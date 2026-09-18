@@ -71,6 +71,18 @@ REGISTRY_META_SCHEMA: dict[str, Any] = {
                         "type": "array",
                         "items": {"type": "string"},
                     },
+                    # Optional (Build Order Step 7): human-readable plan step
+                    # templates for the Plan Generator (Section 8.3.3), one
+                    # string per step, with {param} placeholders formatted
+                    # against the validated intent's params — e.g.
+                    # "Scan {paths} for files older than {days} days".
+                    # A capability with no plan_steps falls back to a
+                    # single generic step built from its description.
+                    "plan_steps": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1,
+                    },
                 },
                 "additionalProperties": True,
             },
@@ -142,6 +154,14 @@ class Registry:
     def command_template_for(self, action: str) -> str:
         """The shell command template for this action, with `{param}` placeholders."""
         return self.get(action)["command_template"]
+
+    def plan_steps_for(self, action: str) -> list[str] | None:
+        """
+        The registered plan-step templates for this action (Section 8.3.3),
+        or None if the capability doesn't define any — callers (plan_generator.py)
+        are expected to fall back to a generic single-step plan in that case.
+        """
+        return self.get(action).get("plan_steps")
 
     def __contains__(self, action: str) -> bool:
         return action in self._by_action

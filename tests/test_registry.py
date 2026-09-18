@@ -70,6 +70,25 @@ def test_all_capabilities_preserves_file_order():
     assert actions_in_order == reg.actions()
 
 
+def test_plan_steps_for_returns_registered_templates():
+    reg = registry_module.load()
+    steps = reg.plan_steps_for("clean_temp_files")
+    assert steps == [
+        "Scan {paths} for files older than {days} days",
+        "Calculate total reclaimable space",
+        "Move matched files to .trash/ (recoverable)",
+    ]
+
+
+def test_plan_steps_for_returns_none_when_not_registered(tmp_path):
+    """A capability with no plan_steps field must return None, not raise or default silently."""
+    entry = _valid_entry()  # _valid_entry() below has no "plan_steps" key
+    path = _write(tmp_path, {"version": "1.0", "capabilities": [entry]})
+    reg = registry_module.load(path)
+
+    assert reg.plan_steps_for("do_thing") is None
+
+
 # --- Integrity-check failure cases -----------------------------------------
 
 
