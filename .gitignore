@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+
+# Runtime data (Section 5.2 — created in user's home, not the repo)
+~/.oh-my-shell/
+
+# Secrets — Google AI Studio API key etc. (codebase rule #7: never hardcode)
+.env
+.env.*
+!.env.example
+
+# Editor/OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

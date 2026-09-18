@@ -1,0 +1,1 @@
+"""Plan Generator — builds step-by-step plans from registry data (Build Order Step 7)."""

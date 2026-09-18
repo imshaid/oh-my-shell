@@ -1,0 +1,1 @@
+"""Pydantic models, Harness Validation Layer (Build Order Step 4)."""

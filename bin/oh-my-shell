@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Entrypoint for Oh My Shell. Hands off to the Python REPL (src/ohmyshell/main.py).
+# Installed by install.sh as a symlink into /usr/local/bin and registered in
+# /etc/shells so it can be set as a login shell via chsh (Section 8.1).
+set -euo pipefail
+
+exec python3 -m ohmyshell.main "$@"

@@ -1,0 +1,1 @@
+"""psutil-based CPU/RAM/GPU tiered detection (Build Order Step 12)."""

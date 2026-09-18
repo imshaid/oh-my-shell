@@ -1,0 +1,1 @@
+"""Prompt rendering — folder-name, model-tag, icon (Build Order Step 11)."""
