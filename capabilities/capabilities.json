@@ -1,0 +1,98 @@
+{
+  "$schema": "capabilities.schema.json",
+  "version": "1.0",
+  "capabilities": [
+    {
+      "action": "clean_temp_files",
+      "description": "Move files older than N days from /tmp and ~/.cache into .trash/ for safe, reversible cleanup.",
+      "risk": "medium",
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "days": { "type": "integer", "minimum": 1, "default": 7 },
+          "paths": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["/tmp", "~/.cache"]
+          }
+        },
+        "required": ["days"],
+        "additionalProperties": false
+      },
+      "command_template": "find {paths} -type f -mtime +{days} -exec mv {{}} ~/.oh-my-shell/.trash/ \\;",
+      "few_shot_examples": [
+        "clean up temp files older than a week",
+        "clear out my cache"
+      ]
+    },
+    {
+      "action": "organize_files",
+      "description": "Sort files in a target directory into subfolders by file extension.",
+      "risk": "low",
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "target_dir": { "type": "string" },
+          "by": {
+            "type": "string",
+            "enum": ["extension"],
+            "default": "extension"
+          }
+        },
+        "required": ["target_dir"],
+        "additionalProperties": false
+      },
+      "command_template": "for f in {target_dir}/*; do ext=\"${f##*.}\"; mkdir -p \"{target_dir}/$ext\"; mv \"$f\" \"{target_dir}/$ext/\"; done",
+      "few_shot_examples": [
+        "organize this folder",
+        "sort downloads by file type"
+      ]
+    },
+    {
+      "action": "list_processes",
+      "description": "List running processes, optionally filtered by name or sorted by resource usage.",
+      "risk": "low",
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "filter": { "type": "string", "default": "" },
+          "sort_by": {
+            "type": "string",
+            "enum": ["cpu", "mem", "none"],
+            "default": "none"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "command_template": "ps aux --sort=-{sort_by} | grep -i '{filter}'",
+      "few_shot_examples": [
+        "show me what's using the most CPU",
+        "find chrome processes"
+      ]
+    },
+    {
+      "action": "kill_process",
+      "description": "Terminate a running process by PID or name. Always high-risk regardless of model output — irreversible, can affect unsaved work or system stability.",
+      "risk": "high",
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "target": { "type": "string" },
+          "signal": {
+            "type": "string",
+            "enum": ["TERM", "KILL"],
+            "default": "TERM"
+          }
+        },
+        "required": ["target"],
+        "additionalProperties": false
+      },
+      "command_template": "kill -{signal} {target}",
+      "few_shot_examples": [
+        "kill the process using port 8080",
+        "stop that runaway python script"
+      ]
+    }
+  ]
+}

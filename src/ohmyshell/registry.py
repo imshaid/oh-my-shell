@@ -1,0 +1,1 @@
+"""capabilities.json loader + jsonschema integrity check (Build Order Step 3)."""

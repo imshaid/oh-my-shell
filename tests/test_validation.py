@@ -1,0 +1,1 @@
+"""Placeholder — tests to be written alongside the corresponding module (codebase rule #4)."""

@@ -1,0 +1,45 @@
+[project]
+name = "oh-my-shell"
+version = "0.1.0"
+description = "An AI-powered, natural-language Linux shell with a plan-confirm-execute safety workflow."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Md. Shaid Hasan" },
+]
+
+# Dependency pins per blueprint Section 5.1.
+# pydantic-ai is deliberately excluded — it is a full agent framework and
+# conflicts with the static/deterministic architecture (Section 2.3).
+dependencies = [
+    "ollama>=0.6.2",
+    "pydantic>=2.13,<3.0",
+    "rich",
+    "questionary",
+    "psutil",
+    "jsonschema",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+# Google AI Studio API client is intentionally NOT pinned here yet.
+# It is an opt-in fallback (Section 7.8); the SDK will be added once
+# provider-abstraction work begins and Open Question 3 (structured-output
+# verification) is resolved.
+
+[project.scripts]
+oh-my-shell = "ohmyshell.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ohmyshell"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
