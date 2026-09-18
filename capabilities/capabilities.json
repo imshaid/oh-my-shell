@@ -23,6 +23,11 @@
       "few_shot_examples": [
         "clean up temp files older than a week",
         "clear out my cache"
+      ],
+      "plan_steps": [
+        "Scan {paths} for files older than {days} days",
+        "Calculate total reclaimable space",
+        "Move matched files to .trash/ (recoverable)"
       ]
     },
     {
@@ -46,6 +51,11 @@
       "few_shot_examples": [
         "organize this folder",
         "sort downloads by file type"
+      ],
+      "plan_steps": [
+        "Scan {target_dir} for files",
+        "Group files by extension",
+        "Move each file into a subfolder named after its extension"
       ]
     },
     {
@@ -69,6 +79,9 @@
       "few_shot_examples": [
         "show me what's using the most CPU",
         "find chrome processes"
+      ],
+      "plan_steps": [
+        "List running processes matching \"{filter}\", sorted by {sort_by}"
       ]
     },
     {
@@ -92,6 +105,10 @@
       "few_shot_examples": [
         "kill the process using port 8080",
         "stop that runaway python script"
+      ],
+      "plan_steps": [
+        "Locate process matching {target}",
+        "Send {signal} signal to terminate it"
       ]
     }
   ]
