@@ -1,21 +1,21 @@
 """
-Shell REPL loop, entrypoint (Build Order Step 6).
+Shell REPL loop, entrypoint (Build Order Step 6, danger-check integrated Step 8).
 
-Per the Build Order's own scoping for this step ("basic REPL loop, raw
-pass-through প্রথমে — সবচেয়ে সহজ path"), this is intentionally NOT the full
-Section 4.1 pipeline yet:
+Per the Build Order's own scoping for Step 6 ("basic REPL loop, raw
+pass-through প্রথমে — সবচেয়ে সহজ path"), this was initially NOT the full
+Section 4.1 pipeline. Step 8 adds the Danger Classifier in front of raw
+shell execution (Section 8.3.5); the rest of the gaps noted below remain:
 
-- RAW_SHELL input executes immediately via subprocess, with no danger
-  check — the Danger Classifier is Build Order Step 8. Wiring that in
-  will be a small, additive change to `_handle_raw_shell` once it exists;
-  nothing here should be read as a security boundary yet.
+- RAW_SHELL input is now classified (danger_classifier.py) before running.
+  A Destructive verdict shows Section 8.3.5's confirmation prompt ([y]/[n]
+  only in this step — [t] "move to trash instead" needs the Trash/Undo
+  Manager, Step 10; see _handle_raw_shell's docstring).
 - NATURAL_LANGUAGE input is parsed (Step 5's intent_parser) and the
   resulting intent/risk is shown to the user, but NOT executed — there is
-  no Plan Generator (Step 7), Confirmation/Discussion loop (Step 7), Sudo
-  Layer (Step 9), or Executor (Step 10) yet. Showing the parsed result
-  without acting on it is this step's whole point: prove the pipeline up
-  through validated-intent works before building the confirm/execute
-  machinery on top of it.
+  no Plan Generator confirm/edit wiring here yet (plan_generator.py and
+  discussion.py exist as of Step 7, but main.py doesn't call them yet),
+  Sudo Layer (Step 9), or Executor (Step 10). Showing the parsed result
+  without acting on it remains this path's current state.
 - SLASH_COMMAND input only understands "/exit" (and "/quit" as a synonym)
   in this step. The full Meta-Command Handler is Step 14.
 - Prompt rendering here is plain text (folder name, model tag if
@@ -23,8 +23,10 @@ Section 4.1 pipeline yet:
   Step 11 (ui/prompt.py, ui/panels.py).
 
 None of this needs a `--no-ai` style flag yet (Section 8.5) since there's
-no AI-execution path to disable — that flag becomes meaningful once the
-Plan Generator/Executor exist.
+no AI-execution path to disable for natural language — that flag becomes
+meaningful once the Plan Generator/Executor are wired into main.py. The
+danger classifier's own LLM fallback tier IS already live, though — see
+its fail-safe policy in _handle_raw_shell's docstring.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ import sys
 from pathlib import Path
 
 from ohmyshell import config as config_module
+from ohmyshell.danger_classifier import Destructive, DangerClassifierError, classify
 from ohmyshell.intent_parser import IntentParseError, parse_intent
 from ohmyshell.registry import Registry, RegistryError
 from ohmyshell.registry import load as load_registry
@@ -58,13 +61,53 @@ def _render_prompt(cfg: dict) -> str:
     return f"{folder_name}{tag} ❯ "
 
 
-def _handle_raw_shell(text: str) -> None:
+def _handle_raw_shell(text: str, cfg: dict, *, confirm: callable = input) -> None:
     """
-    Execute raw shell input directly, no AI involvement, no danger check
-    yet (Step 8 adds that in front of this call). Uses shell=True so
-    pipes/redirects/chaining the router already detected actually work;
-    interactive full-screen programs (vim/top) are a pty hand-off concern
-    for a later step — this is plain blocking subprocess execution.
+    Classify, then execute raw shell input directly (Section 8.3.5).
+
+    Scope note (implementation decision): Section 8.3.5's confirmation
+    prompt offers [y] Run anyway / [n] Cancel / [t] Move to trash instead.
+    [t] is not offered yet — it needs the Trash/Undo Manager (Step 10),
+    which doesn't exist yet, so this step only offers [y]/[n]. A
+    Destructive verdict with trash_alternative_possible=True is exactly
+    the case Step 10 will extend this confirmation prompt to also offer
+    [t] for.
+
+    Hard constraint (Section 8.4, line 853): nothing here inspects the
+    command text for --yes/-y and skips the prompt on a destructive
+    verdict — that flag has no special handling anywhere in this function,
+    which is what makes it unable to bypass this confirmation.
+
+    Fail-safe policy (this function's own choice, not the classifier's):
+    if the LLM fallback itself fails (Ollama unreachable, etc.), the
+    command is treated as unclassifiable and NOT run automatically — the
+    user is told why and asked to re-run manually, rather than silently
+    executing something that couldn't be checked.
+    """
+    try:
+        result = classify(text, model=config_module.get(cfg, "model.active"))
+    except DangerClassifierError as exc:
+        print(f"  ⚠ Could not classify this command ({exc}) — not running it automatically.")
+        print(f"  Re-run manually if you're sure: {text}")
+        return
+
+    if isinstance(result.verdict, Destructive):
+        print("\n  ⚠ Potentially destructive command detected\n")
+        print(f"  {result.verdict.explanation}\n")
+        choice = confirm("  [y] Run anyway   [n] Cancel   ").strip().lower()
+        if choice != "y":
+            print("  Cancelled.")
+            return
+
+    _run_shell_command(text)
+
+
+def _run_shell_command(text: str) -> None:
+    """
+    Actually execute a raw shell command. Uses shell=True so pipes/redirects/
+    chaining the router already detected actually work; interactive
+    full-screen programs (vim/top) are a pty hand-off concern for a later
+    step — this is plain blocking subprocess execution.
     """
     try:
         subprocess.run(text, shell=True)
@@ -138,7 +181,7 @@ def run() -> None:
                 break
             continue
         if routed.kind == InputKind.RAW_SHELL:
-            _handle_raw_shell(routed.text)
+            _handle_raw_shell(routed.text, cfg)
             continue
         if routed.kind == InputKind.NATURAL_LANGUAGE:
             _handle_natural_language(routed.text, registry, cfg)

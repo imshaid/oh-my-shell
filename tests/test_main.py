@@ -58,17 +58,86 @@ def test_render_prompt_ends_with_raw_command_icon(default_cfg):
 # --- _handle_raw_shell -------------------------------------------------------------
 
 
-def test_handle_raw_shell_calls_subprocess_run_with_shell_true():
-    with patch("ohmyshell.main.subprocess.run") as mock_run:
-        main_module._handle_raw_shell("ls -la")
+def test_handle_raw_shell_calls_subprocess_run_with_shell_true(default_cfg):
+    with patch("ohmyshell.main.classify") as mock_classify:
+        from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+        mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
+        with patch("ohmyshell.main.subprocess.run") as mock_run:
+            main_module._handle_raw_shell("ls -la", default_cfg)
     mock_run.assert_called_once_with("ls -la", shell=True)
 
 
-def test_handle_raw_shell_reports_os_error_without_raising(capsys):
-    with patch("ohmyshell.main.subprocess.run", side_effect=OSError("boom")):
-        main_module._handle_raw_shell("whatever")  # must not raise
+def test_handle_raw_shell_reports_os_error_without_raising(default_cfg, capsys):
+    with patch("ohmyshell.main.classify") as mock_classify:
+        from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+        mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
+        with patch("ohmyshell.main.subprocess.run", side_effect=OSError("boom")):
+            main_module._handle_raw_shell("whatever", default_cfg)  # must not raise
     captured = capsys.readouterr()
     assert "boom" in captured.err
+
+
+def test_handle_raw_shell_safe_verdict_never_prompts(default_cfg):
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.run"):
+            confirm_fn = MagicMock()
+            main_module._handle_raw_shell("ls -la", default_cfg, confirm=confirm_fn)
+    confirm_fn.assert_not_called()
+
+
+def test_handle_raw_shell_destructive_verdict_prompts_and_runs_on_yes(default_cfg):
+    from ohmyshell.danger_classifier import ClassificationResult, Destructive
+
+    destructive = ClassificationResult(
+        verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
+        source="regex",
+    )
+    with patch("ohmyshell.main.classify", return_value=destructive):
+        with patch("ohmyshell.main.subprocess.run") as mock_run:
+            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "y")
+    mock_run.assert_called_once_with("rm -rf /tmp/x", shell=True)
+
+
+def test_handle_raw_shell_destructive_verdict_cancelled_on_no(default_cfg):
+    from ohmyshell.danger_classifier import ClassificationResult, Destructive
+
+    destructive = ClassificationResult(
+        verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
+        source="regex",
+    )
+    with patch("ohmyshell.main.classify", return_value=destructive):
+        with patch("ohmyshell.main.subprocess.run") as mock_run:
+            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n")
+    mock_run.assert_not_called()
+
+
+def test_handle_raw_shell_destructive_verdict_shows_explanation(default_cfg, capsys):
+    from ohmyshell.danger_classifier import ClassificationResult, Destructive
+
+    destructive = ClassificationResult(
+        verdict=Destructive(explanation="this will delete everything", trash_alternative_possible=True),
+        source="regex",
+    )
+    with patch("ohmyshell.main.classify", return_value=destructive):
+        with patch("ohmyshell.main.subprocess.run"):
+            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n")
+    out = capsys.readouterr().out
+    assert "this will delete everything" in out
+
+
+def test_handle_raw_shell_classifier_error_does_not_run_command(default_cfg, capsys):
+    from ohmyshell.danger_classifier import DangerClassifierError
+
+    with patch("ohmyshell.main.classify", side_effect=DangerClassifierError("Ollama unreachable")):
+        with patch("ohmyshell.main.subprocess.run") as mock_run:
+            main_module._handle_raw_shell("some ambiguous command", default_cfg)
+    mock_run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Ollama unreachable" in out
 
 
 # --- _handle_natural_language --------------------------------------------------------
