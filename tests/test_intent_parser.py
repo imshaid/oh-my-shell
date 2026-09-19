@@ -153,7 +153,10 @@ def test_first_attempt_invalid_second_attempt_valid(registry):
 
     assert result.action == "organize_files"
     assert result.attempts == 2
-    assert result.intent.params == {"target_dir": "/home/user/Downloads"}
+    # organize_files' "by" param has a schema default ("extension") that
+    # validate_intent now fills in when the model doesn't supply it (see
+    # test_validation.py's dedicated schema-default tests).
+    assert result.intent.params == {"target_dir": "/home/user/Downloads", "by": "extension"}
     assert len(backend.calls) == 2
     # the retry call's user_message should include the validation error as guidance
     assert "invalid" in backend.calls[1]["user_message"].lower()

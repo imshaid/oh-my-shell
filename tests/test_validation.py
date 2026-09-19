@@ -32,7 +32,12 @@ def test_valid_intent_passes_and_risk_comes_from_registry(registry):
     assert outcome.error is None
     assert outcome.intent is not None
     assert outcome.intent.action == "organize_files"
-    assert outcome.intent.params == {"target_dir": "/home/user/Downloads"}
+    # organize_files' own "by" param has a schema default ("extension") and
+    # wasn't supplied here -- validate_intent fills it in (see
+    # test_params_missing_optional_field_gets_schema_default below for the
+    # dedicated test of this behavior), so the model only having to supply
+    # target_dir still produces a complete params dict.
+    assert outcome.intent.params == {"target_dir": "/home/user/Downloads", "by": "extension"}
     assert outcome.intent.risk == "low"  # from the registry, per organize_files' static risk
 
 
@@ -176,6 +181,61 @@ def test_additional_unexpected_param_fails(registry):
     )
 
     assert outcome.ok is False
+
+
+# --- Schema-default filling (bug found via manual end-to-end testing) -------
+
+
+def test_params_missing_optional_field_gets_schema_default(registry):
+    """
+    list_processes.sort_by has params_schema default "none" and isn't
+    required -- a model response that omits it entirely (a real Ollama
+    response did exactly this) must come back with sort_by filled in, not
+    just silently missing. Left unfilled, this reached executor.py's
+    render_command() and crashed with KeyError('sort_by') the first time a
+    real model omitted it (command_template has "{sort_by}" with no
+    placeholder-tolerance, unlike plan_generator.py's step-text rendering).
+    """
+    raw = {"action": "list_processes", "params": {"filter": "chrome"}}
+
+    outcome = validation.validate_intent(raw, registry)
+
+    assert outcome.ok is True
+    assert outcome.intent.params == {"filter": "chrome", "sort_by": "none"}
+
+
+def test_params_all_defaults_used_fills_every_default(registry):
+    raw = {"action": "list_processes", "params": {}}
+
+    outcome = validation.validate_intent(raw, registry)
+
+    assert outcome.ok is True
+    assert outcome.intent.params == {"filter": "", "sort_by": "none"}
+
+
+def test_params_explicit_value_is_never_overwritten_by_default(registry):
+    """A value the model DID supply must win over the schema default, even
+    when it happens to equal something else -- this only fills gaps."""
+    raw = {"action": "list_processes", "params": {"filter": "chrome", "sort_by": "cpu"}}
+
+    outcome = validation.validate_intent(raw, registry)
+
+    assert outcome.ok is True
+    assert outcome.intent.params == {"filter": "chrome", "sort_by": "cpu"}
+
+
+def test_params_property_with_no_schema_default_stays_absent(registry):
+    """kill_process.target has no "default" in its schema -- it's required,
+    so it's always supplied, but a hypothetical optional-with-no-default
+    property should be left out rather than filled with None/""."""
+    raw = {"action": "kill_process", "params": {"target": "1234"}}
+
+    outcome = validation.validate_intent(raw, registry)
+
+    assert outcome.ok is True
+    # signal has an enum+default in the real schema, so it gets filled;
+    # this asserts no *extra* keys beyond target/signal appear.
+    assert set(outcome.intent.params.keys()) <= {"target", "signal"}
 
 
 # --- RawIntent already-parsed input path -------------------------------------
