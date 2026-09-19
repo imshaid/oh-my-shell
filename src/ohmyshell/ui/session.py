@@ -27,6 +27,16 @@ importing this module in a test file never requires a real terminal
 (prompt_toolkit's default input/output backends probe the terminal at
 PromptSession-construction time, which fails under pytest's captured
 stdio unless a stub input/output is supplied).
+
+Command palette (Step 11 follow-up, post-Build-Order): a real
+`PromptSession` is now constructed with `completer=OhMyShellCompleter()`
+and `complete_while_typing=True`, so typing "/" shows the slash-command
+list (ui/palette.py) live, matching the person's explicit ask ("when press
+/ then automatically show all the commands ... like claude code or hermes
+agent"). This only affects the real, lazily-constructed `PromptSession` --
+a test-injected `reader` never sees a completer at all, since fakes used
+in tests don't implement prompt_toolkit's completion protocol and have no
+reason to.
 """
 
 from __future__ import annotations
@@ -60,7 +70,12 @@ class ReplSession:
         else:
             from prompt_toolkit import PromptSession
 
-            self._reader = PromptSession()
+            from ohmyshell.ui.palette import OhMyShellCompleter
+
+            self._reader = PromptSession(
+                completer=OhMyShellCompleter(),
+                complete_while_typing=True,
+            )
 
     def prompt(self, formatted_text: object = "") -> str:
         """

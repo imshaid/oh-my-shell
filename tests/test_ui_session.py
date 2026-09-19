@@ -110,3 +110,23 @@ class TestReplSessionConstructionIsLazy:
         with an explicit reader, which is the supported test-time path."""
         session = ReplSession(reader=FakeReader(["x"]))
         assert session.prompt() == "x"
+
+class TestReplSessionRealConstructionWiresPalette:
+    """
+    Command-palette follow-up: the real (non-fake) construction path must
+    hand prompt_toolkit's PromptSession an OhMyShellCompleter, with
+    complete_while_typing on, so "/" pops up the command list live (see
+    ui/palette.py). This constructs a real PromptSession (no `reader=`
+    override) -- safe under pytest because PromptSession's own
+    terminal-probing is about picking an input/output backend, not about
+    requiring an interactive TTY to merely construct one with an explicit
+    completer.
+    """
+
+    def test_default_construction_sets_completer_and_complete_while_typing(self):
+        from ohmyshell.ui.palette import OhMyShellCompleter
+
+        session = ReplSession()
+        prompt_session = session._reader
+        assert isinstance(prompt_session.completer, OhMyShellCompleter)
+        assert prompt_session.complete_while_typing is True
