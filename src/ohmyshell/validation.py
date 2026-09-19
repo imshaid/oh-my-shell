@@ -131,13 +131,49 @@ def validate_intent(raw: Any, registry: Registry) -> ValidationOutcome:
             ),
         )
 
+    # Bug fix (found via manual end-to-end testing, post-Build-Order): a
+    # model response omitting a non-required param (e.g. list_processes'
+    # sort_by, which has params_schema default "none" but isn't in
+    # `required`) validates fine here -- jsonschema.validate() only checks
+    # an instance against a schema, it never *fills in* a property's
+    # "default" the way e.g. Pydantic's model defaults would. Left as-is,
+    # that missing key then reached executor.py's render_command(), which
+    # does a plain str.format(**params) with no placeholder-tolerance (unlike
+    # plan_generator.py's _LeavePlaceholder, which is plan-text-only) and
+    # crashed with a bare KeyError the first time a real Ollama response
+    # actually omitted an optional param. The correct fix belongs here, not
+    # in executor.py: a ValidatedIntent should always carry a complete params
+    # dict (every property named in the schema, defaulted where the model
+    # didn't supply one) so every downstream consumer -- Plan Generator,
+    # Executor, the Discussion Loop's edit flow -- can rely on the same
+    # complete shape, matching this module's own stated job of being the one
+    # place that reconciles a raw model response against the registry.
+    complete_params = _fill_schema_defaults(parsed.params, params_schema)
+
     # risk is looked up from the registry — never taken from `raw`, even if
     # the model's response happened to include a risk-like field.
     return ValidationOutcome(
         ok=True,
         intent=ValidatedIntent(
             action=parsed.action,
-            params=parsed.params,
+            params=complete_params,
             risk=registry.risk_for(parsed.action),
         ),
     )
+
+
+def _fill_schema_defaults(params: dict[str, Any], params_schema: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return a copy of `params` with any property named in `params_schema`
+    filled in from that property's own JSON Schema "default", if the model
+    didn't supply it. Params the model DID supply are never overwritten
+    (this only adds missing keys, it doesn't second-guess given values).
+    A property with no "default" in the schema and not supplied by the
+    model is simply left absent, same as today -- only params_schema.json
+    already promises a default is safe to fill in here.
+    """
+    filled = dict(params)
+    for name, prop_schema in params_schema.get("properties", {}).items():
+        if name not in filled and "default" in prop_schema:
+            filled[name] = prop_schema["default"]
+    return filled
