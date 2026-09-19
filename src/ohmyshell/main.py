@@ -355,6 +355,7 @@ def _handle_natural_language(
     cfg: dict,
     *,
     read: callable = input,
+    choice_read: callable | None = None,
     console: Console | None = None,
     base_dir=None,
 ) -> None:
@@ -462,7 +463,7 @@ def _handle_natural_language(
         return generate_plan(adjusted.intent, registry)
 
     def _get_user_choice(current_plan: Plan) -> tuple[str, Plan]:
-        choice = _repl_get_user_choice(current_plan, read=read, console=active_console)
+        choice = _repl_get_user_choice(current_plan, read=choice_read, console=active_console)
         if choice == "edit":
             current_plan = _repl_edit_flow(current_plan, registry, read=read, console=active_console)
         return choice, current_plan
