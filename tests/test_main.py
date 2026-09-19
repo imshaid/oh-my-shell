@@ -1,9 +1,11 @@
 """
-Tests for main.py (Build Order Step 6) — basic REPL loop dispatch.
+Tests for main.py (Build Order Step 6, fully wired post-Build-Order to the
+Section 4.1 pipeline) — REPL loop dispatch and the NL/raw-shell glue.
 
-`input()`, `subprocess.run`, and `intent_parser.parse_intent` are all mocked
-so these tests exercise only the REPL's own dispatch logic, not real shell
-execution or a real Ollama call.
+`input()`, `subprocess.run`, `intent_parser.parse_intent`, and the
+Executor/Audit Log are all mocked or redirected to a tmp_path base_dir so
+these tests exercise only main.py's own wiring logic, not real shell
+execution, a real Ollama call, or the user's real ~/.oh-my-shell/.
 """
 
 from unittest.mock import MagicMock, patch
@@ -13,7 +15,10 @@ import pytest
 from ohmyshell import config as config_module
 from ohmyshell import main as main_module
 from ohmyshell import registry as registry_module
+from ohmyshell.discussion import Cancelled, Confirmed
+from ohmyshell.executor import ExecutionResult, StepResult, StepStatus
 from ohmyshell.intent_parser import IntentParseError, ParseResult
+from ohmyshell.plan_generator import Plan
 from ohmyshell.validation import ValidatedIntent
 
 
@@ -58,38 +63,38 @@ def test_render_prompt_ends_with_raw_command_icon(default_cfg):
 # --- _handle_raw_shell -------------------------------------------------------------
 
 
-def test_handle_raw_shell_calls_subprocess_run_with_shell_true(default_cfg):
+def test_handle_raw_shell_calls_subprocess_run_with_shell_true(default_cfg, tmp_path):
     with patch("ohmyshell.main.classify") as mock_classify:
         from ohmyshell.danger_classifier import ClassificationResult, Safe
 
         mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
         with patch("ohmyshell.main.subprocess.run") as mock_run:
-            main_module._handle_raw_shell("ls -la", default_cfg)
+            main_module._handle_raw_shell("ls -la", default_cfg, base_dir=tmp_path)
     mock_run.assert_called_once_with("ls -la", shell=True)
 
 
-def test_handle_raw_shell_reports_os_error_without_raising(default_cfg, capsys):
+def test_handle_raw_shell_reports_os_error_without_raising(default_cfg, tmp_path, capsys):
     with patch("ohmyshell.main.classify") as mock_classify:
         from ohmyshell.danger_classifier import ClassificationResult, Safe
 
         mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
         with patch("ohmyshell.main.subprocess.run", side_effect=OSError("boom")):
-            main_module._handle_raw_shell("whatever", default_cfg)  # must not raise
+            main_module._handle_raw_shell("whatever", default_cfg, base_dir=tmp_path)  # must not raise
     captured = capsys.readouterr()
     assert "boom" in captured.err
 
 
-def test_handle_raw_shell_safe_verdict_never_prompts(default_cfg):
+def test_handle_raw_shell_safe_verdict_never_prompts(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
     with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
         with patch("ohmyshell.main.subprocess.run"):
             confirm_fn = MagicMock()
-            main_module._handle_raw_shell("ls -la", default_cfg, confirm=confirm_fn)
+            main_module._handle_raw_shell("ls -la", default_cfg, confirm=confirm_fn, base_dir=tmp_path)
     confirm_fn.assert_not_called()
 
 
-def test_handle_raw_shell_destructive_verdict_prompts_and_runs_on_yes(default_cfg):
+def test_handle_raw_shell_destructive_verdict_prompts_and_runs_on_yes(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Destructive
 
     destructive = ClassificationResult(
@@ -98,11 +103,11 @@ def test_handle_raw_shell_destructive_verdict_prompts_and_runs_on_yes(default_cf
     )
     with patch("ohmyshell.main.classify", return_value=destructive):
         with patch("ohmyshell.main.subprocess.run") as mock_run:
-            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "y")
+            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "y", base_dir=tmp_path)
     mock_run.assert_called_once_with("rm -rf /tmp/x", shell=True)
 
 
-def test_handle_raw_shell_destructive_verdict_cancelled_on_no(default_cfg):
+def test_handle_raw_shell_destructive_verdict_cancelled_on_no(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Destructive
 
     destructive = ClassificationResult(
@@ -111,11 +116,11 @@ def test_handle_raw_shell_destructive_verdict_cancelled_on_no(default_cfg):
     )
     with patch("ohmyshell.main.classify", return_value=destructive):
         with patch("ohmyshell.main.subprocess.run") as mock_run:
-            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n")
+            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
     mock_run.assert_not_called()
 
 
-def test_handle_raw_shell_destructive_verdict_shows_explanation(default_cfg, capsys):
+def test_handle_raw_shell_destructive_verdict_shows_explanation(default_cfg, tmp_path, capsys):
     from ohmyshell.danger_classifier import ClassificationResult, Destructive
 
     destructive = ClassificationResult(
@@ -124,71 +129,353 @@ def test_handle_raw_shell_destructive_verdict_shows_explanation(default_cfg, cap
     )
     with patch("ohmyshell.main.classify", return_value=destructive):
         with patch("ohmyshell.main.subprocess.run"):
-            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n")
+            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
     out = capsys.readouterr().out
     assert "this will delete everything" in out
 
 
-def test_handle_raw_shell_classifier_error_does_not_run_command(default_cfg, capsys):
+def test_handle_raw_shell_classifier_error_does_not_run_command(default_cfg, tmp_path, capsys):
     from ohmyshell.danger_classifier import DangerClassifierError
 
     with patch("ohmyshell.main.classify", side_effect=DangerClassifierError("Ollama unreachable")):
         with patch("ohmyshell.main.subprocess.run") as mock_run:
-            main_module._handle_raw_shell("some ambiguous command", default_cfg)
+            main_module._handle_raw_shell("some ambiguous command", default_cfg, base_dir=tmp_path)
     mock_run.assert_not_called()
     out = capsys.readouterr().out
     assert "Ollama unreachable" in out
+
+
+def test_handle_raw_shell_destructive_verdict_offers_trash_option_when_possible(default_cfg, tmp_path, capsys):
+    from ohmyshell.danger_classifier import ClassificationResult, Destructive
+
+    destructive = ClassificationResult(
+        verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
+        source="regex",
+    )
+    with patch("ohmyshell.main.classify", return_value=destructive):
+        with patch("ohmyshell.main.subprocess.run"):
+            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
+    out = capsys.readouterr().out
+    assert "[t] Move to trash instead" in out
+
+
+def test_handle_raw_shell_destructive_verdict_omits_trash_option_when_not_possible(default_cfg, tmp_path, capsys):
+    from ohmyshell.danger_classifier import ClassificationResult, Destructive
+
+    destructive = ClassificationResult(
+        verdict=Destructive(explanation="wipes a device", trash_alternative_possible=False),
+        source="regex",
+    )
+    with patch("ohmyshell.main.classify", return_value=destructive):
+        with patch("ohmyshell.main.subprocess.run"):
+            main_module._handle_raw_shell("dd if=/dev/zero of=/dev/sda", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
+    out = capsys.readouterr().out
+    assert "[t]" not in out
+
+
+def test_handle_raw_shell_trash_choice_moves_target_instead_of_running(default_cfg, tmp_path):
+    from ohmyshell.danger_classifier import ClassificationResult, Destructive
+
+    target = tmp_path / "doomed.txt"
+    target.write_text("x")
+    destructive = ClassificationResult(
+        verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
+        source="regex",
+    )
+    with patch("ohmyshell.main.classify", return_value=destructive):
+        with patch("ohmyshell.main.subprocess.run") as mock_run:
+            main_module._handle_raw_shell(f"rm -rf {target}", default_cfg, confirm=lambda _: "t", base_dir=tmp_path)
+    mock_run.assert_not_called()
+    assert not target.exists()
+
+    from ohmyshell import trash as trash_module
+
+    assert len(trash_module.list_trash(base_dir=tmp_path)) == 1
+
+
+def test_handle_raw_shell_logs_audit_entry_on_run(default_cfg, tmp_path):
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.run"):
+            main_module._handle_raw_shell("ls -la", default_cfg, base_dir=tmp_path)
+
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert len(entries) == 1
+    assert entries[0].source == "raw_shell"
+    assert entries[0].status == "done"
 
 
 # --- _handle_natural_language --------------------------------------------------------
 
 
-def test_handle_natural_language_prints_action_and_risk(registry, default_cfg, capsys):
-    fake_result = ParseResult(
-        action="list_processes",
-        intent=ValidatedIntent(action="list_processes", params={"filter": "chrome"}, risk="low"),
+def _fake_parse_result(action="list_processes", params=None, risk="low"):
+    return ParseResult(
+        action=action,
+        intent=ValidatedIntent(action=action, params=params or {}, risk=risk),
         attempts=1,
     )
-    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
-        main_module._handle_natural_language("find chrome processes", registry, default_cfg)
-
-    out = capsys.readouterr().out
-    assert "list_processes" in out
-    assert "low" in out
-    assert "chrome" in out
-    assert "not wired up yet" not in out or "Execution isn't wired up yet" in out
 
 
-def test_handle_natural_language_reports_unmapped(registry, default_cfg, capsys):
+def _fake_plan(action="list_processes", params=None, risk="low", steps=None):
+    return Plan(action=action, params=params or {}, risk=risk, steps=steps or ["do the thing"])
+
+
+def test_handle_natural_language_reports_unmapped(registry, default_cfg, tmp_path, capsys):
     fake_result = ParseResult(action="unmapped", intent=None, attempts=2, last_error="nope")
     with patch("ohmyshell.main.parse_intent", return_value=fake_result):
-        main_module._handle_natural_language("do something weird", registry, default_cfg)
+        main_module._handle_natural_language("do something weird", registry, default_cfg, base_dir=tmp_path)
 
     out = capsys.readouterr().out
     assert "couldn't map" in out.lower()
 
 
-def test_handle_natural_language_reports_backend_failure(registry, default_cfg, capsys):
-    with patch(
-        "ohmyshell.main.parse_intent", side_effect=IntentParseError("Ollama unreachable")
-    ):
-        main_module._handle_natural_language("clean up temp files", registry, default_cfg)
+def test_handle_natural_language_reports_backend_failure(registry, default_cfg, tmp_path, capsys):
+    with patch("ohmyshell.main.parse_intent", side_effect=IntentParseError("Ollama unreachable")):
+        main_module._handle_natural_language("clean up temp files", registry, default_cfg, base_dir=tmp_path)
 
     out = capsys.readouterr().out
     assert "Ollama unreachable" in out
 
 
-def test_handle_natural_language_never_executes_anything(registry, default_cfg):
-    """This step must not touch subprocess at all for NL input — preview only."""
-    fake_result = ParseResult(
-        action="clean_temp_files",
-        intent=ValidatedIntent(action="clean_temp_files", params={"days": 7}, risk="medium"),
-        attempts=1,
-    )
+def test_handle_natural_language_cancel_never_executes_anything(registry, default_cfg, tmp_path):
+    """Cancelling at the Discussion Loop must not touch subprocess/run_plan at all."""
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+
     with patch("ohmyshell.main.parse_intent", return_value=fake_result):
-        with patch("ohmyshell.main.subprocess.run") as mock_run:
-            main_module._handle_natural_language("clean up temp files", registry, default_cfg)
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Cancelled()):
+                with patch("ohmyshell.main.run_plan") as mock_run_plan:
+                    main_module._handle_natural_language(
+                        "clean up temp files", registry, default_cfg, base_dir=tmp_path
+                    )
+    mock_run_plan.assert_not_called()
+
+
+def test_handle_natural_language_cancel_logs_cancelled_status(registry, default_cfg, tmp_path):
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Cancelled()):
+                main_module._handle_natural_language("clean up temp files", registry, default_cfg, base_dir=tmp_path)
+
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert len(entries) == 1
+    assert entries[0].status == "cancelled"
+    assert entries[0].source == "natural_language"
+
+
+def test_handle_natural_language_confirmed_runs_plan_and_logs_done(registry, default_cfg, tmp_path):
+    fake_result = _fake_parse_result(action="list_processes", params={"filter": "chrome"}, risk="low")
+    fake_plan = _fake_plan(action="list_processes", params={"filter": "chrome"}, risk="low")
+    execution = ExecutionResult(
+        action="list_processes",
+        step_results=[
+            StepResult(step_number=1, description="list", status=StepStatus.DONE, returncode=0, stdout="", stderr="")
+        ],
+    )
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Confirmed(plan=fake_plan)):
+                with patch("ohmyshell.main.run_plan", return_value=execution) as mock_run_plan:
+                    main_module._handle_natural_language(
+                        "find chrome processes", registry, default_cfg, base_dir=tmp_path
+                    )
+
+    mock_run_plan.assert_called_once()
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert len(entries) == 1
+    assert entries[0].status == "done"
+    assert entries[0].action == "list_processes"
+    assert entries[0].risk == "low"
+
+
+def test_handle_natural_language_confirmed_never_calls_subprocess_directly(registry, default_cfg, tmp_path):
+    """main.py itself must not shell out for NL input -- only run_plan() may."""
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+    execution = ExecutionResult(
+        action="clean_temp_files",
+        step_results=[
+            StepResult(step_number=1, description="clean", status=StepStatus.DONE, returncode=0, stdout="", stderr="")
+        ],
+    )
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Confirmed(plan=fake_plan)):
+                with patch("ohmyshell.main.run_plan", return_value=execution):
+                    with patch("ohmyshell.main.subprocess.run") as mock_run:
+                        main_module._handle_natural_language(
+                            "clean up temp files", registry, default_cfg, base_dir=tmp_path
+                        )
     mock_run.assert_not_called()
+
+
+def test_handle_natural_language_interrupted_execution_logs_interrupted(registry, default_cfg, tmp_path):
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+    execution = ExecutionResult(
+        action="clean_temp_files",
+        step_results=[
+            StepResult(
+                step_number=1, description="clean", status=StepStatus.INTERRUPTED,
+                returncode=None, stdout="", stderr="",
+            )
+        ],
+        interrupted=True,
+    )
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Confirmed(plan=fake_plan)):
+                with patch("ohmyshell.main.run_plan", return_value=execution):
+                    main_module._handle_natural_language(
+                        "clean up temp files", registry, default_cfg, base_dir=tmp_path
+                    )
+
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert entries[0].status == "interrupted"
+
+
+def test_handle_natural_language_aborted_for_sudo_logs_cancelled(registry, default_cfg, tmp_path):
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+    execution = ExecutionResult(
+        action="clean_temp_files",
+        step_results=[
+            StepResult(step_number=1, description="clean", status=StepStatus.INTERRUPTED, returncode=None)
+        ],
+        aborted_for_sudo=True,
+    )
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Confirmed(plan=fake_plan)):
+                with patch("ohmyshell.main.run_plan", return_value=execution):
+                    main_module._handle_natural_language(
+                        "clean up temp files", registry, default_cfg, base_dir=tmp_path
+                    )
+
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert entries[0].status == "cancelled"
+
+
+def test_handle_natural_language_failed_step_logs_failed(registry, default_cfg, tmp_path):
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+    execution = ExecutionResult(
+        action="clean_temp_files",
+        step_results=[
+            StepResult(
+                step_number=1, description="clean", status=StepStatus.FAILED,
+                returncode=1, stdout="", stderr="boom",
+            )
+        ],
+    )
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Confirmed(plan=fake_plan)):
+                with patch("ohmyshell.main.run_plan", return_value=execution):
+                    main_module._handle_natural_language(
+                        "clean up temp files", registry, default_cfg, base_dir=tmp_path
+                    )
+
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert entries[0].status == "failed"
+    assert "boom" in entries[0].detail
+
+
+def test_handle_natural_language_passes_input_prompt_to_run_plan(registry, default_cfg, tmp_path):
+    """A step needing sudo must be able to reach sudo_layer's real REPL prompt."""
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+    execution = ExecutionResult(
+        action="clean_temp_files",
+        step_results=[StepResult(step_number=1, description="clean", status=StepStatus.DONE, returncode=0)],
+    )
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_discussion", return_value=Confirmed(plan=fake_plan)):
+                with patch("ohmyshell.main.run_plan", return_value=execution) as mock_run_plan:
+                    main_module._handle_natural_language(
+                        "clean up temp files", registry, default_cfg, base_dir=tmp_path
+                    )
+
+    from ohmyshell.sudo_layer import InputPrompt
+
+    _, kwargs = mock_run_plan.call_args
+    assert isinstance(kwargs["prompt"], InputPrompt)
+
+
+# --- _repl_get_user_choice / _repl_edit_flow ------------------------------------------
+
+
+def test_repl_get_user_choice_bare_enter_confirms():
+    plan = _fake_plan()
+    choice = main_module._repl_get_user_choice(plan, read=lambda _: "")
+    assert choice == "confirm"
+
+
+def test_repl_get_user_choice_maps_keys():
+    plan = _fake_plan()
+    assert main_module._repl_get_user_choice(plan, read=lambda _: "e") == "edit"
+    assert main_module._repl_get_user_choice(plan, read=lambda _: "c") == "chat"
+    assert main_module._repl_get_user_choice(plan, read=lambda _: "q") == "cancel"
+
+
+def test_repl_edit_flow_applies_edit(registry):
+    plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+    responses = iter(["days", "14"])
+    updated = main_module._repl_edit_flow(plan, registry, read=lambda _: next(responses), print_fn=lambda _: None)
+    assert updated.params["days"] == "14"
+
+
+def test_repl_edit_flow_unknown_param_leaves_plan_unchanged(registry):
+    plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
+    responses = iter(["not_a_real_param", "whatever"])
+    updated = main_module._repl_edit_flow(plan, registry, read=lambda _: next(responses), print_fn=lambda _: None)
+    assert updated == plan
+
+
+# --- _extract_trash_target --------------------------------------------------------
+
+
+def test_extract_trash_target_picks_trailing_path():
+    assert main_module._extract_trash_target("rm -rf /tmp/build") == "/tmp/build"
+
+
+def test_extract_trash_target_skips_flags():
+    assert main_module._extract_trash_target("rm -rf -v /tmp/build") == "/tmp/build"
+
+
+def test_extract_trash_target_none_for_empty_text():
+    assert main_module._extract_trash_target("") is None
+
+
+def test_extract_trash_target_none_when_only_flags_after_command():
+    # "rm -rf" alone (no path argument) has no real target -- the command
+    # word itself ("rm") is deliberately never returned as a fallback (see
+    # _extract_trash_target's own docstring for why).
+    assert main_module._extract_trash_target("rm -rf") is None
 
 
 # --- _handle_slash_command --------------------------------------------------------
@@ -234,7 +521,12 @@ def test_run_exits_on_eof():
             main_module.run()
 
 
-def test_run_dispatches_raw_shell_then_exits():
+def test_run_dispatches_raw_shell_then_exits(tmp_path, monkeypatch):
+    # Isolate audit_log's default base_dir (config_module.CONFIG_DIR) so this
+    # doesn't append to the real ~/.oh-my-shell/audit.log.jsonl -- run()
+    # itself calls _handle_raw_shell without an explicit base_dir, matching
+    # real usage, so the isolation has to happen at the config-dir level.
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
     with patch("ohmyshell.main.input", side_effect=["ls -la", "/exit"]):
         with patch("ohmyshell.main.load_registry"):
             with patch("ohmyshell.main.subprocess.run") as mock_run:
