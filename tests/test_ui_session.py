@@ -130,3 +130,74 @@ class TestReplSessionRealConstructionWiresPalette:
         prompt_session = session._reader
         assert isinstance(prompt_session.completer, OhMyShellCompleter)
         assert prompt_session.complete_while_typing is True
+
+    def test_default_construction_sets_palette_style(self):
+        """
+        Round 2 fix: the completion menu must use this app's own cyan/dim
+        palette (ui/palette.PALETTE_STYLE), not prompt_toolkit's stock grey
+        defaults -- see ui/palette.py's own docstring for why the original
+        popup read as "ugly, doesn't fit the main shell UI."
+        """
+        from ohmyshell.ui.palette import PALETTE_STYLE
+
+        session = ReplSession()
+        assert session._reader.style is PALETTE_STYLE
+
+    def test_default_construction_wires_retrigger_handler_on_default_buffer(self):
+        """
+        Round 2 fix: backspacing inside a "/..." line must re-open the
+        completion menu, which complete_while_typing alone does not do
+        (see _retrigger_completion_on_edit's own docstring for the
+        prompt_toolkit-internals reason). This checks the handler is
+        actually attached to the real PromptSession's buffer -- the
+        handler's own behavior is covered directly by
+        TestRetriggerCompletionOnEdit below.
+        """
+        from ohmyshell.ui.session import _retrigger_completion_on_edit
+
+        session = ReplSession()
+        handlers = session._reader.default_buffer.on_text_changed._handlers
+        assert _retrigger_completion_on_edit in handlers
+
+class TestRetriggerCompletionOnEdit:
+    """
+    Unit tests for the on_text_changed handler itself (round 2 fix for
+    "when I remove o from /mo then terminal not show any commands") --
+    driven directly against a minimal fake buffer rather than a real
+    prompt_toolkit Buffer, since the only two things this handler does are
+    "read .text" and "call one of two methods depending on it."
+    """
+
+    class _FakeBuffer:
+        def __init__(self, text: str):
+            self.text = text
+            self.calls: list[str] = []
+
+        def start_completion(self, select_first: bool = False) -> None:
+            self.calls.append("start")
+
+        def cancel_completion(self) -> None:
+            self.calls.append("cancel")
+
+    def test_reopens_completion_when_line_still_starts_with_slash(self):
+        from ohmyshell.ui.session import _retrigger_completion_on_edit
+
+        buffer = self._FakeBuffer("/m")  # e.g. after backspacing "/mo" -> "/m"
+        _retrigger_completion_on_edit(buffer)
+        assert buffer.calls == ["start"]
+
+    def test_cancels_completion_when_line_no_longer_starts_with_slash(self):
+        from ohmyshell.ui.session import _retrigger_completion_on_edit
+
+        buffer = self._FakeBuffer("hello")
+        _retrigger_completion_on_edit(buffer)
+        assert buffer.calls == ["cancel"]
+
+    def test_cancels_completion_on_empty_line(self):
+        """Backspacing away the leading "/" itself must close the menu,
+        not error on an empty string."""
+        from ohmyshell.ui.session import _retrigger_completion_on_edit
+
+        buffer = self._FakeBuffer("")
+        _retrigger_completion_on_edit(buffer)
+        assert buffer.calls == ["cancel"]

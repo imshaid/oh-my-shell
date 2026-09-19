@@ -37,6 +37,23 @@ agent"). This only affects the real, lazily-constructed `PromptSession` --
 a test-injected `reader` never sees a completer at all, since fakes used
 in tests don't implement prompt_toolkit's completion protocol and have no
 reason to.
+
+Command palette, round 2 (post-Build-Order, after real-terminal testing of
+round 1 found two problems -- see ui/palette.py's own docstring for the
+full root-cause writeup of both):
+
+  - `style=ui.palette.PALETTE_STYLE` is now also passed to PromptSession,
+    overriding prompt_toolkit's stock grey completion-menu colors with
+    this app's own cyan/dim palette.
+  - `_retrigger_completion_on_edit`, attached below as an
+    `on_text_changed` handler on the real PromptSession's buffer, re-opens
+    the completion menu on backspace/delete too. `complete_while_typing`
+    by itself only fires from `Buffer.insert_text` (confirmed by reading
+    prompt_toolkit's own buffer.py) -- deleting a character never re-runs
+    the completer through that mechanism, which is why backspacing "/mo"
+    down to "/m" made the list vanish instead of updating. `on_text_changed`
+    fires on every edit either direction, so this handler is what actually
+    keeps the menu in sync while backspacing.
 """
 
 from __future__ import annotations
@@ -49,6 +66,26 @@ class PromptReader(Protocol):
     real prompt_toolkit.PromptSession.prompt and any test fake."""
 
     def prompt(self, text: object = "") -> str: ...
+
+
+def _retrigger_completion_on_edit(buffer) -> None:
+    """
+    `on_text_changed` handler: keeps the command-palette menu in sync on
+    backspace/delete, which `complete_while_typing` alone does not cover
+    (see this module's docstring, "Command palette, round 2," for why).
+
+    Re-runs completion whenever the line still starts with "/" (so typing
+    forward keeps working exactly as before -- this handler doesn't change
+    that path, it just ALSO fires on deletes), and explicitly cancels any
+    open menu once the line no longer starts with "/" (e.g. the user
+    backspaced all the way past the leading "/", or pasted over the whole
+    line) -- otherwise a stale menu from a moment ago could linger onscreen
+    for text it no longer applies to.
+    """
+    if buffer.text.startswith("/"):
+        buffer.start_completion(select_first=False)
+    else:
+        buffer.cancel_completion()
 
 
 class ReplSession:
@@ -70,12 +107,17 @@ class ReplSession:
         else:
             from prompt_toolkit import PromptSession
 
-            from ohmyshell.ui.palette import OhMyShellCompleter
+            from ohmyshell.ui.palette import PALETTE_STYLE, OhMyShellCompleter
 
             self._reader = PromptSession(
                 completer=OhMyShellCompleter(),
                 complete_while_typing=True,
+                style=PALETTE_STYLE,
             )
+            # See _retrigger_completion_on_edit's own docstring -- closes
+            # the "backspace makes the menu vanish" gap that
+            # complete_while_typing alone leaves open.
+            self._reader.default_buffer.on_text_changed += _retrigger_completion_on_edit
 
     def prompt(self, formatted_text: object = "") -> str:
         """

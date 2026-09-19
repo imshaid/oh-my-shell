@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
+from prompt_toolkit.styles import Style
 
-from ohmyshell.ui.palette import COMMANDS, OhMyShellCompleter
+from ohmyshell.ui.palette import COMMANDS, PALETTE_STYLE, OhMyShellCompleter
 
 
 def _complete(text: str) -> list:
@@ -96,3 +97,39 @@ class TestCommandsMatchMetaCommandsDispatchTable:
         palette_names = {name for name, _ in COMMANDS}
         assert palette_names == expected
         assert "exit" in meta_commands.EXIT_COMMANDS
+
+
+class TestPaletteStyle:
+    """
+    Round 2 fix ("the ui too much ugly and not properly fit with the main
+    shell ui"): the completion menu must be styled to match this app's own
+    palette, not left on prompt_toolkit's stock grey defaults.
+    """
+
+    def test_is_a_style_instance(self):
+        assert isinstance(PALETTE_STYLE, Style)
+
+    def test_overrides_every_completion_menu_style_class(self):
+        rules = dict(PALETTE_STYLE.style_rules)
+        for class_name in (
+            "completion-menu",
+            "completion-menu.completion",
+            "completion-menu.completion.current",
+            "completion-menu.meta.completion",
+            "completion-menu.meta.completion.current",
+        ):
+            assert class_name in rules, f"missing override for {class_name!r}"
+
+    def test_does_not_use_prompt_toolkits_stock_grey_defaults(self):
+        """
+        prompt_toolkit's own built-in default is `bg:#bbbbbb #000000` for
+        the menu and `bg:#999999 #000000` for the meta column (confirmed by
+        reading prompt_toolkit/styles/defaults.py directly) -- this is the
+        exact grey box the person flagged as not matching the shell's own
+        cyan/dim look. Asserting our override isn't literally those same
+        strings keeps this regression test honest about what actually
+        changed, rather than just checking *something* is set.
+        """
+        rules = dict(PALETTE_STYLE.style_rules)
+        assert rules["completion-menu"] != "bg:#bbbbbb #000000"
+        assert rules["completion-menu.meta.completion"] != "bg:#999999 #000000"
