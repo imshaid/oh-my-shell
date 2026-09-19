@@ -22,7 +22,8 @@
       "command_template": "find {paths} -type f -mtime +{days} -exec mv {{}} ~/.oh-my-shell/.trash/ \\;",
       "few_shot_examples": [
         "clean up temp files older than a week",
-        "clear out my cache"
+        "clear out my cache",
+        "clean up my downloads folder instead"
       ],
       "plan_steps": [
         "Scan {paths} for files older than {days} days",

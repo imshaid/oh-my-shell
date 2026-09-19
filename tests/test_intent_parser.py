@@ -89,6 +89,71 @@ def test_system_prompt_tolerates_missing_knowledge_file(registry, tmp_path):
     assert len(prompt) > 0
 
 
+def test_system_prompt_includes_each_capabilitys_few_shot_examples(registry, tmp_path):
+    """
+    Bug fix (found via manual end-to-end testing, post-Build-Order):
+    few_shot_examples has been a capabilities.json field since Build Order
+    Step 3 and registry.py validates its shape, but _build_system_prompt
+    never spliced it into the prompt the model actually sees -- every
+    capability's examples were dead data the model never got to read. This
+    is the regression test: every action's few_shot_examples strings must
+    literally appear in the built prompt.
+    """
+    empty_knowledge = tmp_path / "knowledge.md"
+    empty_knowledge.write_text("", encoding="utf-8")
+
+    prompt = intent_parser._build_system_prompt(registry, empty_knowledge)
+
+    for cap in registry.all_capabilities():
+        for example in cap.get("few_shot_examples") or []:
+            assert example in prompt, f"missing few-shot example for {cap['action']!r}: {example!r}"
+
+
+def test_system_prompt_tolerates_capability_with_no_few_shot_examples(tmp_path):
+    """A capability with no few_shot_examples key at all must not crash prompt building."""
+    from ohmyshell import registry as registry_module
+
+    class _FakeRegistry:
+        def all_capabilities(self):
+            return [{"action": "noop_action", "description": "Does nothing."}]
+
+    empty_knowledge = tmp_path / "knowledge.md"
+    empty_knowledge.write_text("", encoding="utf-8")
+
+    prompt = intent_parser._build_system_prompt(_FakeRegistry(), empty_knowledge)
+    assert "noop_action: Does nothing." in prompt
+
+
+# --- _format_capability_line ---------------------------------------------------
+
+
+def test_format_capability_line_appends_examples_when_present():
+    cap = {
+        "action": "clean_temp_files",
+        "description": "Move old files to trash.",
+        "few_shot_examples": ["clear out my cache", "clean up my downloads folder instead"],
+    }
+    line = intent_parser._format_capability_line(cap)
+
+    assert line.startswith("- clean_temp_files: Move old files to trash.")
+    assert '"clear out my cache"' in line
+    assert '"clean up my downloads folder instead"' in line
+
+
+def test_format_capability_line_omits_example_suffix_when_absent():
+    cap = {"action": "organize_files", "description": "Sort files."}
+    line = intent_parser._format_capability_line(cap)
+
+    assert line == "- organize_files: Sort files."
+
+
+def test_format_capability_line_omits_example_suffix_when_empty_list():
+    cap = {"action": "organize_files", "description": "Sort files.", "few_shot_examples": []}
+    line = intent_parser._format_capability_line(cap)
+
+    assert line == "- organize_files: Sort files."
+
+
 # --- parse_intent: happy path ---------------------------------------------------
 
 
