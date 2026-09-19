@@ -98,6 +98,65 @@ class PromptReader(Protocol):
     def prompt(self, text: object = "") -> str: ...
 
 
+def _read_single_keypress(bindings: dict[str, str], *, enter_result: str) -> str:
+    """
+    Shared machinery behind every single-keypress REPL menu (the plan
+    choice, the sudo/permission choice): builds a real
+    `prompt_toolkit.application.Application` with `bindings` mapped to
+    their result strings, `Keys.Enter` mapped to `enter_result`, and any
+    other key echoed back as its own single-character result -- then runs
+    it and returns whatever key was pressed, the instant it's pressed (no
+    second Enter needed).
+
+    Pulled out of `read_plan_choice_keypress` (below) so
+    `read_sudo_choice_keypress` doesn't duplicate the same
+    Application/KeyBindings/Layout boilerplate for a second, differently-
+    keyed menu -- both bugs (plan-choice Esc, sudo-choice repeated "s")
+    have the identical root cause (a full `PromptSession.prompt()` line
+    read compared against typed text instead of a real keypress binding),
+    so both fixes share this one implementation.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    kb = KeyBindings()
+
+    for key, result in bindings.items():
+        # Bind by closing over `result` per-iteration (default arg avoids
+        # the late-binding-in-a-loop trap where every handler would
+        # otherwise see the same, final `result` value).
+        @kb.add(key)
+        def _bound(event, _result=result):
+            event.app.exit(result=_result)
+
+    @kb.add(Keys.Enter)
+    def _confirm(event):
+        event.app.exit(result=enter_result)
+
+    @kb.add(Keys.ControlC)
+    @kb.add(Keys.ControlD)
+    def _interrupt(event):
+        event.app.exit(exception=KeyboardInterrupt)
+
+    @kb.add(Keys.Any)
+    def _other(event):
+        event.app.exit(result=event.data)
+
+    app = Application(
+        layout=Layout(Window(FormattedTextControl(text=""))),
+        key_bindings=kb,
+        full_screen=False,
+    )
+    result = app.run()
+    if result is None:
+        raise KeyboardInterrupt
+    return result
+
+
 def read_plan_choice_keypress() -> str:
     """
     Reads exactly one key for the Section 8.3.3 plan-choice prompt
@@ -135,50 +194,41 @@ def read_plan_choice_keypress() -> str:
     second Enter for a typo case that always re-prompts anyway would only
     slow down the common case this menu is actually used for.
     """
-    from prompt_toolkit.application import Application
-    from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
-    from prompt_toolkit.layout import Layout
-    from prompt_toolkit.layout.containers import Window
-    from prompt_toolkit.layout.controls import FormattedTextControl
 
-    kb = KeyBindings()
-
-    @kb.add(Keys.Escape)
-    @kb.add("q")
-    def _cancel(event):
-        event.app.exit(result="cancel")
-
-    @kb.add("e")
-    def _edit(event):
-        event.app.exit(result="edit")
-
-    @kb.add("c")
-    def _chat(event):
-        event.app.exit(result="chat")
-
-    @kb.add(Keys.Enter)
-    def _confirm(event):
-        event.app.exit(result="")
-
-    @kb.add(Keys.ControlC)
-    @kb.add(Keys.ControlD)
-    def _interrupt(event):
-        event.app.exit(exception=KeyboardInterrupt)
-
-    @kb.add(Keys.Any)
-    def _other(event):
-        event.app.exit(result=event.data)
-
-    app = Application(
-        layout=Layout(Window(FormattedTextControl(text=""))),
-        key_bindings=kb,
-        full_screen=False,
+    return _read_single_keypress(
+        {Keys.Escape: "cancel", "q": "cancel", "e": "edit", "c": "chat"},
+        enter_result="",
     )
-    result = app.run()
-    if result is None:
-        raise KeyboardInterrupt
-    return result
+
+
+def read_sudo_choice_keypress() -> str:
+    """
+    Reads exactly one key for the Section 8.3.6 sudo/permission prompt
+    ([Enter] Grant (sudo)   [s] Skip this step   [Esc/q] Abort), returning
+    as soon as that key is pressed -- the sudo-prompt counterpart of
+    `read_plan_choice_keypress`, same underlying bug and fix (see that
+    function's own docstring for the full root-cause explanation).
+
+    --- Bug this fixes ---
+    `ui.panels.RichSudoPrompt.ask()` previously read this prompt via
+    `read("> ")`, where `read` was the REPL's ordinary `ReplSession` (a
+    full line-editing `PromptSession.prompt()`). Pressing "s" there does
+    not submit anything by itself -- it only inserts the character "s"
+    into the line buffer, which is not returned until Enter is pressed.
+    Confirmed via real-terminal testing: pressing "s" repeatedly without
+    Enter just kept extending the typed line ("ssss...") while
+    `run_plan`'s own retry loop kept re-showing the same prompt, making it
+    look like "s" needed to be pressed several times when in fact it had
+    never been submitted at all. The real Esc key had the identical
+    problem for the same reason `read_plan_choice_keypress` documents.
+    """
+    from prompt_toolkit.keys import Keys
+
+    return _read_single_keypress(
+        {Keys.Escape: "abort", "q": "abort", "s": "skip"},
+        enter_result="grant",
+    )
 
 
 def _bottom_toolbar_text() -> str:

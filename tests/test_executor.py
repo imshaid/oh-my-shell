@@ -314,3 +314,85 @@ class TestRunPlanWithRealRegistry:
         plan = _plan(action="list_processes", params={"filter": "", "sort_by": "none"}, steps=["List running processes"])
         result = run_plan(plan, reg, runner=runner)
         assert result.step_results[0].status is StepStatus.DONE
+
+class TestRunPlanBeforeAfterExecuteHooks:
+    """
+    Regression tests for the sudo password-prompt garbling bug fix: a real
+    `sudo <command>` subprocess reads/writes its password prompt directly
+    on the controlling terminal, which collided with `rich.Live`'s own
+    repaint loop still running throughout that blocking call (observed on
+    real-terminal testing as a garbled prompt needing several Enter
+    presses). `on_before_execute`/`on_after_execute` let main.py pause and
+    resume that display around exactly the sudo-prefixed call -- these
+    tests check the hooks fire with the right `used_sudo` value and in the
+    right order, without asserting anything about `rich` itself (that's
+    ui/streaming.py's own test module's job).
+    """
+
+    def test_hooks_fire_around_a_plain_non_sudo_command(self):
+        reg = _fake_registry("echo hi")
+        runner = _ScriptedRunner([_FakeCompleted(returncode=0, stdout="hi")])
+        calls: list[tuple[str, bool]] = []
+        run_plan(
+            _plan(),
+            reg,
+            runner=runner,
+            on_before_execute=lambda used_sudo: calls.append(("before", used_sudo)),
+            on_after_execute=lambda used_sudo: calls.append(("after", used_sudo)),
+        )
+        assert calls == [("before", False), ("after", False)]
+
+    def test_hooks_fire_again_with_used_sudo_true_on_escalation(self):
+        reg = _fake_registry("rm /var/cache/x")
+        runner = _ScriptedRunner([
+            _FakeCompleted(returncode=1, stderr="Permission denied"),
+            _FakeCompleted(returncode=0),
+        ])
+        calls: list[tuple[str, bool]] = []
+        run_plan(
+            _plan(),
+            reg,
+            runner=runner,
+            prompt=_FakePrompt(SudoDecision.GRANT),
+            on_before_execute=lambda used_sudo: calls.append(("before", used_sudo)),
+            on_after_execute=lambda used_sudo: calls.append(("after", used_sudo)),
+        )
+        # First (failed, non-sudo) attempt brackets with used_sudo=False;
+        # the sudo-prefixed retry brackets again with used_sudo=True -- the
+        # second pair is the one a caller actually needs to react to.
+        assert calls == [
+            ("before", False),
+            ("after", False),
+            ("before", True),
+            ("after", True),
+        ]
+
+    def test_after_hook_still_fires_on_double_interrupt(self):
+        """
+        `on_after_execute` must fire even when the subprocess call ends via
+        the _DoubleInterrupt exception path -- a paused Live display must
+        never be left permanently paused because of how a step ended.
+        """
+        reg = _fake_registry("sleep 100")
+
+        def _raising_runner(command, **kwargs):
+            raise executor._DoubleInterrupt()
+
+        calls: list[tuple[str, bool]] = []
+        result = run_plan(
+            _plan(),
+            reg,
+            runner=_raising_runner,
+            on_before_execute=lambda used_sudo: calls.append(("before", used_sudo)),
+            on_after_execute=lambda used_sudo: calls.append(("after", used_sudo)),
+        )
+        assert calls == [("before", False), ("after", False)]
+        assert result.interrupted is True
+
+    def test_hooks_are_optional_and_default_to_none(self):
+        """Existing callers that don't pass these hooks must be unaffected --
+        no crash from a missing callable."""
+        reg = _fake_registry("echo hi")
+        runner = _ScriptedRunner([_FakeCompleted(returncode=0, stdout="hi")])
+        result = run_plan(_plan(), reg, runner=runner)
+        assert result.all_done

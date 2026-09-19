@@ -129,3 +129,55 @@ class TestStreamingRenderer:
         console = Console(file=buffer, width=100, force_terminal=False)
         with streaming(console=console) as renderer:
             assert isinstance(renderer, StreamingRenderer)
+
+class TestStreamingRendererSudoPause:
+    """
+    Regression tests for the sudo password-prompt garbling bug fix (see
+    this module's own `pause_for_sudo`/`resume_after_sudo` docstring
+    comments): a real `sudo <command>` process reads/writes its password
+    prompt directly on the controlling terminal, which collided with
+    `Live`'s own repaint loop still running throughout that blocking call.
+    These hooks must stop/start the underlying `Live` display, and only
+    when `used_sudo` is True -- an ordinary command's spinner must be
+    completely unaffected.
+    """
+
+    def test_pause_for_sudo_stops_live_when_used_sudo_true(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            assert renderer._live is not None
+            assert renderer._live.is_started
+            renderer.pause_for_sudo(True)
+            assert not renderer._live.is_started
+
+    def test_resume_after_sudo_restarts_live_when_used_sudo_true(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            renderer.pause_for_sudo(True)
+            assert not renderer._live.is_started
+            renderer.resume_after_sudo(True)
+            assert renderer._live.is_started
+
+    def test_pause_for_sudo_is_a_noop_when_used_sudo_false(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            renderer.pause_for_sudo(False)
+            assert renderer._live.is_started  # untouched -- not a sudo call
+
+    def test_resume_after_sudo_is_a_noop_when_used_sudo_false(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            renderer.pause_for_sudo(True)
+            renderer.resume_after_sudo(False)  # wrong flag -- must not resume
+            assert not renderer._live.is_started
+
+    def test_pause_before_enter_does_not_raise(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        renderer = StreamingRenderer(console=console)
+        renderer.pause_for_sudo(True)  # no Live yet -- must not crash
+        renderer.resume_after_sudo(True)

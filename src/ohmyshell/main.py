@@ -372,6 +372,7 @@ def _handle_natural_language(
     *,
     read: callable = input,
     choice_read: callable | None = None,
+    sudo_input_fn: callable | None = None,
     console: Console | None = None,
     base_dir=None,
 ) -> None:
@@ -544,8 +545,22 @@ def _handle_natural_language(
         execution = run_plan(
             confirmed_plan,
             registry,
-            prompt=RichSudoPrompt(input_fn=read, console=active_console),
+            # `sudo_input_fn` defaults to None, which makes RichSudoPrompt
+            # use its own real single-keypress reader (see that class's
+            # "Esc/repeated-s bug fix" docstring) instead of the REPL's
+            # ordinary line-read `read` -- only that path actually binds
+            # the real Esc/s/q keys as immediate-submit. Tests can still
+            # override via `sudo_input_fn=`.
+            prompt=RichSudoPrompt(input_fn=sudo_input_fn, console=active_console),
             on_event=renderer.on_event,
+            # Sudo password-prompt garbling bug fix: pause the Live spinner
+            # for exactly the sudo-prefixed subprocess call (used_sudo=True
+            # only) so its own repaint loop doesn't collide with `sudo`'s
+            # real-terminal password prompt -- see StreamingRenderer's own
+            # "Sudo password-prompt garbling bug fix" docstring comment for
+            # the full explanation of the bug this fixes.
+            on_before_execute=renderer.pause_for_sudo,
+            on_after_execute=renderer.resume_after_sudo,
         )
     renderer.print_summary(execution)
     duration = time.time() - start

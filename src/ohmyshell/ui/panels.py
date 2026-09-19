@@ -259,6 +259,25 @@ class RichSudoPrompt:
     changes here -- the decision contract (SudoPrompt.ask -> SudoDecision)
     is unchanged, so executor.py needs no changes to accept this in place
     of InputPrompt.
+
+    --- Esc/repeated-"s" bug fix (post-Build-Order, found via real-terminal
+    testing) ---
+    `input_fn`, when not overridden, now defaults to
+    `ui.session.read_sudo_choice_keypress` -- a real single-keypress reader
+    bound to the actual Esc key event and to "s"/"q" as immediate-submit
+    keys, not a `ReplSession.prompt()` line-editing read compared against
+    typed text after Enter. The previous default -- `input_fn=read` passed
+    in from main.py, `read` being the REPL's `ReplSession` -- meant
+    pressing "s" only inserted the character into a line buffer that
+    wasn't submitted until Enter was pressed, which real-terminal testing
+    showed as "s" appearing to need several presses (it was never actually
+    submitted the first several times) and Esc doing nothing at all, same
+    root cause as `_repl_get_user_choice`'s identical bug in main.py (see
+    `read_plan_choice_keypress`'s own docstring for the full explanation).
+    `input_fn` stays overridable (main.py's edit/chat-adjust sub-prompts,
+    and every existing test in this module, still pass an explicit
+    `input_fn` lambda) since only the plain no-argument construction path
+    is the one real callers hit during normal operation.
     """
 
     def __init__(
@@ -271,14 +290,17 @@ class RichSudoPrompt:
         self._console = console if console is not None else Console()
 
     def ask(self, step: ElevatedStep) -> SudoDecision:
-        read = self._input_fn if self._input_fn is not None else input
         self._console.print(render_sudo_panel(step))
         while True:
-            raw = read("> ")
-            choice = raw.strip().lower()
-            if choice == "":
+            if self._input_fn is None:
+                from ohmyshell.ui.session import read_sudo_choice_keypress
+
+                choice = read_sudo_choice_keypress().strip().lower()
+            else:
+                choice = self._input_fn("> ").strip().lower()
+            if choice in ("", "grant"):
                 return SudoDecision.GRANT
-            if choice == "s":
+            if choice in ("s", "skip"):
                 return SudoDecision.SKIP
             if choice in ("esc", "q", "abort"):
                 return SudoDecision.ABORT

@@ -211,3 +211,30 @@ class TestRichSudoPrompt:
         output = buffer.getvalue()
         assert "elevated permission" in output
         assert "Clear system-level cache in /var/cache" in output
+
+    def test_default_construction_uses_the_real_single_keypress_reader(self, monkeypatch):
+        """
+        Esc/repeated-"s" bug fix regression test: with no `input_fn`
+        override (the real construction path every actual REPL session
+        hits), `ask()` must go through
+        `ui.session.read_sudo_choice_keypress` -- a real single-keypress
+        reader -- rather than falling back to a line-editing `read()` call
+        that only submits on Enter (main.py's `RichSudoPrompt(input_fn=read,
+        ...)` was the previous, buggy wiring; see this class's own
+        docstring for the full history).
+        """
+        from ohmyshell.ui import session as session_module
+
+        calls = []
+
+        def _fake_keypress():
+            calls.append(True)
+            return "skip"
+
+        monkeypatch.setattr(session_module, "read_sudo_choice_keypress", _fake_keypress)
+
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        prompt = RichSudoPrompt(console=console)  # no input_fn override
+        assert prompt.ask(self._step()) is SudoDecision.SKIP
+        assert calls == [True]

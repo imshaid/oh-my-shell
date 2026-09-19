@@ -207,6 +207,8 @@ class _StepRunner:
         prompt: SudoPrompt | None,
         emit: Callable[[StepStatus, str], None],
         state: InterruptState,
+        on_before_execute: Callable[[bool], None] | None = None,
+        on_after_execute: Callable[[bool], None] | None = None,
     ) -> None:
         self.plan = plan
         self.total = total
@@ -215,6 +217,8 @@ class _StepRunner:
         self.emit = emit
         self.state = state
         self.description = plan.steps[0] if plan.steps else plan.action
+        self.on_before_execute = on_before_execute
+        self.on_after_execute = on_after_execute
 
     def _result(self, status: StepStatus, completed: subprocess.CompletedProcess | None = None, used_sudo: bool = False) -> StepResult:
         return StepResult(
@@ -228,16 +232,47 @@ class _StepRunner:
         )
 
     def _execute(self, command: str, *, used_sudo: bool) -> ExecutionResult:
+        # `on_before_execute`/`on_after_execute` (both optional, UI-layer
+        # hooks -- this module stays rich/terminal-agnostic, per this
+        # file's own module docstring split) bracket the actual subprocess
+        # call so a caller can suspend anything that keeps repainting the
+        # terminal (a `rich.Live` spinner, specifically) while `used_sudo`
+        # is True.
+        #
+        # --- Sudo password-prompt garbling bug fix (post-Build-Order,
+        # found via real-terminal testing) ---
+        # A `sudo <command>` child process reads its password prompt from
+        # (and writes it to) the controlling terminal directly -- not
+        # through this process's own stdout/stderr, which `capture_output=
+        # True` pipes away regardless. `ui.streaming.StreamingRenderer`'s
+        # `rich.Live` display was still actively repainting the same
+        # terminal region at its own 8Hz refresh rate for the entire
+        # duration of that blocking call (nothing here ever told it to
+        # stop), so its redraws and sudo's own prompt/keystroke-echo writes
+        # collided -- observed as a garbled, overlapping prompt line and
+        # password entry silently not registering, needing several Enter
+        # presses before it "took". `used_sudo` is passed through so the
+        # hook only pauses rendering for the actual sudo-prefixed call,
+        # not the normal (non-elevated) command.
+        if self.on_before_execute is not None:
+            self.on_before_execute(used_sudo)
         try:
-            with _sigint_handler(self.state):
-                completed = self.runner(command, shell=True, capture_output=True, text=True)
-        except _DoubleInterrupt:
-            self.emit(StepStatus.INTERRUPTED, "force-stopped (second Ctrl+C)")
-            return ExecutionResult(
-                action=self.plan.action,
-                step_results=[self._result(StepStatus.INTERRUPTED, used_sudo=used_sudo)],
-                interrupted=True,
-            )
+            try:
+                with _sigint_handler(self.state):
+                    completed = self.runner(command, shell=True, capture_output=True, text=True)
+            except _DoubleInterrupt:
+                self.emit(StepStatus.INTERRUPTED, "force-stopped (second Ctrl+C)")
+                return ExecutionResult(
+                    action=self.plan.action,
+                    step_results=[self._result(StepStatus.INTERRUPTED, used_sudo=used_sudo)],
+                    interrupted=True,
+                )
+        finally:
+            # Always fires, even on the double-Ctrl+C path above -- a
+            # paused Live display must resume no matter how the subprocess
+            # call ended, not only on its ordinary completion.
+            if self.on_after_execute is not None:
+                self.on_after_execute(used_sudo)
 
         if self.state.interrupt_count >= 1 and completed.returncode != 0:
             # Single (graceful) Ctrl+C: the subprocess was allowed to finish
@@ -303,12 +338,23 @@ def run_plan(
     on_event: Callable[[StepEvent], None] | None = None,
     runner: Callable[..., Any] = subprocess.run,
     interrupt_state: InterruptState | None = None,
+    on_before_execute: Callable[[bool], None] | None = None,
+    on_after_execute: Callable[[bool], None] | None = None,
 ) -> ExecutionResult:
     """
     Execute `plan` (blocking), streaming a StepEvent for its one executable
     command (see module docstring's Scope note for why a plan is currently
     always one command). `on_event`, if given, receives every StepEvent as
     it happens -- Step 11 wires this to `rich` rendering.
+
+    `on_before_execute`/`on_after_execute` (both optional, each called with
+    one bool -- `used_sudo`) bracket the actual blocking subprocess call.
+    See `_StepRunner._execute`'s own docstring comment for why this exists:
+    a `sudo`-prefixed command reads/writes its password prompt directly on
+    the controlling terminal, which collides with anything still
+    repainting that same terminal on a timer (Step 11's `rich.Live`
+    spinner) -- main.py uses these hooks to pause/resume that display
+    around exactly the sudo-prefixed call, and only that one.
     """
     state = interrupt_state if interrupt_state is not None else InterruptState()
     total = len(plan.steps) if plan.steps else 1
@@ -318,5 +364,14 @@ def run_plan(
         if on_event is not None:
             on_event(StepEvent(step_number=1, total_steps=total, status=status, detail=detail))
 
-    step_runner = _StepRunner(plan=plan, total=total, runner=runner, prompt=prompt, emit=emit, state=state)
+    step_runner = _StepRunner(
+        plan=plan,
+        total=total,
+        runner=runner,
+        prompt=prompt,
+        emit=emit,
+        state=state,
+        on_before_execute=on_before_execute,
+        on_after_execute=on_after_execute,
+    )
     return step_runner.run(command)

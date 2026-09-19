@@ -145,6 +145,28 @@ class StreamingRenderer:
     def print_summary(self, result: ExecutionResult) -> None:
         self._console.print(render_execution_summary(result))
 
+    # --- Sudo password-prompt garbling bug fix (post-Build-Order) ---
+    # `Live`'s own refresh loop repaints this renderer's spinner on a timer
+    # for as long as the display is active -- including while executor.py
+    # is blocked inside a real `sudo <command>` subprocess call waiting for
+    # a password. `sudo` reads/writes that prompt directly on the
+    # controlling terminal (bypassing this process's own stdout/stderr
+    # entirely), so its writes and `Live`'s own redraws were colliding on
+    # real-terminal testing: the prompt appeared garbled/overlapping and
+    # typed characters didn't reliably register, needing several Enter
+    # presses before a password attempt "took". `pause_for_sudo`/`resume`
+    # are executor.run_plan()'s `on_before_execute`/`on_after_execute`
+    # hooks (see that function's own docstring) -- main.py passes them
+    # through only for the `used_sudo=True` case, so an ordinary
+    # (non-elevated) command's spinner is completely unaffected.
+    def pause_for_sudo(self, used_sudo: bool) -> None:
+        if used_sudo and self._live is not None:
+            self._live.stop()
+
+    def resume_after_sudo(self, used_sudo: bool) -> None:
+        if used_sudo and self._live is not None:
+            self._live.start()
+
 
 @contextmanager
 def streaming(*, console: Console | None = None) -> Iterator[StreamingRenderer]:
