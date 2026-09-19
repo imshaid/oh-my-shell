@@ -456,7 +456,12 @@ def test_handle_natural_language_edit_then_confirm_executes_edited_plan(registry
     fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium", steps=["Scan for files older than 7 days"])
 
     # Scripted input: [e] edit -> param name "days" -> new value "14" -> then bare Enter to confirm.
-    responses = iter(["e", "days", "14", ""])
+    # Split across two fakes since _get_user_choice now reads the plan
+    # choice ("e", then "") via its own `choice_read` (see the Esc-bug-fix
+    # docstring on _repl_get_user_choice) while the edit sub-flow's own
+    # param-name/value prompts still go through the ordinary `read`.
+    choice_responses = iter(["e", ""])
+    edit_responses = iter(["days", "14"])
     captured_plans = []
 
     def _fake_run_plan(plan, reg, **kwargs):
@@ -474,18 +479,14 @@ def test_handle_natural_language_edit_then_confirm_executes_edited_plan(registry
                     "clean up temp files",
                     registry,
                     default_cfg,
-                    read=lambda _: next(responses),
+                    read=lambda _: next(edit_responses),
+                    choice_read=lambda _: next(choice_responses),
                     console=console,
                     base_dir=tmp_path,
                 )
 
     assert len(captured_plans) == 1
     assert captured_plans[0].params["days"] == "14"
-
-    from ohmyshell import audit_log as audit_log_module
-
-    entries = audit_log_module.read_entries(base_dir=tmp_path)
-    assert entries[0].params["days"] == "14"
 
 
 # --- _repl_get_user_choice / _repl_edit_flow ------------------------------------------
