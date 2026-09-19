@@ -71,21 +71,31 @@ from __future__ import annotations
 # `command` token (no leading "/"); description is a short paraphrase of
 # HELP_TEXT's matching line, not a copy-paste, so the two can drift in
 # wording without one having to mirror the other's exact formatting.
-COMMANDS: list[tuple[str, str]] = [
-    ("help", "Show the command reference"),
-    ("model", "Show or switch the active model"),
-    ("history", "This session's earlier requests"),
-    ("undo", "Revert the last destructive action"),
-    ("trash", "View or manage .trash/"),
-    ("log", "View the audit log"),
-    ("capabilities", "List what Oh My Shell can do"),
-    ("explain", "Why the AI chose its last action"),
-    ("stats", "Session token usage & average latency"),
-    ("system", "Full hardware & shell status"),
-    ("config", "View or change settings"),
-    ("clear", "Clear the screen"),
-    ("exit", "Quit Oh My Shell"),
-]
+#
+# Listed alphabetically by name (not HELP_TEXT's own frequency-of-use
+# ordering) -- the person asked for the palette itself to be lexicographic,
+# so a person scanning the list for a specific command can find it by
+# letter rather than having to read the whole thing. HELP_TEXT (`/help`'s
+# own output) is unaffected and keeps its separate, curated ordering --
+# these are two different audiences (skimming a live list while typing vs.
+# reading a reference top to bottom).
+COMMANDS: list[tuple[str, str]] = sorted(
+    [
+        ("capabilities", "List what Oh My Shell can do"),
+        ("clear", "Clear the screen"),
+        ("config", "View or change settings"),
+        ("exit", "Quit Oh My Shell"),
+        ("explain", "Why the AI chose its last action"),
+        ("help", "Show the command reference"),
+        ("history", "This session's earlier requests"),
+        ("log", "View the audit log"),
+        ("model", "Show or switch the active model"),
+        ("stats", "Session token usage & average latency"),
+        ("system", "Full hardware & shell status"),
+        ("trash", "View or manage .trash/"),
+        ("undo", "Revert the last destructive action"),
+    ]
+)
 
 _NAME_COLUMN_WIDTH = max(len(name) for name, _ in COMMANDS) + 3  # +3: "/" + 2 gap
 

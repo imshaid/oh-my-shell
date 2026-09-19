@@ -49,6 +49,18 @@ class TestVisibleCommands:
         for name, description in COMMANDS:
             assert description.strip(), f"{name} has an empty description"
 
+    def test_commands_are_listed_alphabetically_by_name(self):
+        """The person explicitly asked for lexicographic ordering (a person
+        scanning the palette should be able to find a command by letter),
+        distinct from /help's own HELP_TEXT, which keeps its own
+        frequency-of-use ordering -- see the module docstring."""
+        names = [name for name, _ in COMMANDS]
+        assert names == sorted(names)
+
+    def test_a_bare_slash_lists_commands_in_alphabetical_order(self):
+        names = [name for name, _ in visible_commands("/")]
+        assert names == sorted(names)
+
 
 class TestRenderToolbarText:
     def test_no_match_renders_empty_string(self):
