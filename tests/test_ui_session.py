@@ -132,20 +132,31 @@ class TestReplSessionRealConstructionWiresInlineToolbar:
         session = ReplSession()
         assert session._reader.bottom_toolbar is _bottom_toolbar_text
 
-    def test_default_construction_blanks_the_toolbars_default_style(self):
+    def test_default_construction_cancels_the_toolbars_reverse_video_default(self):
         """
         prompt_toolkit's own built-in default for the "bottom-toolbar"
         style class is "reverse" (confirmed by reading
         prompt_toolkit/styles/defaults.py directly) -- an inverted-color
         bar, which is exactly the kind of forced styling that clashes with
-        an arbitrary terminal theme. The style passed here must override it
-        to an empty rule (no color forced either way), not to some other
-        specific color -- picking a *different* hardcoded color was round
-        2's mistake.
+        an arbitrary terminal theme (and, confirmed by real-terminal
+        testing, still renders as a solid filled bar). The style passed
+        here must be the literal "noreverse" token, not an empty string --
+        an empty string does not reset an already-set boolean flag like
+        reverse (see ui/session.py's own docstring, "Round 3," for the
+        merged-attrs proof); only "noreverse" actually cancels it, without
+        forcing any specific color of its own -- picking a *different*
+        hardcoded color was round 2's separate mistake.
         """
         session = ReplSession()
         rules = dict(session._reader.style.style_rules)
-        assert rules.get("bottom-toolbar") == ""
+        assert rules.get("bottom-toolbar") == "noreverse"
+
+        from prompt_toolkit.styles import merge_styles
+        from prompt_toolkit.styles.defaults import default_ui_style
+
+        merged = merge_styles([default_ui_style(), session._reader.style])
+        attrs = merged.get_attrs_for_style_str("class:bottom-toolbar")
+        assert attrs.reverse is False
 
     def test_default_construction_does_not_set_a_completer(self):
         """Round 1/2's popup-menu approach (a prompt_toolkit Completer) is

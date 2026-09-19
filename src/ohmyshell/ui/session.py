@@ -48,14 +48,37 @@ own "/" list. Round 2's custom colors were also wrong on their own terms --
 hardcoding specific hex colors bakes in an assumption about the person's
 terminal theme that doesn't hold for every user.
 
-Round 3 (current): the `Completer`/`complete_while_typing`/`style`/
-`on_text_changed` machinery is gone entirely. `bottom_toolbar` is used
+Round 3 (current): the `Completer`/`complete_while_typing`/`on_text_changed`
+machinery from rounds 1/2 is gone entirely. `bottom_toolbar` is used
 instead -- a plain text region prompt_toolkit redraws live under the input
-line as the buffer changes, with no menu chrome and no forced colors (see
-`_TOOLBAR_STYLE` below, which blanks out prompt_toolkit's own default
-"reverse video" toolbar styling rather than replacing it with a different
-hardcoded color -- the terminal's own ambient foreground/background is
-what actually shows). `_bottom_toolbar_text()` reads the *live* buffer via
+line as the buffer changes, with no menu chrome. Getting this to actually
+render as *plain inline text*, with no forced color and no filled bar, took
+two attempts within this round (both worth recording, since the first
+attempt looked correct in the source but was still wrong on screen):
+
+  - First attempt: `style=Style.from_dict({"bottom-toolbar": ""})`. This
+    still rendered as a solid filled bar in a real terminal. Root cause,
+    confirmed by directly inspecting prompt_toolkit's own resolved style
+    attributes (`merge_styles([default_ui_style(), Style.from_dict({...})])
+    .get_attrs_for_style_str("class:bottom-toolbar")`): prompt_toolkit's
+    built-in default for this class is `"reverse"` (inverted fg/bg), and an
+    *empty* string in `Style.from_dict` does not reset an already-set
+    boolean flag like `reverse` -- there's nothing in `""` to override it
+    with, so the inherited `reverse=True` survived the merge untouched.
+    `Window`'s own `style="class:bottom-toolbar"` (prompt_toolkit's
+    shortcuts/prompt.py, not something this app controls) then painted
+    that reversed style across the toolbar's full width, which is what
+    actually produced the "filled purple bar" look, regardless of what
+    hex value (or lack of one) this app supplied.
+  - Fix: `style=Style.from_dict({"bottom-toolbar": "noreverse"})`.
+    `noreverse` is an explicit instruction to clear the reverse flag
+    (confirmed the same way -- the merged attrs now show `reverse=False`),
+    not "no color specified." With reverse actually off, the toolbar
+    region no longer forces any fg/bg of its own, so the command list
+    renders in the terminal's own ambient text color, matching Claude
+    Code's own "/" list.
+
+`_bottom_toolbar_text()` reads the *live* buffer via
 `get_app().current_buffer`, since a callable passed to `bottom_toolbar` is
 re-invoked by prompt_toolkit on every redraw -- it does not receive the
 buffer as an argument. ui/palette.py's `render_toolbar_text()` is the pure
@@ -115,12 +138,30 @@ class ReplSession:
 
             self._reader = PromptSession(
                 bottom_toolbar=_bottom_toolbar_text,
-                # Blanks prompt_toolkit's own default bottom-toolbar style
-                # ("reverse", i.e. inverted fg/bg -- a colored bar) rather
-                # than replacing it with a different hardcoded color, so
-                # the command list renders in the terminal's own ambient
-                # text color. See this module's docstring, "Round 3."
-                style=Style.from_dict({"bottom-toolbar": ""}),
+                # Cancels prompt_toolkit's own default bottom-toolbar style
+                # ("reverse", i.e. inverted fg/bg -- a filled bar), so the
+                # command list renders in the terminal's own ambient text
+                # color instead. See this module's docstring, "Round 3" --
+                # and its own follow-up fix, below.
+                #
+                # Round 3 follow-up (still under this same round -- the
+                # first attempt at this line used `"bottom-toolbar": ""`
+                # instead of `"...": "noreverse"`, which real-terminal
+                # testing showed still rendered as a solid filled bar, not
+                # plain inline text). The reason: an empty style string in
+                # `Style.from_dict` does not reset an already-set boolean
+                # flag like `reverse` -- it has nothing to override with,
+                # so prompt_toolkit's own built-in default
+                # (`("bottom-toolbar", "reverse")`, confirmed by reading
+                # prompt_toolkit/styles/defaults.py) stayed in effect after
+                # merging with this style (confirmed directly: computing
+                # `merge_styles([default_ui_style(), Style.from_dict({...})]
+                # ).get_attrs_for_style_str("class:bottom-toolbar")` with
+                # `""` still showed `reverse=True`; only the explicit
+                # `"noreverse"` token actually clears it, verified the same
+                # way). `noreverse` is the fix -- an explicit instruction to
+                # turn reverse-video off, not merely "no color specified."
+                style=Style.from_dict({"bottom-toolbar": "noreverse"}),
             )
 
     def prompt(self, formatted_text: object = "") -> str:
