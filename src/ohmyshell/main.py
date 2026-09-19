@@ -83,26 +83,6 @@ optional prompt string that returns str") — a `ReplSession` or a plain
 test fake both satisfy that shape identically, so discussion.py and
 sudo_layer.py needed no contract changes at all for this pass.
 
---- Spacing + "Thinking..." spinner (post-Build-Order, same Step 11 pass) ---
-Two more gaps found the same way (a real session compared side-by-side
-against other CLIs):
-  - No blank line separated one turn's output from the next prompt, so a
-    session read as one unbroken wall of text. Fixed with a single
-    `console.print()` right before every `session.prompt(...)` call in
-    `run()`'s loop (see that loop's own comment for why one seam there,
-    not scattered blank-line prints throughout every handler).
-  - Both blocking `parse_intent()` calls in `_handle_natural_language`
-    (the initial parse, and `_reparse`'s chat-adjust re-parse) gave no
-    feedback at all while Ollama was generating — the terminal just sat
-    there. Wrapped both in `console.status("Thinking...", spinner="dots")`
-    (rich's own spinner context manager) so there's visible activity
-    during what can be a multi-second model call. This is NOT the "real
-    live token streaming" the person separately asked for (a spinner
-    still resolves to the complete parsed result all at once) — that is
-    a distinct, larger follow-up (rewiring intent_parser.py's Ollama call
-    to stream=True and incrementally parse partial JSON), intentionally
-    scoped out of this pass and tracked separately.
-
 `--yes`/`-y`/`--dry-run`/`--verbose`/`--quiet` (Section 8.5) are still not
 implemented — no inline-modifier parsing exists on either the raw-shell or
 natural-language input paths yet. The one hard constraint that DOES apply
@@ -142,6 +122,7 @@ from ohmyshell.ui.panels import (
 from ohmyshell.ui.prompt import render_prompt_ansi
 from ohmyshell.ui.session import ReplSession
 from ohmyshell.ui.streaming import StreamingRenderer
+from ohmyshell.ui.thinking import run_with_thinking_indicator
 
 EXIT_COMMANDS = {"/exit", "/quit"}
 
@@ -291,7 +272,14 @@ def _run_shell_command(text: str) -> None:
         print(f"error: {exc}", file=sys.stderr)
 
 
-def _repl_get_user_choice(plan: Plan, *, read: callable = input, console: Console | None = None) -> str:
+def _repl_get_user_choice(
+    plan: Plan,
+    *,
+    read: callable | None = None,
+    console: Console | None = None,
+    telemetry=None,
+    attempts: int | None = None,
+) -> str:
     """
     REPL-level [Enter] confirm / [e] edit / [c] chat / [Esc] cancel prompt
     (Section 8.3.3), mapped onto discussion.run_discussion's expected
@@ -302,10 +290,38 @@ def _repl_get_user_choice(plan: Plan, *, read: callable = input, console: Consol
     REPL layer (Step 11/main.py), not to run_discussion itself -- this is
     that mapping, now rendering the plan via ui/panels.render_plan_panel
     (boxed) instead of discussion.render_plan_text (plain).
+
+    `telemetry`/`attempts` (intent_parser.ParseTelemetry / ParseResult.attempts,
+    both optional) are passed straight through to render_plan_panel so the
+    boxed panel this function prints carries the real tokens-in/out,
+    duration, tok/s, model, and retry-count footer (Section 8.3.3's mockup)
+    -- see _handle_natural_language's own wiring for where these come from.
+
+    --- Esc bug fix (post-Build-Order, found via real-terminal testing) ---
+    `read`, when not overridden, now defaults to
+    `ui.session.read_plan_choice_keypress` -- a real single-keypress reader
+    bound to the actual Esc key event, not `ReplSession.prompt()`'s
+    line-editing read compared against the literal typed text "esc". The
+    previous default (`read: callable = input`, later effectively
+    `ReplSession`) could only ever match "esc" if someone typed those three
+    letters and pressed Enter; a real Esc keypress produced nothing
+    `input()`/`PromptSession.prompt()` would submit on its own, so only
+    "q" + Enter ever actually worked. `read_plan_choice_keypress` returns
+    already-lowercase/short tokens ("cancel"/"edit"/"chat"/<typed text>)
+    directly, not a raw line needing the same "esc"/"q"/"cancel" string
+    comparison this function used to do -- so that comparison is kept only
+    for backward compatibility with callers/tests that still inject a
+    plain `read: callable` returning ordinary typed lines (e.g. a test
+    lambda returning "q" or "esc").
     """
+    from ohmyshell.ui.session import read_plan_choice_keypress
+
     active_console = console if console is not None else Console()
-    active_console.print(render_plan_panel(plan))
-    raw = read("> ").strip().lower()
+    active_console.print(render_plan_panel(plan, telemetry=telemetry, attempts=attempts))
+    if read is None:
+        raw = read_plan_choice_keypress().strip().lower()
+    else:
+        raw = read("> ").strip().lower()
     if raw == "":
         return "confirm"
     if raw == "e":
@@ -370,12 +386,7 @@ def _handle_natural_language(
 
     1. Intent Parser failure (backend unreachable) and "unmapped" both end
        the request here with a message -- same behavior as the Step 5-era
-       preview-only version, nothing to plan or execute yet. Both blocking
-       parse_intent() calls below (the initial parse, and _reparse's
-       chat-adjust re-parse) show a "Thinking..." spinner (rich's
-       Console.status) while they run — a real turn against a local model
-       can take several seconds, and a bare blocking call with no
-       feedback read as the terminal having hung.
+       preview-only version, nothing to plan or execute yet.
     2. Plan Generator runs once up front (Step 7), then the Discussion Loop
        (discussion.run_discussion) drives confirm/edit/chat/cancel using
        the REPL callbacks above. "chat" reparses via parse_intent + a
@@ -439,9 +450,18 @@ def _handle_natural_language(
     """
     active_console = console if console is not None else Console()
     model = config_module.get(cfg, "model.active")
+
+    # `run_with_thinking_indicator` (ui/thinking.py) replaces the plain
+    # `active_console.status("Thinking...")` spinner with the Section
+    # 8.3.3 / Core Feature #14 live CPU/RAM/GPU indicator -- parse_intent()
+    # itself is unchanged (still one blocking call); the indicator just
+    # runs it on a background thread so the hardware bars and elapsed
+    # timer can keep refreshing while it's in flight. Its return value is
+    # exactly what parse_intent() would have returned directly.
     try:
-        with active_console.status("[dim]Thinking...[/dim]", spinner="dots"):
-            result = parse_intent(text, registry, model=model)
+        result = run_with_thinking_indicator(
+            lambda: parse_intent(text, registry, model=model), console=active_console
+        )
     except IntentParseError as exc:
         active_console.print(f"  [yellow]⚠[/yellow] Could not reach the model: {exc}")
         return
@@ -451,19 +471,44 @@ def _handle_natural_language(
         return
 
     plan = generate_plan(result.intent, registry)
+    # Tracks the most recent parse's telemetry/attempts so the plan panel
+    # (rendered by _repl_get_user_choice, below) always shows the numbers
+    # for whichever parse actually produced the plan currently on screen --
+    # the original parse, or the latest chat-adjust reparse once one has
+    # happened.
+    last_telemetry = result.telemetry
+    last_attempts = result.attempts
 
     def _reparse(adjustment_text: str, current_plan: Plan) -> Plan | None:
+        nonlocal last_telemetry, last_attempts
         try:
-            with active_console.status("[dim]Thinking...[/dim]", spinner="dots"):
-                adjusted = parse_intent(adjustment_text, registry, model=model)
+            adjusted = run_with_thinking_indicator(
+                lambda: parse_intent(adjustment_text, registry, model=model), console=active_console
+            )
         except IntentParseError:
             return None
         if adjusted.intent is None:
             return None
+        last_telemetry = adjusted.telemetry
+        last_attempts = adjusted.attempts
         return generate_plan(adjusted.intent, registry)
 
     def _get_user_choice(current_plan: Plan) -> tuple[str, Plan]:
-        choice = _repl_get_user_choice(current_plan, read=choice_read, console=active_console)
+        # `choice_read` defaults to None, which makes _repl_get_user_choice
+        # use its own real single-keypress reader (see that function's
+        # "Esc bug fix" docstring) instead of the REPL's ordinary line-read
+        # `read` -- only that path actually binds the real Esc key. Tests
+        # (and any other caller that needs to script this specific choice)
+        # can still override via `choice_read=`. `_repl_edit_flow`'s own
+        # sub-prompts keep using `read` normally, since editing a param's
+        # value is a genuine typed-line read, not a single-keypress choice.
+        choice = _repl_get_user_choice(
+            current_plan,
+            read=choice_read,
+            console=active_console,
+            telemetry=last_telemetry,
+            attempts=last_attempts,
+        )
         if choice == "edit":
             current_plan = _repl_edit_flow(current_plan, registry, read=read, console=active_console)
         return choice, current_plan

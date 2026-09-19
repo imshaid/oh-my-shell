@@ -49,11 +49,13 @@ is available -- nothing downstream depends on the exact colors/box style.
 
 from __future__ import annotations
 
-from rich.console import Console, RenderableType
+from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.text import Text
 
 from ohmyshell.danger_classifier import ClassificationResult, Destructive
+from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.plan_generator import Plan
 from ohmyshell.sudo_layer import ElevatedStep, SudoDecision
 
@@ -65,22 +67,95 @@ def _risk_text(risk: str) -> Text:
     return Text(risk.capitalize(), style=color)
 
 
-def render_plan_panel(plan: Plan) -> Panel:
+def _telemetry_footer_text(telemetry: ParseTelemetry, *, attempts: int | None = None) -> Text | None:
+    """
+    Section 8.3.3's plan-panel footer, verbatim mockup:
+    "↯ 94 tokens in · 62 tokens out · 0.8s · qwen3:8b" -- shown below a
+    horizontal rule inside the same panel box. Extended (per the user's own
+    "share your thoughts freely" invitation and confirmed selections) with
+    tokens/sec and a retry count when relevant -- tokens_in doubling as the
+    "context/prompt size" figure the user separately asked for, since that
+    number already IS the size of the prompt sent to the model; a second,
+    differently-labeled figure for the same count would be redundant.
+
+    Any field ParseTelemetry doesn't have (a backend that couldn't report
+    it -- see ParseTelemetry's own docstring) is simply left out of this
+    line rather than shown as a placeholder like "? tokens" -- an honest
+    partial line beats a fake-looking complete one. Returns None only when
+    NOTHING is available at all (every field is None and no retry
+    happened), so a genuinely empty telemetry object doesn't add an empty
+    footer/rule to the panel.
+
+    `attempts` (from ParseResult.attempts) adds "· retried once" only when
+    it is 2 or more -- a normal, single-attempt call shows nothing extra,
+    per the user's own "Retry count যদি ১-এর বেশি হয়" selection (only
+    surface it when it actually happened).
+    """
+    parts: list[str] = []
+    if telemetry.tokens_in is not None:
+        parts.append(f"{telemetry.tokens_in} tokens in")
+    if telemetry.tokens_out is not None:
+        parts.append(f"{telemetry.tokens_out} tokens out")
+    if telemetry.duration_seconds is not None:
+        parts.append(f"{telemetry.duration_seconds:.1f}s")
+    if (
+        telemetry.tokens_out is not None
+        and telemetry.duration_seconds is not None
+        and telemetry.duration_seconds > 0
+    ):
+        tokens_per_second = telemetry.tokens_out / telemetry.duration_seconds
+        parts.append(f"{tokens_per_second:.0f} tok/s")
+    if telemetry.model is not None:
+        parts.append(telemetry.model)
+    if attempts is not None and attempts > 1:
+        retry_count = attempts - 1
+        noun = "retry" if retry_count == 1 else "retries"
+        parts.append(f"{retry_count} {noun}")
+    if not parts:
+        return None
+    return Text(f"↯ {' · '.join(parts)}", style="dim")
+
+
+def render_plan_panel(
+    plan: Plan, *, telemetry: ParseTelemetry | None = None, attempts: int | None = None
+) -> Panel:
     """
     Boxed rendering of a Plan for the Confirmation + Discussion Loop
-    (Section 8.3.3 -- see module docstring's disclosed gap: the exact
-    mockup for this specific panel is not available verbatim, so this is
-    the assistant's own design, built to carry the same information as
-    discussion.py's plain-text render_plan_text()).
+    (Section 8.3.3's confirmed mockup).
+
+    `telemetry` (intent_parser.ParseTelemetry, optional) adds the mockup's
+    footer line -- real tokens-in/tokens-out/elapsed-time/model/tokens-per-
+    second, separated from the plan body by a horizontal rule, exactly as
+    shown in Section 8.3.3:
+
+        │  Risk: Medium  ·  Est. 340 files  ·  ~1.2 GB             │
+        ├───────────────────────────────────────────────────────┤
+        │  ↯ 94 tokens in · 62 tokens out · 0.8s · 77 tok/s · qwen3:8b │
+
+    `attempts` (intent_parser.ParseResult.attempts, optional) adds a
+    "· N retries" segment to that same line, but only when it is 2 or
+    more -- see _telemetry_footer_text's own docstring.
+
+    Omitted entirely (no rule, no empty line) when telemetry is None or
+    carries no usable fields and no retry happened -- callers that don't
+    have real numbers yet (or a backend that can't report them) get
+    exactly the panel this function rendered before telemetry existed, not
+    a broken-looking line.
     """
-    body = Text()
+    body_text = Text()
     for i, step in enumerate(plan.steps, start=1):
-        body.append(f"{i}. {step}\n")
-    body.append("\n")
-    body.append("Risk: ")
-    body.append(_risk_text(plan.risk))
-    body.append("\n")
-    body.append("[Enter] Confirm   [e] Edit   [c] Chat/adjust   [Esc] Cancel", style="dim")
+        body_text.append(f"{i}. {step}\n")
+    body_text.append("\n")
+    body_text.append("Risk: ")
+    body_text.append(_risk_text(plan.risk))
+    body_text.append("\n")
+    body_text.append("[Enter] Confirm   [e] Edit   [c] Chat/adjust   [Esc] Cancel", style="dim")
+
+    footer = _telemetry_footer_text(telemetry, attempts=attempts) if telemetry is not None else None
+    if footer is None:
+        body: RenderableType = body_text
+    else:
+        body = Group(body_text, Rule(style="dim"), footer)
 
     return Panel(
         body,

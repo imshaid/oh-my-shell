@@ -98,6 +98,89 @@ class PromptReader(Protocol):
     def prompt(self, text: object = "") -> str: ...
 
 
+def read_plan_choice_keypress() -> str:
+    """
+    Reads exactly one key for the Section 8.3.3 plan-choice prompt
+    ([Enter] confirm / [e] edit / [c] chat / [Esc] cancel), returning as
+    soon as that single key is pressed -- no Enter needed afterward for
+    e/c/Esc, and Enter alone (nothing else typed) confirms.
+
+    --- Bug this fixes ---
+    main.py's `_repl_get_user_choice` previously read this prompt with
+    `ReplSession.prompt()` (a full `PromptSession.prompt()` line-edit
+    call), then compared the *typed line* against `("esc", "q", "cancel")`.
+    That only ever matched if someone typed the literal four letters "esc"
+    and pressed Enter -- a raw Esc keypress produces no printable
+    characters at all in `PromptSession.prompt()`'s default key bindings
+    (it isn't bound to submit the buffer, so hitting it did nothing
+    visible), which is exactly why only "q" + Enter appeared to work in
+    real-terminal testing. Directly binding the `Keys.Escape` key here
+    (via `prompt_toolkit.application.Application` + a small `KeyBindings`
+    set, not `PromptSession.prompt()`) is the actual fix -- it lets this
+    one prompt react to the real Esc key event itself, not to typed text
+    that happens to spell out its name.
+
+    This is a true single-keypress menu (matching Section 8.3.3's own
+    "[Enter] Confirm   [e] Edit   [c] Chat/adjust   [Esc] Cancel" mockup
+    exactly) -- Enter/e/c/Esc/q each submit the instant they're pressed, no
+    second Enter needed. Any other key is echoed back as its own
+    single-character result (e.g. pressing "x" returns "x") so
+    run_discussion's existing "Unrecognized choice %r" message still has
+    something concrete to show, matching this function's previous
+    line-read behavior for a typo -- there is no legitimate multi-
+    character response at this specific prompt (discussion.py's own loop
+    only ever recognizes the exact strings "confirm"/"edit"/"chat"/
+    "cancel"; anything else always fell into the same "unrecognized
+    choice" branch even under the old line-read version), so requiring a
+    second Enter for a typo case that always re-prompts anyway would only
+    slow down the common case this menu is actually used for.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    kb = KeyBindings()
+
+    @kb.add(Keys.Escape)
+    @kb.add("q")
+    def _cancel(event):
+        event.app.exit(result="cancel")
+
+    @kb.add("e")
+    def _edit(event):
+        event.app.exit(result="edit")
+
+    @kb.add("c")
+    def _chat(event):
+        event.app.exit(result="chat")
+
+    @kb.add(Keys.Enter)
+    def _confirm(event):
+        event.app.exit(result="")
+
+    @kb.add(Keys.ControlC)
+    @kb.add(Keys.ControlD)
+    def _interrupt(event):
+        event.app.exit(exception=KeyboardInterrupt)
+
+    @kb.add(Keys.Any)
+    def _other(event):
+        event.app.exit(result=event.data)
+
+    app = Application(
+        layout=Layout(Window(FormattedTextControl(text=""))),
+        key_bindings=kb,
+        full_screen=False,
+    )
+    result = app.run()
+    if result is None:
+        raise KeyboardInterrupt
+    return result
+
+
 def _bottom_toolbar_text() -> str:
     """
     `bottom_toolbar` callable for the real PromptSession: renders the

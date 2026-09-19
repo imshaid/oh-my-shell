@@ -79,6 +79,24 @@ class IntentParseError(Exception):
 
 
 @dataclass(frozen=True)
+class ParseTelemetry:
+    """
+    Real token/timing numbers for one model call, when the backend can
+    supply them (Section 8.3.3's plan-panel footer mockup: "94 tokens in ·
+    62 tokens out · 0.8s · qwen3:8b"). All fields are optional because the
+    `IntentBackend` Protocol's own contract (generate() -> str) doesn't
+    require any backend to expose this -- a future non-Ollama backend
+    (Section 7.8's Google AI Studio fallback) may not report the same
+    counters, and this module must not break if it doesn't.
+    """
+
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    duration_seconds: float | None = None
+    model: str | None = None
+
+
+@dataclass(frozen=True)
 class ParseResult:
     """
     Outcome of parsing one user request all the way through retry.
@@ -88,12 +106,22 @@ class ParseResult:
     said "unmapped" and when both attempts failed harness validation —
     callers (router.py / plan_generator.py) only need to know "did we get
     a usable intent or not", not which of those two happened.
+
+    `telemetry` carries the LAST attempt's real token/timing numbers (see
+    ParseTelemetry), when the backend used exposed them — None for a
+    backend that doesn't (e.g. a test FakeBackend, or a future provider
+    that can't report counters). This is the same real ollama.chat()
+    response fields (prompt_eval_count/eval_count/total_duration) callers
+    already pay for on every non-streaming call -- reading them costs
+    nothing extra and is what lets ui/panels.py's plan-panel footer show
+    real numbers instead of omitting the line entirely.
     """
 
     action: str
     intent: ValidatedIntent | None
     attempts: int
     last_error: str | None = None
+    telemetry: ParseTelemetry | None = None
 
 
 class IntentBackend(Protocol):
@@ -111,10 +139,20 @@ class IntentBackend(Protocol):
 
 
 class OllamaBackend:
-    """Default backend (Section 7.6): local Ollama, think:false, schema-constrained."""
+    """Default backend (Section 7.6): local Ollama, think:false, schema-constrained.
+
+    `last_telemetry` (ParseTelemetry | None) records the most recent call's
+    real token/timing numbers -- an attribute, not part of the
+    `IntentBackend` Protocol's own required interface, so `generate()`'s
+    return type stays a plain `str` (no change to the seam every other
+    backend, real or test-fake, has to satisfy). `parse_intent()` reads it
+    with `getattr(..., "last_telemetry", None)` after calling generate(),
+    which is why a FakeBackend with no such attribute works unchanged.
+    """
 
     def __init__(self, model: str):
         self.model = model
+        self.last_telemetry: ParseTelemetry | None = None
 
     def generate(
         self, *, system_prompt: str, user_message: str, schema: dict[str, Any]
@@ -132,6 +170,24 @@ class OllamaBackend:
             )
         except Exception as exc:  # ollama client raises its own exception types
             raise IntentParseError(f"Ollama call failed: {exc}") from exc
+
+        # ollama.chat()'s response (even non-streaming) already carries
+        # real prompt_eval_count/eval_count/total_duration fields -- no
+        # architectural change (e.g. stream=True) is needed to get real
+        # tokens-in/tokens-out/elapsed-time numbers, only reading fields
+        # that were already being thrown away. total_duration is
+        # nanoseconds (ollama's own units); divided here to seconds, the
+        # unit ui/panels.py's footer actually displays.
+        self.last_telemetry = ParseTelemetry(
+            tokens_in=response.prompt_eval_count,
+            tokens_out=response.eval_count,
+            duration_seconds=(
+                response.total_duration / 1_000_000_000
+                if response.total_duration is not None
+                else None
+            ),
+            model=response.model or self.model,
+        )
 
         return response.message.content
 
@@ -302,11 +358,18 @@ def parse_intent(
         schema=schema,
         registry=registry,
     )
+    # Read after every _attempt() call, win or lose -- `last_telemetry` is
+    # an OllamaBackend-only attribute (see its own docstring), so a
+    # test/other backend without it simply yields None here, and the
+    # ParseResult's telemetry field is just left unset, same as today.
+    telemetry = getattr(active_backend, "last_telemetry", None)
     if intent is not None:
-        return ParseResult(action=intent.action, intent=intent, attempts=1)
+        return ParseResult(action=intent.action, intent=intent, attempts=1, telemetry=telemetry)
     if error is None:
         # Model explicitly said unmapped on the first try — no retry.
-        return ParseResult(action=UNMAPPED_ACTION, intent=None, attempts=1)
+        return ParseResult(
+            action=UNMAPPED_ACTION, intent=None, attempts=1, telemetry=telemetry
+        )
 
     # One retry, with the validation failure fed back as extra guidance —
     # gives the model a concrete reason its first answer didn't work,
@@ -324,11 +387,20 @@ def parse_intent(
         schema=schema,
         registry=registry,
     )
+    # Overwritten by the retry's own numbers -- the retry is the real,
+    # final model call this ParseResult reflects, so its telemetry (not
+    # the discarded first attempt's) is what a panel showing "this is what
+    # producing this plan cost" should display.
+    telemetry = getattr(active_backend, "last_telemetry", None)
     if intent is not None:
-        return ParseResult(action=intent.action, intent=intent, attempts=2)
+        return ParseResult(action=intent.action, intent=intent, attempts=2, telemetry=telemetry)
 
     # Either the retry also failed validation, or the model said unmapped
     # on the retry — both fall back to unmapped, per Section 7.4c.
     return ParseResult(
-        action=UNMAPPED_ACTION, intent=None, attempts=2, last_error=retry_error
+        action=UNMAPPED_ACTION,
+        intent=None,
+        attempts=2,
+        last_error=retry_error,
+        telemetry=telemetry,
     )
