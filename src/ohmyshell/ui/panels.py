@@ -55,7 +55,7 @@ from rich.text import Text
 
 from ohmyshell.danger_classifier import ClassificationResult, Destructive
 from ohmyshell.plan_generator import Plan
-from ohmyshell.sudo_layer import ElevatedStep
+from ohmyshell.sudo_layer import ElevatedStep, SudoDecision
 
 _RISK_COLORS = {"low": "green", "medium": "yellow", "high": "red"}
 
@@ -169,3 +169,44 @@ def print_panel(panel: RenderableType, *, console: Console | None = None) -> Non
     """Render any of the above panels to the terminal (or an injected Console)."""
     active_console = console if console is not None else Console()
     active_console.print(panel)
+
+
+class RichSudoPrompt:
+    """
+    The Step 11 `SudoPrompt` implementation sudo_layer.py's own docstring
+    already names as the eventual replacement for `InputPrompt` -- same
+    Grant/Skip/Abort decision logic, boxed via render_sudo_panel() instead
+    of sudo_layer.render_prompt_text()'s plain string.
+
+    Key mapping is intentionally identical to InputPrompt (Section 8.3.6's
+    own confirmed default): bare Enter -> GRANT, "s" -> SKIP, "esc"/"q"/
+    "abort" -> ABORT, anything else re-prompts. Only the *rendering*
+    changes here -- the decision contract (SudoPrompt.ask -> SudoDecision)
+    is unchanged, so executor.py needs no changes to accept this in place
+    of InputPrompt.
+    """
+
+    def __init__(
+        self,
+        *,
+        input_fn: "callable[[str], str] | None" = None,
+        console: Console | None = None,
+    ) -> None:
+        self._input_fn = input_fn
+        self._console = console if console is not None else Console()
+
+    def ask(self, step: ElevatedStep) -> SudoDecision:
+        read = self._input_fn if self._input_fn is not None else input
+        self._console.print(render_sudo_panel(step))
+        while True:
+            raw = read("> ")
+            choice = raw.strip().lower()
+            if choice == "":
+                return SudoDecision.GRANT
+            if choice == "s":
+                return SudoDecision.SKIP
+            if choice in ("esc", "q", "abort"):
+                return SudoDecision.ABORT
+            self._console.print(
+                "[dim]Please press Enter to grant, 's' to skip, or 'esc'/'q' to abort.[/dim]"
+            )

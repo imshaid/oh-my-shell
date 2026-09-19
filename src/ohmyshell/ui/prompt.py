@@ -28,6 +28,12 @@ specific colors/characters the blueprint doesn't state. This is exposed as
 an explicit `ai_active: bool` parameter rather than any global/implicit
 state, so it stays trivially testable and main.py's REPL loop controls
 exactly when it's true (only around the natural-language handling branch).
+
+Note (post-Build-Order, Step 11 wiring pass): main.py's real REPL loop
+does NOT currently drive `ai_active=True` at any point -- see main.py's own
+module docstring for why (a single blocking `.prompt()` call has no later
+moment to redraw mid-request). `ai_active` stays here, tested and ready,
+for whenever the REPL read loop grows a live-redraw mechanism.
 """
 
 from __future__ import annotations
@@ -75,3 +81,21 @@ def render_prompt_plain(cfg: dict, *, ai_active: bool = False, cwd: Path | None 
     Console-driven prompt (Step 11's real terminal) is available; this is
     the fallback used by input()-based call sites."""
     return render_prompt(cfg, ai_active=ai_active, cwd=cwd).plain
+
+
+def render_prompt_ansi(cfg: dict, *, ai_active: bool = False, cwd: Path | None = None) -> str:
+    """
+    ANSI-escaped string form of render_prompt(), for prompt_toolkit's
+    `ANSI()` wrapper (Step 11's full rich prompt engine -- see
+    ui/session.py). rich already knows how to turn a Text into raw ANSI
+    escapes via a Console capture; reusing that here means the color
+    palette (folder=bold blue, default icon=cyan, AI-active icon=magenta)
+    stays defined in exactly one place (render_prompt above) rather than
+    being re-encoded as a second, parallel prompt_toolkit style sheet.
+    """
+    from rich.console import Console
+
+    console = Console(force_terminal=True, color_system="standard", no_color=False)
+    with console.capture() as capture:
+        console.print(render_prompt(cfg, ai_active=ai_active, cwd=cwd), end="")
+    return capture.get()

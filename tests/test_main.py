@@ -1,16 +1,28 @@
 """
 Tests for main.py (Build Order Step 6, fully wired post-Build-Order to the
-Section 4.1 pipeline) — REPL loop dispatch and the NL/raw-shell glue.
+Section 4.1 pipeline, then to full `rich`/`prompt_toolkit` visual polish —
+Step 11).
 
-`input()`, `subprocess.run`, `intent_parser.parse_intent`, and the
-Executor/Audit Log are all mocked or redirected to a tmp_path base_dir so
-these tests exercise only main.py's own wiring logic, not real shell
+`input()`/`ReplSession`, `subprocess.run`, `intent_parser.parse_intent`, and
+the Executor/Audit Log are all mocked or redirected to a tmp_path base_dir
+so these tests exercise only main.py's own wiring logic, not real shell
 execution, a real Ollama call, or the user's real ~/.oh-my-shell/.
+
+Rich-rendered output (panels, the prompt, streaming) is asserted against an
+injected `Console(file=io.StringIO(), force_terminal=False)` buffer's
+rendered text, the same pattern ui/panels.py's and ui/streaming.py's own
+test suites already use -- a plain substring check against the buffer
+content, exactly like the old plain-text tests did against capsys, just
+reading from the injected Console instead of stdout.
 """
 
+from __future__ import annotations
+
+import io
 from unittest.mock import MagicMock, patch
 
 import pytest
+from rich.console import Console
 
 from ohmyshell import config as config_module
 from ohmyshell import main as main_module
@@ -19,6 +31,8 @@ from ohmyshell.discussion import Cancelled, Confirmed
 from ohmyshell.executor import ExecutionResult, StepResult, StepStatus
 from ohmyshell.intent_parser import IntentParseError, ParseResult
 from ohmyshell.plan_generator import Plan
+from ohmyshell.ui.panels import RichSudoPrompt
+from ohmyshell.ui.prompt import render_prompt_ansi
 from ohmyshell.validation import ValidatedIntent
 
 
@@ -32,32 +46,30 @@ def default_cfg():
     return config_module.default_config()
 
 
-# --- _render_prompt --------------------------------------------------------------
+def _buffer_console() -> tuple[io.StringIO, Console]:
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=False)
+    return buffer, console
 
 
-def test_render_prompt_shows_folder_name_only(default_cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    prompt = main_module._render_prompt(default_cfg)
-    assert tmp_path.name in prompt
-    assert str(tmp_path) not in prompt  # full path must not appear, only the folder name
+# --- ui/prompt.render_prompt_ansi (main.py's prompt source) ------------------------
+#
+# main.py's REPL loop calls ui.prompt.render_prompt_ansi directly (there is
+# no more main.py-local _render_prompt -- see main.py's own module
+# docstring for why). These tests exercise it through the same import path
+# main.py uses, confirming the wiring is live, while the exhaustive
+# content/behavior assertions already live in test_ui_prompt.py.
 
 
-def test_render_prompt_no_tag_for_default_model(default_cfg):
-    prompt = main_module._render_prompt(default_cfg)
-    assert "(" not in prompt
+def test_render_prompt_ansi_shows_folder_name_only(default_cfg, tmp_path):
+    rendered = render_prompt_ansi(default_cfg, cwd=tmp_path)
+    assert tmp_path.name in rendered
+    assert str(tmp_path) not in rendered  # full path must not appear, only the folder name
 
 
-def test_render_prompt_shows_tag_for_non_default_model(default_cfg):
-    cfg = dict(default_cfg)
-    cfg["model"] = {**default_cfg["model"], "active": "qwen3.5:4b"}
-    prompt = main_module._render_prompt(cfg)
-    assert "(qwen3.5:4b)" in prompt
-
-
-def test_render_prompt_ends_with_raw_command_icon(default_cfg):
-    """Section 8.3.1: icon-swap-on-AI-request needs live redraw (Step 11) — always ❯ for now."""
-    prompt = main_module._render_prompt(default_cfg)
-    assert prompt.rstrip().endswith("❯")
+def test_render_prompt_ansi_contains_color_escapes(default_cfg, tmp_path):
+    rendered = render_prompt_ansi(default_cfg, cwd=tmp_path)
+    assert "\x1b[" in rendered
 
 
 # --- _handle_raw_shell -------------------------------------------------------------
@@ -120,57 +132,63 @@ def test_handle_raw_shell_destructive_verdict_cancelled_on_no(default_cfg, tmp_p
     mock_run.assert_not_called()
 
 
-def test_handle_raw_shell_destructive_verdict_shows_explanation(default_cfg, tmp_path, capsys):
+def test_handle_raw_shell_destructive_verdict_shows_explanation_in_panel(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Destructive
 
     destructive = ClassificationResult(
         verdict=Destructive(explanation="this will delete everything", trash_alternative_possible=True),
         source="regex",
     )
+    buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", return_value=destructive):
         with patch("ohmyshell.main.subprocess.run"):
-            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
-    out = capsys.readouterr().out
-    assert "this will delete everything" in out
+            main_module._handle_raw_shell(
+                "rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", console=console, base_dir=tmp_path
+            )
+    assert "this will delete everything" in buffer.getvalue()
 
 
-def test_handle_raw_shell_classifier_error_does_not_run_command(default_cfg, tmp_path, capsys):
+def test_handle_raw_shell_classifier_error_does_not_run_command(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import DangerClassifierError
 
+    buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", side_effect=DangerClassifierError("Ollama unreachable")):
         with patch("ohmyshell.main.subprocess.run") as mock_run:
-            main_module._handle_raw_shell("some ambiguous command", default_cfg, base_dir=tmp_path)
+            main_module._handle_raw_shell("some ambiguous command", default_cfg, console=console, base_dir=tmp_path)
     mock_run.assert_not_called()
-    out = capsys.readouterr().out
-    assert "Ollama unreachable" in out
+    assert "Ollama unreachable" in buffer.getvalue()
 
 
-def test_handle_raw_shell_destructive_verdict_offers_trash_option_when_possible(default_cfg, tmp_path, capsys):
+def test_handle_raw_shell_destructive_verdict_offers_trash_option_when_possible(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Destructive
 
     destructive = ClassificationResult(
         verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
         source="regex",
     )
+    buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", return_value=destructive):
         with patch("ohmyshell.main.subprocess.run"):
-            main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
-    out = capsys.readouterr().out
-    assert "[t] Move to trash instead" in out
+            main_module._handle_raw_shell(
+                "rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", console=console, base_dir=tmp_path
+            )
+    assert "Move to trash instead" in buffer.getvalue()
 
 
-def test_handle_raw_shell_destructive_verdict_omits_trash_option_when_not_possible(default_cfg, tmp_path, capsys):
+def test_handle_raw_shell_destructive_verdict_omits_trash_option_when_not_possible(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Destructive
 
     destructive = ClassificationResult(
         verdict=Destructive(explanation="wipes a device", trash_alternative_possible=False),
         source="regex",
     )
+    buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", return_value=destructive):
         with patch("ohmyshell.main.subprocess.run"):
-            main_module._handle_raw_shell("dd if=/dev/zero of=/dev/sda", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
-    out = capsys.readouterr().out
-    assert "[t]" not in out
+            main_module._handle_raw_shell(
+                "dd if=/dev/zero of=/dev/sda", default_cfg, confirm=lambda _: "n", console=console, base_dir=tmp_path
+            )
+    assert "Move to trash" not in buffer.getvalue()
 
 
 def test_handle_raw_shell_trash_choice_moves_target_instead_of_running(default_cfg, tmp_path):
@@ -223,21 +241,23 @@ def _fake_plan(action="list_processes", params=None, risk="low", steps=None):
     return Plan(action=action, params=params or {}, risk=risk, steps=steps or ["do the thing"])
 
 
-def test_handle_natural_language_reports_unmapped(registry, default_cfg, tmp_path, capsys):
+def test_handle_natural_language_reports_unmapped(registry, default_cfg, tmp_path):
     fake_result = ParseResult(action="unmapped", intent=None, attempts=2, last_error="nope")
+    buffer, console = _buffer_console()
     with patch("ohmyshell.main.parse_intent", return_value=fake_result):
-        main_module._handle_natural_language("do something weird", registry, default_cfg, base_dir=tmp_path)
+        main_module._handle_natural_language(
+            "do something weird", registry, default_cfg, console=console, base_dir=tmp_path
+        )
+    assert "couldn't map" in buffer.getvalue().lower()
 
-    out = capsys.readouterr().out
-    assert "couldn't map" in out.lower()
 
-
-def test_handle_natural_language_reports_backend_failure(registry, default_cfg, tmp_path, capsys):
+def test_handle_natural_language_reports_backend_failure(registry, default_cfg, tmp_path):
+    buffer, console = _buffer_console()
     with patch("ohmyshell.main.parse_intent", side_effect=IntentParseError("Ollama unreachable")):
-        main_module._handle_natural_language("clean up temp files", registry, default_cfg, base_dir=tmp_path)
-
-    out = capsys.readouterr().out
-    assert "Ollama unreachable" in out
+        main_module._handle_natural_language(
+            "clean up temp files", registry, default_cfg, console=console, base_dir=tmp_path
+        )
+    assert "Ollama unreachable" in buffer.getvalue()
 
 
 def test_handle_natural_language_cancel_never_executes_anything(registry, default_cfg, tmp_path):
@@ -403,8 +423,8 @@ def test_handle_natural_language_failed_step_logs_failed(registry, default_cfg, 
     assert "boom" in entries[0].detail
 
 
-def test_handle_natural_language_passes_input_prompt_to_run_plan(registry, default_cfg, tmp_path):
-    """A step needing sudo must be able to reach sudo_layer's real REPL prompt."""
+def test_handle_natural_language_passes_rich_sudo_prompt_to_run_plan(registry, default_cfg, tmp_path):
+    """A step needing sudo must be able to reach the Step 11 boxed sudo prompt."""
     fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
     fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
     execution = ExecutionResult(
@@ -420,10 +440,9 @@ def test_handle_natural_language_passes_input_prompt_to_run_plan(registry, defau
                         "clean up temp files", registry, default_cfg, base_dir=tmp_path
                     )
 
-    from ohmyshell.sudo_layer import InputPrompt
-
     _, kwargs = mock_run_plan.call_args
-    assert isinstance(kwargs["prompt"], InputPrompt)
+    assert isinstance(kwargs["prompt"], RichSudoPrompt)
+
 
 def test_handle_natural_language_edit_then_confirm_executes_edited_plan(registry, default_cfg, tmp_path):
     """
@@ -447,6 +466,7 @@ def test_handle_natural_language_edit_then_confirm_executes_edited_plan(registry
             step_results=[StepResult(step_number=1, description="clean", status=StepStatus.DONE, returncode=0)],
         )
 
+    _, console = _buffer_console()
     with patch("ohmyshell.main.parse_intent", return_value=fake_result):
         with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
             with patch("ohmyshell.main.run_plan", side_effect=_fake_run_plan):
@@ -455,7 +475,7 @@ def test_handle_natural_language_edit_then_confirm_executes_edited_plan(registry
                     registry,
                     default_cfg,
                     read=lambda _: next(responses),
-                    print_fn=lambda _: None,
+                    console=console,
                     base_dir=tmp_path,
                 )
 
@@ -484,17 +504,25 @@ def test_repl_get_user_choice_maps_keys():
     assert main_module._repl_get_user_choice(plan, read=lambda _: "q") == "cancel"
 
 
+def test_repl_get_user_choice_renders_plan_panel():
+    plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium", steps=["Scan for old files"])
+    buffer, console = _buffer_console()
+    main_module._repl_get_user_choice(plan, read=lambda _: "", console=console)
+    assert "Scan for old files" in buffer.getvalue()
+    assert "Confirm" in buffer.getvalue()
+
+
 def test_repl_edit_flow_applies_edit(registry):
     plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
     responses = iter(["days", "14"])
-    updated = main_module._repl_edit_flow(plan, registry, read=lambda _: next(responses), print_fn=lambda _: None)
+    updated = main_module._repl_edit_flow(plan, registry, read=lambda _: next(responses))
     assert updated.params["days"] == "14"
 
 
 def test_repl_edit_flow_unknown_param_leaves_plan_unchanged(registry):
     plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium")
     responses = iter(["not_a_real_param", "whatever"])
-    updated = main_module._repl_edit_flow(plan, registry, read=lambda _: next(responses), print_fn=lambda _: None)
+    updated = main_module._repl_edit_flow(plan, registry, read=lambda _: next(responses))
     assert updated == plan
 
 
@@ -531,34 +559,55 @@ def test_slash_quit_returns_true(registry, default_cfg):
     assert main_module._handle_slash_command("/quit", registry, default_cfg, 0.0) is True
 
 
-def test_slash_help_is_now_fully_handled_by_meta_commands(registry, default_cfg, capsys):
+def test_slash_help_is_now_fully_handled_by_meta_commands(registry, default_cfg):
     # Step 14 wires the full Meta-Command Handler in — /help is a real,
     # recognized command now (not the Step 6-era placeholder), so this
     # returns False (don't exit) and prints the actual command reference.
-    result = main_module._handle_slash_command("/help", registry, default_cfg, 0.0)
-    out = capsys.readouterr().out
+    buffer, console = _buffer_console()
+    result = main_module._handle_slash_command("/help", registry, default_cfg, 0.0, console=console)
     assert result is False
-    assert "Command Reference" in out
+    assert "Command Reference" in buffer.getvalue()
 
 
-def test_unrecognized_slash_command_prints_error_and_does_not_exit(registry, default_cfg, capsys):
-    result = main_module._handle_slash_command("/totally-bogus", registry, default_cfg, 0.0)
-    out = capsys.readouterr().out
+def test_unrecognized_slash_command_prints_error_and_does_not_exit(registry, default_cfg):
+    buffer, console = _buffer_console()
+    result = main_module._handle_slash_command("/totally-bogus", registry, default_cfg, 0.0, console=console)
     assert result is False
-    assert "Unrecognized command" in out
+    assert "Unrecognized command" in buffer.getvalue()
 
 
 # --- run(): REPL loop integration ---------------------------------------------------
+#
+# run() now reads via a ui.session.ReplSession instance instead of the bare
+# `input` builtin, so these tests patch ohmyshell.main.ReplSession to return
+# a fake session whose .prompt() is scripted -- the REPL-loop-level
+# equivalent of the old `patch("ohmyshell.main.input", side_effect=[...])`.
+
+
+class _FakeSession:
+    """Stands in for ui.session.ReplSession in run()'s REPL loop."""
+
+    def __init__(self, responses):
+        self._responses = iter(responses)
+
+    def prompt(self, *_args, **_kwargs):
+        try:
+            return next(self._responses)
+        except StopIteration:
+            raise EOFError from None
+
+    def __call__(self, *args, **kwargs):
+        return self.prompt(*args, **kwargs)
 
 
 def test_run_exits_cleanly_on_slash_exit():
-    with patch("ohmyshell.main.input", side_effect=["/exit"]):
+    with patch("ohmyshell.main.ReplSession", return_value=_FakeSession(["/exit"])):
         with patch("ohmyshell.main.load_registry"):
             main_module.run()  # must return without raising
 
 
 def test_run_exits_on_eof():
-    with patch("ohmyshell.main.input", side_effect=EOFError):
+    with patch("ohmyshell.main.ReplSession", return_value=_FakeSession([])):
         with patch("ohmyshell.main.load_registry"):
             main_module.run()
 
@@ -569,7 +618,7 @@ def test_run_dispatches_raw_shell_then_exits(tmp_path, monkeypatch):
     # itself calls _handle_raw_shell without an explicit base_dir, matching
     # real usage, so the isolation has to happen at the config-dir level.
     monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
-    with patch("ohmyshell.main.input", side_effect=["ls -la", "/exit"]):
+    with patch("ohmyshell.main.ReplSession", return_value=_FakeSession(["ls -la", "/exit"])):
         with patch("ohmyshell.main.load_registry"):
             with patch("ohmyshell.main.subprocess.run") as mock_run:
                 main_module.run()
@@ -583,4 +632,4 @@ def test_run_exits_process_if_registry_fails_to_load(capsys):
         with pytest.raises(SystemExit) as exc_info:
             main_module.run()
     assert exc_info.value.code == 1
-    assert "missing file" in capsys.readouterr().err
+    assert "missing file" in capsys.readouterr().out

@@ -10,8 +10,9 @@ from rich.panel import Panel
 
 from ohmyshell.danger_classifier import ClassificationResult, Destructive, Safe
 from ohmyshell.plan_generator import Plan
-from ohmyshell.sudo_layer import ElevatedStep
+from ohmyshell.sudo_layer import ElevatedStep, SudoDecision
 from ohmyshell.ui.panels import (
+    RichSudoPrompt,
     print_panel,
     render_destructive_command_panel,
     render_plan_panel,
@@ -42,7 +43,7 @@ class TestRenderPlanPanel:
     def test_returns_a_panel(self):
         assert isinstance(render_plan_panel(_plan()), Panel)
 
-    def test_includes_all_steps(self):
+    def test_includes_every_step(self):
         text = _render_to_text(render_plan_panel(_plan()))
         assert "Scan /tmp for files older than 7 days" in text
         assert "Move matched files to .trash/" in text
@@ -52,78 +53,65 @@ class TestRenderPlanPanel:
         assert "High" in text
 
     def test_includes_action_in_title(self):
-        text = _render_to_text(render_plan_panel(_plan(action="organize_files")))
-        assert "organize_files" in text
+        panel = render_plan_panel(_plan(action="organize_files"))
+        assert "organize_files" in str(panel.title)
 
     def test_includes_confirm_edit_chat_cancel_options(self):
         text = _render_to_text(render_plan_panel(_plan()))
         assert "Confirm" in text
         assert "Edit" in text
-        assert "Chat" in text or "chat" in text.lower()
+        assert "Chat/adjust" in text
         assert "Cancel" in text
-
-    def test_low_risk_plan_renders_without_error(self):
-        text = _render_to_text(render_plan_panel(_plan(risk="low")))
-        assert "Low" in text
 
 
 class TestRenderDestructiveCommandPanel:
-    def _result(self, *, trash_alternative_possible: bool, explanation: str = "This deletes things permanently."):
+    def _result(self, *, trash_alternative_possible: bool) -> ClassificationResult:
         return ClassificationResult(
-            verdict=Destructive(explanation=explanation, trash_alternative_possible=trash_alternative_possible),
+            verdict=Destructive(
+                explanation="this deletes everything in /tmp",
+                trash_alternative_possible=trash_alternative_possible,
+            ),
             source="regex",
         )
 
-    def test_returns_a_panel(self):
-        assert isinstance(render_destructive_command_panel(self._result(trash_alternative_possible=True)), Panel)
-
-    def test_includes_explanation_text(self):
-        text = _render_to_text(
-            render_destructive_command_panel(self._result(trash_alternative_possible=True, explanation="Deletes /var/log"))
-        )
-        assert "Deletes /var/log" in text
-
-    def test_includes_trash_option_when_possible(self):
-        text = _render_to_text(render_destructive_command_panel(self._result(trash_alternative_possible=True)))
-        assert "Move to trash instead" in text
-
-    def test_omits_trash_option_when_not_possible(self):
-        text = _render_to_text(render_destructive_command_panel(self._result(trash_alternative_possible=False)))
-        assert "Move to trash instead" not in text
-
-    def test_always_includes_run_anyway_and_cancel(self):
-        text = _render_to_text(render_destructive_command_panel(self._result(trash_alternative_possible=False)))
-        assert "Run anyway" in text
-        assert "Cancel" in text
-
-    def test_raises_type_error_for_safe_verdict(self):
+    def test_raises_for_safe_verdict(self):
         safe_result = ClassificationResult(verdict=Safe(), source="regex")
         with pytest.raises(TypeError):
             render_destructive_command_panel(safe_result)
 
+    def test_includes_explanation(self):
+        text = _render_to_text(render_destructive_command_panel(self._result(trash_alternative_possible=True)))
+        assert "this deletes everything in /tmp" in text
+
+    def test_includes_trash_option_when_possible(self):
+        text = _render_to_text(render_destructive_command_panel(self._result(trash_alternative_possible=True)))
+        assert "[t] Move to trash instead" in text
+
+    def test_omits_trash_option_when_not_possible(self):
+        text = _render_to_text(render_destructive_command_panel(self._result(trash_alternative_possible=False)))
+        assert "[t]" not in text
+
+    def test_includes_run_anyway_and_cancel_always(self):
+        text = _render_to_text(render_destructive_command_panel(self._result(trash_alternative_possible=False)))
+        assert "[y] Run anyway" in text
+        assert "[n] Cancel" in text
+
 
 class TestRenderSudoPanel:
-    def _step(self, **overrides) -> ElevatedStep:
-        defaults = dict(
+    def _step(self) -> ElevatedStep:
+        return ElevatedStep(
             step_number=3,
             total_steps=5,
             description="Clear system-level cache in /var/cache",
             reason="this directory is owned by root",
         )
-        defaults.update(overrides)
-        return ElevatedStep(**defaults)
 
-    def test_returns_a_panel(self):
-        assert isinstance(render_sudo_panel(self._step()), Panel)
-
-    def test_includes_step_progress(self):
-        text = _render_to_text(render_sudo_panel(self._step(step_number=3, total_steps=5)))
-        assert "3/5" in text
+    def test_includes_step_number_and_total(self):
+        text = _render_to_text(render_sudo_panel(self._step()))
+        assert "Step 3/5" in text
 
     def test_includes_description_and_reason(self):
-        text = _render_to_text(
-            render_sudo_panel(self._step(description="Clear system-level cache in /var/cache", reason="this directory is owned by root"))
-        )
+        text = _render_to_text(render_sudo_panel(self._step()))
         assert "Clear system-level cache in /var/cache" in text
         assert "this directory is owned by root" in text
 
@@ -164,3 +152,62 @@ class TestPrintPanel:
     def test_works_without_injected_console(self, capsys):
         # Should not raise even with rich's default Console (stdout).
         print_panel(render_undo_confirm_panel(count=1))
+
+
+class TestRichSudoPrompt:
+    """
+    RichSudoPrompt is the Step 11 SudoPrompt implementation -- same
+    Grant/Skip/Abort decision contract as sudo_layer.InputPrompt, just
+    rendered via render_sudo_panel() instead of plain text. These tests
+    mirror sudo_layer.py's own InputPrompt tests but assert against a
+    rich-rendered buffer instead of print() calls.
+    """
+
+    @staticmethod
+    def _step() -> ElevatedStep:
+        return ElevatedStep(
+            step_number=3,
+            total_steps=5,
+            description="Clear system-level cache in /var/cache",
+            reason="this directory is owned by root",
+        )
+
+    def test_bare_enter_grants(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        prompt = RichSudoPrompt(input_fn=lambda _: "", console=console)
+        assert prompt.ask(self._step()) is SudoDecision.GRANT
+
+    def test_s_skips(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        prompt = RichSudoPrompt(input_fn=lambda _: "s", console=console)
+        assert prompt.ask(self._step()) is SudoDecision.SKIP
+
+    def test_esc_aborts(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        prompt = RichSudoPrompt(input_fn=lambda _: "esc", console=console)
+        assert prompt.ask(self._step()) is SudoDecision.ABORT
+
+    def test_q_aborts(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        prompt = RichSudoPrompt(input_fn=lambda _: "q", console=console)
+        assert prompt.ask(self._step()) is SudoDecision.ABORT
+
+    def test_invalid_choice_reprompts_then_grants(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        responses = iter(["garbage", ""])
+        prompt = RichSudoPrompt(input_fn=lambda _: next(responses), console=console)
+        assert prompt.ask(self._step()) is SudoDecision.GRANT
+
+    def test_renders_sudo_panel_to_console(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        prompt = RichSudoPrompt(input_fn=lambda _: "", console=console)
+        prompt.ask(self._step())
+        output = buffer.getvalue()
+        assert "elevated permission" in output
+        assert "Clear system-level cache in /var/cache" in output

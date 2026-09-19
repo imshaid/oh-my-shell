@@ -1,7 +1,8 @@
 """
 Shell REPL loop, entrypoint (Build Order Step 6, danger-check integrated
 Step 8, full Meta-Command Handler wired in Step 14, full Section 4.1
-pipeline wired post-Build-Order).
+pipeline wired post-Build-Order, full `rich`/`prompt_toolkit` visual
+polish wired post-Build-Order — Step 11).
 
 Per the Build Order's own scoping for Step 6 ("basic REPL loop, raw
 pass-through প্রথমে — সবচেয়ে সহজ path"), this was initially NOT the full
@@ -18,21 +19,69 @@ wires all of them together end to end:
   Parser (Step 5) -> Plan Generator (Step 7) -> Confirmation + Discussion
   Loop (Step 7/11) -> Sudo Layer (Step 9, only if a step needs elevated
   permission) -> Streaming Executor (Step 10) -> Audit Log (Step 12). See
-  _handle_natural_language's own docstring for the exact wiring and the
-  design decisions this required (none of the blueprint text retrieved so
-  far spells out the REPL-level glue between these already-built modules
-  in that much detail, so the glue itself -- not any individual module's
-  behavior -- is this file's own design, documented inline).
+  _handle_natural_language's own docstring for the exact wiring.
 - SLASH_COMMAND input goes through the full Meta-Command Handler
   (meta_commands.py, Step 14) — /help, /model, /history, /undo, /trash,
   /log, /capabilities, /explain, /stats, /system, /config, /clear, /exit,
   /quit are all recognized.
-- Prompt rendering here is still plain text (folder name, model tag if
-  non-default) — the `rich`-based visual polish from ui/prompt.py (Step 11)
-  exists but isn't wired into this REPL's `input()` call, since `input()`
-  only accepts a plain string prompt; adopting ui/prompt.py fully would
-  need replacing `input()` with a `rich`/`prompt_toolkit`-driven read loop,
-  a separate UI-framework change from wiring the pipeline's logic together.
+
+--- Step 11 visual-polish wiring (post-Build-Order) ---
+Until this pass, every render in this module went through plain `print`/
+`print_fn`, even though ui/panels.py (boxed rich.Panel confirmation/warning
+prompts) and ui/streaming.py (rich.Live execution progress) already existed
+and were already unit-tested — they were simply never called from here.
+Found and fixed after the person compared a real session's output against
+other CLIs' prompt/output styling (fish, nushell, exa) and it looked
+"noisy, non-aligned, generic" by contrast — not a functional bug, but a
+real gap between what Step 11 was supposed to deliver and what actually
+reached the terminal.
+
+What changed, module by module:
+  - ui/prompt.py: `_render_prompt` (plain "<folder> (<model>) ❯ " string)
+    is replaced by ui/prompt.py's `render_prompt_ansi`, which reuses the
+    same content/logic but colors the folder name and the icon (cyan ❯).
+    ui/prompt.py's `ai_active` parameter (icon swap to magenta ✦) is not
+    driven from here: this REPL's `session.prompt()` call blocks until the
+    *next* line is typed, so there is no later moment in the same prompt
+    render to redraw it "while" a request runs — the earliest an
+    `ai_active=True` render could show is the *next* prompt after the
+    request already finished, which would misrepresent what's currently
+    happening rather than reflect it. Actually redrawing the live prompt
+    mid-request would need a different input mechanism (a background
+    thread refreshing a prompt_toolkit Application, not a single blocking
+    `.prompt()` call) — left as a real Step-11-completing follow-up rather
+    than faked here with a parameter that would always render `False`.
+  - ui/session.py: the bare `input()` REPL read is replaced by a
+    `ReplSession` (prompt_toolkit-backed) so the colored prompt actually
+    renders with working line-editing (`input()` cannot safely take a
+    pre-ANSI-escaped string — see ui/session.py's own docstring for why
+    prompt_toolkit specifically, not just wrapping input() in more rich
+    markup). `ReplSession` is also used as the `read` callable everywhere
+    a raw `input` was passed before (edit-param sub-prompts, chat-adjust
+    text, sudo-decision reads) — its `__call__` makes it a drop-in
+    replacement for every existing `read: callable = input` parameter
+    throughout this file, discussion.py, and sudo_layer.py.
+  - ui/panels.py: the plan (confirm/edit/chat/cancel), destructive-command
+    warning, and sudo-escalation prompts are now rendered as boxed
+    rich.Panel output (render_plan_panel / render_destructive_command_panel
+    / render_sudo_panel) instead of plain print() lines. `RichSudoPrompt`
+    (new, alongside these) replaces `sudo_layer.InputPrompt` as the
+    `SudoPrompt` passed into `run_plan` — same Grant/Skip/Abort decision
+    contract, boxed rendering.
+  - ui/streaming.py: execution progress now goes through
+    `StreamingRenderer` (a `rich.Live` spinner that collapses to a
+    ✓/✗/⚠/⊘ summary line per step) instead of one flat print per StepEvent.
+
+Every function below that used to take `print_fn: callable = print` now
+takes `console: Console | None = None` instead (defaulting to a fresh rich
+Console, matching ui/panels.py's own `print_panel` convention) — tests
+inject a `Console(file=io.StringIO(), force_terminal=False)` and assert
+against the buffer's rendered text, the same pattern ui/panels.py's and
+ui/streaming.py's own test suites already established. `read: callable`
+parameters are unchanged in shape (still "a thing callable with an
+optional prompt string that returns str") — a `ReplSession` or a plain
+test fake both satisfy that shape identically, so discussion.py and
+sudo_layer.py needed no contract changes at all for this pass.
 
 `--yes`/`-y`/`--dry-run`/`--verbose`/`--quiet` (Section 8.5) are still not
 implemented — no inline-modifier parsing exists on either the raw-shell or
@@ -50,6 +99,9 @@ import sys
 import time
 from pathlib import Path
 
+from rich.console import Console
+from rich.text import Text
+
 from ohmyshell import audit_log as audit_log_module
 from ohmyshell import config as config_module
 from ohmyshell import meta_commands
@@ -62,24 +114,25 @@ from ohmyshell.plan_generator import Plan, generate_plan
 from ohmyshell.registry import Registry, RegistryError
 from ohmyshell.registry import load as load_registry
 from ohmyshell.router import InputKind, route
-from ohmyshell.sudo_layer import InputPrompt
+from ohmyshell.ui.panels import (
+    RichSudoPrompt,
+    render_destructive_command_panel,
+    render_plan_panel,
+)
+from ohmyshell.ui.prompt import render_prompt_ansi
+from ohmyshell.ui.session import ReplSession
+from ohmyshell.ui.streaming import StreamingRenderer
 
 EXIT_COMMANDS = {"/exit", "/quit"}
 
-
-def _render_prompt(cfg: dict) -> str:
-    """
-    Plain-text prompt: current folder name only (not full path), plus a
-    model tag if the active model isn't the default (Section 8.3.1).
-    The icon-swap-on-AI-request behavior from 8.3.1 needs live in-place
-    terminal redraw, which belongs to ui/streaming.py (Step 11) — this
-    step always shows the raw-command icon "❯".
-    """
-    folder_name = Path.cwd().name or "/"
-    active_model = config_module.get(cfg, "model.active")
-    default_model = config_module.default_config()["model"]["active"]
-    tag = f" ({active_model})" if active_model != default_model else ""
-    return f"{folder_name}{tag} ❯ "
+# One consistent banner shown once at startup — gives the app a signature
+# look on launch rather than dropping straight into a bare prompt (no
+# blueprint mockup covers this exactly; kept intentionally small/quiet so
+# it doesn't compete with /help's own reference text).
+_BANNER = Text.from_markup(
+    "[bold cyan]✦ Oh My Shell[/bold cyan] [dim]— natural-language Linux shell[/dim]\n"
+    "[dim]Type naturally, or /help for commands.[/dim]"
+)
 
 
 def _extract_trash_target(text: str) -> str | None:
@@ -125,11 +178,14 @@ def _extract_trash_target(text: str) -> str | None:
     return None
 
 
-def _handle_raw_shell(text: str, cfg: dict, *, confirm: callable = input, base_dir=None) -> None:
+def _handle_raw_shell(
+    text: str, cfg: dict, *, confirm: callable = input, console: Console | None = None, base_dir=None
+) -> None:
     """
     Classify, then execute raw shell input directly (Section 8.3.5).
 
-    Confirmation prompt (Section 8.3.5): a Destructive verdict shows
+    Confirmation prompt (Section 8.3.5): a Destructive verdict shows a
+    boxed rich.Panel (ui/panels.render_destructive_command_panel) with
     [y] Run anyway / [n] Cancel, and -- only when the classifier says
     `trash_alternative_possible` -- also [t] Move to trash instead, which
     moves the command's apparent target (see _extract_trash_target's own
@@ -154,26 +210,24 @@ def _handle_raw_shell(text: str, cfg: dict, *, confirm: callable = input, base_d
     Log row ("প্রতিটা action ... রেকর্ড করে") does not scope itself to
     AI-originated actions only, so this module logs both paths uniformly.
     """
+    active_console = console if console is not None else Console()
     try:
         result = classify(text, model=config_module.get(cfg, "model.active"))
     except DangerClassifierError as exc:
-        print(f"  ⚠ Could not classify this command ({exc}) — not running it automatically.")
-        print(f"  Re-run manually if you're sure: {text}")
+        active_console.print(
+            f"  [yellow]⚠[/yellow] Could not classify this command ({exc}) — not running it automatically."
+        )
+        active_console.print(f"  [dim]Re-run manually if you're sure: {text}[/dim]")
         return
 
     if isinstance(result.verdict, Destructive):
-        print("\n  ⚠ Potentially destructive command detected\n")
-        print(f"  {result.verdict.explanation}\n")
-        options = "  [y] Run anyway   [n] Cancel"
-        if result.verdict.trash_alternative_possible:
-            options += "   [t] Move to trash instead"
-        print(options)
+        active_console.print(render_destructive_command_panel(result))
         choice = confirm("  > ").strip().lower()
 
         if choice == "t" and result.verdict.trash_alternative_possible:
             target = _extract_trash_target(text)
             if target is None:
-                print("  Couldn't tell what to move to trash — cancelled. Nothing changed.")
+                active_console.print("  Couldn't tell what to move to trash — cancelled. Nothing changed.")
                 audit_log_module.record_action(
                     action=text, source="raw_shell", status="cancelled",
                     detail="trash target not determinable", base_dir=base_dir,
@@ -182,13 +236,13 @@ def _handle_raw_shell(text: str, cfg: dict, *, confirm: callable = input, base_d
             try:
                 trash_module.move_to_trash(target, base_dir=base_dir)
             except trash_module.TrashError as exc:
-                print(f"  Could not move {target!r} to trash: {exc}")
+                active_console.print(f"  Could not move {target!r} to trash: {exc}")
                 audit_log_module.record_action(
                     action=text, source="raw_shell", status="failed",
                     error=str(exc), detail=f"target={target}", base_dir=base_dir,
                 )
                 return
-            print(f"  Moved {target!r} to .trash/ instead of running the original command.")
+            active_console.print(f"  [green]✓[/green] Moved {target!r} to .trash/ instead of running the original command.")
             audit_log_module.record_action(
                 action=text, source="raw_shell", status="done",
                 detail=f"moved {target!r} to trash instead of running command", base_dir=base_dir,
@@ -196,7 +250,7 @@ def _handle_raw_shell(text: str, cfg: dict, *, confirm: callable = input, base_d
             return
 
         if choice != "y":
-            print("  Cancelled.")
+            active_console.print("  Cancelled.")
             audit_log_module.record_action(action=text, source="raw_shell", status="cancelled", base_dir=base_dir)
             return
 
@@ -217,7 +271,7 @@ def _run_shell_command(text: str) -> None:
         print(f"error: {exc}", file=sys.stderr)
 
 
-def _repl_get_user_choice(plan: Plan, *, read: callable = input) -> str:
+def _repl_get_user_choice(plan: Plan, *, read: callable = input, console: Console | None = None) -> str:
     """
     REPL-level [Enter] confirm / [e] edit / [c] chat / [Esc] cancel prompt
     (Section 8.3.3), mapped onto discussion.run_discussion's expected
@@ -226,12 +280,11 @@ def _repl_get_user_choice(plan: Plan, *, read: callable = input) -> str:
     Design note (this file's own glue, Section 16 Rule 5): discussion.py's
     own docstring says the raw-keypress-to-choice mapping belongs to the
     REPL layer (Step 11/main.py), not to run_discussion itself -- this is
-    that mapping. Plain input() line-reading, not a raw/cbreak single-key
-    read (same "no true Esc key" limitation sudo_layer.InputPrompt already
-    documents and works around the same way: a typed word instead).
+    that mapping, now rendering the plan via ui/panels.render_plan_panel
+    (boxed) instead of discussion.render_plan_text (plain).
     """
-    print_fn = print
-    print_fn("  [Enter] Confirm   [e] Edit   [c] Chat/adjust   [Esc/q] Cancel")
+    active_console = console if console is not None else Console()
+    active_console.print(render_plan_panel(plan))
     raw = read("> ").strip().lower()
     if raw == "":
         return "confirm"
@@ -244,7 +297,9 @@ def _repl_get_user_choice(plan: Plan, *, read: callable = input) -> str:
     return raw  # let run_discussion's own "unrecognized choice" branch handle it
 
 
-def _repl_edit_flow(plan: Plan, registry: Registry, *, read: callable = input, print_fn: callable = print) -> Plan:
+def _repl_edit_flow(
+    plan: Plan, registry: Registry, *, read: callable = input, console: Console | None = None
+) -> Plan:
     """
     Drives the [e] direct-edit sub-flow: ask which param, ask its new
     value, apply via discussion.edit_step_param, return the updated plan.
@@ -257,19 +312,20 @@ def _repl_edit_flow(plan: Plan, registry: Registry, *, read: callable = input, p
     all, the plan is returned unchanged and a message is printed, rather
     than crashing the discussion loop over a typo.
     """
+    active_console = console if console is not None else Console()
     if not plan.params:
-        print_fn("  This plan has no editable params.")
+        active_console.print("  This plan has no editable params.")
         return plan
-    print_fn(f"  Editable params: {', '.join(plan.params.keys())}")
+    active_console.print(f"  [dim]Editable params:[/dim] {', '.join(plan.params.keys())}")
     param_name = read("  Edit which param? ").strip()
     if not param_name:
-        print_fn("  Cancelled edit — plan unchanged.")
+        active_console.print("  Cancelled edit — plan unchanged.")
         return plan
     new_value = read(f"  New value for {param_name!r}: ").strip()
     try:
         return edit_step_param(plan, param_name, new_value, registry)
     except KeyError:
-        print_fn(f"  {param_name!r} isn't a param on this plan — unchanged.")
+        active_console.print(f"  {param_name!r} isn't a param on this plan — unchanged.")
         return plan
 
 
@@ -279,7 +335,7 @@ def _handle_natural_language(
     cfg: dict,
     *,
     read: callable = input,
-    print_fn: callable = print,
+    console: Console | None = None,
     base_dir=None,
 ) -> None:
     """
@@ -334,11 +390,12 @@ def _handle_natural_language(
     3. On Cancelled(): the request ends, logged as status="cancelled" (no
        execution happened).
     4. On Confirmed(plan): run_plan() executes it, streaming StepEvents
-       (printed plainly here -- ui/streaming.py's rich Live rendering is a
-       separate UI-framework adoption, same scope line drawn for the prompt
-       icon in this module's own docstring). run_plan() is given
-       prompt=InputPrompt() so any step that hits a permission-denied retry
-       shows the Section 8.3.6 sudo box via sudo_layer's own REPL prompt.
+       through ui/streaming.StreamingRenderer (a rich.Live spinner that
+       collapses to a summary line per step) instead of a flat print per
+       event. run_plan() is given prompt=RichSudoPrompt(console=...) so
+       any step that hits a permission-denied retry shows the Section
+       8.3.6 sudo box as a boxed rich.Panel via sudo_layer's own decision
+       contract.
     5. Exactly one audit_log.record_action() call per request outcome,
        mapping ExecutionResult onto the audit schema:
          - all_done                      -> status="done"
@@ -354,15 +411,16 @@ def _handle_natural_language(
        step's stderr/detail for a failed/interrupted outcome so /explain
        and /log have something concrete to show.
     """
+    active_console = console if console is not None else Console()
     model = config_module.get(cfg, "model.active")
     try:
         result = parse_intent(text, registry, model=model)
     except IntentParseError as exc:
-        print_fn(f"  ⚠ Could not reach the model: {exc}")
+        active_console.print(f"  [yellow]⚠[/yellow] Could not reach the model: {exc}")
         return
 
     if result.intent is None:
-        print_fn("  I couldn't map that to anything I can do yet. Try `/help`.")
+        active_console.print("  I couldn't map that to anything I can do yet. Try `/help`.")
         return
 
     plan = generate_plan(result.intent, registry)
@@ -377,21 +435,28 @@ def _handle_natural_language(
         return generate_plan(adjusted.intent, registry)
 
     def _get_user_choice(current_plan: Plan) -> tuple[str, Plan]:
-        choice = _repl_get_user_choice(current_plan, read=read)
+        choice = _repl_get_user_choice(current_plan, read=read, console=active_console)
         if choice == "edit":
-            current_plan = _repl_edit_flow(current_plan, registry, read=read, print_fn=print_fn)
+            current_plan = _repl_edit_flow(current_plan, registry, read=read, console=active_console)
         return choice, current_plan
+
+    def _discussion_print(line: str) -> None:
+        # run_discussion's own print_fn calls (diff-notes, soft-limit nudge,
+        # "couldn't apply that adjustment", "unrecognized choice") are short
+        # single lines -- rendered dim rather than boxed, so they read as
+        # secondary/system text next to the boxed plan panel above them.
+        active_console.print(f"[dim]{line}[/dim]" if line.strip() else line)
 
     outcome = run_discussion(
         plan,
         get_user_choice=_get_user_choice,
         get_adjustment_text=lambda: read("  What would you like to change? "),
         reparse=_reparse,
-        print_fn=print_fn,
+        print_fn=_discussion_print,
     )
 
     if isinstance(outcome, Cancelled):
-        print_fn("  Cancelled.")
+        active_console.print("  Cancelled.")
         audit_log_module.record_action(
             action=result.intent.action, source="natural_language", status="cancelled",
             params=result.intent.params, risk=result.intent.risk, base_dir=base_dir,
@@ -401,12 +466,15 @@ def _handle_natural_language(
     assert isinstance(outcome, Confirmed)
     confirmed_plan = outcome.plan
 
-    def _on_event(event) -> None:
-        label = event.status.name.lower()
-        print_fn(f"  [{event.step_number}/{event.total_steps}] {label}: {event.detail}".rstrip(": "))
-
     start = time.time()
-    execution = run_plan(confirmed_plan, registry, prompt=InputPrompt(), on_event=_on_event)
+    with StreamingRenderer(console=active_console) as renderer:
+        execution = run_plan(
+            confirmed_plan,
+            registry,
+            prompt=RichSudoPrompt(input_fn=read, console=active_console),
+            on_event=renderer.on_event,
+        )
+    renderer.print_summary(execution)
     duration = time.time() - start
 
     used_sudo = any(r.used_sudo for r in execution.step_results)
@@ -435,19 +503,10 @@ def _handle_natural_language(
         base_dir=base_dir,
     )
 
-    if status == "done":
-        print_fn("  Done.")
-    elif status == "interrupted":
-        print_fn("  Interrupted.")
-    elif status == "cancelled":
-        print_fn("  Aborted (elevated permission declined).")
-    elif status == "skipped":
-        print_fn("  Step skipped.")
-    else:
-        print_fn(f"  Failed: {last_detail}")
 
-
-def _handle_slash_command(text: str, registry: Registry, cfg: dict, session_start: float) -> bool:
+def _handle_slash_command(
+    text: str, registry: Registry, cfg: dict, session_start: float, *, console: Console | None = None
+) -> bool:
     """
     Dispatch a slash command through the full Meta-Command Handler
     (meta_commands.py, Step 14). Returns True if the REPL should exit.
@@ -455,35 +514,46 @@ def _handle_slash_command(text: str, registry: Registry, cfg: dict, session_star
     A MetaCommandError (recognized command, bad usage, or genuinely
     unrecognized command) is caught and printed rather than crashing the
     REPL — the same fail-soft spirit used throughout this codebase (e.g.
-    the Danger Classifier's own LLM-failure handling).
+    the Danger Classifier's own LLM-failure handling). meta_commands.py's
+    own output stays plain text (it's a thin wrapper over already-built
+    modules per its own docstring, out of this pass's scope) -- only the
+    surrounding print call is routed through the shared Console so its
+    output lands in the same stream/buffer as everything else this module
+    renders (important for tests that capture one Console's buffer).
     """
+    active_console = console if console is not None else Console()
     try:
         outcome = meta_commands.dispatch(text, cfg=cfg, registry=registry, session_start=session_start)
     except meta_commands.MetaCommandError as exc:
-        print(f"  {exc}")
+        active_console.print(f"  {exc}")
         return False
 
     if outcome.text:
-        print(outcome.text)
+        active_console.print(outcome.text, highlight=False)
     return outcome.should_exit
 
 
 def run() -> None:
     """Entrypoint (see pyproject.toml's [project.scripts] and bin/oh-my-shell)."""
+    console = Console()
+
     try:
         registry = load_registry()
     except RegistryError as exc:
-        print(f"Fatal: could not load capability registry: {exc}", file=sys.stderr)
+        console.print(f"[red]Fatal: could not load capability registry: {exc}[/red]")
         sys.exit(1)
 
     cfg = config_module.load()
     session_start = time.time()
+    session = ReplSession()
+
+    console.print(_BANNER)
 
     while True:
         try:
-            raw_input_text = input(_render_prompt(cfg))
+            raw_input_text = session.prompt(render_prompt_ansi(cfg))
         except (EOFError, KeyboardInterrupt):
-            print()  # keep the terminal cursor on a clean line
+            console.print()  # keep the terminal cursor on a clean line
             break
 
         routed = route(raw_input_text)
@@ -491,14 +561,14 @@ def run() -> None:
         if routed.kind == InputKind.EMPTY:
             continue
         if routed.kind == InputKind.SLASH_COMMAND:
-            if _handle_slash_command(routed.text, registry, cfg, session_start):
+            if _handle_slash_command(routed.text, registry, cfg, session_start, console=console):
                 break
             continue
         if routed.kind == InputKind.RAW_SHELL:
-            _handle_raw_shell(routed.text, cfg)
+            _handle_raw_shell(routed.text, cfg, confirm=session, console=console)
             continue
         if routed.kind == InputKind.NATURAL_LANGUAGE:
-            _handle_natural_language(routed.text, registry, cfg)
+            _handle_natural_language(routed.text, registry, cfg, read=session, console=console)
             continue
 
 

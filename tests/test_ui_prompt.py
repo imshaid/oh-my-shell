@@ -9,6 +9,7 @@ from ohmyshell.ui.prompt import (
     AI_ACTIVE_ICON,
     DEFAULT_ICON,
     render_prompt,
+    render_prompt_ansi,
     render_prompt_plain,
 )
 
@@ -66,3 +67,30 @@ class TestRenderPromptPlain:
     def test_no_rich_markup_leaks_into_plain_string(self, tmp_path):
         result = render_prompt_plain(_cfg(), ai_active=True, cwd=tmp_path)
         assert "[" not in result or "magenta" not in result  # no raw style tags
+
+
+class TestRenderPromptAnsi:
+    """
+    render_prompt_ansi (Step 11's prompt_toolkit bridge) must produce a
+    string containing real ANSI escape sequences (so prompt_toolkit's
+    ANSI() wrapper has something to parse), while still containing the
+    same plain text content as render_prompt_plain -- the escapes decorate
+    the text, they don't replace it.
+    """
+
+    def test_contains_ansi_escape_codes(self, tmp_path):
+        result = render_prompt_ansi(_cfg(), cwd=tmp_path)
+        assert "\x1b[" in result
+
+    def test_plain_text_content_still_present(self, tmp_path):
+        result = render_prompt_ansi(_cfg(), cwd=tmp_path)
+        assert tmp_path.name in result
+        assert DEFAULT_ICON in result
+
+    def test_ai_active_icon_present_when_requested(self, tmp_path):
+        result = render_prompt_ansi(_cfg(), ai_active=True, cwd=tmp_path)
+        assert AI_ACTIVE_ICON in result
+
+    def test_returns_a_string(self, tmp_path):
+        result = render_prompt_ansi(_cfg(), cwd=tmp_path)
+        assert isinstance(result, str)
