@@ -28,32 +28,39 @@ importing this module in a test file never requires a real terminal
 PromptSession-construction time, which fails under pytest's captured
 stdio unless a stub input/output is supplied).
 
-Command palette (Step 11 follow-up, post-Build-Order): a real
-`PromptSession` is now constructed with `completer=OhMyShellCompleter()`
-and `complete_while_typing=True`, so typing "/" shows the slash-command
-list (ui/palette.py) live, matching the person's explicit ask ("when press
-/ then automatically show all the commands ... like claude code or hermes
-agent"). This only affects the real, lazily-constructed `PromptSession` --
-a test-injected `reader` never sees a completer at all, since fakes used
-in tests don't implement prompt_toolkit's completion protocol and have no
-reason to.
+--- Command palette: three rounds (post-Build-Order) ---
 
-Command palette, round 2 (post-Build-Order, after real-terminal testing of
-round 1 found two problems -- see ui/palette.py's own docstring for the
-full root-cause writeup of both):
+Round 1 wired a prompt_toolkit `Completer` (ui/palette.OhMyShellCompleter)
+via `completer=`/`complete_while_typing=True`. Real-terminal testing found
+two problems: prompt_toolkit's own default completion-menu colors (flat
+grey) didn't match this app's look, and backspacing inside a "/..." line
+made the menu vanish instead of updating (a genuine prompt_toolkit gap:
+`complete_while_typing` only fires from `Buffer.insert_text`, never from
+delete -- confirmed by reading prompt_toolkit's own buffer.py).
 
-  - `style=ui.palette.PALETTE_STYLE` is now also passed to PromptSession,
-    overriding prompt_toolkit's stock grey completion-menu colors with
-    this app's own cyan/dim palette.
-  - `_retrigger_completion_on_edit`, attached below as an
-    `on_text_changed` handler on the real PromptSession's buffer, re-opens
-    the completion menu on backspace/delete too. `complete_while_typing`
-    by itself only fires from `Buffer.insert_text` (confirmed by reading
-    prompt_toolkit's own buffer.py) -- deleting a character never re-runs
-    the completer through that mechanism, which is why backspacing "/mo"
-    down to "/m" made the list vanish instead of updating. `on_text_changed`
-    fires on every edit either direction, so this handler is what actually
-    keeps the menu in sync while backspacing.
+Round 2 fixed the backspace gap (an `on_text_changed` handler that
+re-triggered completion) and reskinned the menu with a custom `Style` to
+match this app's colors. Testing found this still wasn't right, for a
+reason round 2 missed: a floating completion-menu widget is a popup
+regardless of what colors it uses, and the person had explicitly asked for
+an *inline* list ("not any additional popup or else"), like Claude Code's
+own "/" list. Round 2's custom colors were also wrong on their own terms --
+hardcoding specific hex colors bakes in an assumption about the person's
+terminal theme that doesn't hold for every user.
+
+Round 3 (current): the `Completer`/`complete_while_typing`/`style`/
+`on_text_changed` machinery is gone entirely. `bottom_toolbar` is used
+instead -- a plain text region prompt_toolkit redraws live under the input
+line as the buffer changes, with no menu chrome and no forced colors (see
+`_TOOLBAR_STYLE` below, which blanks out prompt_toolkit's own default
+"reverse video" toolbar styling rather than replacing it with a different
+hardcoded color -- the terminal's own ambient foreground/background is
+what actually shows). `_bottom_toolbar_text()` reads the *live* buffer via
+`get_app().current_buffer`, since a callable passed to `bottom_toolbar` is
+re-invoked by prompt_toolkit on every redraw -- it does not receive the
+buffer as an argument. ui/palette.py's `render_toolbar_text()` is the pure
+function that turns "current input text" into "what to show," kept there
+so it's testable without any of this prompt_toolkit plumbing.
 """
 
 from __future__ import annotations
@@ -68,24 +75,22 @@ class PromptReader(Protocol):
     def prompt(self, text: object = "") -> str: ...
 
 
-def _retrigger_completion_on_edit(buffer) -> None:
+def _bottom_toolbar_text() -> str:
     """
-    `on_text_changed` handler: keeps the command-palette menu in sync on
-    backspace/delete, which `complete_while_typing` alone does not cover
-    (see this module's docstring, "Command palette, round 2," for why).
+    `bottom_toolbar` callable for the real PromptSession: renders the
+    inline command list (ui/palette.render_toolbar_text) for whatever the
+    buffer's current text is, or "" (nothing shown) otherwise.
 
-    Re-runs completion whenever the line still starts with "/" (so typing
-    forward keeps working exactly as before -- this handler doesn't change
-    that path, it just ALSO fires on deletes), and explicitly cancels any
-    open menu once the line no longer starts with "/" (e.g. the user
-    backspaced all the way past the leading "/", or pasted over the whole
-    line) -- otherwise a stale menu from a moment ago could linger onscreen
-    for text it no longer applies to.
+    Reads the live buffer via `get_app().current_buffer` rather than
+    taking `text` as a parameter -- prompt_toolkit calls a `bottom_toolbar`
+    callable with no arguments and re-invokes it on every redraw, so this
+    is how it sees what's currently typed.
     """
-    if buffer.text.startswith("/"):
-        buffer.start_completion(select_first=False)
-    else:
-        buffer.cancel_completion()
+    from prompt_toolkit.application import get_app
+
+    from ohmyshell.ui.palette import render_toolbar_text
+
+    return render_toolbar_text(get_app().current_buffer.text)
 
 
 class ReplSession:
@@ -106,18 +111,17 @@ class ReplSession:
             self._reader = reader
         else:
             from prompt_toolkit import PromptSession
-
-            from ohmyshell.ui.palette import PALETTE_STYLE, OhMyShellCompleter
+            from prompt_toolkit.styles import Style
 
             self._reader = PromptSession(
-                completer=OhMyShellCompleter(),
-                complete_while_typing=True,
-                style=PALETTE_STYLE,
+                bottom_toolbar=_bottom_toolbar_text,
+                # Blanks prompt_toolkit's own default bottom-toolbar style
+                # ("reverse", i.e. inverted fg/bg -- a colored bar) rather
+                # than replacing it with a different hardcoded color, so
+                # the command list renders in the terminal's own ambient
+                # text color. See this module's docstring, "Round 3."
+                style=Style.from_dict({"bottom-toolbar": ""}),
             )
-            # See _retrigger_completion_on_edit's own docstring -- closes
-            # the "backspace makes the menu vanish" gap that
-            # complete_while_typing alone leaves open.
-            self._reader.default_buffer.on_text_changed += _retrigger_completion_on_edit
 
     def prompt(self, formatted_text: object = "") -> str:
         """

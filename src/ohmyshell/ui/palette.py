@@ -18,65 +18,54 @@ Design notes (Section 16 Rule 5 -- this glue is this file's own decision):
   would be fragile (breaks the moment its wording changes) for no real
   gain -- meta_commands.py's own `dispatch()` function is still the single
   source of truth for what a command actually DOES, this table only carries
-  the two things a completion popup needs (name, one-line description),
-  kept next to each other here so they're easy to keep in sync with
-  meta_commands.py's command set by eye.
-- Only top-level command names are completed (e.g. "/model"), not their
+  the two things the palette needs (name, one-line description), kept next
+  to each other here so they're easy to keep in sync with meta_commands.py's
+  command set by eye.
+- Only top-level command names are matched (e.g. "/model"), not their
   subcommands ("/model switch qwen3:8b") -- matching how Claude Code's own
-  "/" palette works (it completes the command, not every argument), and
-  because meta_commands.py's subcommand shapes vary too much (some take a
-  fixed enum like /trash's status|keep|clear, others take a free-form
-  model name or config key) to offer generically useful completions for.
-- Completion only triggers when the line starts with "/" (checked by
-  OhMyShellCompleter.get_completions itself) -- typing "/" in the middle of
-  an ordinary natural-language sentence (e.g. "what does a/b mean") must
-  not pop up a command list. Router.py's own INPUT classification already
-  treats "starts with /" as the slash-command signal (see router.py); this
-  completer mirrors that exact rule rather than inventing a second one.
+  "/" palette works (it lists the command, not every argument), and because
+  meta_commands.py's subcommand shapes vary too much (some take a fixed
+  enum like /trash's status|keep|clear, others take a free-form model name
+  or config key) to offer generically useful completions for.
+- The list only appears when the line starts with "/" (checked by
+  visible_commands itself) -- typing "/" in the middle of an ordinary
+  natural-language sentence (e.g. "what does a/b mean") must not show a
+  command list. Router.py's own INPUT classification already treats
+  "starts with /" as the slash-command signal (see router.py); this module
+  mirrors that exact rule rather than inventing a second one.
 
---- Round 2 fixes (post-Build-Order, after the first delivered version was
-tested in a real terminal) ---
+--- Round 3 (post-Build-Order, after two earlier real-terminal test rounds
+found this still wasn't what was asked for) ---
 
-Two real problems came back from that test, both fixed here and in
-ui/session.py rather than in this module's own completion logic (which was
-already correct -- see test_ui_palette.py, unchanged):
+Round 1 built this as a prompt_toolkit `Completer`, which renders as a
+separate floating completion-menu widget -- a bordered box that pops up
+below the cursor. Round 2 tried to reskin that box to match this app's own
+colors, but that missed the actual ask twice over: (a) the person explicitly
+said "not any additional popup or else" -- a floating menu widget is a
+popup no matter what colors it uses, and Claude Code's own "/" list is not
+a popup, it's plain lines printed inline under the input, using the
+terminal's own ambient colors; (b) hardcoding *any* specific colors (even
+ones picked to "match" this app) is wrong for a different reason the person
+also raised directly: a real terminal's color scheme is chosen by the user
+(their own theme, light or dark), not by this app, so baking in specific
+hex colors will clash with whatever theme a given person is actually
+running, exactly the nordic/dark-cyan scheme in the person's own screenshot
+being one example, not the universal case.
 
-1. "the ui too much ugly and not properly fit with the main shell ui... not
-   additional popup". prompt_toolkit's own default completion-menu style is
-   a flat grey box (`bg:#bbbbbb #000000` for the menu, `#999999` for the
-   meta column -- prompt_toolkit/styles/defaults.py's own hardcoded
-   defaults), which has nothing to do with this app's rich-driven cyan/dim
-   palette (ui/prompt.py). PALETTE_STYLE below is a prompt_toolkit `Style`
-   override for exactly the "completion-menu*" style classes, matched to
-   this app's own colors (dark background, cyan for the command name,
-   grey/dim for its description, reverse-cyan for the highlighted row) --
-   passed into PromptSession as `style=` in ui/session.py. This does not
-   change the menu's *position* (still an inline dropdown directly under
-   the cursor, prompt_toolkit's COLUMN style, which is already the
-   "attached, not floating" layout the person compared to Claude Code/
-   Hermes Agent) -- only its colors, which is what actually read as "ugly."
-
-2. "when I remove o from /mo then terminal not show any commands". This one
-   is a genuine prompt_toolkit behavior gap, not a bug in this module:
-   `Buffer.insert_text` is the ONLY place that fires `complete_while_typing`
-   autocompletion (see its own source -- the async completer task is
-   scheduled from inside `insert_text`, right after `on_text_insert.fire()`).
-   Backspace goes through `delete_before_cursor`, which never calls
-   `insert_text` and never schedules that completer task -- so
-   `complete_while_typing=True` alone silently does nothing on backspace,
-   independent of anything OhMyShellCompleter itself does (this was
-   confirmed by reading prompt_toolkit's own buffer.py, not guessed at).
-   The fix is in ui/session.py: an `on_text_changed` handler (which DOES
-   fire on every edit, insert or delete alike) that explicitly calls
-   `buffer.start_completion()` again whenever the line still starts with
-   "/", so deleting back into a shorter command prefix re-opens the list
-   instead of leaving it stuck closed.
+This round replaces the whole `Completer`-based approach with
+`prompt_toolkit.PromptSession`'s `bottom_toolbar` -- a plain text region
+that redraws live under the input line as you type, with no border, no
+menu chrome, and (per the explicit `Style.from_dict({"bottom-toolbar": ""})`
+override in ui/session.py) no forced background/foreground color at all,
+so it renders in the terminal's own default text color exactly like any
+other line this app prints via `rich`. `visible_commands(text)` below is
+the pure function that decides what to show (empty list unless `text`
+starts with "/"); `render_toolbar_text(text)` turns that into the actual
+lines ui/session.py's `bottom_toolbar` callable returns -- separated so
+each is independently testable without constructing a real PromptSession.
 """
 
 from __future__ import annotations
-
-from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.styles import Style
 
 # (name, one-line description) -- name matches meta_commands.py's own
 # `command` token (no leading "/"); description is a short paraphrase of
@@ -98,46 +87,39 @@ COMMANDS: list[tuple[str, str]] = [
     ("exit", "Quit Oh My Shell"),
 ]
 
-
-# Matches ui/prompt.py's own palette (folder=bold blue, icon=cyan) instead
-# of prompt_toolkit's stock grey completion-menu colors -- see this
-# module's docstring, fix #1. Only the "completion-menu*" style classes are
-# set here; everything else (the input line itself, etc.) is left alone so
-# this can't accidentally override unrelated prompt styling.
-PALETTE_STYLE = Style.from_dict(
-    {
-        "completion-menu": "bg:#1c1c1c #d0d0d0",
-        "completion-menu.completion": "bg:#1c1c1c #00d7ff",
-        "completion-menu.completion.current": "bg:#00d7ff #1c1c1c bold",
-        "completion-menu.meta.completion": "bg:#1c1c1c #808080",
-        "completion-menu.meta.completion.current": "bg:#00d7ff #1c1c1c",
-    }
-)
+_NAME_COLUMN_WIDTH = max(len(name) for name, _ in COMMANDS) + 3  # +3: "/" + 2 gap
 
 
-class OhMyShellCompleter(Completer):
+def visible_commands(text: str) -> list[tuple[str, str]]:
     """
-    Offers slash-command completions while the current line starts with
-    "/" and has no space yet (i.e. the user is still typing the command
-    name itself, not its arguments -- see module docstring for why
-    subcommand args aren't completed here).
+    Which (name, description) pairs should be listed for the current input
+    line -- empty unless `text` starts with "/" and has no space yet (still
+    typing the command name itself, not its arguments; see module
+    docstring). Filters by prefix once at least one character after "/" has
+    been typed; a bare "/" lists everything.
     """
+    if not text.startswith("/"):
+        return []
+    if " " in text:
+        return []
+    typed = text[1:].lower()
+    return [(name, desc) for name, desc in COMMANDS if name.startswith(typed)]
 
-    def get_completions(self, document, complete_event):
-        text = document.text_before_cursor
-        if not text.startswith("/"):
-            return
-        if " " in text:
-            # Already past the command name (typing args) -- nothing to
-            # complete; see module docstring.
-            return
 
-        typed = text[1:].lower()
-        for name, description in COMMANDS:
-            if name.startswith(typed):
-                yield Completion(
-                    name,
-                    start_position=-len(typed),
-                    display=f"/{name}",
-                    display_meta=description,
-                )
+def render_toolbar_text(text: str) -> str:
+    """
+    Plain-text rendering of visible_commands(text), one command per line,
+    name left-padded to a fixed column so descriptions line up -- the
+    actual string ui/session.py's `bottom_toolbar` callable returns.
+    Deliberately returns a bare `str`, not any rich/prompt_toolkit markup
+    object: no color or style is attached here at all, so whatever the
+    terminal's own default foreground/background is is what's shown (see
+    ui/session.py's matching `Style.from_dict({"bottom-toolbar": ""})`
+    override, which is what stops prompt_toolkit's own default reverse-
+    video toolbar styling from applying here).
+    """
+    commands = visible_commands(text)
+    if not commands:
+        return ""
+    lines = [f"  /{name:<{_NAME_COLUMN_WIDTH}}{desc}" for name, desc in commands]
+    return "\n".join(lines)

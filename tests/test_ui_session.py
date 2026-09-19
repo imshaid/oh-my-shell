@@ -111,93 +111,81 @@ class TestReplSessionConstructionIsLazy:
         session = ReplSession(reader=FakeReader(["x"]))
         assert session.prompt() == "x"
 
-class TestReplSessionRealConstructionWiresPalette:
+class TestReplSessionRealConstructionWiresInlineToolbar:
     """
-    Command-palette follow-up: the real (non-fake) construction path must
-    hand prompt_toolkit's PromptSession an OhMyShellCompleter, with
-    complete_while_typing on, so "/" pops up the command list live (see
-    ui/palette.py). This constructs a real PromptSession (no `reader=`
-    override) -- safe under pytest because PromptSession's own
-    terminal-probing is about picking an input/output backend, not about
-    requiring an interactive TTY to merely construct one with an explicit
-    completer.
+    Command-palette, round 3: the real (non-fake) construction path must
+    wire prompt_toolkit's `bottom_toolbar` (an inline text region, not a
+    popup menu) to ui/session._bottom_toolbar_text, and blank out
+    prompt_toolkit's own default reverse-video toolbar styling so the list
+    renders in the terminal's own ambient colors -- see ui/session.py's own
+    docstring, "Round 3," for the full history of why rounds 1 and 2 (a
+    Completer-based popup, then a recolored popup) were replaced. This
+    constructs a real PromptSession (no `reader=` override) -- safe under
+    pytest because PromptSession's own terminal-probing is about picking an
+    input/output backend, not about requiring an interactive TTY to merely
+    construct one.
     """
 
-    def test_default_construction_sets_completer_and_complete_while_typing(self):
-        from ohmyshell.ui.palette import OhMyShellCompleter
+    def test_default_construction_sets_bottom_toolbar(self):
+        from ohmyshell.ui.session import _bottom_toolbar_text
 
         session = ReplSession()
-        prompt_session = session._reader
-        assert isinstance(prompt_session.completer, OhMyShellCompleter)
-        assert prompt_session.complete_while_typing is True
+        assert session._reader.bottom_toolbar is _bottom_toolbar_text
 
-    def test_default_construction_sets_palette_style(self):
+    def test_default_construction_blanks_the_toolbars_default_style(self):
         """
-        Round 2 fix: the completion menu must use this app's own cyan/dim
-        palette (ui/palette.PALETTE_STYLE), not prompt_toolkit's stock grey
-        defaults -- see ui/palette.py's own docstring for why the original
-        popup read as "ugly, doesn't fit the main shell UI."
+        prompt_toolkit's own built-in default for the "bottom-toolbar"
+        style class is "reverse" (confirmed by reading
+        prompt_toolkit/styles/defaults.py directly) -- an inverted-color
+        bar, which is exactly the kind of forced styling that clashes with
+        an arbitrary terminal theme. The style passed here must override it
+        to an empty rule (no color forced either way), not to some other
+        specific color -- picking a *different* hardcoded color was round
+        2's mistake.
         """
-        from ohmyshell.ui.palette import PALETTE_STYLE
-
         session = ReplSession()
-        assert session._reader.style is PALETTE_STYLE
+        rules = dict(session._reader.style.style_rules)
+        assert rules.get("bottom-toolbar") == ""
 
-    def test_default_construction_wires_retrigger_handler_on_default_buffer(self):
-        """
-        Round 2 fix: backspacing inside a "/..." line must re-open the
-        completion menu, which complete_while_typing alone does not do
-        (see _retrigger_completion_on_edit's own docstring for the
-        prompt_toolkit-internals reason). This checks the handler is
-        actually attached to the real PromptSession's buffer -- the
-        handler's own behavior is covered directly by
-        TestRetriggerCompletionOnEdit below.
-        """
-        from ohmyshell.ui.session import _retrigger_completion_on_edit
-
+    def test_default_construction_does_not_set_a_completer(self):
+        """Round 1/2's popup-menu approach (a prompt_toolkit Completer) is
+        gone entirely in round 3 -- nothing here should still be wiring one
+        up, since a completer is what produced the floating popup box the
+        person explicitly said they didn't want."""
         session = ReplSession()
-        handlers = session._reader.default_buffer.on_text_changed._handlers
-        assert _retrigger_completion_on_edit in handlers
+        assert session._reader.completer is None
 
-class TestRetriggerCompletionOnEdit:
+
+class TestBottomToolbarText:
     """
-    Unit tests for the on_text_changed handler itself (round 2 fix for
-    "when I remove o from /mo then terminal not show any commands") --
-    driven directly against a minimal fake buffer rather than a real
-    prompt_toolkit Buffer, since the only two things this handler does are
-    "read .text" and "call one of two methods depending on it."
+    Unit tests for the bottom_toolbar callable itself, via a fake
+    prompt_toolkit "current app" so the current buffer's text can be
+    controlled directly without a real PromptSession event loop.
     """
 
     class _FakeBuffer:
         def __init__(self, text: str):
             self.text = text
-            self.calls: list[str] = []
 
-        def start_completion(self, select_first: bool = False) -> None:
-            self.calls.append("start")
+    class _FakeApp:
+        def __init__(self, text: str):
+            self.current_buffer = TestBottomToolbarText._FakeBuffer(text)
 
-        def cancel_completion(self) -> None:
-            self.calls.append("cancel")
+    def _call_with_text(self, text: str, monkeypatch) -> str:
+        from ohmyshell.ui import session as session_module
 
-    def test_reopens_completion_when_line_still_starts_with_slash(self):
-        from ohmyshell.ui.session import _retrigger_completion_on_edit
+        monkeypatch.setattr(
+            session_module, "_bottom_toolbar_text", session_module._bottom_toolbar_text
+        )
+        import prompt_toolkit.application as application_module
 
-        buffer = self._FakeBuffer("/m")  # e.g. after backspacing "/mo" -> "/m"
-        _retrigger_completion_on_edit(buffer)
-        assert buffer.calls == ["start"]
+        monkeypatch.setattr(application_module, "get_app", lambda: self._FakeApp(text))
+        return session_module._bottom_toolbar_text()
 
-    def test_cancels_completion_when_line_no_longer_starts_with_slash(self):
-        from ohmyshell.ui.session import _retrigger_completion_on_edit
+    def test_renders_matching_commands_for_current_buffer_text(self, monkeypatch):
+        result = self._call_with_text("/mo", monkeypatch)
+        assert "/model" in result
 
-        buffer = self._FakeBuffer("hello")
-        _retrigger_completion_on_edit(buffer)
-        assert buffer.calls == ["cancel"]
-
-    def test_cancels_completion_on_empty_line(self):
-        """Backspacing away the leading "/" itself must close the menu,
-        not error on an empty string."""
-        from ohmyshell.ui.session import _retrigger_completion_on_edit
-
-        buffer = self._FakeBuffer("")
-        _retrigger_completion_on_edit(buffer)
-        assert buffer.calls == ["cancel"]
+    def test_renders_empty_string_when_buffer_has_no_slash(self, monkeypatch):
+        result = self._call_with_text("clean up temp files", monkeypatch)
+        assert result == ""
