@@ -194,19 +194,29 @@ def test_handle_natural_language_never_executes_anything(registry, default_cfg):
 # --- _handle_slash_command --------------------------------------------------------
 
 
-def test_slash_exit_returns_true():
-    assert main_module._handle_slash_command("/exit") is True
+def test_slash_exit_returns_true(registry, default_cfg):
+    assert main_module._handle_slash_command("/exit", registry, default_cfg, 0.0) is True
 
 
-def test_slash_quit_returns_true():
-    assert main_module._handle_slash_command("/quit") is True
+def test_slash_quit_returns_true(registry, default_cfg):
+    assert main_module._handle_slash_command("/quit", registry, default_cfg, 0.0) is True
 
 
-def test_unknown_slash_command_returns_false_and_reports(capsys):
-    result = main_module._handle_slash_command("/help")
+def test_slash_help_is_now_fully_handled_by_meta_commands(registry, default_cfg, capsys):
+    # Step 14 wires the full Meta-Command Handler in — /help is a real,
+    # recognized command now (not the Step 6-era placeholder), so this
+    # returns False (don't exit) and prints the actual command reference.
+    result = main_module._handle_slash_command("/help", registry, default_cfg, 0.0)
     out = capsys.readouterr().out
     assert result is False
-    assert "wired up" in out.lower()
+    assert "Command Reference" in out
+
+
+def test_unrecognized_slash_command_prints_error_and_does_not_exit(registry, default_cfg, capsys):
+    result = main_module._handle_slash_command("/totally-bogus", registry, default_cfg, 0.0)
+    out = capsys.readouterr().out
+    assert result is False
+    assert "Unrecognized command" in out
 
 
 # --- run(): REPL loop integration ---------------------------------------------------
