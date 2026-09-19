@@ -425,6 +425,48 @@ def test_handle_natural_language_passes_input_prompt_to_run_plan(registry, defau
     _, kwargs = mock_run_plan.call_args
     assert isinstance(kwargs["prompt"], InputPrompt)
 
+def test_handle_natural_language_edit_then_confirm_executes_edited_plan(registry, default_cfg, tmp_path):
+    """
+    End-to-end regression test for the bug found via manual testing: typing
+    [e] Edit, changing a param, then confirming must execute the EDITED
+    plan, not the original one. This exercises the real run_discussion (not
+    mocked) through _handle_natural_language's own _get_user_choice glue,
+    the same path a real terminal session drives.
+    """
+    fake_result = _fake_parse_result(action="clean_temp_files", params={"days": 7}, risk="medium")
+    fake_plan = _fake_plan(action="clean_temp_files", params={"days": 7}, risk="medium", steps=["Scan for files older than 7 days"])
+
+    # Scripted input: [e] edit -> param name "days" -> new value "14" -> then bare Enter to confirm.
+    responses = iter(["e", "days", "14", ""])
+    captured_plans = []
+
+    def _fake_run_plan(plan, reg, **kwargs):
+        captured_plans.append(plan)
+        return ExecutionResult(
+            action=plan.action,
+            step_results=[StepResult(step_number=1, description="clean", status=StepStatus.DONE, returncode=0)],
+        )
+
+    with patch("ohmyshell.main.parse_intent", return_value=fake_result):
+        with patch("ohmyshell.main.generate_plan", return_value=fake_plan):
+            with patch("ohmyshell.main.run_plan", side_effect=_fake_run_plan):
+                main_module._handle_natural_language(
+                    "clean up temp files",
+                    registry,
+                    default_cfg,
+                    read=lambda _: next(responses),
+                    print_fn=lambda _: None,
+                    base_dir=tmp_path,
+                )
+
+    assert len(captured_plans) == 1
+    assert captured_plans[0].params["days"] == "14"
+
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert entries[0].params["days"] == "14"
+
 
 # --- _repl_get_user_choice / _repl_edit_flow ------------------------------------------
 

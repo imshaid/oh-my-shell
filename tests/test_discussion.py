@@ -3,7 +3,15 @@ Tests for discussion.py (Build Order Step 7).
 
 get_user_choice / get_adjustment_text / reparse are all fakes here — this
 module is deliberately UI-framework-agnostic (see its docstring), so tests
-drive it exactly the way a real terminal loop (Step 11) would.
+drive it exactly the way a real terminal loop (Step 11/main.py) would.
+
+get_user_choice returns a (choice, plan) tuple, not just a choice string
+(Section 16 Rule 5 -- this contract was fixed post-Build-Order after manual
+end-to-end testing found that [e] Edit silently did nothing: the original
+contract had no way for a caller's edited Plan to reach this loop's own
+`plan` variable at all. See run_discussion's own docstring for the full
+story). For "confirm"/"cancel"/"chat" the plan half of the tuple is simply
+whatever Plan was passed in to get_user_choice.
 """
 
 import pytest
@@ -48,7 +56,7 @@ def test_render_plan_text_includes_steps_and_risk(clean_temp_plan):
 def test_confirm_on_first_turn_returns_confirmed(clean_temp_plan):
     outcome = run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: "confirm",
+        get_user_choice=lambda plan: ("confirm", plan),
         get_adjustment_text=lambda: "",
         reparse=lambda text, plan: None,
         print_fn=lambda _: None,
@@ -61,7 +69,7 @@ def test_confirm_on_first_turn_returns_confirmed(clean_temp_plan):
 def test_cancel_on_first_turn_returns_cancelled(clean_temp_plan):
     outcome = run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: "cancel",
+        get_user_choice=lambda plan: ("cancel", plan),
         get_adjustment_text=lambda: "",
         reparse=lambda text, plan: None,
         print_fn=lambda _: None,
@@ -73,7 +81,7 @@ def test_cancel_on_first_turn_returns_cancelled(clean_temp_plan):
 def test_choice_is_case_insensitive(clean_temp_plan):
     outcome = run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: "CONFIRM",
+        get_user_choice=lambda plan: ("CONFIRM", plan),
         get_adjustment_text=lambda: "",
         reparse=lambda text, plan: None,
         print_fn=lambda _: None,
@@ -93,7 +101,7 @@ def test_chat_adjust_updates_plan_then_confirm(clean_temp_plan, registry):
     choices = iter(["chat", "confirm"])
     outcome = run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: next(choices),
+        get_user_choice=lambda plan: (next(choices), plan),
         get_adjustment_text=lambda: "make it two weeks instead",
         reparse=lambda text, plan: adjusted_plan,
         print_fn=lambda _: None,
@@ -113,7 +121,7 @@ def test_chat_adjust_prints_diff_note(clean_temp_plan, registry, capsys):
     choices = iter(["chat", "confirm"])
     run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: next(choices),
+        get_user_choice=lambda plan: (next(choices), plan),
         get_adjustment_text=lambda: "two weeks",
         reparse=lambda text, plan: adjusted_plan,
         print_fn=printed.append,
@@ -127,7 +135,7 @@ def test_chat_adjust_returning_none_keeps_plan_unchanged(clean_temp_plan):
     choices = iter(["chat", "confirm"])
     outcome = run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: next(choices),
+        get_user_choice=lambda plan: (next(choices), plan),
         get_adjustment_text=lambda: "do something unmappable",
         reparse=lambda text, plan: None,
         print_fn=printed.append,
@@ -147,7 +155,7 @@ def test_soft_limit_nudge_appears_after_configured_turns(clean_temp_plan, regist
     choices = iter(["chat", "chat", "chat", "confirm"])
     run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: next(choices),
+        get_user_choice=lambda plan: (next(choices), plan),
         get_adjustment_text=lambda: "tweak it",
         reparse=lambda text, plan: adjusted_plan,
         print_fn=printed.append,
@@ -165,7 +173,7 @@ def test_no_nudge_before_soft_limit_reached(clean_temp_plan, registry):
     choices = iter(["chat", "confirm"])  # only 1 chat turn, soft limit is 5
     run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: next(choices),
+        get_user_choice=lambda plan: (next(choices), plan),
         get_adjustment_text=lambda: "tweak it",
         reparse=lambda text, plan: adjusted_plan,
         print_fn=printed.append,
@@ -182,7 +190,7 @@ def test_soft_limit_nudge_does_not_block_further_turns(clean_temp_plan, registry
     choices = iter(["chat", "chat", "chat", "chat", "confirm"])
     outcome = run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: next(choices),
+        get_user_choice=lambda plan: (next(choices), plan),
         get_adjustment_text=lambda: "tweak it",
         reparse=lambda text, plan: adjusted_plan,
         print_fn=lambda _: None,
@@ -200,7 +208,7 @@ def test_unrecognized_choice_reprompts(clean_temp_plan):
     choices = iter(["garbage", "confirm"])
     outcome = run_discussion(
         clean_temp_plan,
-        get_user_choice=lambda plan: next(choices),
+        get_user_choice=lambda plan: (next(choices), plan),
         get_adjustment_text=lambda: "",
         reparse=lambda text, plan: None,
         print_fn=printed.append,
@@ -208,6 +216,66 @@ def test_unrecognized_choice_reprompts(clean_temp_plan):
 
     assert isinstance(outcome, Confirmed)
     assert any("unrecognized" in line.lower() for line in printed)
+
+
+# --- run_discussion: edit actually reaches the final plan (bug fix) ---------------
+
+
+def test_edit_choice_updated_plan_reaches_confirmed_outcome(clean_temp_plan, registry):
+    """
+    Bug found via manual end-to-end testing (post-Build-Order): [e] Edit in
+    a real session updated the param but the CONFIRMED plan still showed
+    the old value -- get_user_choice's edited Plan never reached this
+    loop's own state. This is the regression test: a get_user_choice fake
+    that performs an "edit" (via edit_step_param, exactly like main.py's
+    real _repl_edit_flow does) and returns the updated plan on the "edit"
+    turn must have that update show up in the final Confirmed(plan).
+    """
+    edited_plan = edit_step_param(clean_temp_plan, "days", 14, registry)
+    choices = iter(["edit", "confirm"])
+
+    def _get_user_choice(plan):
+        choice = next(choices)
+        if choice == "edit":
+            return choice, edited_plan
+        return choice, plan
+
+    outcome = run_discussion(
+        clean_temp_plan,
+        get_user_choice=_get_user_choice,
+        get_adjustment_text=lambda: "",
+        reparse=lambda text, plan: None,
+        print_fn=lambda _: None,
+    )
+
+    assert isinstance(outcome, Confirmed)
+    assert outcome.plan.params["days"] == 14
+
+
+def test_edit_choice_replan_is_shown_again_before_next_choice(clean_temp_plan, registry, capsys):
+    """After an edit, the loop must re-render the UPDATED plan (not the
+    stale one) before asking for the next choice."""
+    edited_plan = edit_step_param(clean_temp_plan, "days", 21, registry)
+    choices = iter(["edit", "confirm"])
+
+    def _get_user_choice(plan):
+        choice = next(choices)
+        if choice == "edit":
+            return choice, edited_plan
+        return choice, plan
+
+    printed = []
+    run_discussion(
+        clean_temp_plan,
+        get_user_choice=_get_user_choice,
+        get_adjustment_text=lambda: "",
+        reparse=lambda text, plan: None,
+        print_fn=printed.append,
+    )
+
+    # The plan text printed on the SECOND iteration (right before the
+    # "confirm" choice) must reflect the edited plan's steps.
+    assert any("21" in line for line in printed)
 
 
 # --- edit_step_param ---------------------------------------------------------------
