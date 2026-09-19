@@ -351,12 +351,11 @@ def _handle_natural_language(
             return None
         return generate_plan(adjusted.intent, registry)
 
-    def _get_user_choice(current_plan: Plan) -> str:
+    def _get_user_choice(current_plan: Plan) -> tuple[str, Plan]:
         choice = _repl_get_user_choice(current_plan, read=read)
         if choice == "edit":
-            nonlocal plan
-            plan = _repl_edit_flow(current_plan, registry, read=read, print_fn=print_fn)
-        return choice
+            current_plan = _repl_edit_flow(current_plan, registry, read=read, print_fn=print_fn)
+        return choice, current_plan
 
     outcome = run_discussion(
         plan,

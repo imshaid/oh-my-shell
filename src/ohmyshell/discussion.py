@@ -131,7 +131,7 @@ def edit_step_param(plan: Plan, param_name: str, new_value, registry) -> Plan:
 def run_discussion(
     initial_plan: Plan,
     *,
-    get_user_choice: Callable[[Plan], str],
+    get_user_choice: Callable[[Plan], tuple[str, Plan]],
     get_adjustment_text: Callable[[], str],
     reparse: Reparser,
     print_fn: Callable[[str], None] = print,
@@ -143,10 +143,29 @@ def run_discussion(
 
     Args:
         initial_plan: the first Plan to show.
-        get_user_choice: called with the current Plan, must return one of
-            "confirm", "edit", "chat", "cancel" (case-insensitive; this
-            function does the raw keypress-to-choice mapping in the real
-            CLI — Step 11 — so this loop stays UI-framework-agnostic).
+        get_user_choice: called with the current Plan, must return a
+            (choice, plan) tuple. `choice` is one of "confirm", "edit",
+            "chat", "cancel" (case-insensitive; this function does the raw
+            keypress-to-choice mapping in the real CLI — Step 11 — so this
+            loop stays UI-framework-agnostic). `plan` is the Plan to
+            continue the loop with -- for "confirm"/"cancel"/"chat" this is
+            just the same `current_plan` it was called with, but for "edit"
+            it is the caller's updated Plan (after running its own edit
+            sub-flow, e.g. via edit_step_param) -- this is how an edit
+            actually reaches the next iteration of this loop and the final
+            Confirmed(plan) result.
+
+            Bug fix (found via manual end-to-end testing, post-Build-Order):
+            an earlier version of this contract had get_user_choice return
+            only the choice string, with a comment saying callers were
+            "expected to... pass the resulting Plan back in via
+            get_user_choice's next call" -- but nothing in this loop ever
+            read a plan back out of get_user_choice, so a caller's edited
+            plan never actually reached this loop's own `plan` variable,
+            and [e] Edit silently kept confirming/executing the OLD,
+            unedited plan. Returning the plan alongside the choice closes
+            that gap directly, without a caller needing a side channel or
+            a mutable Plan (Plan is and stays a frozen dataclass).
         get_adjustment_text: called with no args when the user picks
             "chat", must return their free-text adjustment.
         reparse: callback that turns adjustment text + the current plan
@@ -164,7 +183,8 @@ def run_discussion(
 
     while True:
         print_fn(render_plan_text(plan))
-        choice = get_user_choice(plan).strip().lower()
+        choice, plan = get_user_choice(plan)
+        choice = choice.strip().lower()
 
         if choice == "confirm":
             return Confirmed(plan=plan)
@@ -186,14 +206,10 @@ def run_discussion(
             continue
 
         if choice == "edit":
-            # The real edit flow (which param, what new value) is a Step 11
-            # UI concern (Section 8.3.3's "Edit which step?" prompt); this
-            # loop only needs to know editing happened and re-show the plan.
-            # Callers driving this loop from a real terminal are expected to
-            # perform the edit (via edit_step_param) themselves and pass the
-            # resulting Plan back in via get_user_choice's next call — this
-            # branch exists so "edit" is a recognized choice rather than
-            # falling through to the unknown-choice case below.
+            # get_user_choice already ran its own edit sub-flow (which
+            # param, what new value -- a Step 11 UI concern, Section 8.3.3's
+            # "Edit which step?" prompt) and returned the updated plan
+            # above; nothing left to do here but loop and re-show it.
             continue
 
         print_fn(f"  Unrecognized choice {choice!r}. Use confirm/edit/chat/cancel.")
