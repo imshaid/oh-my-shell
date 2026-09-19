@@ -68,8 +68,8 @@
           "filter": { "type": "string", "default": "" },
           "sort_by": {
             "type": "string",
-            "enum": ["cpu", "mem", "none"],
-            "default": "none"
+            "enum": ["%cpu", "%mem", "pid"],
+            "default": "pid"
           }
         },
         "required": [],

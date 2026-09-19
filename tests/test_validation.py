@@ -188,20 +188,23 @@ def test_additional_unexpected_param_fails(registry):
 
 def test_params_missing_optional_field_gets_schema_default(registry):
     """
-    list_processes.sort_by has params_schema default "none" and isn't
+    list_processes.sort_by has params_schema default "pid" and isn't
     required -- a model response that omits it entirely (a real Ollama
     response did exactly this) must come back with sort_by filled in, not
     just silently missing. Left unfilled, this reached executor.py's
     render_command() and crashed with KeyError('sort_by') the first time a
     real model omitted it (command_template has "{sort_by}" with no
     placeholder-tolerance, unlike plan_generator.py's step-text rendering).
+    (sort_by's enum is ps-native values -- "%cpu"/"%mem"/"pid" -- a second
+    bug found in the same manual test run: the original "cpu"/"mem"/"none"
+    enum produced `ps aux --sort=-none`, an invalid ps specifier.)
     """
     raw = {"action": "list_processes", "params": {"filter": "chrome"}}
 
     outcome = validation.validate_intent(raw, registry)
 
     assert outcome.ok is True
-    assert outcome.intent.params == {"filter": "chrome", "sort_by": "none"}
+    assert outcome.intent.params == {"filter": "chrome", "sort_by": "pid"}
 
 
 def test_params_all_defaults_used_fills_every_default(registry):
@@ -210,18 +213,18 @@ def test_params_all_defaults_used_fills_every_default(registry):
     outcome = validation.validate_intent(raw, registry)
 
     assert outcome.ok is True
-    assert outcome.intent.params == {"filter": "", "sort_by": "none"}
+    assert outcome.intent.params == {"filter": "", "sort_by": "pid"}
 
 
 def test_params_explicit_value_is_never_overwritten_by_default(registry):
     """A value the model DID supply must win over the schema default, even
     when it happens to equal something else -- this only fills gaps."""
-    raw = {"action": "list_processes", "params": {"filter": "chrome", "sort_by": "cpu"}}
+    raw = {"action": "list_processes", "params": {"filter": "chrome", "sort_by": "%cpu"}}
 
     outcome = validation.validate_intent(raw, registry)
 
     assert outcome.ok is True
-    assert outcome.intent.params == {"filter": "chrome", "sort_by": "cpu"}
+    assert outcome.intent.params == {"filter": "chrome", "sort_by": "%cpu"}
 
 
 def test_params_property_with_no_schema_default_stays_absent(registry):
