@@ -17,6 +17,7 @@ dependencies = [
     "pydantic>=2.13,<3.0",
     "rich",
     "questionary",
+    "prompt_toolkit",
     "psutil",
     "jsonschema",
 ]
