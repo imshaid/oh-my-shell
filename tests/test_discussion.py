@@ -252,30 +252,44 @@ def test_edit_choice_updated_plan_reaches_confirmed_outcome(clean_temp_plan, reg
     assert outcome.plan.params["days"] == 14
 
 
-def test_edit_choice_replan_is_shown_again_before_next_choice(clean_temp_plan, registry, capsys):
-    """After an edit, the loop must re-render the UPDATED plan (not the
-    stale one) before asking for the next choice."""
+def test_edit_choice_replan_is_passed_to_next_get_user_choice_call(clean_temp_plan, registry):
+    """
+    After an edit, the loop must call get_user_choice again with the
+    UPDATED plan (not the stale one) on its next turn.
+
+    Note: this used to assert against `print_fn` output, back when
+    run_discussion re-rendered the plan itself every turn via
+    `print_fn(render_plan_text(plan))`. That per-turn render was removed
+    (see run_discussion's own in-loop comment) because every real caller
+    (main.py's _repl_get_user_choice) already renders the plan itself
+    right before reading the user's choice -- the old code showed the
+    plan twice, once plain (from here) and once boxed (from the caller).
+    Plan-rendering is now entirely get_user_choice's responsibility, so
+    this test asserts the actual contract that matters: get_user_choice
+    receives the edited plan on its next call, which is what lets a real
+    caller re-render the CORRECT (updated) plan.
+    """
     edited_plan = edit_step_param(clean_temp_plan, "days", 21, registry)
     choices = iter(["edit", "confirm"])
+    received_plans = []
 
     def _get_user_choice(plan):
+        received_plans.append(plan)
         choice = next(choices)
         if choice == "edit":
             return choice, edited_plan
         return choice, plan
 
-    printed = []
     run_discussion(
         clean_temp_plan,
         get_user_choice=_get_user_choice,
         get_adjustment_text=lambda: "",
         reparse=lambda text, plan: None,
-        print_fn=printed.append,
+        print_fn=lambda _: None,
     )
 
-    # The plan text printed on the SECOND iteration (right before the
-    # "confirm" choice) must reflect the edited plan's steps.
-    assert any("21" in line for line in printed)
+    assert received_plans[0] is clean_temp_plan  # first turn: original plan
+    assert received_plans[1] is edited_plan  # second turn: the edited plan
 
 
 # --- edit_step_param ---------------------------------------------------------------

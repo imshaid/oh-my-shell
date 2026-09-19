@@ -83,6 +83,26 @@ optional prompt string that returns str") — a `ReplSession` or a plain
 test fake both satisfy that shape identically, so discussion.py and
 sudo_layer.py needed no contract changes at all for this pass.
 
+--- Spacing + "Thinking..." spinner (post-Build-Order, same Step 11 pass) ---
+Two more gaps found the same way (a real session compared side-by-side
+against other CLIs):
+  - No blank line separated one turn's output from the next prompt, so a
+    session read as one unbroken wall of text. Fixed with a single
+    `console.print()` right before every `session.prompt(...)` call in
+    `run()`'s loop (see that loop's own comment for why one seam there,
+    not scattered blank-line prints throughout every handler).
+  - Both blocking `parse_intent()` calls in `_handle_natural_language`
+    (the initial parse, and `_reparse`'s chat-adjust re-parse) gave no
+    feedback at all while Ollama was generating — the terminal just sat
+    there. Wrapped both in `console.status("Thinking...", spinner="dots")`
+    (rich's own spinner context manager) so there's visible activity
+    during what can be a multi-second model call. This is NOT the "real
+    live token streaming" the person separately asked for (a spinner
+    still resolves to the complete parsed result all at once) — that is
+    a distinct, larger follow-up (rewiring intent_parser.py's Ollama call
+    to stream=True and incrementally parse partial JSON), intentionally
+    scoped out of this pass and tracked separately.
+
 `--yes`/`-y`/`--dry-run`/`--verbose`/`--quiet` (Section 8.5) are still not
 implemented — no inline-modifier parsing exists on either the raw-shell or
 natural-language input paths yet. The one hard constraint that DOES apply
@@ -349,7 +369,12 @@ def _handle_natural_language(
 
     1. Intent Parser failure (backend unreachable) and "unmapped" both end
        the request here with a message -- same behavior as the Step 5-era
-       preview-only version, nothing to plan or execute yet.
+       preview-only version, nothing to plan or execute yet. Both blocking
+       parse_intent() calls below (the initial parse, and _reparse's
+       chat-adjust re-parse) show a "Thinking..." spinner (rich's
+       Console.status) while they run — a real turn against a local model
+       can take several seconds, and a bare blocking call with no
+       feedback read as the terminal having hung.
     2. Plan Generator runs once up front (Step 7), then the Discussion Loop
        (discussion.run_discussion) drives confirm/edit/chat/cancel using
        the REPL callbacks above. "chat" reparses via parse_intent + a
@@ -414,7 +439,8 @@ def _handle_natural_language(
     active_console = console if console is not None else Console()
     model = config_module.get(cfg, "model.active")
     try:
-        result = parse_intent(text, registry, model=model)
+        with active_console.status("[dim]Thinking...[/dim]", spinner="dots"):
+            result = parse_intent(text, registry, model=model)
     except IntentParseError as exc:
         active_console.print(f"  [yellow]⚠[/yellow] Could not reach the model: {exc}")
         return
@@ -427,7 +453,8 @@ def _handle_natural_language(
 
     def _reparse(adjustment_text: str, current_plan: Plan) -> Plan | None:
         try:
-            adjusted = parse_intent(adjustment_text, registry, model=model)
+            with active_console.status("[dim]Thinking...[/dim]", spinner="dots"):
+                adjusted = parse_intent(adjustment_text, registry, model=model)
         except IntentParseError:
             return None
         if adjusted.intent is None:
@@ -550,6 +577,17 @@ def run() -> None:
     console.print(_BANNER)
 
     while True:
+        # A blank line before every prompt (Step 11 visual-polish pass,
+        # found missing when the person compared a real session's output
+        # against other CLIs' spacing) -- without it, one command's output
+        # runs directly into the next "<folder> ❯ " line with no visual
+        # separation, which is what made a real session read as "noisy,
+        # non-aligned" by contrast. This alone, deliberately, rather than
+        # bracketing every individual print call throughout this module
+        # with blank lines -- one seam, in the one place every turn passes
+        # through, is enough to separate turns without scattering spacing
+        # concerns across every handler.
+        console.print()
         try:
             raw_input_text = session.prompt(render_prompt_ansi(cfg))
         except (EOFError, KeyboardInterrupt):

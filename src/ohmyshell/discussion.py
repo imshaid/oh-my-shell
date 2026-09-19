@@ -182,7 +182,23 @@ def run_discussion(
     chat_turns = 0
 
     while True:
-        print_fn(render_plan_text(plan))
+        # Bug fix (found via manual end-to-end testing, post-Build-Order,
+        # Step 11 UI-polish pass): this loop used to call
+        # `print_fn(render_plan_text(plan))` here on every turn, rendering
+        # the plan in plain text -- then `get_user_choice(plan)` was called
+        # right after, and every real caller (main.py's
+        # _repl_get_user_choice) ALSO renders the plan itself (now as a
+        # boxed rich.Panel, via ui/panels.render_plan_panel), specifically
+        # so it can show the panel immediately before reading the user's
+        # keypress. The result was the plan appearing twice per turn: once
+        # plain, once boxed. Plan-rendering is get_user_choice's job (its
+        # own docstring already says the raw-keypress-to-choice mapping,
+        # and by extension what's shown right before it, belongs to the
+        # REPL layer) -- this loop only needs the *decision*, not to also
+        # render the thing the decision is about. render_plan_text/
+        # print_fn are still used for every other message this loop prints
+        # (diff-notes, soft-limit nudge, "couldn't apply", "unrecognized
+        # choice") -- only the per-turn plan echo was removed.
         choice, plan = get_user_choice(plan)
         choice = choice.strip().lower()
 
