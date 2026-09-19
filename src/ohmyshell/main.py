@@ -1,32 +1,44 @@
 """
-Shell REPL loop, entrypoint (Build Order Step 6, danger-check integrated Step 8).
+Shell REPL loop, entrypoint (Build Order Step 6, danger-check integrated
+Step 8, full Meta-Command Handler wired in Step 14 — the final Build Order step).
 
 Per the Build Order's own scoping for Step 6 ("basic REPL loop, raw
 pass-through প্রথমে — সবচেয়ে সহজ path"), this was initially NOT the full
-Section 4.1 pipeline. Step 8 adds the Danger Classifier in front of raw
-shell execution (Section 8.3.5); the rest of the gaps noted below remain:
+Section 4.1 pipeline. Later steps filled in what was missing:
 
-- RAW_SHELL input is now classified (danger_classifier.py) before running.
-  A Destructive verdict shows Section 8.3.5's confirmation prompt ([y]/[n]
-  only in this step — [t] "move to trash instead" needs the Trash/Undo
-  Manager, Step 10; see _handle_raw_shell's docstring).
+- RAW_SHELL input is classified (danger_classifier.py, Step 8) before
+  running. A Destructive verdict shows Section 8.3.5's confirmation prompt
+  ([y]/[n] only — [t] "move to trash instead" still isn't wired into this
+  prompt even though trash.py exists as of Step 10; wiring executor.py/
+  trash.py's [t] option and the Plan Generator/Sudo Layer/Executor into the
+  NATURAL_LANGUAGE path is Section 4.1's full pipeline and remains future
+  work beyond Step 14's own scope, which is specifically "slash-commands,
+  thin wrapper over existing core logic" per its Section 10.1 line — not a
+  general invitation to wire up the whole pipeline).
 - NATURAL_LANGUAGE input is parsed (Step 5's intent_parser) and the
-  resulting intent/risk is shown to the user, but NOT executed — there is
-  no Plan Generator confirm/edit wiring here yet (plan_generator.py and
-  discussion.py exist as of Step 7, but main.py doesn't call them yet),
-  Sudo Layer (Step 9), or Executor (Step 10). Showing the parsed result
-  without acting on it remains this path's current state.
-- SLASH_COMMAND input only understands "/exit" (and "/quit" as a synonym)
-  in this step. The full Meta-Command Handler is Step 14.
-- Prompt rendering here is plain text (folder name, model tag if
-  non-default) — the `rich`-based visual polish from Section 8.3.1 is
-  Step 11 (ui/prompt.py, ui/panels.py).
+  resulting intent/risk is shown to the user, but still NOT executed —
+  unchanged from Step 6/8's behavior; see the note above.
+- SLASH_COMMAND input now goes through the full Meta-Command Handler
+  (meta_commands.py, Step 14) — /help, /model, /history, /undo, /trash,
+  /log, /capabilities, /explain, /stats, /system, /config, /clear, /exit,
+  /quit are all recognized. meta_commands.dispatch() is a thin wrapper
+  over already-built modules per its own docstring; main.py's job here is
+  just calling it and printing/acting on the result.
+- Prompt rendering here is still plain text (folder name, model tag if
+  non-default) — the `rich`-based visual polish from ui/prompt.py (Step 11)
+  exists but isn't wired into this REPL's `input()` call, since `input()`
+  only accepts a plain string prompt; adopting ui/prompt.py fully would
+  need replacing `input()` with a `rich`/`prompt_toolkit`-driven read loop,
+  which is a UI-framework change beyond what Step 14's "thin wrapper" scope
+  covers.
 
-None of this needs a `--no-ai` style flag yet (Section 8.5) since there's
-no AI-execution path to disable for natural language — that flag becomes
-meaningful once the Plan Generator/Executor are wired into main.py. The
-danger classifier's own LLM fallback tier IS already live, though — see
-its fail-safe policy in _handle_raw_shell's docstring.
+`--yes`/`-y`/`--dry-run`/`--verbose`/`--quiet` (Section 8.5) are not
+implemented anywhere yet — they're inline modifiers on a natural-language
+request, which isn't executed at all yet (see above), so there's nothing
+for them to modify. The one hard constraint that DOES apply today --
+`--yes`/`-y` must never bypass a destructive-command confirmation -- is
+already satisfied by construction in _handle_raw_shell, which has no
+special-case for any flag in the command text.
 """
 
 from __future__ import annotations
@@ -34,9 +46,11 @@ from __future__ import annotations
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from ohmyshell import config as config_module
+from ohmyshell import meta_commands
 from ohmyshell.danger_classifier import Destructive, DangerClassifierError, classify
 from ohmyshell.intent_parser import IntentParseError, parse_intent
 from ohmyshell.registry import Registry, RegistryError
@@ -140,19 +154,25 @@ def _handle_natural_language(text: str, registry: Registry, cfg: dict) -> None:
     print("  (Execution isn't wired up yet — this is a preview of the parsed intent.)")
 
 
-def _handle_slash_command(text: str) -> bool:
+def _handle_slash_command(text: str, registry: Registry, cfg: dict, session_start: float) -> bool:
     """
-    Returns True if the REPL should exit.
+    Dispatch a slash command through the full Meta-Command Handler
+    (meta_commands.py, Step 14). Returns True if the REPL should exit.
 
-    Only /exit and /quit are understood in this step; everything else is
-    reported as not-yet-available rather than silently ignored, so it's
-    clear this isn't the full Meta-Command Handler (Step 14) yet.
+    A MetaCommandError (recognized command, bad usage, or genuinely
+    unrecognized command) is caught and printed rather than crashing the
+    REPL — the same fail-soft spirit used throughout this codebase (e.g.
+    the Danger Classifier's own LLM-failure handling).
     """
-    command = shlex.split(text)[0].lower() if text.strip() else text
-    if command in EXIT_COMMANDS:
-        return True
-    print(f"  Slash commands aren't fully wired up yet ({text!r}). Try /exit to quit.")
-    return False
+    try:
+        outcome = meta_commands.dispatch(text, cfg=cfg, registry=registry, session_start=session_start)
+    except meta_commands.MetaCommandError as exc:
+        print(f"  {exc}")
+        return False
+
+    if outcome.text:
+        print(outcome.text)
+    return outcome.should_exit
 
 
 def run() -> None:
@@ -164,6 +184,7 @@ def run() -> None:
         sys.exit(1)
 
     cfg = config_module.load()
+    session_start = time.time()
 
     while True:
         try:
@@ -177,7 +198,7 @@ def run() -> None:
         if routed.kind == InputKind.EMPTY:
             continue
         if routed.kind == InputKind.SLASH_COMMAND:
-            if _handle_slash_command(routed.text):
+            if _handle_slash_command(routed.text, registry, cfg, session_start):
                 break
             continue
         if routed.kind == InputKind.RAW_SHELL:
