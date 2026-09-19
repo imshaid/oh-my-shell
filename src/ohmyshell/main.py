@@ -306,6 +306,31 @@ def _handle_natural_language(
        disclosing: a multi-turn *contextual* adjustment (e.g. "no wait,
        just the Downloads folder") only works as well as the Intent Parser
        can infer from that fragment alone.
+
+       Known limitation, confirmed via manual end-to-end testing
+       (post-Build-Order, local qwen3:8b / qwen3.5:4b): a chat-adjust whose
+       intent is to change a capability's non-required, no-enum param (e.g.
+       clean_temp_files' `paths`, an array with no fixed value set) is
+       unreliable even after intent_parser._build_system_prompt was fixed
+       to actually splice each capability's few_shot_examples into the
+       prompt (that fix was itself a real bug -- the field existed in
+       capabilities.json since Step 3 but was never read into the prompt
+       the model saw). With the fix in place and a matching example added
+       ("clean up my downloads folder instead"), standalone single-sentence
+       adjustments still sometimes came back "unmapped", and in one
+       observed case the model produced a schema-valid but semantically
+       wrong result (organize_files with target_dir hallucinated as
+       "~/.cache" -- a value copied from clean_temp_files' unrelated
+       default, not from the user's actual words). This is model reasoning
+       capacity, not a code defect: the schema-constrained decoding
+       (Section 7.4a) and harness validation (Step 4) both did their job --
+       the JSON was well-formed and passed its schema -- the *content* was
+       just wrong, which those layers are not designed to catch (semantic
+       correctness of free-form param values is fundamentally the model's
+       job, not the harness's). No further attempt was made to prompt-
+       engineer around this within this project's scope; a larger/different
+       local model, or a future context-carrying reparse contract, are the
+       two directions noted for anyone picking this up later.
     3. On Cancelled(): the request ends, logged as status="cancelled" (no
        execution happened).
     4. On Confirmed(plan): run_plan() executes it, streaming StepEvents

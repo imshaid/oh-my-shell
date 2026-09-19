@@ -191,9 +191,37 @@ def _load_knowledge_context(path: Path | None) -> str:
     return f"Additional context:\n{text}\n"
 
 
+def _format_capability_line(cap: dict[str, Any]) -> str:
+    """
+    One capability's line in the system prompt: its description, plus its
+    `few_shot_examples` (if any) as inline example phrasings.
+
+    Bug fix (found via manual end-to-end testing, post-Build-Order):
+    capabilities.json has carried a `few_shot_examples` field per capability
+    since Build Order Step 3, and registry.py validates its shape, but
+    nothing ever read it into the prompt the model actually sees — every
+    capability's examples were dead data. In practice this meant the model
+    had no example of, say, clean_temp_files' `paths` param ever being
+    customized away from its default, and would either silently ignore a
+    request like "clean up my downloads folder instead" (falling back to
+    the default /tmp + ~/.cache) or decline it outright as "unmapped" per
+    this prompt's own "prefer unmapped over guessing" instruction. Splicing
+    the examples in as parenthetical phrasings gives the model concrete
+    evidence that a capability's params vary by request, without changing
+    the schema, the retry policy, or anything else about this module's
+    contract.
+    """
+    line = f"- {cap['action']}: {cap['description']}"
+    examples = cap.get("few_shot_examples") or []
+    if examples:
+        quoted = ", ".join(f"\"{example}\"" for example in examples)
+        line += f" (e.g. {quoted})"
+    return line
+
+
 def _build_system_prompt(registry: Registry, knowledge_path: Path | None) -> str:
     action_descriptions = "\n".join(
-        f"- {cap['action']}: {cap['description']}" for cap in registry.all_capabilities()
+        _format_capability_line(cap) for cap in registry.all_capabilities()
     )
     return SYSTEM_PROMPT_TEMPLATE.format(
         action_descriptions=action_descriptions,
