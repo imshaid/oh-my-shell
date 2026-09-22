@@ -156,6 +156,30 @@ class TestTrash:
         with pytest.raises(meta_commands.MetaCommandError, match="Usage"):
             _dispatch("/trash bogus", cfg, registry, base_dir)
 
+    def test_keep_empty_trash(self, cfg, registry, base_dir):
+        outcome = _dispatch("/trash keep", cfg, registry, base_dir)
+        assert "nothing to keep" in outcome.text
+
+    def test_keep_resets_retention_timer(self, cfg, registry, base_dir, tmp_path):
+        source = tmp_path / "f.txt"
+        source.write_text("x")
+        trash_module.move_to_trash(source, base_dir=base_dir, now=0.0)
+        outcome = _dispatch("/trash keep", cfg, registry, base_dir)
+        assert "Reset the retention timer for 1 item" in outcome.text
+        assert f"another {cfg['trash']['retention_days']} days" in outcome.text
+        entry = trash_module.list_trash(base_dir)[0]
+        assert entry.trashed_at > 0.0
+
+    def test_keep_pluralizes_for_multiple_items(self, cfg, registry, base_dir, tmp_path):
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("x")
+        b.write_text("y")
+        trash_module.move_to_trash(a, base_dir=base_dir, now=0.0)
+        trash_module.move_to_trash(b, base_dir=base_dir, now=0.0)
+        outcome = _dispatch("/trash keep", cfg, registry, base_dir)
+        assert "2 items" in outcome.text
+
 
 class TestLog:
     def test_empty_log(self, cfg, registry, base_dir):

@@ -231,6 +231,50 @@ def clear_trash(base_dir: Path | None = None) -> int:
     return len(entries)
 
 
+def keep_all(base_dir: Path | None = None, *, now: float | None = None) -> int:
+    """
+    `/trash keep` (Section 8.4): reset every current trash entry's
+    retention timer by re-stamping `trashed_at` to now, so nothing in
+    `.trash/` looks any closer to expiry than the moment this was called.
+
+    Documented follow-up, now implemented (see meta_commands.py's prior
+    "isn't wired up yet" note): this reuses trash.py's own existing
+    metadata read/write path (`_entries`/`_write_entries`) rather than
+    adding any new on-disk shape -- each TrashEntry is a frozen dataclass,
+    so this rebuilds the list with a new `trashed_at` per entry (dataclasses
+    have no in-place field assignment) and writes it back in one pass,
+    matching every other bulk-metadata operation in this module (e.g.
+    clear_trash's own read-then-act-on-every-entry shape).
+
+    `trashed_name` (which embeds the original trash timestamp, per
+    move_to_trash's own naming scheme) and `trash_id` are left unchanged --
+    only the metadata's own `trashed_at` field, which is what
+    check_and_expire() actually reads, needs to move for retention to
+    reset; renaming the file on disk to match would be extra churn with no
+    behavioral difference.
+
+    Returns the number of entries whose timer was reset (0 if trash is
+    already empty -- a no-op, not an error, matching clear_trash's own
+    "no-op on empty trash" behavior).
+    """
+    current_time = now if now is not None else time.time()
+    entries = _entries(base_dir)
+    if not entries:
+        return 0
+    refreshed = [
+        TrashEntry(
+            trash_id=e.trash_id,
+            original_path=e.original_path,
+            trashed_name=e.trashed_name,
+            trashed_at=current_time,
+            action_id=e.action_id,
+        )
+        for e in entries
+    ]
+    _write_entries(refreshed, base_dir)
+    return len(refreshed)
+
+
 @dataclass(frozen=True)
 class ExpiryReport:
     """Result of check_and_expire(): what got deleted, what's about to."""

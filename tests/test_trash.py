@@ -252,6 +252,53 @@ class TestCheckAndExpire:
         assert not hasattr(trash, "_scheduler")
 
 
+class TestKeepAll:
+    def test_no_op_on_empty_trash(self, trash_root):
+        assert trash.keep_all(trash_root) == 0
+
+    def test_returns_count_of_entries_reset(self, tmp_path, trash_root):
+        a = _make_file(tmp_path, "a.txt")
+        b = _make_file(tmp_path, "b.txt")
+        trash.move_to_trash(a, base_dir=trash_root, now=0.0)
+        trash.move_to_trash(b, base_dir=trash_root, now=0.0)
+        assert trash.keep_all(trash_root, now=500.0) == 2
+
+    def test_resets_trashed_at_for_every_entry(self, tmp_path, trash_root):
+        a = _make_file(tmp_path, "a.txt")
+        trash.move_to_trash(a, base_dir=trash_root, now=0.0)
+        trash.keep_all(trash_root, now=12345.0)
+        entries = trash.list_trash(trash_root)
+        assert entries[0].trashed_at == 12345.0
+
+    def test_prevents_expiry_after_reset(self, tmp_path, trash_root):
+        a = _make_file(tmp_path, "a.txt")
+        trash.move_to_trash(a, base_dir=trash_root, now=0.0)
+        # Without a reset this would already be past an 8-day retention.
+        reset_at = 7 * trash.SECONDS_PER_DAY
+        trash.keep_all(trash_root, now=reset_at)
+        now = reset_at + 7 * trash.SECONDS_PER_DAY  # still < 8 days since reset
+        report = trash.check_and_expire(retention_days=8, base_dir=trash_root, now=now)
+        assert report.deleted == []
+        assert len(trash.list_trash(trash_root)) == 1
+
+    def test_preserves_trash_id_and_action_id(self, tmp_path, trash_root):
+        a = _make_file(tmp_path, "a.txt")
+        entry = trash.move_to_trash(a, action_id="act-1", base_dir=trash_root, now=0.0)
+        trash.keep_all(trash_root, now=100.0)
+        refreshed = trash.list_trash(trash_root)[0]
+        assert refreshed.trash_id == entry.trash_id
+        assert refreshed.action_id == "act-1"
+
+    def test_defaults_to_current_time_when_now_not_given(self, tmp_path, trash_root):
+        a = _make_file(tmp_path, "a.txt")
+        trash.move_to_trash(a, base_dir=trash_root, now=0.0)
+        before = time.time()
+        trash.keep_all(trash_root)
+        after = time.time()
+        refreshed_at = trash.list_trash(trash_root)[0].trashed_at
+        assert before <= refreshed_at <= after
+
+
 class TestRenderExpiryWarning:
     def test_none_when_nothing_warned(self):
         report = trash.ExpiryReport(deleted=[], warned=[])

@@ -202,14 +202,16 @@ def _handle_trash(args: list[str], cfg: dict, base_dir=None) -> str:
         return f"  Permanently deleted {count} item(s) from .trash/."
 
     if subcommand == "keep":
-        # "Reset the retention timer" -- re-stamp every entry's trashed_at to
-        # now, via the same metadata write path trash.py already uses (no
-        # new trash.py API needed; this reads/rewrites through its public
-        # move_to_trash-adjacent surface would be overkill for a rename, so
-        # this command reports the intent — actually extending timers needs
-        # a small trash.py addition; documented as a known follow-up rather
-        # than guessed at here).
-        return "  /trash keep isn't wired up to extend retention yet -- use /trash status to check expiry."
+        # "Reset the retention timer" -- re-stamps every entry's trashed_at
+        # to now via trash.keep_all() (implemented alongside this wiring;
+        # see that function's own docstring for why re-stamping trashed_at
+        # is the whole operation and no new on-disk shape was needed).
+        count = trash_module.keep_all(base_dir=base_dir)
+        if count == 0:
+            return "  .trash/ is empty -- nothing to keep."
+        noun = "item" if count == 1 else "items"
+        retention_days = config_module.get(cfg, "trash.retention_days")
+        return f"  Reset the retention timer for {count} {noun} -- kept for another {retention_days} days."
 
     raise MetaCommandError(f"Usage: /trash status|keep|clear (got {subcommand!r}).")
 
