@@ -297,29 +297,91 @@ def test_malformed_json_from_backend_treated_as_validation_failure(registry):
 # --- OllamaBackend: think:false / schema-format contract -----------------------
 
 
-def test_ollama_backend_passes_think_false_and_schema_format(registry):
+def _fake_stream_chunk(*, content="", done=False, **fields):
+    """
+    One `ollama.chat(stream=True, ...)` chunk -- a MagicMock standing in for
+    ollama's real ChatResponse, since only the attributes this codebase
+    actually reads (message.content, eval_count, prompt_eval_count,
+    total_duration, model) need to exist for these tests.
+    """
+    chunk = MagicMock()
+    chunk.message = MagicMock()
+    chunk.message.content = content
+    chunk.eval_count = fields.get("eval_count")
+    chunk.prompt_eval_count = fields.get("prompt_eval_count")
+    chunk.total_duration = fields.get("total_duration")
+    chunk.model = fields.get("model")
+    chunk.done = done
+    return chunk
+
+
+def test_ollama_backend_passes_think_false_schema_format_and_stream(registry):
     """
     Section 7.3: think must be passed as a literal top-level False.
     Section 7.4a: format must receive the actual schema dict, not "json".
+    Streaming (added post-Build-Order, for live token progress): every call
+    now goes through stream=True internally -- see OllamaBackend.generate's
+    own docstring for why this doesn't change the final decoded content.
     """
-    fake_message = MagicMock()
-    fake_message.content = json.dumps({"action": "unmapped", "risk": "low", "params": {}})
-    fake_response = MagicMock()
-    fake_response.message = fake_message
+    final_content = json.dumps({"action": "unmapped", "risk": "low", "params": {}})
+    chunks = [
+        _fake_stream_chunk(content=final_content[:5]),
+        _fake_stream_chunk(content=final_content[5:]),
+        _fake_stream_chunk(
+            content="",
+            done=True,
+            eval_count=12,
+            prompt_eval_count=40,
+            total_duration=500_000_000,
+            model="qwen3:8b",
+        ),
+    ]
 
     schema = intent_parser.build_schema(registry)
 
-    with patch("ohmyshell.intent_parser.ollama.chat", return_value=fake_response) as mock_chat:
+    with patch("ohmyshell.intent_parser.ollama.chat", return_value=iter(chunks)) as mock_chat:
         backend = intent_parser.OllamaBackend(model="qwen3:8b")
         result = backend.generate(
             system_prompt="sys", user_message="hello", schema=schema
         )
 
-    assert result == fake_message.content
+    assert result == final_content
     _, kwargs = mock_chat.call_args
     assert kwargs["think"] is False
     assert kwargs["format"] == schema  # actual schema dict, never the string "json"
     assert kwargs["model"] == "qwen3:8b"
+    assert kwargs["stream"] is True
+    assert backend.last_telemetry.tokens_out == 12
+    assert backend.last_telemetry.tokens_in == 40
+    assert backend.last_telemetry.duration_seconds == 0.5
+
+
+def test_ollama_backend_calls_on_token_for_every_chunk(registry):
+    """
+    Live-streaming regression coverage (the user's explicit "fully implement
+    live token streaming" request): on_token must fire once per chunk, in
+    order, each carrying that chunk's own running eval_count -- not just a
+    single call at the end with the final tally.
+    """
+    final_content = json.dumps({"action": "unmapped", "risk": "low", "params": {}})
+    chunks = [
+        _fake_stream_chunk(content=final_content[:5], eval_count=3),
+        _fake_stream_chunk(content=final_content[5:], eval_count=9),
+        _fake_stream_chunk(content="", done=True, eval_count=12, prompt_eval_count=40, total_duration=500_000_000),
+    ]
+    schema = intent_parser.build_schema(registry)
+    seen: list[intent_parser.StreamProgress] = []
+
+    with patch("ohmyshell.intent_parser.ollama.chat", return_value=iter(chunks)):
+        backend = intent_parser.OllamaBackend(model="qwen3:8b")
+        backend.generate(
+            system_prompt="sys", user_message="hello", schema=schema, on_token=seen.append
+        )
+
+    assert len(seen) == 3
+    assert [p.tokens_out for p in seen] == [3, 9, 12]
+    assert seen[0].text_delta == final_content[:5]
+    assert seen[1].text_delta == final_content[5:]
 
 
 def test_ollama_backend_raises_intent_parse_error_on_client_exception():
@@ -327,6 +389,41 @@ def test_ollama_backend_raises_intent_parse_error_on_client_exception():
         backend = intent_parser.OllamaBackend(model="qwen3:8b")
         with pytest.raises(intent_parser.IntentParseError):
             backend.generate(system_prompt="sys", user_message="hi", schema={})
+
+
+def test_parse_intent_forwards_on_token_when_backend_supports_it(registry):
+    """
+    parse_intent() must thread on_token through to a real (streaming-aware)
+    backend -- this is what lets main.py's run_with_thinking_indicator show
+    a genuinely live count, not just intent_parser's own internal plumbing.
+    """
+    final_content = json.dumps({"action": "unmapped", "risk": "low", "params": {}})
+    chunks = [_fake_stream_chunk(content=final_content, done=True, eval_count=5)]
+    seen: list[intent_parser.StreamProgress] = []
+
+    with patch("ohmyshell.intent_parser.ollama.chat", return_value=iter(chunks)):
+        backend = intent_parser.OllamaBackend(model="qwen3:8b")
+        intent_parser.parse_intent(
+            "anything", registry, backend=backend, on_token=seen.append
+        )
+
+    assert len(seen) == 1
+
+
+def test_parse_intent_ignores_on_token_when_backend_does_not_support_it(registry):
+    """
+    A backend with the older 3-kwarg generate() signature (every hand-
+    written fake in this test file) must not blow up just because a caller
+    happens to pass on_token -- parse_intent()'s duck-typing check
+    (_backend_accepts_on_token) must fall back to the plain 3-kwarg call.
+    """
+    backend = FakeBackend([{"action": "unmapped", "risk": "low", "params": {}}])
+
+    result = intent_parser.parse_intent(
+        "anything", registry, backend=backend, on_token=lambda progress: None
+    )
+
+    assert result.action == "unmapped"
 
 
 # --- Google AI Studio fallback stub --------------------------------------------

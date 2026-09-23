@@ -455,14 +455,25 @@ def _handle_natural_language(
 
     # `run_with_thinking_indicator` (ui/thinking.py) replaces the plain
     # `active_console.status("Thinking...")` spinner with the Section
-    # 8.3.3 / Core Feature #14 live CPU/RAM/GPU indicator -- parse_intent()
-    # itself is unchanged (still one blocking call); the indicator just
-    # runs it on a background thread so the hardware bars and elapsed
-    # timer can keep refreshing while it's in flight. Its return value is
-    # exactly what parse_intent() would have returned directly.
+    # 8.3.3 / Core Feature #14 live CPU/RAM/GPU indicator, now with a
+    # genuinely live, growing token count too (post-Build-Order, per the
+    # user's explicit "fully implement live streaming" request):
+    # `token_box` is written by parse_intent()'s own on_token callback (one
+    # dict update per streamed chunk, from intent_parser.OllamaBackend --
+    # see that module's docstring) and read every UI frame by the Live
+    # polling loop below -- see run_with_thinking_indicator's own
+    # `on_token_box` docstring for why a plain dict needs no lock here.
+    token_box: dict[str, int] = {}
+
+    def _on_token(progress) -> None:
+        if progress.tokens_out is not None:
+            token_box["tokens_out"] = progress.tokens_out
+
     try:
         result = run_with_thinking_indicator(
-            lambda: parse_intent(text, registry, model=model), console=active_console
+            lambda: parse_intent(text, registry, model=model, on_token=_on_token),
+            console=active_console,
+            on_token_box=token_box,
         )
     except IntentParseError as exc:
         active_console.print(f"  [yellow]⚠[/yellow] Could not reach the model: {exc}")
@@ -483,9 +494,19 @@ def _handle_natural_language(
 
     def _reparse(adjustment_text: str, current_plan: Plan) -> Plan | None:
         nonlocal last_telemetry, last_attempts
+        reparse_token_box: dict[str, int] = {}
+
+        def _on_reparse_token(progress) -> None:
+            if progress.tokens_out is not None:
+                reparse_token_box["tokens_out"] = progress.tokens_out
+
         try:
             adjusted = run_with_thinking_indicator(
-                lambda: parse_intent(adjustment_text, registry, model=model), console=active_console
+                lambda: parse_intent(
+                    adjustment_text, registry, model=model, on_token=_on_reparse_token
+                ),
+                console=active_console,
+                on_token_box=reparse_token_box,
             )
         except IntentParseError:
             return None
@@ -563,7 +584,11 @@ def _handle_natural_language(
             on_before_execute=renderer.pause_for_sudo,
             on_after_execute=renderer.resume_after_sudo,
         )
-    renderer.print_summary(execution)
+    # last_telemetry: the same ParseTelemetry already threaded into the
+    # plan panel's own footer above -- the "AI: N tokens · Ns reasoning
+    # time" execution-summary line (Section 8.3.4's mockup) uses the exact
+    # same real numbers, not a second, separately-tracked figure.
+    renderer.print_summary(execution, telemetry=last_telemetry)
     duration = time.time() - start
 
     used_sudo = any(r.used_sudo for r in execution.step_results)

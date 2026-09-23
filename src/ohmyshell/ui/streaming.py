@@ -39,11 +39,18 @@ renderer's structure (spinner -> collapse) is already the right shape to
 extend, it just has only one "file" (the whole command) to show progress
 for today.
 
-The "AI: N tokens · Ns reasoning time" line in the blueprint's summary
-mockup is not rendered here either -- no token/timing telemetry is
-threaded through intent_parser.py's ParseResult today; a future step would
-need to add that before this line could be shown truthfully rather than
-faked.
+The "AI: N tokens · Ns reasoning time" line (added post-Build-Order, found
+via manual end-to-end testing): intent_parser.OllamaBackend already reads
+real prompt_eval_count/eval_count/total_duration off every ollama.chat()
+response into ParseTelemetry -- that data existed all along, it just never
+reached this renderer. `render_execution_summary` now takes an optional
+`telemetry` (the same ParseTelemetry main.py already threads into the plan
+panel's own footer) and, when given, prints this line using the plan's
+total token count (tokens_in + tokens_out, matching "N tokens total" in the
+mockup, as distinct from the plan panel's separate in/out breakdown) and
+duration_seconds as reasoning time. Left out (not a fake "0 tokens" line)
+when telemetry is None or empty -- a raw-shell command, for instance, never
+went through the Intent Parser at all and has nothing genuine to show here.
 """
 
 from __future__ import annotations
@@ -57,6 +64,7 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from ohmyshell.executor import ExecutionResult, StepEvent, StepStatus
+from ohmyshell.intent_parser import ParseTelemetry
 
 _STATUS_GLYPH = {
     StepStatus.DONE: ("✓", "green"),
@@ -92,13 +100,46 @@ def render_result_line(event: StepEvent) -> Text:
     return text
 
 
-def render_execution_summary(result: ExecutionResult) -> Text:
-    """Final collapsed summary after run_plan() returns, for all its steps."""
+def _ai_telemetry_line(telemetry: ParseTelemetry | None) -> str | None:
+    """
+    "AI: N tokens total · Ns reasoning time" (Section 8.3.4's mockup),
+    built from the same real ParseTelemetry the plan panel's own footer
+    already shows -- see this module's docstring for why this used to be
+    omitted. Returns None (nothing to show) when telemetry is missing or
+    carries no usable fields, same "honest partial line" rule ui/panels.py's
+    own _telemetry_footer_text already follows.
+    """
+    if telemetry is None:
+        return None
+    parts: list[str] = []
+    if telemetry.tokens_in is not None or telemetry.tokens_out is not None:
+        total_tokens = (telemetry.tokens_in or 0) + (telemetry.tokens_out or 0)
+        parts.append(f"{total_tokens} tokens total")
+    if telemetry.duration_seconds is not None:
+        parts.append(f"{telemetry.duration_seconds:.1f}s reasoning time")
+    if not parts:
+        return None
+    return f"AI: {' · '.join(parts)}"
+
+
+def render_execution_summary(result: ExecutionResult, *, telemetry: ParseTelemetry | None = None) -> Text:
+    """
+    Final collapsed summary after run_plan() returns, for all its steps.
+
+    `telemetry` (intent_parser.ParseTelemetry, optional) adds the mockup's
+    "AI: N tokens total · Ns reasoning time" line -- see this module's
+    docstring and `_ai_telemetry_line`. Omitted entirely when not given (a
+    raw-shell command, which never went through the Intent Parser at all,
+    or a caller that hasn't been updated to pass it).
+    """
     lines = Text()
     for step_result in result.step_results:
         glyph, color = _STATUS_GLYPH.get(step_result.status, ("?", "white"))
         lines.append(f"{glyph} ", style=color)
         lines.append(f"Step {step_result.step_number}: {step_result.description}\n")
+    ai_line = _ai_telemetry_line(telemetry)
+    if ai_line is not None:
+        lines.append(f"\n{ai_line}", style="dim")
     if result.interrupted:
         lines.append("\n[Ctrl+C] Stopped early — see above for what completed.", style="yellow")
         # Bug fix (found via manual end-to-end testing, in a real terminal
@@ -156,8 +197,8 @@ class StreamingRenderer:
         else:
             self._live.update(render_result_line(event))
 
-    def print_summary(self, result: ExecutionResult) -> None:
-        self._console.print(render_execution_summary(result))
+    def print_summary(self, result: ExecutionResult, *, telemetry: ParseTelemetry | None = None) -> None:
+        self._console.print(render_execution_summary(result, telemetry=telemetry))
 
     # --- Sudo password-prompt garbling bug fix (post-Build-Order) ---
     # `Live`'s own refresh loop repaints this renderer's spinner on a timer

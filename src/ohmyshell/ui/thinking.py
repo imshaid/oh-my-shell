@@ -23,19 +23,28 @@ disk I/O were explicitly asked about and explicitly declined by the user
 ("বাদ দেয়া হোক") -- mostly-idle numbers for a local Ollama call would just
 be visual noise -- so neither appears here.
 
-"Token count ও সময় ... live in-place update হয়" (Section 8.3.3) -- a
-genuine token-by-token LIVE count needs intent_parser.py's Ollama call to
-use stream=True (currently a single blocking ollama.chat() call -- see
-intent_parser.py's own docstring/ParseTelemetry for the non-streaming
-telemetry this project reads instead). That is a distinct, larger,
-separately-tracked piece of work (real token-by-token streaming, not yet
-started). What this module gives live, truthfully, without that: elapsed
-time (ticks in place every frame) and a live-refreshing hardware bar --
-both real per-second measurements, not simulated. Tokens/sec and model
-name only appear once the backend call has actually finished and a
-ParseTelemetry is available (see render_thinking_display's `telemetry`
-param) -- before that, the top line shows only the elapsed timer, exactly
-as before, rather than a fake or zeroed throughput figure.
+"Token count ও সময় ... live in-place update হয়" (Section 8.3.3) -- now
+genuinely live (added post-Build-Order, per the user's explicit "fully
+implement live streaming" request, found missing via manual end-to-end
+testing). intent_parser.OllamaBackend.generate() streams internally
+(stream=True; see that module's own docstring for why grammar-constrained
+decoding via format=schema is unaffected) and, when given an `on_token`
+callback, invokes it once per chunk with that chunk's own running
+eval_count -- a real number ollama itself reports as it generates, not a
+client-side estimate. `run_with_thinking_indicator` accepts an optional
+`on_token_box` (a plain dict the caller's own on_token closure writes
+into, e.g. `{"tokens_out": progress.tokens_out}` on each callback) and
+reads it every UI frame from the polling Live loop below, the same
+shared-mutable-state shape `result_box`/`error_box` already use for
+getting the worker thread's outcome back to the main thread. Before the
+first chunk arrives (a real, if usually sub-second, gap while the model
+loads/starts generating) the top line still shows only the elapsed timer,
+same as always -- there is nothing live to show yet, and this module has
+never shown a fake or zeroed figure. Once chunks start arriving, the
+token count updates in place every frame, and tokens/sec + model name
+(which need the FINAL duration/model, not available until the call
+completes) still only appear once a finished ParseTelemetry is passed in,
+exactly as before.
 
 --- Why a background thread ---
 parse_intent() is a single blocking call (no progress callback this
@@ -163,14 +172,27 @@ def render_hardware_lines(snapshot: hardware_module.HardwareSnapshot) -> list[Te
     return lines
 
 
-def _thinking_line(*, elapsed_seconds: float, telemetry: ParseTelemetry | None) -> Text:
+def _thinking_line(
+    *,
+    elapsed_seconds: float,
+    telemetry: ParseTelemetry | None,
+    live_tokens_out: int | None = None,
+) -> Text:
     """
-    Top line -- elapsed time always; tokens/sec and model name only once a
-    finished ParseTelemetry is available (there is nothing genuinely live
-    to show for those before the call returns -- see module docstring).
+    Top line -- elapsed time always; a live, growing token count while the
+    call is still streaming (see module docstring); tokens/sec and model
+    name only once a finished ParseTelemetry is available (final
+    duration/model aren't known until the call completes).
+
+    `live_tokens_out` is ignored once `telemetry` is available -- the
+    finished call's own tokens_out (part of the tok/s figure right after
+    it) is the same number's final, authoritative value, so showing both
+    would just be the same count twice in one line.
     """
     line = Text(f"⚟ Thinking... {elapsed_seconds:.1f}s", style="dim")
     if telemetry is None:
+        if live_tokens_out is not None:
+            line.append(f" · {live_tokens_out} tokens")
         return line
     if (
         telemetry.tokens_out is not None
@@ -189,10 +211,15 @@ def render_thinking_display(
     elapsed_seconds: float,
     snapshot: hardware_module.HardwareSnapshot,
     telemetry: ParseTelemetry | None = None,
+    live_tokens_out: int | None = None,
 ) -> Group:
     """The full 4-line (or 3-line, GPU-absent) group this module shows."""
     return Group(
-        _thinking_line(elapsed_seconds=elapsed_seconds, telemetry=telemetry),
+        _thinking_line(
+            elapsed_seconds=elapsed_seconds,
+            telemetry=telemetry,
+            live_tokens_out=live_tokens_out,
+        ),
         *render_hardware_lines(snapshot),
     )
 
@@ -202,6 +229,7 @@ def run_with_thinking_indicator(
     *,
     console: Console | None = None,
     hardware_reader: Callable[[], hardware_module.HardwareSnapshot] = hardware_module.read_snapshot,
+    on_token_box: dict[str, int] | None = None,
 ) -> T:
     """
     Run `fn` (a zero-arg blocking callable) on a background thread while
@@ -214,6 +242,21 @@ def run_with_thinking_indicator(
 
     `hardware_reader` is injectable for tests (avoids sampling real CPU/RAM
     every test run) and for anyone wanting a cheaper/fake snapshot source.
+
+    `on_token_box` (added post-Build-Order, for genuine live token
+    streaming -- see module docstring): a plain dict the CALLER's own
+    `fn` closure is expected to write `{"tokens_out": N}` into as chunks
+    arrive (in practice, `fn` is `lambda: parse_intent(..., on_token=lambda
+    progress: on_token_box.update(tokens_out=progress.tokens_out))` from
+    main.py). This loop just reads `on_token_box.get("tokens_out")` once
+    per frame and passes it to `render_thinking_display` -- it never writes
+    the box itself, so `fn` need not be an intent_parser call at all; a
+    caller that doesn't pass `on_token_box` gets exactly today's behavior
+    (elapsed timer + hardware only, until a final ParseTelemetry arrives).
+    A single dict write/read per frame from two threads needs no lock here:
+    both sides only ever set/get the one "tokens_out" key with a plain int,
+    which is atomic under the GIL, and a torn read (an old value shown for
+    up to one frame) is invisible at 8 refreshes/second.
     """
     active_console = console if console is not None else Console()
 
@@ -238,7 +281,14 @@ def run_with_thinking_indicator(
             if now - last_hardware_read >= HARDWARE_REFRESH_SECONDS:
                 snapshot = hardware_reader()
                 last_hardware_read = now
-            live.update(render_thinking_display(elapsed_seconds=now - start, snapshot=snapshot))
+            live_tokens_out = on_token_box.get("tokens_out") if on_token_box is not None else None
+            live.update(
+                render_thinking_display(
+                    elapsed_seconds=now - start,
+                    snapshot=snapshot,
+                    live_tokens_out=live_tokens_out,
+                )
+            )
             time.sleep(1 / UI_REFRESH_PER_SECOND)
     thread.join()
 

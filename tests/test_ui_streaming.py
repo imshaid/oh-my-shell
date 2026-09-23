@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.spinner import Spinner
 
 from ohmyshell.executor import ExecutionResult, StepEvent, StepResult, StepStatus
+from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.ui.streaming import (
     StreamingRenderer,
     render_execution_summary,
@@ -112,6 +113,50 @@ class TestRenderExecutionSummary:
         result = self._result(StepStatus.DONE)
         text = _render_to_text(render_execution_summary(result))
         assert "Clean temp files" in text
+
+
+class TestExecutionSummaryAiTelemetryLine:
+    """
+    Regression coverage (added post-Build-Order, found via manual
+    end-to-end testing): the "AI: N tokens total · Ns reasoning time" line
+    from Section 8.3.4's mockup used to be entirely unrendered, even though
+    intent_parser.OllamaBackend already reads real token/timing numbers off
+    every ollama.chat() response into ParseTelemetry -- the data existed,
+    it just never reached this renderer.
+    """
+
+    def _result(self, status: StepStatus = StepStatus.DONE, **overrides) -> ExecutionResult:
+        defaults = dict(interrupted=False, aborted_for_sudo=False)
+        defaults.update(overrides)
+        step = StepResult(step_number=1, description="Clean temp files", status=status)
+        return ExecutionResult(action="clean_temp_files", step_results=[step], **defaults)
+
+    def test_no_telemetry_omits_the_line_entirely(self):
+        text = _render_to_text(render_execution_summary(self._result()))
+        assert "AI:" not in text
+
+    def test_full_telemetry_shows_total_tokens_and_reasoning_time(self):
+        telemetry = ParseTelemetry(tokens_in=94, tokens_out=62, duration_seconds=0.8, model="qwen3:8b")
+        text = _render_to_text(render_execution_summary(self._result(), telemetry=telemetry))
+        assert "AI: 156 tokens total · 0.8s reasoning time" in text
+
+    def test_partial_telemetry_shows_only_available_fields(self):
+        telemetry = ParseTelemetry(tokens_in=None, tokens_out=None, duration_seconds=1.2, model=None)
+        text = _render_to_text(render_execution_summary(self._result(), telemetry=telemetry))
+        assert "AI: 1.2s reasoning time" in text
+        assert "tokens total" not in text
+
+    def test_empty_telemetry_object_omits_the_line(self):
+        telemetry = ParseTelemetry()
+        text = _render_to_text(render_execution_summary(self._result(), telemetry=telemetry))
+        assert "AI:" not in text
+
+    def test_telemetry_line_also_appears_on_an_interrupted_result(self):
+        telemetry = ParseTelemetry(tokens_in=10, tokens_out=5, duration_seconds=0.3)
+        result = self._result(StepStatus.INTERRUPTED, interrupted=True)
+        text = _render_to_text(render_execution_summary(result, telemetry=telemetry))
+        assert "AI: 15 tokens total · 0.3s reasoning time" in text
+        assert "Stopped early" in text
 
 
 class TestStreamingRenderer:

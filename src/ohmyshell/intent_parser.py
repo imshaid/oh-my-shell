@@ -40,10 +40,11 @@ still failing, return the "unmapped" outcome.
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import ollama
 
@@ -138,6 +139,18 @@ class IntentBackend(Protocol):
         ...
 
 
+# One streamed chunk's worth of live progress, reported via `on_token` (see
+# OllamaBackend.generate below) -- `tokens_out` is a running count of the
+# model's *output* tokens so far this call (ollama's streaming chunks each
+# carry the accumulated eval_count directly, not just a raw text delta), so
+# a caller can show a genuinely live-growing number rather than guessing
+# from character/word counts.
+@dataclass(frozen=True)
+class StreamProgress:
+    text_delta: str
+    tokens_out: int | None
+
+
 class OllamaBackend:
     """Default backend (Section 7.6): local Ollama, think:false, schema-constrained.
 
@@ -148,6 +161,27 @@ class OllamaBackend:
     backend, real or test-fake, has to satisfy). `parse_intent()` reads it
     with `getattr(..., "last_telemetry", None)` after calling generate(),
     which is why a FakeBackend with no such attribute works unchanged.
+
+    `on_token` (added post-Build-Order, per the user's explicit "fully
+    implement live streaming" request): an optional callable invoked with a
+    `StreamProgress` for every chunk `ollama.chat(stream=True, ...)` yields,
+    letting a caller (ui/thinking.py's Live loop, via parse_intent) show a
+    genuinely live, incrementally-growing token count and partial text
+    while the model is still generating -- not just the final tally after
+    the whole call returns. When `on_token` is None (the default, and every
+    existing call site before this change), `generate()` still uses
+    `stream=True` internally (see the module-level note below on why this
+    is safe) but simply never invokes the callback, so behavior for a
+    caller that doesn't care about live progress is unchanged: one string
+    back, same as before.
+
+    Feasibility note (verified via `help(ollama.chat)` before writing this):
+    `stream` and `format` are independent, combinable parameters -- passing
+    `format=schema` (Section 7.4a's grammar-constrained decoding) together
+    with `stream=True` still constrains every token to the schema's
+    grammar; streaming only changes *how* the same final content is
+    delivered (incrementally vs. all at once), not what content is
+    produced. `think=False` (Section 7.3) is unaffected either way.
     """
 
     def __init__(self, model: str):
@@ -155,41 +189,69 @@ class OllamaBackend:
         self.last_telemetry: ParseTelemetry | None = None
 
     def generate(
-        self, *, system_prompt: str, user_message: str, schema: dict[str, Any]
+        self,
+        *,
+        system_prompt: str,
+        user_message: str,
+        schema: dict[str, Any],
+        on_token: Callable[[StreamProgress], None] | None = None,
     ) -> str:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
         try:
-            response = ollama.chat(
+            # Always streamed internally now -- a single non-streaming
+            # ollama.chat() call and this loop produce byte-identical final
+            # content (streaming only changes delivery, not decoding; see
+            # this class's own docstring), so there is no behavior-vs-
+            # stream=False fork to maintain here. `on_token`, when given,
+            # is called once per chunk with the running output-token count
+            # ollama itself reports on every streamed chunk -- no client-
+            # side estimation.
+            chunks = ollama.chat(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
+                messages=messages,
                 format=schema,  # actual JSON Schema, not the bare string "json" (Section 7.4a)
                 think=False,  # mandatory top-level parameter (Section 7.3) — never system-prompt-only
                 options={"temperature": 0},
+                stream=True,
             )
+
+            content_parts: list[str] = []
+            final_chunk = None
+            for chunk in chunks:
+                delta = chunk.message.content or ""
+                if delta:
+                    content_parts.append(delta)
+                if on_token is not None:
+                    on_token(StreamProgress(text_delta=delta, tokens_out=chunk.eval_count))
+                final_chunk = chunk
         except Exception as exc:  # ollama client raises its own exception types
             raise IntentParseError(f"Ollama call failed: {exc}") from exc
 
-        # ollama.chat()'s response (even non-streaming) already carries
-        # real prompt_eval_count/eval_count/total_duration fields -- no
-        # architectural change (e.g. stream=True) is needed to get real
-        # tokens-in/tokens-out/elapsed-time numbers, only reading fields
-        # that were already being thrown away. total_duration is
-        # nanoseconds (ollama's own units); divided here to seconds, the
-        # unit ui/panels.py's footer actually displays.
+        if final_chunk is None:
+            raise IntentParseError("Ollama call failed: empty stream (no chunks received)")
+
+        # The final streamed chunk (done=True) carries the same aggregate
+        # prompt_eval_count/eval_count/total_duration fields a non-streaming
+        # response carries -- nothing is lost by switching to stream=True,
+        # this is still the same real numbers, just read off the last chunk
+        # instead of the one-shot response. total_duration is nanoseconds
+        # (ollama's own units); divided here to seconds, the unit
+        # ui/panels.py's footer actually displays.
         self.last_telemetry = ParseTelemetry(
-            tokens_in=response.prompt_eval_count,
-            tokens_out=response.eval_count,
+            tokens_in=final_chunk.prompt_eval_count,
+            tokens_out=final_chunk.eval_count,
             duration_seconds=(
-                response.total_duration / 1_000_000_000
-                if response.total_duration is not None
+                final_chunk.total_duration / 1_000_000_000
+                if final_chunk.total_duration is not None
                 else None
             ),
-            model=response.model or self.model,
+            model=final_chunk.model or self.model,
         )
 
-        return response.message.content
+        return "".join(content_parts)
 
 
 def _call_google_ai_studio(*, system_prompt: str, user_message: str, schema: dict[str, Any]) -> str:
@@ -285,6 +347,27 @@ def _build_system_prompt(registry: Registry, knowledge_path: Path | None) -> str
     )
 
 
+def _backend_accepts_on_token(backend: IntentBackend) -> bool:
+    """
+    Duck-typing check (not an `isinstance`/Protocol check -- Protocol
+    classes aren't runtime-checkable here) for whether `backend.generate`
+    declares an `on_token` parameter. Needed because `IntentBackend`'s own
+    Protocol contract (three required kwargs, `-> str`) predates streaming,
+    and this project's own test suite has several hand-written fake
+    backends (FakeBackend, BrokenBackend, etc.) implementing exactly that
+    older three-kwarg signature -- calling them with an unexpected
+    `on_token=` kwarg would be a hard TypeError, not a graceful no-op. Real
+    `OllamaBackend.generate` (the only backend that actually streams) does
+    declare it, so this is a one-time signature check, not a per-call cost
+    that matters.
+    """
+    try:
+        params = inspect.signature(backend.generate).parameters
+    except (TypeError, ValueError):
+        return False
+    return "on_token" in params
+
+
 def _attempt(
     backend: IntentBackend,
     *,
@@ -292,11 +375,20 @@ def _attempt(
     user_message: str,
     schema: dict[str, Any],
     registry: Registry,
+    on_token: Callable[[StreamProgress], None] | None = None,
 ) -> tuple[ValidatedIntent | None, str | None]:
     """One model call + one harness validation pass. Returns (intent, error)."""
-    raw_text = backend.generate(
-        system_prompt=system_prompt, user_message=user_message, schema=schema
-    )
+    if on_token is not None and _backend_accepts_on_token(backend):
+        raw_text = backend.generate(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            schema=schema,
+            on_token=on_token,
+        )
+    else:
+        raw_text = backend.generate(
+            system_prompt=system_prompt, user_message=user_message, schema=schema
+        )
 
     try:
         raw = json.loads(raw_text)
@@ -325,6 +417,7 @@ def parse_intent(
     backend: IntentBackend | None = None,
     model: str = "qwen3:8b",
     knowledge_path: Path | None = None,
+    on_token: Callable[[StreamProgress], None] | None = None,
 ) -> ParseResult:
     """
     Parse one natural-language request into a validated intent.
@@ -346,6 +439,11 @@ def parse_intent(
             fresh OllamaBackend(model=model).
         model: Ollama model name, used only if `backend` is not given.
         knowledge_path: override for tests; defaults to knowledge/knowledge.md.
+        on_token: optional live-progress callback (see OllamaBackend.generate
+            and StreamProgress) -- forwarded to every attempt (including the
+            retry) when the active backend supports it; ignored entirely for
+            a backend that doesn't (e.g. the test suite's FakeBackend), so
+            this is purely additive.
     """
     active_backend = backend or OllamaBackend(model=model)
     schema = build_schema(registry)
@@ -357,6 +455,7 @@ def parse_intent(
         user_message=user_message,
         schema=schema,
         registry=registry,
+        on_token=on_token,
     )
     # Read after every _attempt() call, win or lose -- `last_telemetry` is
     # an OllamaBackend-only attribute (see its own docstring), so a
@@ -386,6 +485,7 @@ def parse_intent(
         user_message=retry_user_message,
         schema=schema,
         registry=registry,
+        on_token=on_token,
     )
     # Overwritten by the retry's own numbers -- the retry is the real,
     # final model call this ParseResult reflects, so its telemetry (not
