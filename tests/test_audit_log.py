@@ -96,6 +96,53 @@ class TestRecordAndRead:
         entries = audit_log.read_entries(log_root)
         assert len(entries) == 1
 
+    def test_tolerates_unrecognized_extra_field_in_a_log_line(self, log_root):
+        """
+        Regression test (found via manual end-to-end testing): a log line
+        may come from a newer oh-my-shell version that added a per-entry
+        field this AuditEntry doesn't declare (e.g. future `tokens_used`
+        telemetry, already anticipated by SessionSummary's own docstring).
+        Before this fix, `AuditEntry(**raw)` raised TypeError on any
+        unrecognized keyword -- one forward-compatible line crashed the
+        ENTIRE read (and therefore `/log`, `/log export`, `/explain`, and
+        the session summary), not just that one entry.
+        """
+        path = audit_log.audit_log_path(log_root)
+        path.parent.mkdir(parents=True)
+        newer_line = {
+            "timestamp": 1700000000.0, "action": "clean_temp_files", "source": "natural_language",
+            "params": {}, "risk": "medium", "status": "done", "duration_seconds": 1.2,
+            "used_sudo": False, "error": None, "detail": "",
+            "tokens_used": 250,  # field AuditEntry doesn't (yet) declare
+        }
+        path.write_text(json.dumps(newer_line) + "\n", encoding="utf-8")
+
+        entries = audit_log.read_entries(log_root)
+
+        assert len(entries) == 1
+        assert entries[0].action == "clean_temp_files"
+        assert entries[0].status == "done"
+        assert not hasattr(entries[0], "tokens_used")
+
+    def test_tolerates_missing_optional_field_in_an_older_log_line(self, log_root):
+        """Complementary backward-compat case: a line written before an
+        optional field existed (all defaulted fields simply absent) must
+        still parse, picking up AuditEntry's own dataclass defaults."""
+        path = audit_log.audit_log_path(log_root)
+        path.parent.mkdir(parents=True)
+        older_line = {
+            "timestamp": 1700000000.0, "action": "clean_temp_files", "source": "natural_language",
+            "params": {}, "risk": "medium", "status": "done",
+            # missing: duration_seconds, used_sudo, error, detail
+        }
+        path.write_text(json.dumps(older_line) + "\n", encoding="utf-8")
+
+        entries = audit_log.read_entries(log_root)
+
+        assert len(entries) == 1
+        assert entries[0].used_sudo is False
+        assert entries[0].detail == ""
+
 
 class TestIterEntries:
     def test_yields_same_entries_as_read(self, log_root):

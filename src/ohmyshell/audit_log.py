@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -120,9 +120,25 @@ def record_action(
     return entry
 
 
+_AUDIT_ENTRY_FIELD_NAMES = frozenset(f.name for f in fields(AuditEntry))
+
+
 def read_entries(base_dir: Path | None = None) -> list[AuditEntry]:
     """
     Read every entry from the audit log, oldest first.
+
+    Forward-compat note (found via manual end-to-end testing): a log line
+    may carry a field this AuditEntry doesn't declare -- e.g. the user ran
+    a newer oh-my-shell version that added a per-entry field (such as the
+    `tokens_used` telemetry this module's own SessionSummary docstring
+    already anticipates) against this same ~/.oh-my-shell/audit.log.jsonl,
+    then downgraded, or the log is shared/copied onto a machine running an
+    older version. `AuditEntry(**raw)` would previously raise TypeError on
+    any unrecognized keyword, crashing the ENTIRE read (and therefore
+    `/log`, `/log export`, `/explain`, and the session summary) over one
+    forward-compatible line. Unknown fields are now dropped before
+    construction so old code degrades gracefully -- it just can't see the
+    field it doesn't know about, rather than refusing to read anything.
 
     Raises:
         AuditLogError: if a line exists but isn't valid JSON (a truncated
@@ -142,7 +158,8 @@ def read_entries(base_dir: Path | None = None) -> list[AuditEntry]:
             raw = json.loads(line)
         except json.JSONDecodeError as exc:
             raise AuditLogError(f"{path}:{line_number}: invalid JSON ({exc})") from exc
-        entries.append(AuditEntry(**raw))
+        known = {k: v for k, v in raw.items() if k in _AUDIT_ENTRY_FIELD_NAMES}
+        entries.append(AuditEntry(**known))
     return entries
 
 
