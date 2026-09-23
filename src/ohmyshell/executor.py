@@ -31,8 +31,19 @@ handling; none of the four registered capabilities need that yet.
    template's own trusted shell syntax), every param value is escaped with
    `shlex.quote()` before substitution. A list-type param (e.g.
    `paths: ["/tmp", "~/.cache"]`) has each item quoted individually and the
-   results space-joined, so `{paths}` expands to e.g. `/tmp '~/.cache'` --
+   results space-joined, so `{paths}` expands to e.g. `/tmp ~/.cache` --
    safe to place directly into `find {paths} ...`.
+
+   Correction (post-Build-Order, found via manual end-to-end testing): a
+   value quoted as-is with `shlex.quote()` alone -- e.g. "~/.cache" ->
+   "'~/.cache'" -- defeats shell tilde expansion, since a POSIX shell never
+   expands `~` inside single quotes; the rendered command silently failed
+   to find "'~/.cache'" as a literal directory name. `_quote_param()` (see
+   `_expand_and_quote()`'s own docstring for the full story) now expands a
+   leading `~`/`~/` to an absolute path in Python first, so the value has
+   no `~` left by the time it's quoted -- the example above now correctly
+   renders as `/tmp ~/.cache` (already expanded, so still safe once quoted
+   as an ordinary absolute path).
 
 2. Sudo-escalation trigger: capabilities.json has no static "requires_sudo"
    flag (none of the four registered capabilities need one). Detection is
@@ -64,6 +75,7 @@ it in the Build Order.
 
 from __future__ import annotations
 
+import os
 import shlex
 import signal
 import subprocess
@@ -133,11 +145,46 @@ class _DoubleInterrupt(Exception):
     """Raised internally when a second Ctrl+C arrives during a running step."""
 
 
+def _expand_and_quote(item: Any) -> str:
+    """
+    shlex.quote() a single scalar param value, expanding a leading `~`/`~/`
+    to the real home directory first.
+
+    Bug fix (found via manual end-to-end testing, post-Build-Order):
+    capabilities.json's own clean_temp_files default is
+    `paths: ["/tmp", "~/.cache"]` (Section 5.4), and command_template
+    renders it straight into `find {paths} ...`. shlex.quote("~/.cache")
+    returns "'~/.cache'" (wrapped in real single quotes) -- correct
+    shell-injection-safe escaping in general, but inside single quotes a
+    POSIX shell never performs tilde expansion, so the rendered command
+    became `find /tmp '~/.cache' ...`, which `find` reports as
+    "No such file or directory" for a literal directory named "~/.cache"
+    in the current working directory (verified directly: `find '~/.cache'
+    -maxdepth 0` fails, while the unquoted `find ~/.cache -maxdepth 0`
+    correctly resolves to $HOME/.cache). Every capability using this
+    codebase's only home-relative default silently only ever cleaned
+    /tmp; the ~/.cache half of the request quietly no-op'd.
+
+    The fix expands `~`/`~/...` to an absolute path in Python (via
+    os.path.expanduser, which never touches the shell) BEFORE quoting --
+    shlex.quote() on an already-absolute path is a no-op for the
+    resulting shell safety guarantee, but now there is no leading `~`
+    left for the shell to fail to expand. Values with no leading `~` are
+    unaffected (os.path.expanduser is a no-op for them), so every other
+    existing param (a plain path, a PID, a process-name filter, a signal
+    name) quotes exactly as before.
+    """
+    text = str(item)
+    if text == "~" or text.startswith("~/"):
+        text = os.path.expanduser(text)
+    return shlex.quote(text)
+
+
 def _quote_param(value: Any) -> str:
-    """shlex.quote() a single param value, or space-join quoted list items."""
+    """_expand_and_quote() a single param value, or space-join quoted list items."""
     if isinstance(value, (list, tuple)):
-        return " ".join(shlex.quote(str(item)) for item in value)
-    return shlex.quote(str(value))
+        return " ".join(_expand_and_quote(item) for item in value)
+    return _expand_and_quote(value)
 
 
 def render_command(command_template: str, params: dict[str, Any]) -> str:

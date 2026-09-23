@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 
@@ -86,8 +87,11 @@ class TestRenderCommand:
         assert cmd == "echo 'hello world'"
 
     def test_quotes_list_param_items_and_space_joins(self):
-        cmd = render_command("find {paths} -type f", {"paths": ["/tmp", "~/.cache"]})
-        assert cmd == "find /tmp '~/.cache' -type f"
+        # Non-tilde items still quote exactly as before; the tilde-specific
+        # expansion is covered by TestTildeExpansion below (bug fix,
+        # post-Build-Order -- see _expand_and_quote's own docstring).
+        cmd = render_command("find {paths} -type f", {"paths": ["/tmp", "/var/tmp"]})
+        assert cmd == "find /tmp /var/tmp -type f"
 
     def test_escapes_shell_metacharacters_in_value(self):
         cmd = render_command("echo {msg}", {"msg": "a; rm -rf /"})
@@ -99,6 +103,52 @@ class TestRenderCommand:
     def test_template_syntax_itself_is_untouched(self):
         cmd = render_command("find {paths} -mtime +{days} -exec mv {{}} ~/.oh-my-shell/.trash/ \\;", {"paths": ["/tmp"], "days": 7})
         assert "-exec mv {} ~/.oh-my-shell/.trash/ \\;" in cmd
+
+
+class TestTildeExpansion:
+    """
+    Bug fix (found via manual end-to-end testing, post-Build-Order):
+    shlex.quote("~/.cache") -> "'~/.cache'" defeats shell tilde expansion
+    (a POSIX shell never expands `~` inside single quotes), so
+    capabilities.json's own clean_temp_files default (paths including
+    "~/.cache") silently never matched anything. See executor.py's
+    `_expand_and_quote()` docstring for the full root-cause explanation.
+    """
+
+    def test_bare_tilde_path_is_expanded_before_quoting(self):
+        cmd = render_command("find {paths} -type f", {"paths": ["~/.cache"]})
+        home = os.path.expanduser("~")
+        assert cmd == f"find {home}/.cache -type f"
+        assert "~" not in cmd
+
+    def test_mixed_absolute_and_tilde_paths(self):
+        cmd = render_command("find {paths} -type f", {"paths": ["/tmp", "~/.cache"]})
+        home = os.path.expanduser("~")
+        assert cmd == f"find /tmp {home}/.cache -type f"
+
+    def test_bare_tilde_alone_is_expanded(self):
+        cmd = render_command("echo {path}", {"path": "~"})
+        home = os.path.expanduser("~")
+        assert cmd == f"echo {home}"
+
+    def test_tilde_not_at_start_is_left_alone(self):
+        # Only a LEADING ~ or ~/ means "home directory" in shell semantics;
+        # a tilde elsewhere in a value (e.g. part of a filename) must not
+        # be expanded -- shlex.quote() may still wrap it in quotes (its own
+        # normal, unrelated escaping choice for a value containing "~"),
+        # but the literal text "file~backup" itself must be untouched, not
+        # rewritten into some expanded-home-directory form.
+        cmd = render_command("echo {msg}", {"msg": "file~backup"})
+        assert "file~backup" in cmd
+        assert os.path.expanduser("~") not in cmd
+
+    def test_tilde_username_form_is_not_expanded(self):
+        # ~otheruser is a different (unsupported here) shell feature --
+        # os.path.expanduser only resolves the current user's own `~`, and
+        # this module makes no attempt to resolve another user's home; the
+        # value is quoted as an ordinary literal instead of being guessed at.
+        cmd = render_command("echo {path}", {"path": "~otheruser/data"})
+        assert "otheruser" in cmd
 
 
 # ---------------------------------------------------------------------------
