@@ -82,7 +82,21 @@ class TestRenderExecutionSummary:
         result = self._result(StepStatus.INTERRUPTED, interrupted=True)
         text = _render_to_text(render_execution_summary(result))
         assert "Stopped early" in text
-        assert "Undo this action" not in text
+
+    def test_interrupted_also_shows_undo_hint(self):
+        """
+        Regression test (found via manual end-to-end testing, in a real
+        terminal session): a single-Ctrl+C graceful stop used to show no
+        undo option at all, even though Section 8.3.4's own mockup shows
+        "[u] Undo what was moved" right alongside an interrupted stop, and
+        whatever completed before the interrupt (files already moved into
+        .trash/) is exactly as undoable as a fully-finished run's files --
+        the audit log records status="interrupted" with the same action_id
+        trash.py's undo looks up regardless of how the run ended.
+        """
+        result = self._result(StepStatus.INTERRUPTED, interrupted=True)
+        text = _render_to_text(render_execution_summary(result))
+        assert "Undo this action" in text
 
     def test_aborted_for_sudo_shows_aborted_message(self):
         result = self._result(StepStatus.INTERRUPTED, aborted_for_sudo=True)

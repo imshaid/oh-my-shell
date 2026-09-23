@@ -101,6 +101,20 @@ def render_execution_summary(result: ExecutionResult) -> Text:
         lines.append(f"Step {step_result.step_number}: {step_result.description}\n")
     if result.interrupted:
         lines.append("\n[Ctrl+C] Stopped early — see above for what completed.", style="yellow")
+        # Bug fix (found via manual end-to-end testing, in a real terminal
+        # session): [u] Undo used to be offered only when result.all_done,
+        # so a single-Ctrl+C graceful stop showed no undo option at all --
+        # but Section 8.3.4's own mockup shows "[u] Undo what was moved"
+        # right alongside an interrupted stop, and whatever DID complete
+        # before the interrupt (e.g. files already moved into .trash/) is
+        # exactly as undoable as a fully-finished run's files -- the audit
+        # log already records status="interrupted" with the same action_id
+        # trash.py's undo looks up regardless of how the run ended. This is
+        # distinct from "[r] Resume remaining" (also in that same mockup),
+        # which is a genuinely unimplemented, separate feature (resuming a
+        # partially-completed plan) -- not offered here, so this line only
+        # ever promises what actually works today.
+        lines.append("\n▸ [u] Undo this action", style="dim")
     elif result.aborted_for_sudo:
         lines.append("\nAborted — elevated permission was declined.", style="yellow")
     elif result.all_done:
