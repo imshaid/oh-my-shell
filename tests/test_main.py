@@ -604,13 +604,15 @@ class _FakeSession:
 def test_run_exits_cleanly_on_slash_exit():
     with patch("ohmyshell.main.ReplSession", return_value=_FakeSession(["/exit"])):
         with patch("ohmyshell.main.load_registry"):
-            main_module.run()  # must return without raising
+            with patch("ohmyshell.main.wizard_module.should_run_wizard", return_value=False):
+                main_module.run()  # must return without raising
 
 
 def test_run_exits_on_eof():
     with patch("ohmyshell.main.ReplSession", return_value=_FakeSession([])):
         with patch("ohmyshell.main.load_registry"):
-            main_module.run()
+            with patch("ohmyshell.main.wizard_module.should_run_wizard", return_value=False):
+                main_module.run()
 
 
 def test_run_dispatches_raw_shell_then_exits(tmp_path, monkeypatch):
@@ -621,9 +623,49 @@ def test_run_dispatches_raw_shell_then_exits(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
     with patch("ohmyshell.main.ReplSession", return_value=_FakeSession(["ls -la", "/exit"])):
         with patch("ohmyshell.main.load_registry"):
-            with patch("ohmyshell.main.subprocess.run") as mock_run:
-                main_module.run()
+            with patch("ohmyshell.main.wizard_module.should_run_wizard", return_value=False):
+                with patch("ohmyshell.main.subprocess.run") as mock_run:
+                    main_module.run()
     mock_run.assert_called_once_with("ls -la", shell=True)
+
+
+def test_run_invokes_wizard_on_genuine_first_run(tmp_path, monkeypatch):
+    """
+    Bug fix (found via manual end-to-end testing, post-Build-Order):
+    wizard.py (Build Order Step 13) was fully written and tested but run()
+    never actually called it -- it went straight to config_module.load(),
+    which silently creates a static-default config.json with no wizard
+    involved. wizard.py's own should_run_wizard() docstring already
+    documented the expectation this violated. This test confirms run()
+    now calls should_run_wizard()/run_wizard() before config_module.load()
+    on a genuine first run (no config.json on disk yet).
+    """
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
+    assert not (tmp_path / "config.json").exists()
+
+    with patch("ohmyshell.main.ReplSession", return_value=_FakeSession(["/exit"])):
+        with patch("ohmyshell.main.load_registry"):
+            with patch("ohmyshell.main.wizard_module.run_wizard") as mock_wizard:
+                main_module.run()
+
+    mock_wizard.assert_called_once()
+
+
+def test_run_skips_wizard_when_config_already_exists(tmp_path, monkeypatch):
+    """Complementary case: an existing config.json means this isn't a first
+    run, so the wizard must NOT run (it would clobber the user's config)."""
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    config_path.write_text("{}", encoding="utf-8")
+
+    with patch("ohmyshell.main.ReplSession", return_value=_FakeSession(["/exit"])):
+        with patch("ohmyshell.main.load_registry"):
+            with patch("ohmyshell.main.wizard_module.run_wizard") as mock_wizard:
+                main_module.run()
+
+    mock_wizard.assert_not_called()
 
 
 def test_run_exits_process_if_registry_fails_to_load(capsys):

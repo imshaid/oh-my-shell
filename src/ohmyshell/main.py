@@ -106,6 +106,7 @@ from ohmyshell import audit_log as audit_log_module
 from ohmyshell import config as config_module
 from ohmyshell import meta_commands
 from ohmyshell import trash as trash_module
+from ohmyshell import wizard as wizard_module
 from ohmyshell.danger_classifier import Destructive, DangerClassifierError, classify
 from ohmyshell.discussion import Cancelled, Confirmed, edit_step_param, run_discussion
 from ohmyshell.executor import StepStatus, run_plan
@@ -630,6 +631,22 @@ def run() -> None:
     except RegistryError as exc:
         console.print(f"[red]Fatal: could not load capability registry: {exc}[/red]")
         sys.exit(1)
+
+    # Bug fix (found via manual end-to-end testing, post-Build-Order):
+    # wizard.py (Build Order Step 13) was fully written and tested but
+    # never actually called from here -- this entrypoint went straight to
+    # config_module.load(), whose own docstring says it silently creates a
+    # static-default config.json "on first run" with no wizard involved.
+    # wizard.py's own should_run_wizard() docstring already documents the
+    # expectation this violated: "main.py ... is expected to call this
+    # before config.load() and run_wizard() first if it's True, since
+    # config.load() itself would otherwise silently create a default
+    # config file without ever asking the user anything." The result: the
+    # hardware-aware first-run model recommendation (Section 10.1) never
+    # actually reached a real user -- every fresh install silently got the
+    # static qwen3:8b default regardless of the machine's hardware.
+    if wizard_module.should_run_wizard():
+        wizard_module.run_wizard(print_fn=console.print)
 
     cfg = config_module.load()
     session_start = time.time()
