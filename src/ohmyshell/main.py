@@ -676,15 +676,38 @@ def run() -> None:
 
         if routed.kind == InputKind.EMPTY:
             continue
-        if routed.kind == InputKind.SLASH_COMMAND:
-            if _handle_slash_command(routed.text, registry, cfg, session_start, console=console):
-                break
-            continue
-        if routed.kind == InputKind.RAW_SHELL:
-            _handle_raw_shell(routed.text, cfg, confirm=session, console=console)
-            continue
-        if routed.kind == InputKind.NATURAL_LANGUAGE:
-            _handle_natural_language(routed.text, registry, cfg, read=session, console=console)
+
+        # Bug fix (found via manual end-to-end testing, post-Build-Order,
+        # live-terminal session): only the top-level `session.prompt()`
+        # read above was ever wrapped for KeyboardInterrupt -- every
+        # mid-command confirmation read a dispatched handler does itself
+        # (the destructive-command [y/n/t] prompt in _handle_raw_shell,
+        # the plan discussion loop's [Enter/e/c/Esc] and its own edit
+        # sub-prompts, the sudo [Enter/s/Esc] prompt) was not. Pressing
+        # Ctrl+C at any of THOSE prompts -- a completely natural "actually,
+        # never mind" reflex, confirmed for real against a live raw-shell
+        # destructive-command panel -- propagated all the way out of this
+        # loop as an unhandled exception, printing a full traceback and
+        # killing the whole interactive session, not just cancelling the
+        # one pending action. Catching it here, around each dispatched
+        # handler individually (not by widening the top-level prompt's own
+        # except, which has different EOF/exit semantics -- Ctrl+D there
+        # legitimately means "end the session"), cancels just that action
+        # and returns to the ordinary REPL prompt instead.
+        try:
+            if routed.kind == InputKind.SLASH_COMMAND:
+                if _handle_slash_command(routed.text, registry, cfg, session_start, console=console):
+                    break
+                continue
+            if routed.kind == InputKind.RAW_SHELL:
+                _handle_raw_shell(routed.text, cfg, confirm=session, console=console)
+                continue
+            if routed.kind == InputKind.NATURAL_LANGUAGE:
+                _handle_natural_language(routed.text, registry, cfg, read=session, console=console)
+                continue
+        except KeyboardInterrupt:
+            console.print()
+            console.print("  Cancelled.")
             continue
 
 

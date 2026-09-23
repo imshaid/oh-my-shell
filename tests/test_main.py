@@ -668,6 +668,53 @@ def test_run_skips_wizard_when_config_already_exists(tmp_path, monkeypatch):
     mock_wizard.assert_not_called()
 
 
+def test_run_survives_ctrl_c_at_a_mid_command_confirmation_prompt(tmp_path, monkeypatch):
+    """
+    Regression test (found via manual end-to-end testing, in a real
+    terminal session): pressing Ctrl+C at a mid-command confirmation
+    prompt -- here, the raw-shell destructive-command [y/n/t] panel, but
+    the same unguarded-read pattern applies to the discussion loop's own
+    prompts and the sudo prompt -- used to raise KeyboardInterrupt straight
+    out of run()'s while loop as an unhandled exception (a full traceback,
+    then the whole process exiting), not just cancel the pending raw-shell
+    command. run() must catch it around the dispatched handler and return
+    to the ordinary REPL prompt for the next turn instead.
+    """
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
+
+    class _RaisesOnConfirm:
+        """The REPL's session, used both as the top-level prompt reader
+        and (via main.py's `confirm=session`) as _handle_raw_shell's
+        confirmation-prompt reader -- .prompt() drives the REPL loop's
+        own input, __call__ simulates Ctrl+C at the destructive-command
+        confirmation prompt specifically."""
+
+        def __init__(self, repl_inputs):
+            self._repl_inputs = iter(repl_inputs)
+
+        def prompt(self, *_args, **_kwargs):
+            try:
+                return next(self._repl_inputs)
+            except StopIteration:
+                raise EOFError from None
+
+        def __call__(self, *_args, **_kwargs):
+            raise KeyboardInterrupt
+
+    fake_session = _RaisesOnConfirm(["rm -rf /tmp/somedir", "/exit"])
+
+    with patch("ohmyshell.main.ReplSession", return_value=fake_session):
+        with patch("ohmyshell.main.load_registry"):
+            with patch("ohmyshell.main.wizard_module.should_run_wizard", return_value=False):
+                with patch("ohmyshell.main.subprocess.run") as mock_run:
+                    main_module.run()  # must return normally, not raise
+
+    # The destructive command was never actually run -- Ctrl+C cancelled it,
+    # same as pressing "n" would have, rather than crashing before a
+    # decision was ever made.
+    mock_run.assert_not_called()
+
+
 def test_run_exits_process_if_registry_fails_to_load(capsys):
     from ohmyshell.registry import RegistryError
 
