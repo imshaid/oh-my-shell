@@ -360,13 +360,23 @@ def test_ollama_backend_calls_on_token_for_every_chunk(registry):
     """
     Live-streaming regression coverage (the user's explicit "fully implement
     live token streaming" request): on_token must fire once per chunk, in
-    order, each carrying that chunk's own running eval_count -- not just a
-    single call at the end with the final tally.
+    order, with a genuinely growing tokens_out and accumulated text_so_far.
+
+    Bug fix (found via real end-to-end testing on the user's machine): this
+    test originally asserted tokens_out came straight from each chunk's own
+    `eval_count` field -- but ollama's real streaming behavior only
+    populates eval_count on the FINAL (done=True) chunk, every earlier
+    chunk carries None, so that old assertion was itself encoding the bug
+    (a "live" count that only ever changed once, at the very end -- exactly
+    what the user saw and flagged as not actually live). tokens_out is now
+    OllamaBackend's own running chunk count instead (see StreamProgress's
+    docstring), which genuinely increments on every chunk.
     """
     final_content = json.dumps({"action": "unmapped", "risk": "low", "params": {}})
     chunks = [
-        _fake_stream_chunk(content=final_content[:5], eval_count=3),
-        _fake_stream_chunk(content=final_content[5:], eval_count=9),
+        _fake_stream_chunk(content=final_content[:5]),
+        _fake_stream_chunk(content=final_content[5:10]),
+        _fake_stream_chunk(content=final_content[10:]),
         _fake_stream_chunk(content="", done=True, eval_count=12, prompt_eval_count=40, total_duration=500_000_000),
     ]
     schema = intent_parser.build_schema(registry)
@@ -378,10 +388,16 @@ def test_ollama_backend_calls_on_token_for_every_chunk(registry):
             system_prompt="sys", user_message="hello", schema=schema, on_token=seen.append
         )
 
-    assert len(seen) == 3
-    assert [p.tokens_out for p in seen] == [3, 9, 12]
+    # 3 real content chunks + 1 empty done=True chunk -- on_token fires for
+    # every chunk ollama yields, including the final empty one (a caller
+    # may still care about its telemetry-adjacent fields).
+    assert len(seen) == 4
+    assert [p.tokens_out for p in seen] == [1, 2, 3, 3]  # grows with real content, not the empty final chunk
     assert seen[0].text_delta == final_content[:5]
-    assert seen[1].text_delta == final_content[5:]
+    assert seen[1].text_delta == final_content[5:10]
+    assert seen[0].text_so_far == final_content[:5]
+    assert seen[1].text_so_far == final_content[:10]
+    assert seen[2].text_so_far == final_content  # fully accumulated by the last real chunk
 
 
 def test_ollama_backend_raises_intent_parse_error_on_client_exception():

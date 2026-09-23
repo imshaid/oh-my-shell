@@ -455,19 +455,25 @@ def _handle_natural_language(
 
     # `run_with_thinking_indicator` (ui/thinking.py) replaces the plain
     # `active_console.status("Thinking...")` spinner with the Section
-    # 8.3.3 / Core Feature #14 live CPU/RAM/GPU indicator, now with a
-    # genuinely live, growing token count too (post-Build-Order, per the
-    # user's explicit "fully implement live streaming" request):
+    # 8.3.3 / Core Feature #14 live CPU/RAM/GPU indicator, now with
+    # genuinely live token counts AND the raw JSON text itself streaming
+    # underneath it (post-Build-Order, per the user's own explicit follow-
+    # up: "I want to show the full live token by token streaming ... also
+    # other stats", found via the user's own real end-to-end test run that
+    # the first cut only updated a number once, at the very end -- see
+    # intent_parser.StreamProgress's own docstring for the root cause).
     # `token_box` is written by parse_intent()'s own on_token callback (one
     # dict update per streamed chunk, from intent_parser.OllamaBackend --
     # see that module's docstring) and read every UI frame by the Live
     # polling loop below -- see run_with_thinking_indicator's own
     # `on_token_box` docstring for why a plain dict needs no lock here.
-    token_box: dict[str, int] = {}
+    token_box: dict[str, object] = {}
 
     def _on_token(progress) -> None:
-        if progress.tokens_out is not None:
-            token_box["tokens_out"] = progress.tokens_out
+        token_box["tokens_out"] = progress.tokens_out
+        if progress.tokens_in is not None:
+            token_box["tokens_in"] = progress.tokens_in
+        token_box["text"] = progress.text_so_far
 
     try:
         result = run_with_thinking_indicator(
@@ -494,11 +500,13 @@ def _handle_natural_language(
 
     def _reparse(adjustment_text: str, current_plan: Plan) -> Plan | None:
         nonlocal last_telemetry, last_attempts
-        reparse_token_box: dict[str, int] = {}
+        reparse_token_box: dict[str, object] = {}
 
         def _on_reparse_token(progress) -> None:
-            if progress.tokens_out is not None:
-                reparse_token_box["tokens_out"] = progress.tokens_out
+            reparse_token_box["tokens_out"] = progress.tokens_out
+            if progress.tokens_in is not None:
+                reparse_token_box["tokens_in"] = progress.tokens_in
+            reparse_token_box["text"] = progress.text_so_far
 
         try:
             adjusted = run_with_thinking_indicator(

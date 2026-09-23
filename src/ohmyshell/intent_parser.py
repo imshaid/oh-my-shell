@@ -140,15 +140,36 @@ class IntentBackend(Protocol):
 
 
 # One streamed chunk's worth of live progress, reported via `on_token` (see
-# OllamaBackend.generate below) -- `tokens_out` is a running count of the
-# model's *output* tokens so far this call (ollama's streaming chunks each
-# carry the accumulated eval_count directly, not just a raw text delta), so
-# a caller can show a genuinely live-growing number rather than guessing
-# from character/word counts.
+# OllamaBackend.generate below).
+#
+# Bug fix (found via real end-to-end testing on the user's machine, post-
+# Build-Order): this dataclass originally exposed `chunk.eval_count`
+# directly as a "running" output-token count. That is wrong -- verified
+# against ollama's actual client types (BaseGenerateResponse):
+# prompt_eval_count/eval_count/total_duration are all Optional and, per
+# ollama's real streaming behavior, are only populated on the FINAL chunk
+# (done=True); every earlier chunk carries None for all three. So the
+# "live" count was in fact only ever set once, on the very last chunk --
+# functionally identical to just reading the already-finished
+# ParseTelemetry, which is exactly the "not actually live" bug the user
+# caught live (the Thinking indicator showed nothing token-related until
+# the already-finished plan panel appeared with its numbers).
+#
+# Fixed by having THIS module (not the UI layer) count chunks itself:
+# `tokens_out` below is `OllamaBackend.generate`'s own running tally of
+# non-empty content deltas seen so far (ollama streams roughly one token
+# per chunk), so it grows by 1 on every real chunk instead of staying
+# unset until the end. `text_delta` is that chunk's own raw text piece and
+# `text_so_far` is the full accumulated text -- both needed so a caller
+# can render the growing raw JSON content live (the user's explicit ask:
+# "I want to show the full live token by token streaming ... also other
+# stats"), not just a number.
 @dataclass(frozen=True)
 class StreamProgress:
     text_delta: str
-    tokens_out: int | None
+    text_so_far: str
+    tokens_out: int
+    tokens_in: int | None = None
 
 
 class OllamaBackend:
@@ -220,12 +241,26 @@ class OllamaBackend:
 
             content_parts: list[str] = []
             final_chunk = None
+            chunk_count = 0
             for chunk in chunks:
                 delta = chunk.message.content or ""
                 if delta:
                     content_parts.append(delta)
+                    # Client-side running count (see StreamProgress's own
+                    # docstring for why chunk.eval_count itself can't be
+                    # used here -- ollama only populates it on the final,
+                    # done=True chunk). One non-empty content delta is, in
+                    # ollama's normal streaming behavior, one token.
+                    chunk_count += 1
                 if on_token is not None:
-                    on_token(StreamProgress(text_delta=delta, tokens_out=chunk.eval_count))
+                    on_token(
+                        StreamProgress(
+                            text_delta=delta,
+                            text_so_far="".join(content_parts),
+                            tokens_out=chunk_count,
+                            tokens_in=chunk.prompt_eval_count,
+                        )
+                    )
                 final_chunk = chunk
         except Exception as exc:  # ollama client raises its own exception types
             raise IntentParseError(f"Ollama call failed: {exc}") from exc
