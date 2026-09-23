@@ -22,26 +22,33 @@ progress display (Section 8.3.4's confirmed mockup):
 
     ▸ [v] View detailed log     [u] Undo this action
 
-Scope note (Section 16 Rule 5): executor.py's current StepEvent only
-carries {step_number, total_steps, status, detail} -- it has no live
-file-count/byte-size/percentage fields, because none of the four registered
-capabilities' command_templates report granular progress (they're each one
-opaque shell command run via subprocess.run(), blocking, not a Python loop
-this codebase controls step-by-step). A real per-file bar (the richer
-mockup above) would need the command_template itself to emit structured
-progress AND executor.py to switch from a single blocking subprocess.run()
-call to Popen + live line-reading -- a genuine architecture change to a
-module whose current design (blocking subprocess, `runner` injected as a
-plain callable) is itself a "confirmed with the user" decision (see
-executor.py's own module docstring, decision 1-3) with broad existing test
-coverage built on that exact contract. Not attempted here without an
-explicit go-ahead, to avoid quietly destabilizing a heavily-tested,
-already-fixed-many-times module. What IS implemented here (post-Build-
-Order, per the user's explicit "make the whole shell feel alive, not just
-the AI thinking step" request): a genuinely live-TICKING elapsed-time
-counter on the RUNNING spinner line, via `_LiveRunningLine` below -- see
-its own docstring for why this needed no threading or executor.py changes
-at all, and is exactly as safe as the plain static spinner it replaces.
+Real per-file live progress (added post-Build-Order, per the user's
+explicit "make the whole shell feel alive, every operation, professional
+not a toy" request): executor.py's `run_plan(..., on_output_line=...)`
+(see that module's `_run_streaming` docstring) now streams a command's
+stdout one line at a time, as it's produced, instead of only reporting a
+result after the whole command finishes. capabilities.json's
+clean_temp_files/organize_files templates were given `mv -v`, so there is
+now something genuine to stream: GNU coreutils' own "renamed 'X' -> 'Y'"
+line per file moved. `StreamingRenderer.on_output_line` (below) is the
+`on_output_line` callback main.py wires into `run_plan()`; it parses that
+exact line shape to keep a running file count and the most recent
+filename, and falls back to showing the raw line verbatim for any other
+capability's output (e.g. `list_processes`' `ps`/`grep` output) -- either
+way, always real command output, never a simulated/estimated number.
+
+This needed no change to executor.py's Ctrl+C/SIGINT-handling contract
+(reading a Popen's stdout is already incremental -- no worker thread is
+needed the way ui/thinking.py needed one for parse_intent(); see
+`_run_streaming`'s own docstring) and is fully additive: `on_output_line`
+defaults to None, and every pre-existing (non-streaming) call site keeps
+using the exact same `runner`-based blocking path as before, completely
+untouched.
+
+`_LiveRunningLine` (below) carries both a live-ticking elapsed-time
+counter AND the live label text, updated in place via `update_label()` as
+each output line arrives -- `__rich_console__` reads both fresh on every
+`Live` refresh tick, so neither needs an explicit re-render call.
 
 The "AI: N tokens · Ns reasoning time" line (added post-Build-Order, found
 via manual end-to-end testing): intent_parser.OllamaBackend already reads
@@ -59,6 +66,7 @@ went through the Intent Parser at all and has nothing genuine to show here.
 
 from __future__ import annotations
 
+import re
 import time
 from contextlib import contextmanager
 from typing import Iterator
@@ -78,39 +86,51 @@ _STATUS_GLYPH = {
     StepStatus.SKIPPED: ("⊘", "yellow"),
 }
 
+_MAX_RUNNING_LABEL_CHARS = 72  # keeps the spinner line to roughly one terminal row
+
 
 class _LiveRunningLine:
     """
-    Spinner + a genuinely live, ticking elapsed-time counter for the
-    RUNNING step (added post-Build-Order, per the user's explicit "make
-    the whole shell feel alive" request -- see this module's docstring for
-    why real per-file progress isn't attempted here).
+    Spinner + a genuinely live, ticking elapsed-time counter AND a
+    mutable label for the RUNNING step (added post-Build-Order, per the
+    user's explicit "make the whole shell feel alive, every operation"
+    request -- see this module's docstring for the real per-file progress
+    this now carries).
 
     A plain `rich.spinner.Spinner` already animates on its own under a
     `Live` display -- Live's background refresh thread re-renders whatever
     renderable is currently stored every tick, and `Spinner.render(t)`
     computes its glyph frame fresh from wall-clock time each call, with no
     extra plumbing needed. This class uses that exact same mechanism for
-    the elapsed-time text: `__rich_console__` is called by Live on every
-    refresh tick (same as Spinner's own), and computes `time.monotonic() -
-    self._start` fresh each time, so the "12.4s" text ticks in place
-    exactly like the spinner glyph next to it -- no background thread, no
-    change to `on_event`'s call pattern (still called exactly once for
-    RUNNING, since a plan is currently always one command; see executor.py's
-    own module docstring), and critically no change to run_plan()'s
-    blocking subprocess/SIGINT-handling contract: executor.py's Ctrl+C
-    handling relies on `signal.signal()`, which only works on the main
-    thread, so anything that would need a worker thread here (the pattern
+    both the elapsed-time text AND the label: `__rich_console__` is called
+    by Live on every refresh tick (same as Spinner's own), and reads
+    `self._label`/computes `time.monotonic() - self._start` fresh each
+    time -- so calling `update_label()` between ticks (from
+    StreamingRenderer.on_output_line, as real command output arrives) is
+    picked up on the very next automatic repaint, with no extra
+    `live.update()` call needed. No background thread, no change to
+    `on_event`'s call pattern (still called exactly once for RUNNING,
+    since a plan is currently always one command; see executor.py's own
+    module docstring), and critically no change to run_plan()'s blocking
+    subprocess/SIGINT-handling contract: executor.py's Ctrl+C handling
+    relies on `signal.signal()`, which only works on the main thread, so
+    anything that would need a worker thread here (the pattern
     ui/thinking.py uses for parse_intent) would risk breaking the
     already-fixed Ctrl+C behavior (this session's own Bug #8/#9). This
     class needs none of that -- it is a passive renderable, not an active
-    poller.
+    poller; executor.py's own `_run_streaming` is what makes the label
+    updates arrive incrementally, on the same main thread, not this class.
     """
 
     def __init__(self, label: str) -> None:
         self._label = label
         self._start = time.monotonic()
         self._spinner = Spinner("dots")
+
+    def update_label(self, label: str) -> None:
+        if len(label) > _MAX_RUNNING_LABEL_CHARS:
+            label = "…" + label[-(_MAX_RUNNING_LABEL_CHARS - 1) :]
+        self._label = label
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         elapsed = time.monotonic() - self._start
@@ -122,6 +142,30 @@ def render_running_line(event: StepEvent) -> _LiveRunningLine:
     """A spinner + live elapsed-time line shown while a step is RUNNING (Section 8.3.4's ⠙)."""
     label = event.detail if event.detail else "Executing..."
     return _LiveRunningLine(label)
+
+
+# GNU coreutils' `mv -v` output shape, exactly as verified on the dev
+# machine (`renamed '<src>' -> '<dst>'`) -- capabilities.json's
+# clean_temp_files/organize_files templates were given `-v` specifically
+# so this has real per-file lines to match, one per file actually moved.
+_MV_VERBOSE_RE = re.compile(r"^renamed '.*' -> '(?P<dest>.*)'$")
+
+
+def _running_label_for_output_line(line: str, *, files_moved_so_far: int) -> tuple[str, int]:
+    """
+    Turn one real line of a running command's stdout into the next live
+    label + updated file count. Recognizes `mv -v`'s line shape
+    specifically (the two capabilities this project streams progress for
+    both use it); any other capability's raw output is shown verbatim, so
+    nothing here silently hides real output it doesn't understand.
+    """
+    match = _MV_VERBOSE_RE.match(line)
+    if match is not None:
+        files_moved_so_far += 1
+        dest_name = match.group("dest").rsplit("/", 1)[-1]
+        noun = "file" if files_moved_so_far == 1 else "files"
+        return f"{files_moved_so_far} {noun} moved  ·  {dest_name}", files_moved_so_far
+    return line, files_moved_so_far
 
 
 def render_result_line(event: StepEvent) -> Text:
@@ -222,6 +266,13 @@ class StreamingRenderer:
     def __init__(self, *, console: Console | None = None) -> None:
         self._console = console if console is not None else Console()
         self._live: Live | None = None
+        # Tracks the currently-active RUNNING line + its file count, so
+        # `on_output_line` (below) can update the SAME instance already
+        # being repainted by Live, and so the file counter accumulates
+        # correctly across multiple lines of one command's output rather
+        # than resetting per line.
+        self._running_line: _LiveRunningLine | None = None
+        self._files_moved: int = 0
 
     def __enter__(self) -> "StreamingRenderer":
         self._live = Live(console=self._console, refresh_per_second=8, transient=True)
@@ -237,9 +288,28 @@ class StreamingRenderer:
         if self._live is None:
             return
         if event.status is StepStatus.RUNNING:
-            self._live.update(render_running_line(event))
+            self._files_moved = 0
+            self._running_line = render_running_line(event)
+            self._live.update(self._running_line)
         else:
+            self._running_line = None
             self._live.update(render_result_line(event))
+
+    def on_output_line(self, line: str) -> None:
+        """
+        `executor.run_plan(..., on_output_line=...)` callback (added post-
+        Build-Order, real per-file live progress -- see this module's own
+        docstring): called once per line of the running command's stdout,
+        as it's produced. Updates the currently-active RUNNING line's
+        label in place; a no-op before RUNNING fires or after the display
+        has closed, same defensive shape `on_event` already uses.
+        """
+        if self._running_line is None:
+            return
+        label, self._files_moved = _running_label_for_output_line(
+            line, files_moved_so_far=self._files_moved
+        )
+        self._running_line.update_label(label)
 
     def print_summary(self, result: ExecutionResult, *, telemetry: ParseTelemetry | None = None) -> None:
         self._console.print(render_execution_summary(result, telemetry=telemetry))

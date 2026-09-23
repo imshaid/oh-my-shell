@@ -446,3 +446,148 @@ class TestRunPlanBeforeAfterExecuteHooks:
         runner = _ScriptedRunner([_FakeCompleted(returncode=0, stdout="hi")])
         result = run_plan(_plan(), reg, runner=runner)
         assert result.all_done
+
+
+# ---------------------------------------------------------------------------
+# Live per-line streaming (on_output_line/popen_factory, added post-Build-
+# Order per the user's explicit "make the whole shell feel alive, every
+# operation" request -- see executor.py's own _run_streaming docstring)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStderr:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def read(self) -> str:
+        return self._text
+
+
+class _FakePopen:
+    """
+    Fake Popen exposing just what `_run_streaming` reads: `.stdout` (an
+    iterable of raw lines, each already carrying its own trailing "\n"
+    exactly like a real pipe does), `.stderr` (has `.read()`), `.returncode`,
+    `.wait()`, and `.kill()`.
+    """
+
+    def __init__(self, lines: list[str], *, returncode: int = 0, stderr_text: str = ""):
+        self.stdout = iter(f"{line}\n" for line in lines)
+        self.stderr = _FakeStderr(stderr_text)
+        self.returncode = returncode
+        self.killed = False
+
+    def wait(self) -> int:
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class _ScriptedPopenFactory:
+    def __init__(self, fake_popens: list[_FakePopen]):
+        self._fake_popens = list(fake_popens)
+        self.calls: list[str] = []
+
+    def __call__(self, command, **kwargs):
+        self.calls.append(command)
+        return self._fake_popens.pop(0)
+
+
+class TestRunPlanLiveOutputStreaming:
+    def test_on_output_line_called_once_per_line_in_order(self):
+        reg = _fake_registry("mv -v a b")
+        popen_factory = _ScriptedPopenFactory(
+            [_FakePopen(["renamed 'a' -> 'b'", "renamed 'c' -> 'd'"], returncode=0)]
+        )
+        seen: list[str] = []
+        run_plan(_plan(), reg, on_output_line=seen.append, popen_factory=popen_factory)
+
+        assert seen == ["renamed 'a' -> 'b'", "renamed 'c' -> 'd'"]
+
+    def test_successful_streaming_run_reports_done(self):
+        reg = _fake_registry("mv -v a b")
+        popen_factory = _ScriptedPopenFactory([_FakePopen(["renamed 'a' -> 'b'"], returncode=0)])
+        result = run_plan(_plan(), reg, on_output_line=lambda line: None, popen_factory=popen_factory)
+
+        assert result.step_results[0].status is StepStatus.DONE
+        assert "renamed 'a' -> 'b'" in result.step_results[0].stdout
+
+    def test_failed_streaming_run_reports_failed(self):
+        reg = _fake_registry("mv -v a b")
+        popen_factory = _ScriptedPopenFactory(
+            [_FakePopen([], returncode=1, stderr_text="mv: cannot stat 'a': No such file or directory")]
+        )
+        result = run_plan(_plan(), reg, on_output_line=lambda line: None, popen_factory=popen_factory)
+
+        assert result.step_results[0].status is StepStatus.FAILED
+        assert "No such file" in result.step_results[0].stderr
+
+    def test_omitting_on_output_line_uses_plain_runner_not_popen_factory(self):
+        """
+        Backward-compatibility guarantee: every pre-existing call site
+        (no `on_output_line`) must keep using `runner`, never touching
+        `popen_factory` at all -- proven here by making the injected
+        popen_factory raise if it's ever called.
+        """
+        reg = _fake_registry("echo hi")
+        runner = _ScriptedRunner([_FakeCompleted(returncode=0, stdout="hi")])
+
+        def _popen_factory_that_must_not_be_called(*args, **kwargs):
+            raise AssertionError("popen_factory should not be used when on_output_line is omitted")
+
+        result = run_plan(_plan(), reg, runner=runner, popen_factory=_popen_factory_that_must_not_be_called)
+
+        assert result.step_results[0].status is StepStatus.DONE
+        assert runner.calls  # the plain runner path was actually used
+
+    def test_sudo_escalation_retry_also_streams(self):
+        """
+        The sudo-retry path reuses the same _StepRunner instance (see
+        _escalate's own call to self._execute), so on_output_line/
+        popen_factory must carry through to the retried, sudo-prefixed
+        command too -- not just the first attempt.
+        """
+        reg = _fake_registry("mv a b")
+        popen_factory = _ScriptedPopenFactory(
+            [
+                _FakePopen([], returncode=1, stderr_text="Permission denied"),
+                _FakePopen(["renamed 'a' -> 'b'"], returncode=0),
+            ]
+        )
+        seen: list[str] = []
+        result = run_plan(
+            _plan(),
+            reg,
+            on_output_line=seen.append,
+            popen_factory=popen_factory,
+            prompt=_FakePrompt(SudoDecision.GRANT),
+        )
+
+        assert result.step_results[0].status is StepStatus.DONE
+        assert seen == ["renamed 'a' -> 'b'"]
+        assert popen_factory.calls[1].startswith("sudo ")
+
+    def test_double_interrupt_kills_the_process_and_reports_interrupted(self):
+        """
+        A second Ctrl+C mid-stream must not leave an orphaned child process
+        running -- `_run_streaming` kills it before re-raising, the same
+        safety property double-Ctrl+C already has on the non-streaming
+        (`runner`) path (see TestRunPlanDoubleInterrupt below).
+        """
+        reg = _fake_registry("mv -v a b")
+        fake_popen = _FakePopen(["renamed 'a' -> 'b'", "renamed 'c' -> 'd'"], returncode=0)
+        popen_factory = _ScriptedPopenFactory([fake_popen])
+        state = InterruptState()
+
+        def _on_line(line: str) -> None:
+            # Simulate the second SIGINT arriving while output is streaming.
+            state.note_interrupt()
+            state.note_interrupt()
+
+        result = run_plan(
+            _plan(), reg, on_output_line=_on_line, popen_factory=popen_factory, interrupt_state=state
+        )
+
+        assert result.interrupted is True
+        assert fake_popen.killed is True

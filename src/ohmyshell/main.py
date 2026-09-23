@@ -591,6 +591,14 @@ def _handle_natural_language(
             # the full explanation of the bug this fixes.
             on_before_execute=renderer.pause_for_sudo,
             on_after_execute=renderer.resume_after_sudo,
+            # Real per-file live progress (added post-Build-Order, per the
+            # user's explicit "make the whole shell feel alive, every
+            # operation" request): streams the running command's stdout
+            # live into the same spinner line, one real line at a time --
+            # see ui/streaming.py's own module docstring and executor.py's
+            # `_run_streaming` docstring for how this works without a
+            # worker thread and without touching Ctrl+C handling.
+            on_output_line=renderer.on_output_line,
         )
     # last_telemetry: the same ParseTelemetry already threaded into the
     # plan panel's own footer above -- the "AI: N tokens · Ns reasoning

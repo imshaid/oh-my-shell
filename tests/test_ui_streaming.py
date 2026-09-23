@@ -12,6 +12,7 @@ from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.ui.streaming import (
     StreamingRenderer,
     _LiveRunningLine,
+    _running_label_for_output_line,
     render_execution_summary,
     render_result_line,
     render_running_line,
@@ -68,6 +69,122 @@ class TestRenderRunningLine:
             return float(fragment.strip().rstrip("s\n"))
 
         assert _extract_seconds(second_text) > _extract_seconds(first_text)
+
+    def test_update_label_changes_what_renders(self):
+        line = _LiveRunningLine("Executing...")
+        line.update_label("3 files moved  ·  report.pdf")
+        text = _render_to_text(line)
+        assert "3 files moved" in text
+        assert "report.pdf" in text
+        assert "Executing..." not in text
+
+    def test_update_label_truncates_a_very_long_label_to_the_tail(self):
+        line = _LiveRunningLine("Executing...")
+        long_label = "x" * 200 + "TAIL_MARKER"
+        line.update_label(long_label)
+        text = _render_to_text(line)
+        assert "TAIL_MARKER" in text
+        assert "…" in text
+        assert "x" * 200 not in text
+
+
+class TestRunningLabelForOutputLine:
+    """
+    Regression coverage for real per-file live progress (added post-Build-
+    Order, per the user's explicit "make the whole shell feel alive, every
+    operation" request): parses `mv -v`'s real "renamed 'X' -> 'Y'" output
+    (capabilities.json's clean_temp_files/organize_files templates were
+    given `-v` specifically so there's genuine per-file output to parse)
+    into a running file count + latest filename, and falls back to the raw
+    line verbatim for any other capability's output.
+    """
+
+    def test_first_mv_verbose_line_counts_as_one_file(self):
+        label, count = _running_label_for_output_line(
+            "renamed '/tmp/old.log' -> '/home/user/.oh-my-shell/.trash/old.log'",
+            files_moved_so_far=0,
+        )
+        assert count == 1
+        assert "1 file moved" in label
+        assert "old.log" in label
+
+    def test_count_accumulates_across_successive_lines(self):
+        label1, count1 = _running_label_for_output_line(
+            "renamed '/tmp/a.log' -> '/trash/a.log'", files_moved_so_far=0
+        )
+        label2, count2 = _running_label_for_output_line(
+            "renamed '/tmp/b.log' -> '/trash/b.log'", files_moved_so_far=count1
+        )
+        assert count1 == 1
+        assert count2 == 2
+        assert "2 files moved" in label2  # plural once count > 1
+
+    def test_non_mv_output_is_shown_verbatim(self):
+        """
+        A capability whose output isn't `mv -v` (e.g. list_processes' `ps`
+        output) must still be shown, not silently swallowed just because
+        this parser doesn't recognize its shape.
+        """
+        label, count = _running_label_for_output_line(
+            "1234  0.5%  chrome --type=renderer", files_moved_so_far=0
+        )
+        assert label == "1234  0.5%  chrome --type=renderer"
+        assert count == 0  # unrecognized shape never increments the file counter
+
+
+class TestStreamingRendererOnOutputLine:
+    def test_updates_the_active_running_line(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="Executing..."))
+            renderer.on_output_line("renamed '/tmp/a.log' -> '/trash/a.log'")
+            text = _render_to_text(renderer._running_line)
+        assert "1 file moved" in text
+        assert "a.log" in text
+
+    def test_file_count_accumulates_across_multiple_output_lines(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="Executing..."))
+            renderer.on_output_line("renamed '/tmp/a.log' -> '/trash/a.log'")
+            renderer.on_output_line("renamed '/tmp/b.log' -> '/trash/b.log'")
+            renderer.on_output_line("renamed '/tmp/c.log' -> '/trash/c.log'")
+            text = _render_to_text(renderer._running_line)
+        assert "3 files moved" in text
+
+    def test_file_count_resets_for_a_new_running_step(self):
+        """
+        A fresh RUNNING event (a new command) must start its own file
+        count from zero, not continue accumulating from a previous step's
+        count -- each command's progress is independent.
+        """
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="first"))
+            renderer.on_output_line("renamed '/tmp/a.log' -> '/trash/a.log'")
+            renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.DONE, detail="done"))
+            renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="second"))
+            renderer.on_output_line("renamed '/tmp/x.log' -> '/trash/x.log'")
+            text = _render_to_text(renderer._running_line)
+        assert "1 file moved" in text  # not "2 files moved"
+
+    def test_before_running_event_is_a_noop(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        renderer = StreamingRenderer(console=console)
+        renderer.on_output_line("renamed '/tmp/a.log' -> '/trash/a.log'")  # must not raise
+
+    def test_after_terminal_event_is_a_noop(self):
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=False)
+        with StreamingRenderer(console=console) as renderer:
+            renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="x"))
+            renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.DONE, detail="done"))
+            renderer.on_output_line("renamed '/tmp/a.log' -> '/trash/a.log'")  # must not raise
+            assert renderer._running_line is None
 
 
 class TestRenderResultLine:

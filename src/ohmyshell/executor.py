@@ -238,6 +238,72 @@ def _run_one_command(command: str, *, runner: Callable[..., Any]) -> subprocess.
     return runner(command, shell=True, capture_output=True, text=True)
 
 
+def _run_streaming(
+    command: str,
+    *,
+    state: InterruptState,
+    on_output_line: Callable[[str], None],
+    popen_factory: Callable[..., subprocess.Popen],
+) -> subprocess.CompletedProcess:
+    """
+    Real per-line live progress (added post-Build-Order, per the user's
+    explicit "make the whole shell feel alive, every operation" request).
+
+    Runs `command` via `popen_factory` (default `subprocess.Popen`) instead
+    of the plain `runner` callable, reading its stdout ONE LINE AT A TIME
+    as the child process produces it (e.g. `mv -v`'s "renamed 'X' -> 'Y'"
+    per file, added to capabilities.json's clean_temp_files/organize_files
+    templates specifically so there's something genuine to stream) and
+    calling `on_output_line` for each -- this is what lets the UI layer
+    (ui/streaming.py's StreamingRenderer) show a real, growing file count
+    instead of a spinner that never changes for the whole command's
+    duration.
+
+    Still entirely on the calling (main) thread, by design: unlike
+    ui/thinking.py's parse_intent streaming (which needed a worker thread
+    because parse_intent() itself never yields control until it returns),
+    reading a Popen's stdout is already incremental -- `for line in
+    proc.stdout` returns each line as soon as it's flushed, without
+    blocking for the whole command. So Ctrl+C handling is completely
+    unaffected: `_sigint_handler`'s `signal.signal()` still runs on the
+    main thread exactly as it does for the non-streaming `runner` path
+    (see `_StepRunner._execute`), and a raised `_DoubleInterrupt` simply
+    propagates out of the `for line in proc.stdout` loop the same way it
+    already propagates out of a blocking `subprocess.run()` call.
+
+    Returns a `subprocess.CompletedProcess` built from what was actually
+    observed, so every downstream consumer (`_StepRunner._result`,
+    `_looks_like_permission_denied`, etc.) sees the exact same shape it
+    already handles from the non-streaming path -- this function is a
+    drop-in alternative source of that one object, not a new contract.
+    """
+    proc = popen_factory(
+        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
+    )
+    collected_lines: list[str] = []
+    try:
+        assert proc.stdout is not None  # guaranteed by stdout=PIPE above
+        for raw_line in proc.stdout:
+            collected_lines.append(raw_line)
+            stripped = raw_line.rstrip("\n")
+            if stripped:
+                on_output_line(stripped)
+    except BaseException:
+        # Covers _DoubleInterrupt (raised mid-iteration by the SIGINT
+        # handler) and any other failure while reading -- don't leave an
+        # orphaned child process behind either way.
+        proc.kill()
+        raise
+    proc.wait()
+    stderr_text = proc.stderr.read() if proc.stderr is not None else ""
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=proc.returncode,
+        stdout="".join(collected_lines),
+        stderr=stderr_text,
+    )
+
+
 class _StepRunner:
     """
     Internal helper bundling the plan/registry/runner/emit context so
@@ -256,6 +322,8 @@ class _StepRunner:
         state: InterruptState,
         on_before_execute: Callable[[bool], None] | None = None,
         on_after_execute: Callable[[bool], None] | None = None,
+        on_output_line: Callable[[str], None] | None = None,
+        popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
     ) -> None:
         self.plan = plan
         self.total = total
@@ -266,6 +334,16 @@ class _StepRunner:
         self.description = plan.steps[0] if plan.steps else plan.action
         self.on_before_execute = on_before_execute
         self.on_after_execute = on_after_execute
+        # `on_output_line`/`popen_factory` (added post-Build-Order): purely
+        # additive -- when `on_output_line` is None (every call site and
+        # test written before this feature, and still every call site that
+        # doesn't opt in), `_execute` below calls `self.runner` exactly as
+        # it always has. Only when a caller (main.py, for the real live
+        # terminal UI) supplies `on_output_line` does execution switch to
+        # `_run_streaming`/Popen. This keeps the existing `runner` contract
+        # (and every test built on it) completely untouched.
+        self.on_output_line = on_output_line
+        self.popen_factory = popen_factory
 
     def _result(self, status: StepStatus, completed: subprocess.CompletedProcess | None = None, used_sudo: bool = False) -> StepResult:
         return StepResult(
@@ -306,7 +384,15 @@ class _StepRunner:
         try:
             try:
                 with _sigint_handler(self.state):
-                    completed = self.runner(command, shell=True, capture_output=True, text=True)
+                    if self.on_output_line is not None:
+                        completed = _run_streaming(
+                            command,
+                            state=self.state,
+                            on_output_line=self.on_output_line,
+                            popen_factory=self.popen_factory,
+                        )
+                    else:
+                        completed = self.runner(command, shell=True, capture_output=True, text=True)
             except _DoubleInterrupt:
                 self.emit(StepStatus.INTERRUPTED, "force-stopped (second Ctrl+C)")
                 return ExecutionResult(
@@ -387,6 +473,8 @@ def run_plan(
     interrupt_state: InterruptState | None = None,
     on_before_execute: Callable[[bool], None] | None = None,
     on_after_execute: Callable[[bool], None] | None = None,
+    on_output_line: Callable[[str], None] | None = None,
+    popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
 ) -> ExecutionResult:
     """
     Execute `plan` (blocking), streaming a StepEvent for its one executable
@@ -402,6 +490,18 @@ def run_plan(
     repainting that same terminal on a timer (Step 11's `rich.Live`
     spinner) -- main.py uses these hooks to pause/resume that display
     around exactly the sudo-prefixed call, and only that one.
+
+    `on_output_line` (added post-Build-Order, per the user's explicit
+    "make the whole shell feel alive, every operation" request): optional,
+    called once per line of the command's stdout AS IT ARRIVES (not after
+    the command finishes). When given, execution switches internally from
+    `runner` to Popen-based real-time reading (see `_run_streaming`'s own
+    docstring for why this needed no threading and doesn't touch Ctrl+C
+    handling); when omitted (every pre-existing call site and test), the
+    original `runner`-based blocking call happens exactly as before --
+    this parameter is purely additive. `popen_factory` is the Popen
+    equivalent of `runner`, injectable for tests of the streaming path
+    specifically.
     """
     state = interrupt_state if interrupt_state is not None else InterruptState()
     total = len(plan.steps) if plan.steps else 1
@@ -420,5 +520,7 @@ def run_plan(
         state=state,
         on_before_execute=on_before_execute,
         on_after_execute=on_after_execute,
+        on_output_line=on_output_line,
+        popen_factory=popen_factory,
     )
     return step_runner.run(command)
