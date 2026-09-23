@@ -48,7 +48,7 @@
         "required": ["target_dir"],
         "additionalProperties": false
       },
-      "command_template": "for f in {target_dir}/*; do ext=\"${f##*.}\"; mkdir -p \"{target_dir}/$ext\"; mv \"$f\" \"{target_dir}/$ext/\"; done",
+      "command_template": "for f in {target_dir}/*; do ext=\"${{f##*.}}\"; mkdir -p \"{target_dir}/$ext\"; mv \"$f\" \"{target_dir}/$ext/\"; done",
       "few_shot_examples": [
         "organize this folder",
         "sort downloads by file type"

@@ -70,6 +70,96 @@ def test_all_capabilities_preserves_file_order():
     assert actions_in_order == reg.actions()
 
 
+class TestCommandTemplatesActuallyRender:
+    """
+    Regression coverage for a real bug (found via manual end-to-end
+    testing, post-Build-Order): organize_files' own command_template used
+    bash's `${f##*.}` parameter-expansion syntax with its braces
+    UNESCAPED for str.format() -- executor.render_command() calls
+    `command_template.format(**quoted_params)`, and Python's str.format()
+    parses ANY `{...}` in the template as a placeholder field, not just the
+    ones this registry's own `{param}` convention intends. `${f##*.}` was
+    therefore parsed as a format field named `f##*`, which is never a
+    param, so render_command() raised KeyError on every single
+    organize_files invocation -- the capability could never actually
+    execute, despite passing intent parsing, harness validation, and plan
+    generation cleanly (none of which ever calls render_command() to
+    render the real, final command).
+
+    No prior test in this suite (nor test_validation.py, test_plan_
+    generator.py, test_intent_parser.py, or test_ui_panels.py, all of
+    which reference organize_files) ever exercised the actual rendering
+    step -- this class closes that gap for every REGISTERED capability,
+    not just organize_files, so a future capability with the same kind of
+    unescaped-brace mistake in its command_template fails a test
+    immediately instead of only at real, live execution time.
+    """
+
+    # Best-effort placeholder values for a required param with no schema
+    # default -- realistic-shaped strings for the params this registry's
+    # four core capabilities actually declare as required-without-default
+    # (organize_files' target_dir, kill_process' target). A future
+    # capability adding a new required-without-default param of a kind not
+    # listed here would fall back to the generic "placeholder" string,
+    # which is enough to prove render_command() doesn't raise -- it does
+    # not need to be a semantically perfect value for this test's purpose.
+    _REQUIRED_PARAM_PLACEHOLDERS = {
+        "target_dir": "/tmp/placeholder-dir",
+        "target": "1234",
+    }
+
+    def _placeholder_params(self, reg, action):
+        schema = reg.params_schema_for(action)
+        params = {}
+        for name, prop in schema.get("properties", {}).items():
+            if "default" in prop:
+                params[name] = prop["default"]
+            elif name in schema.get("required", []):
+                params[name] = self._REQUIRED_PARAM_PLACEHOLDERS.get(name, "placeholder")
+        return params
+
+    def test_every_registered_capability_command_template_renders(self):
+        """
+        For every capability currently in capabilities.json, build a
+        plausible params dict (schema defaults where declared, a
+        placeholder for anything required-without-default) and confirm
+        executor.render_command() does not raise. This is the direct
+        regression test for the organize_files bug -- it would have failed
+        loudly (KeyError) against the pre-fix command_template.
+        """
+        from ohmyshell.executor import render_command
+
+        reg = registry_module.load()
+        for cap in reg.all_capabilities():
+            action = cap["action"]
+            params = self._placeholder_params(reg, action)
+            try:
+                render_command(cap["command_template"], params)
+            except KeyError as exc:
+                pytest.fail(
+                    f"{action}'s command_template failed to render: {exc!r}. "
+                    f"A literal '{{...}}' in the template (e.g. bash's own "
+                    f"${{...}} parameter expansion) must be escaped as '{{{{...}}}}' "
+                    f"so str.format() treats it as literal text, not a placeholder."
+                )
+
+    def test_organize_files_template_specifically_survives_bash_brace_syntax(self):
+        """
+        Narrower, explicit regression test naming the exact bug: bash's
+        `${f##*.}` extension-stripping syntax must appear UNCHANGED (still
+        real bash syntax, not swallowed or mangled) in the rendered
+        command -- proving the fix escaped the template's braces for
+        str.format() without altering what bash itself will actually run.
+        """
+        from ohmyshell.executor import render_command
+
+        reg = registry_module.load()
+        template = reg.command_template_for("organize_files")
+        cmd = render_command(template, {"target_dir": "/tmp/mydir", "by": "extension"})
+        assert "${f##*.}" in cmd
+        assert "/tmp/mydir" in cmd
+
+
 def test_plan_steps_for_returns_registered_templates():
     reg = registry_module.load()
     steps = reg.plan_steps_for("clean_temp_files")
