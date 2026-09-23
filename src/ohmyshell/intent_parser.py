@@ -277,6 +277,10 @@ class GoogleAIStudioBackend:
     The JSON schema is enforced via `generation_config={"response_mime_type":
     "application/json"}`, which this session verified works reliably for
     Gemini (unlike Gemma 4 — see GOOGLE_AI_STUDIO_MODELS' own comment).
+
+    Supports live streaming (`on_token`, same shape as OllamaBackend's) —
+    see `generate()`'s own docstring for how token counts are recovered
+    from google.generativeai's per-chunk `usage_metadata`.
     """
 
     def __init__(self, models: tuple[str, ...] = GOOGLE_AI_STUDIO_MODELS, api_key: str | None = None):
@@ -294,37 +298,134 @@ class GoogleAIStudioBackend:
         genai.configure(api_key=self._api_key)
         return genai
 
-    def generate(self, *, system_prompt: str, user_message: str, schema: dict[str, Any]) -> str:
+    def generate(
+        self,
+        *,
+        system_prompt: str,
+        user_message: str,
+        schema: dict[str, Any],
+        on_token: Callable[[StreamProgress], None] | None = None,
+    ) -> str:
+        """
+        Generate one response, streamed chunk-by-chunk when `on_token` is
+        given (added after this backend's initial cut, which only made one
+        blocking, non-streaming call — see this method's own history: the
+        first version left `on_token`/live token counts/telemetry entirely
+        unimplemented for this backend, unlike OllamaBackend, and that gap
+        was never surfaced to the project owner as a deliberate trade-off.
+        This closes it, matching OllamaBackend's live-progress experience.
+
+        `stream=True` on google.generativeai's own `generate_content` yields
+        a sequence of partial-response chunks; each chunk's `.text` is the
+        DELTA for that chunk (not the accumulated text so far — confirmed
+        against this package's own streaming behavior), so the running
+        `text_so_far` is built up here exactly like OllamaBackend already
+        does. `usage_metadata` (prompt_token_count/candidates_token_count)
+        is only populated on the FINAL chunk of a stream (this SDK's own
+        behavior, same as the older Ollama chunk-count precedent this
+        module already works around) -- `last_telemetry` is filled from
+        whichever chunk last carried it, so a real call always ends up with
+        real numbers once the stream finishes, not just a bare model name.
+        """
         genai = self._client()
         last_exc: Exception | None = None
 
         for model_name in self.models:
             try:
                 model = genai.GenerativeModel(model_name, system_instruction=system_prompt)
-                response = model.generate_content(
-                    user_message,
-                    generation_config={
-                        "response_mime_type": "application/json",
-                        "temperature": 0,
-                    },
-                )
+                if on_token is not None:
+                    text = self._generate_streaming(
+                        model, model_name=model_name, user_message=user_message, on_token=on_token
+                    )
+                else:
+                    response = model.generate_content(
+                        user_message,
+                        generation_config={
+                            "response_mime_type": "application/json",
+                            "temperature": 0,
+                        },
+                    )
+                    self.last_telemetry = _telemetry_from_response(response, model_name=model_name)
+                    text = response.text
             except Exception as exc:  # google.generativeai raises its own exception types
                 last_exc = exc
                 if _looks_like_quota_error(exc):
                     continue  # try the next model in the rollover order
                 raise IntentParseError(f"Google AI Studio call failed ({model_name}): {exc}") from exc
 
-            self.last_telemetry = ParseTelemetry(model=model_name)
-            return response.text
+            return text
 
         raise IntentParseError(
             f"Google AI Studio call failed on every configured model {self.models}: {last_exc}"
         )
 
+    def _generate_streaming(
+        self,
+        model,
+        *,
+        model_name: str,
+        user_message: str,
+        on_token: Callable[[StreamProgress], None],
+    ) -> str:
+        chunks = model.generate_content(
+            user_message,
+            generation_config={
+                "response_mime_type": "application/json",
+                "temperature": 0,
+            },
+            stream=True,
+        )
+
+        text_parts: list[str] = []
+        chunk_count = 0
+        last_chunk = None
+        for chunk in chunks:
+            delta = chunk.text or ""
+            if delta:
+                text_parts.append(delta)
+                chunk_count += 1
+            usage = getattr(chunk, "usage_metadata", None)
+            tokens_in = getattr(usage, "prompt_token_count", None) if usage else None
+            on_token(
+                StreamProgress(
+                    text_delta=delta,
+                    text_so_far="".join(text_parts),
+                    tokens_out=chunk_count,
+                    tokens_in=tokens_in,
+                )
+            )
+            last_chunk = chunk
+
+        self.last_telemetry = _telemetry_from_response(last_chunk, model_name=model_name)
+        return "".join(text_parts)
+
 
 def _looks_like_quota_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(marker in text for marker in _QUOTA_ERROR_MARKERS)
+
+
+def _telemetry_from_response(response, *, model_name: str) -> ParseTelemetry:
+    """
+    Build a real ParseTelemetry from a google.generativeai response/chunk's
+    `usage_metadata` (prompt_token_count / candidates_token_count), when
+    present. `response` may be None (a streaming call that produced no
+    chunks at all -- defensive, shouldn't happen in practice) or a chunk/
+    response whose `usage_metadata` isn't populated yet (mid-stream chunks
+    on this SDK don't carry it -- only the final one does) -- either way
+    this falls back to just the model name rather than raising, matching
+    ParseTelemetry's own "leave missing fields as None" convention.
+    """
+    if response is None:
+        return ParseTelemetry(model=model_name)
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return ParseTelemetry(model=model_name)
+    return ParseTelemetry(
+        tokens_in=getattr(usage, "prompt_token_count", None),
+        tokens_out=getattr(usage, "candidates_token_count", None),
+        model=model_name,
+    )
 
 
 def _backend_for(model_provider: str, *, model: str | None) -> IntentBackend:
@@ -345,7 +446,7 @@ def build_schema() -> dict[str, Any]:
 
 
 def _backend_accepts_on_token(backend: IntentBackend) -> bool:
-    """Duck-typing check for whether `backend.generate` declares `on_token` (OllamaBackend does; GoogleAIStudioBackend doesn't stream yet)."""
+    """Duck-typing check for whether `backend.generate` declares `on_token` (both OllamaBackend and GoogleAIStudioBackend do)."""
     try:
         params = inspect.signature(backend.generate).parameters
     except (TypeError, ValueError):
@@ -410,9 +511,10 @@ def parse_intent(
             `backend` is not given.
         model: Ollama model name, used only when `model_provider ==
             "ollama"` and `backend` is not given.
-        on_token: optional live-progress callback — forwarded only to a
-            backend that supports it (OllamaBackend does; GoogleAIStudio
-            Backend doesn't stream yet, so this is silently ignored for it).
+        on_token: optional live-progress callback — forwarded to whichever
+            backend is active; both OllamaBackend and GoogleAIStudioBackend
+            support it (each streams chunk-by-chunk and reports real,
+            growing token counts as they arrive).
     """
     active_backend = backend or _backend_for(model_provider, model=model)
     schema = build_schema()

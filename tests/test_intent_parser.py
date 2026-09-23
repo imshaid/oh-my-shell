@@ -313,15 +313,31 @@ class _FakeResponse:
         self.text = text
 
 
+class _FakeUsageMetadata:
+    def __init__(self, *, prompt_token_count=None, candidates_token_count=None):
+        self.prompt_token_count = prompt_token_count
+        self.candidates_token_count = candidates_token_count
+
+
+class _FakeStreamChunk:
+    def __init__(self, *, text, usage_metadata=None):
+        self.text = text
+        self.usage_metadata = usage_metadata
+
+
 class _FakeGenerativeModel:
     def __init__(self, model_name, *, system_instruction=None, behavior):
         self.model_name = model_name
         self.behavior = behavior
 
-    def generate_content(self, user_message, *, generation_config):
+    def generate_content(self, user_message, *, generation_config, stream=False):
         outcome = self.behavior(self.model_name)
         if isinstance(outcome, Exception):
             raise outcome
+        if stream:
+            return iter(outcome) if not isinstance(outcome, str) else iter(
+                [_FakeStreamChunk(text=outcome, usage_metadata=_FakeUsageMetadata(prompt_token_count=1, candidates_token_count=1))]
+            )
         return _FakeResponse(outcome)
 
 
@@ -398,6 +414,119 @@ class TestGoogleAIStudioBackendRollover:
         backend = intent_parser.GoogleAIStudioBackend(api_key=None)
         with pytest.raises(intent_parser.IntentParseError):
             backend.generate(system_prompt="sys", user_message="hi", schema={})
+
+
+class TestGoogleAIStudioBackendStreaming:
+    """
+    Regression coverage: GoogleAIStudioBackend's first cut made only a
+    single blocking, non-streaming call and left `on_token`/live token
+    counts entirely unimplemented (unlike OllamaBackend) -- this was never
+    surfaced to the project owner as a deliberate trade-off, and was fixed
+    after a real end-to-end session showed no live streaming/telemetry for
+    this provider. These tests cover the fix: `on_token` switches
+    generate() onto the `stream=True` path, and real token counts are
+    recovered from the (only-on-the-final-chunk) `usage_metadata`.
+    """
+
+    def test_on_token_switches_to_streaming_and_reports_deltas(self):
+        final_json = json.dumps({"command": "ls", "risk": "low", "explanation": ""})
+        # Simulate two streamed chunks whose .text values are DELTAS (not
+        # accumulated), the second one carrying usage_metadata (only the
+        # FINAL chunk does, per this SDK's own behavior).
+        half = len(final_json) // 2
+        stream_chunks = [
+            _FakeStreamChunk(text=final_json[:half]),
+            _FakeStreamChunk(
+                text=final_json[half:],
+                usage_metadata=_FakeUsageMetadata(prompt_token_count=12, candidates_token_count=7),
+            ),
+        ]
+
+        def behavior(model_name):
+            return stream_chunks
+
+        progress_events = []
+        backend = intent_parser.GoogleAIStudioBackend(api_key="fake-key")
+        with patch.object(backend, "_client", return_value=_FakeGenAI(behavior)):
+            result = backend.generate(
+                system_prompt="sys", user_message="hi", schema={}, on_token=progress_events.append
+            )
+
+        assert json.loads(result)["command"] == "ls"
+        assert len(progress_events) == 2
+        # Deltas concatenate back to the full response.
+        assert progress_events[0].text_delta + progress_events[1].text_delta == final_json
+        # text_so_far accumulates.
+        assert progress_events[1].text_so_far == final_json
+        assert progress_events[1].tokens_out == 2  # one increment per chunk with real content
+
+    def test_streaming_populates_telemetry_from_final_chunk(self):
+        final_json = json.dumps({"command": "ls", "risk": "low", "explanation": ""})
+        stream_chunks = [
+            _FakeStreamChunk(text=final_json),  # no usage_metadata mid-stream
+        ]
+        # Append a trailing no-text chunk carrying the final usage_metadata,
+        # matching how a real stream's last chunk can be metadata-only.
+        stream_chunks.append(
+            _FakeStreamChunk(text="", usage_metadata=_FakeUsageMetadata(prompt_token_count=20, candidates_token_count=9))
+        )
+
+        def behavior(model_name):
+            return stream_chunks
+
+        backend = intent_parser.GoogleAIStudioBackend(api_key="fake-key")
+        with patch.object(backend, "_client", return_value=_FakeGenAI(behavior)):
+            backend.generate(system_prompt="sys", user_message="hi", schema={}, on_token=lambda _p: None)
+
+        assert backend.last_telemetry.tokens_in == 20
+        assert backend.last_telemetry.tokens_out == 9
+        assert backend.last_telemetry.model == intent_parser.GOOGLE_AI_STUDIO_MODELS[0]
+
+    def test_streaming_still_rolls_over_on_quota_error(self):
+        final_json = json.dumps({"command": "ls", "risk": "low", "explanation": ""})
+        calls = []
+
+        def behavior(model_name):
+            calls.append(model_name)
+            if model_name == intent_parser.GOOGLE_AI_STUDIO_MODELS[0]:
+                raise RuntimeError("429 quota exceeded")
+            return [
+                _FakeStreamChunk(
+                    text=final_json,
+                    usage_metadata=_FakeUsageMetadata(prompt_token_count=1, candidates_token_count=1),
+                )
+            ]
+
+        backend = intent_parser.GoogleAIStudioBackend(api_key="fake-key")
+        with patch.object(backend, "_client", return_value=_FakeGenAI(behavior)):
+            result = backend.generate(
+                system_prompt="sys", user_message="hi", schema={}, on_token=lambda _p: None
+            )
+
+        assert json.loads(result)["command"] == "ls"
+        assert calls == list(intent_parser.GOOGLE_AI_STUDIO_MODELS)
+        assert backend.last_telemetry.model == intent_parser.GOOGLE_AI_STUDIO_MODELS[1]
+
+    def test_parse_intent_forwards_on_token_to_google_backend(self, monkeypatch):
+        """
+        End-to-end confirmation that parse_intent()'s _backend_accepts_on_token
+        duck-typing check now recognizes GoogleAIStudioBackend too (it used
+        to report False for this backend, silently dropping on_token).
+        """
+        final_json = json.dumps({"command": "ls", "risk": "low", "explanation": ""})
+
+        def fake_generate(self, *, system_prompt, user_message, schema, on_token=None):
+            assert on_token is not None  # would fail before the fix (on_token silently dropped)
+            on_token(intent_parser.StreamProgress(text_delta=final_json, text_so_far=final_json, tokens_out=1))
+            return final_json
+
+        monkeypatch.setattr(intent_parser.GoogleAIStudioBackend, "generate", fake_generate)
+
+        seen = []
+        result = intent_parser.parse_intent("anything", on_token=seen.append)
+
+        assert result.action == "ls"
+        assert len(seen) == 1
 
 
 # --- parse_intent: provider selection -------------------------------------------
