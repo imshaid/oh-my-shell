@@ -102,16 +102,26 @@ class TestCommandsMatchMetaCommandsDispatchTable:
     def test_palette_commands_are_all_dispatchable(self):
         from ohmyshell import meta_commands
 
-        # Commands meta_commands.dispatch() recognizes, read directly off
-        # its own EXIT_COMMANDS constant plus the fixed set its dispatch()
-        # function checks -- kept as a literal list here (mirroring
-        # meta_commands.py's own command table comment) since dispatch()
-        # doesn't expose its recognized commands as importable data.
-        expected = {
+        # Regression fix (found via manual end-to-end testing): this test's
+        # own `expected` set used to be a SECOND hand-maintained literal
+        # list (mirroring meta_commands.py's dispatch() table "by eye",
+        # exactly the drift risk this module's own docstring warns about
+        # for COMMANDS itself) -- and that second copy had ALSO drifted: it
+        # omitted "quit", so this "sync" test gave false confidence while
+        # COMMANDS was actually missing a real, working command
+        # (meta_commands.EXIT_COMMANDS = {"exit", "quit"}, both accepted by
+        # dispatch()/main.py's own EXIT_COMMANDS, but only "exit" was ever
+        # in the palette). Non-exit commands still aren't importable as
+        # data from meta_commands.py (see this module's own docstring for
+        # why), so those stay a literal list here, but the EXIT_COMMANDS
+        # portion is now read directly off the real source instead of
+        # retyped, so it can't drift out of sync with it again.
+        expected_non_exit = {
             "help", "model", "history", "undo", "trash", "log",
             "capabilities", "explain", "stats", "system", "config",
-            "clear", "exit",
+            "clear",
         }
+        expected = expected_non_exit | meta_commands.EXIT_COMMANDS
         palette_names = {name for name, _ in COMMANDS}
         assert palette_names == expected
-        assert "exit" in meta_commands.EXIT_COMMANDS
+        assert meta_commands.EXIT_COMMANDS <= palette_names

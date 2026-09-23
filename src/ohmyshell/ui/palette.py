@@ -90,6 +90,14 @@ COMMANDS: list[tuple[str, str]] = sorted(
         ("history", "This session's earlier requests"),
         ("log", "View the audit log"),
         ("model", "Show or switch the active model"),
+        # "quit" (found missing via manual end-to-end testing): meta_commands.
+        # EXIT_COMMANDS and main.py's own EXIT_COMMANDS both accept "/quit" as
+        # a full alias of "/exit" -- this table just hadn't been kept in sync,
+        # exactly the drift risk this module's own docstring already flags
+        # about maintaining this list "by eye". Typing "/q" or "/quit"
+        # previously showed no suggestion at all despite it being a real,
+        # working command.
+        ("quit", "Quit Oh My Shell"),
         ("stats", "Session token usage & average latency"),
         ("system", "Full hardware & shell status"),
         ("trash", "View or manage .trash/"),
