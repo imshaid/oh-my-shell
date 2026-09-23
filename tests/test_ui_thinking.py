@@ -143,6 +143,26 @@ class TestRenderThinkingDisplay:
         )
         assert '{"action": "clean_temp' in text
 
+    def test_streamed_text_appears_below_hardware_lines(self):
+        """
+        Layout regression test (found via the user's own real end-to-end
+        screenshot): the streamed JSON must render AFTER the CPU/RAM/GPU
+        hardware rows, not between the stats line and them -- the user
+        explicitly asked for the fixed-position system stats to stay
+        anchored at the top, with the growing/scrolling JSON content at
+        the bottom.
+        """
+        text = _render_to_text(
+            render_thinking_display(
+                elapsed_seconds=1.0,
+                snapshot=_fake_snapshot(gpu=True),
+                live_text='{"action": "clean_temp_files"',
+            )
+        )
+        gpu_index = text.index("GPU")
+        json_index = text.index('{"action"')
+        assert gpu_index < json_index
+
     def test_omits_live_text_once_telemetry_is_final(self):
         """
         The streamed-text line is only for while the call is still in

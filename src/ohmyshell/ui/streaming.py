@@ -26,18 +26,22 @@ Scope note (Section 16 Rule 5): executor.py's current StepEvent only
 carries {step_number, total_steps, status, detail} -- it has no live
 file-count/byte-size/percentage fields, because none of the four registered
 capabilities' command_templates report granular progress (they're each one
-opaque shell command run via subprocess, not a Python loop this codebase
-controls step-by-step). Rendering a real file-count/percentage progress bar
-would require either parsing command output live (fragile, command-
-specific) or the command_template itself emitting structured progress
-(not in any capability's definition) -- neither exists yet. So this module
-renders what executor.py actually emits: a single spinner while RUNNING,
-then a collapsed one-line summary on DONE/FAILED/INTERRUPTED/SKIPPED. The
-richer bar-with-file-count mockup above is left as the target shape for
-once a capability's execution model can report granular progress -- this
-renderer's structure (spinner -> collapse) is already the right shape to
-extend, it just has only one "file" (the whole command) to show progress
-for today.
+opaque shell command run via subprocess.run(), blocking, not a Python loop
+this codebase controls step-by-step). A real per-file bar (the richer
+mockup above) would need the command_template itself to emit structured
+progress AND executor.py to switch from a single blocking subprocess.run()
+call to Popen + live line-reading -- a genuine architecture change to a
+module whose current design (blocking subprocess, `runner` injected as a
+plain callable) is itself a "confirmed with the user" decision (see
+executor.py's own module docstring, decision 1-3) with broad existing test
+coverage built on that exact contract. Not attempted here without an
+explicit go-ahead, to avoid quietly destabilizing a heavily-tested,
+already-fixed-many-times module. What IS implemented here (post-Build-
+Order, per the user's explicit "make the whole shell feel alive, not just
+the AI thinking step" request): a genuinely live-TICKING elapsed-time
+counter on the RUNNING spinner line, via `_LiveRunningLine` below -- see
+its own docstring for why this needed no threading or executor.py changes
+at all, and is exactly as safe as the plain static spinner it replaces.
 
 The "AI: N tokens · Ns reasoning time" line (added post-Build-Order, found
 via manual end-to-end testing): intent_parser.OllamaBackend already reads
@@ -55,10 +59,11 @@ went through the Intent Parser at all and has nothing genuine to show here.
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from typing import Iterator
 
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.text import Text
@@ -74,10 +79,49 @@ _STATUS_GLYPH = {
 }
 
 
-def render_running_line(event: StepEvent) -> Spinner:
-    """A single spinner line shown while a step is RUNNING (Section 8.3.4's ⠙)."""
+class _LiveRunningLine:
+    """
+    Spinner + a genuinely live, ticking elapsed-time counter for the
+    RUNNING step (added post-Build-Order, per the user's explicit "make
+    the whole shell feel alive" request -- see this module's docstring for
+    why real per-file progress isn't attempted here).
+
+    A plain `rich.spinner.Spinner` already animates on its own under a
+    `Live` display -- Live's background refresh thread re-renders whatever
+    renderable is currently stored every tick, and `Spinner.render(t)`
+    computes its glyph frame fresh from wall-clock time each call, with no
+    extra plumbing needed. This class uses that exact same mechanism for
+    the elapsed-time text: `__rich_console__` is called by Live on every
+    refresh tick (same as Spinner's own), and computes `time.monotonic() -
+    self._start` fresh each time, so the "12.4s" text ticks in place
+    exactly like the spinner glyph next to it -- no background thread, no
+    change to `on_event`'s call pattern (still called exactly once for
+    RUNNING, since a plan is currently always one command; see executor.py's
+    own module docstring), and critically no change to run_plan()'s
+    blocking subprocess/SIGINT-handling contract: executor.py's Ctrl+C
+    handling relies on `signal.signal()`, which only works on the main
+    thread, so anything that would need a worker thread here (the pattern
+    ui/thinking.py uses for parse_intent) would risk breaking the
+    already-fixed Ctrl+C behavior (this session's own Bug #8/#9). This
+    class needs none of that -- it is a passive renderable, not an active
+    poller.
+    """
+
+    def __init__(self, label: str) -> None:
+        self._label = label
+        self._start = time.monotonic()
+        self._spinner = Spinner("dots")
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        elapsed = time.monotonic() - self._start
+        frame = self._spinner.render(time.monotonic())
+        yield Text.assemble(frame, f" {self._label}", (f"  ·  {elapsed:.1f}s", "dim"))
+
+
+def render_running_line(event: StepEvent) -> _LiveRunningLine:
+    """A spinner + live elapsed-time line shown while a step is RUNNING (Section 8.3.4's ⠙)."""
     label = event.detail if event.detail else "Executing..."
-    return Spinner("dots", text=Text(label))
+    return _LiveRunningLine(label)
 
 
 def render_result_line(event: StepEvent) -> Text:

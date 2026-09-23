@@ -10,10 +10,10 @@ expansion of it (fan RPM, CPU model, GPU temperature, tokens/sec -- see
 this project's own working notes, not a blueprint addition):
 
     ⚟ Thinking... 0.8s · 12 in / 34 out · 43 tok/s · qwen3:8b
-    {"action": "clean_temp_files", "risk": "medium", "para
     CPU ▓▓▓▓▓▓▓░░░ 82% · 58°C · 2100 RPM · 13th Gen i7-13650HX
     RAM ▓▓▓▓▓▓▓▓░░ 39% · 6.1/15.6GB
     GPU ▓▓▓▓░░░░░░ 39% VRAM · 61°C · RTX 4060
+    {"action": "clean_temp_files", "risk": "medium", "para
 
 One metric-group per hardware line, confirmed by the user over the plain
 2-line original (see AskUserQuestion history in this project's own working
@@ -256,7 +256,18 @@ def render_thinking_display(
     live_tokens_in: int | None = None,
     live_text: str | None = None,
 ) -> Group:
-    """The full stats + streamed-text + hardware group this module shows."""
+    """
+    The full stats + hardware + streamed-text group this module shows.
+
+    Layout fix (found via the user's own real end-to-end run, screenshot
+    attached): the raw JSON stream was originally placed directly under the
+    stats line, ABOVE the CPU/RAM/GPU hardware rows -- the user explicitly
+    asked for it the other way around, streamed text BELOW the hardware
+    stats, so the fixed-position system stats stay visually anchored at the
+    top of the indicator and the growing/scrolling JSON content sits at the
+    bottom where its variable height doesn't push the hardware rows around
+    frame to frame.
+    """
     renderables: list[Text] = [
         _thinking_line(
             elapsed_seconds=elapsed_seconds,
@@ -265,6 +276,7 @@ def render_thinking_display(
             live_tokens_in=live_tokens_in,
         )
     ]
+    renderables.extend(render_hardware_lines(snapshot))
     # Only shown while still streaming (telemetry is None) -- once the call
     # has finished, the plan panel right below takes over as the permanent
     # record of what was produced; repeating the raw JSON here too would be
@@ -273,7 +285,6 @@ def render_thinking_display(
         streamed_line = _streamed_text_line(live_text)
         if streamed_line is not None:
             renderables.append(streamed_line)
-    renderables.extend(render_hardware_lines(snapshot))
     return Group(*renderables)
 
 

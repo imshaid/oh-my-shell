@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import io
+import time
 
 from rich.console import Console
-from rich.spinner import Spinner
 
 from ohmyshell.executor import ExecutionResult, StepEvent, StepResult, StepStatus
 from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.ui.streaming import (
     StreamingRenderer,
+    _LiveRunningLine,
     render_execution_summary,
     render_result_line,
     render_running_line,
@@ -26,14 +27,47 @@ def _render_to_text(renderable, width: int = 100) -> str:
 
 
 class TestRenderRunningLine:
-    def test_returns_a_spinner(self):
+    """
+    Regression coverage for the live-ticking elapsed-time running line
+    (added post-Build-Order, per the user's explicit "make the whole shell
+    feel alive" request -- see ui/streaming.py's own docstring for why this
+    replaced the previously-static Spinner).
+    """
+
+    def test_returns_a_live_running_line(self):
         event = StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="find /tmp ...")
-        assert isinstance(render_running_line(event), Spinner)
+        assert isinstance(render_running_line(event), _LiveRunningLine)
 
     def test_defaults_label_when_no_detail(self):
         event = StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="")
-        spinner = render_running_line(event)
-        assert spinner is not None  # smoke test — Spinner text isn't trivially introspectable
+        line = render_running_line(event)
+        text = _render_to_text(line)
+        assert "Executing..." in text
+
+    def test_shows_the_event_detail_as_label(self):
+        event = StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="moving files")
+        text = _render_to_text(render_running_line(event))
+        assert "moving files" in text
+
+    def test_elapsed_time_genuinely_ticks_between_renders(self):
+        """
+        The whole point of this class: re-rendering the SAME instance
+        later must show a larger elapsed number -- not a value frozen at
+        construction time. This is what makes the spinner line "live"
+        rather than a static string that merely looks like a timer.
+        """
+        line = _LiveRunningLine("Executing...")
+        first_text = _render_to_text(line)
+        time.sleep(0.25)
+        second_text = _render_to_text(line)
+
+        def _extract_seconds(text: str) -> float:
+            # "...  ·  0.3s" -- the trailing "<number>s" segment.
+            marker = "·  "
+            fragment = text[text.index(marker) + len(marker) :]
+            return float(fragment.strip().rstrip("s\n"))
+
+        assert _extract_seconds(second_text) > _extract_seconds(first_text)
 
 
 class TestRenderResultLine:
