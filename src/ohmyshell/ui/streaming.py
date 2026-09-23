@@ -378,7 +378,7 @@ class StreamingRenderer:
     8.3.4/8.3.7. Used as:
 
         with StreamingRenderer(console=console) as renderer:
-            result = run_plan(plan, registry, on_event=renderer.on_event)
+            result = run_plan(plan, on_event=renderer.on_event)
         renderer.print_summary(result)
     """
 

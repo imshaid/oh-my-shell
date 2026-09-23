@@ -14,6 +14,7 @@ authors = [
 # conflicts with the static/deterministic architecture (Section 2.3).
 dependencies = [
     "ollama>=0.6.2",
+    "google-generativeai",
     "pydantic>=2.13,<3.0",
     "rich",
     "questionary",
@@ -27,10 +28,11 @@ dev = [
     "pytest",
 ]
 
-# Google AI Studio API client is intentionally NOT pinned here yet.
-# It is an opt-in fallback (Section 7.8); the SDK will be added once
-# provider-abstraction work begins and Open Question 3 (structured-output
-# verification) is resolved.
+# Google AI Studio (Gemini) is now the default/recommended provider for
+# open-ended command generation (Section 7.4/7.8's updated note) — this
+# project's own empirical testing found it materially more reliable than
+# consumer-hardware-tier local models for this task. Ollama stays a fully
+# supported, explicitly-kept rollback path (see intent_parser.py).
 
 [project.scripts]
 oh-my-shell = "ohmyshell.main:run"

@@ -1,26 +1,22 @@
 """
-Tests for discussion.py (Build Order Step 7).
-
-get_user_choice / get_adjustment_text / reparse are all fakes here — this
-module is deliberately UI-framework-agnostic (see its docstring), so tests
-drive it exactly the way a real terminal loop (Step 11/main.py) would.
+Tests for discussion.py (Build Order Step 7), rewritten for the open-ended
+architecture (see discussion.py's own module docstring and
+edit_command's docstring). [e] edit now replaces the plan's raw command
+TEXT wholesale via edit_command(plan, new_command) instead of editing one
+param in a params dict via the removed edit_step_param().
 
 get_user_choice returns a (choice, plan) tuple, not just a choice string
-(Section 16 Rule 5 -- this contract was fixed post-Build-Order after manual
-end-to-end testing found that [e] Edit silently did nothing: the original
-contract had no way for a caller's edited Plan to reach this loop's own
-`plan` variable at all. See run_discussion's own docstring for the full
-story). For "confirm"/"cancel"/"chat" the plan half of the tuple is simply
-whatever Plan was passed in to get_user_choice.
+(Section 16 Rule 5 -- see run_discussion's own docstring). For
+"confirm"/"cancel"/"chat" the plan half of the tuple is simply whatever
+Plan was passed in to get_user_choice.
 """
 
 import pytest
 
-from ohmyshell import registry as registry_module
 from ohmyshell.discussion import (
     Cancelled,
     Confirmed,
-    edit_step_param,
+    edit_command,
     render_plan_text,
     run_discussion,
 )
@@ -28,15 +24,14 @@ from ohmyshell.plan_generator import Plan, generate_plan
 from ohmyshell.validation import ValidatedIntent
 
 
-@pytest.fixture(scope="module")
-def registry():
-    return registry_module.load()
-
-
 @pytest.fixture
-def clean_temp_plan(registry):
-    intent = ValidatedIntent(action="clean_temp_files", params={"days": 7}, risk="medium")
-    return generate_plan(intent, registry)
+def clean_temp_plan():
+    intent = ValidatedIntent(
+        command="find /tmp -mtime +7 -delete",
+        risk="medium",
+        explanation="Delete files in /tmp older than 7 days.",
+    )
+    return generate_plan(intent)
 
 
 # --- render_plan_text ------------------------------------------------------------
@@ -92,11 +87,13 @@ def test_choice_is_case_insensitive(clean_temp_plan):
 # --- run_discussion: chat-adjust ---------------------------------------------------
 
 
-def test_chat_adjust_updates_plan_then_confirm(clean_temp_plan, registry):
+def test_chat_adjust_updates_plan_then_confirm(clean_temp_plan):
     adjusted_intent = ValidatedIntent(
-        action="clean_temp_files", params={"days": 14}, risk="medium"
+        command="find /tmp -mtime +14 -delete",
+        risk="medium",
+        explanation="Delete files in /tmp older than 14 days.",
     )
-    adjusted_plan = generate_plan(adjusted_intent, registry)
+    adjusted_plan = generate_plan(adjusted_intent)
 
     choices = iter(["chat", "confirm"])
     outcome = run_discussion(
@@ -108,14 +105,16 @@ def test_chat_adjust_updates_plan_then_confirm(clean_temp_plan, registry):
     )
 
     assert isinstance(outcome, Confirmed)
-    assert outcome.plan.params["days"] == 14
+    assert outcome.plan.command == "find /tmp -mtime +14 -delete"
 
 
-def test_chat_adjust_prints_diff_note(clean_temp_plan, registry, capsys):
+def test_chat_adjust_prints_diff_note(clean_temp_plan):
     adjusted_intent = ValidatedIntent(
-        action="clean_temp_files", params={"days": 14}, risk="medium"
+        command="find /tmp -mtime +14 -delete",
+        risk="medium",
+        explanation="Delete files in /tmp older than 14 days.",
     )
-    adjusted_plan = generate_plan(adjusted_intent, registry)
+    adjusted_plan = generate_plan(adjusted_intent)
 
     printed = []
     choices = iter(["chat", "confirm"])
@@ -127,7 +126,10 @@ def test_chat_adjust_prints_diff_note(clean_temp_plan, registry, capsys):
         print_fn=printed.append,
     )
 
-    assert any("days" in line and "7" in line and "14" in line for line in printed)
+    assert any(
+        "find /tmp -mtime +7 -delete" in line and "find /tmp -mtime +14 -delete" in line
+        for line in printed
+    )
 
 
 def test_chat_adjust_returning_none_keeps_plan_unchanged(clean_temp_plan):
@@ -146,12 +148,11 @@ def test_chat_adjust_returning_none_keeps_plan_unchanged(clean_temp_plan):
     assert any("couldn't apply" in line.lower() for line in printed)
 
 
-def test_soft_limit_nudge_appears_after_configured_turns(clean_temp_plan, registry):
-    adjusted_intent = ValidatedIntent(action="clean_temp_files", params={"days": 8}, risk="medium")
-    adjusted_plan = generate_plan(adjusted_intent, registry)
+def test_soft_limit_nudge_appears_after_configured_turns(clean_temp_plan):
+    adjusted_intent = ValidatedIntent(command="find /tmp -mtime +8 -delete", risk="medium", explanation="")
+    adjusted_plan = generate_plan(adjusted_intent)
 
     printed = []
-    # 3 chat turns then confirm, with soft_limit_turns=3 -> nudge on the 3rd chat turn.
     choices = iter(["chat", "chat", "chat", "confirm"])
     run_discussion(
         clean_temp_plan,
@@ -165,21 +166,11 @@ def test_soft_limit_nudge_appears_after_configured_turns(clean_temp_plan, regist
     assert any("turn 3" in line.lower() for line in printed)
 
 
-def test_soft_limit_nudge_appears_only_once_not_every_turn_after(clean_temp_plan, registry):
-    """
-    Regression test (found via manual end-to-end testing): the nudge
-    condition used to be `chat_turns >= soft_limit_turns`, which re-printed
-    the reminder on EVERY chat turn once the threshold was crossed, not
-    just once. Section 8.3.3 says "একটা gentle reminder" (a/one reminder,
-    singular) after the soft limit, matching the blueprint's own mockup
-    where it appears exactly once -- not once per turn thereafter.
-    """
-    adjusted_intent = ValidatedIntent(action="clean_temp_files", params={"days": 8}, risk="medium")
-    adjusted_plan = generate_plan(adjusted_intent, registry)
+def test_soft_limit_nudge_appears_only_once_not_every_turn_after(clean_temp_plan):
+    adjusted_intent = ValidatedIntent(command="find /tmp -mtime +8 -delete", risk="medium", explanation="")
+    adjusted_plan = generate_plan(adjusted_intent)
 
     printed = []
-    # 5 chat turns then confirm, with soft_limit_turns=2 -> nudge should
-    # fire exactly once, on turn 2, and never again on turns 3-5.
     choices = iter(["chat", "chat", "chat", "chat", "chat", "confirm"])
     run_discussion(
         clean_temp_plan,
@@ -195,9 +186,9 @@ def test_soft_limit_nudge_appears_only_once_not_every_turn_after(clean_temp_plan
     assert "turn 2" in nudge_lines[0].lower()
 
 
-def test_no_nudge_before_soft_limit_reached(clean_temp_plan, registry):
-    adjusted_intent = ValidatedIntent(action="clean_temp_files", params={"days": 8}, risk="medium")
-    adjusted_plan = generate_plan(adjusted_intent, registry)
+def test_no_nudge_before_soft_limit_reached(clean_temp_plan):
+    adjusted_intent = ValidatedIntent(command="find /tmp -mtime +8 -delete", risk="medium", explanation="")
+    adjusted_plan = generate_plan(adjusted_intent)
 
     printed = []
     choices = iter(["chat", "confirm"])  # only 1 chat turn, soft limit is 5
@@ -212,10 +203,9 @@ def test_no_nudge_before_soft_limit_reached(clean_temp_plan, registry):
     assert not any("turn" in line.lower() and "discussion" in line.lower() for line in printed)
 
 
-def test_soft_limit_nudge_does_not_block_further_turns(clean_temp_plan, registry):
-    """Section 8.3.3: nudge is a gentle reminder, never a hard block."""
-    adjusted_intent = ValidatedIntent(action="clean_temp_files", params={"days": 8}, risk="medium")
-    adjusted_plan = generate_plan(adjusted_intent, registry)
+def test_soft_limit_nudge_does_not_block_further_turns(clean_temp_plan):
+    adjusted_intent = ValidatedIntent(command="find /tmp -mtime +8 -delete", risk="medium", explanation="")
+    adjusted_plan = generate_plan(adjusted_intent)
 
     choices = iter(["chat", "chat", "chat", "chat", "confirm"])
     outcome = run_discussion(
@@ -251,17 +241,8 @@ def test_unrecognized_choice_reprompts(clean_temp_plan):
 # --- run_discussion: edit actually reaches the final plan (bug fix) ---------------
 
 
-def test_edit_choice_updated_plan_reaches_confirmed_outcome(clean_temp_plan, registry):
-    """
-    Bug found via manual end-to-end testing (post-Build-Order): [e] Edit in
-    a real session updated the param but the CONFIRMED plan still showed
-    the old value -- get_user_choice's edited Plan never reached this
-    loop's own state. This is the regression test: a get_user_choice fake
-    that performs an "edit" (via edit_step_param, exactly like main.py's
-    real _repl_edit_flow does) and returns the updated plan on the "edit"
-    turn must have that update show up in the final Confirmed(plan).
-    """
-    edited_plan = edit_step_param(clean_temp_plan, "days", 14, registry)
+def test_edit_choice_updated_plan_reaches_confirmed_outcome(clean_temp_plan):
+    edited_plan = edit_command(clean_temp_plan, "find /tmp -mtime +30 -delete")
     choices = iter(["edit", "confirm"])
 
     def _get_user_choice(plan):
@@ -279,27 +260,11 @@ def test_edit_choice_updated_plan_reaches_confirmed_outcome(clean_temp_plan, reg
     )
 
     assert isinstance(outcome, Confirmed)
-    assert outcome.plan.params["days"] == 14
+    assert outcome.plan.command == "find /tmp -mtime +30 -delete"
 
 
-def test_edit_choice_replan_is_passed_to_next_get_user_choice_call(clean_temp_plan, registry):
-    """
-    After an edit, the loop must call get_user_choice again with the
-    UPDATED plan (not the stale one) on its next turn.
-
-    Note: this used to assert against `print_fn` output, back when
-    run_discussion re-rendered the plan itself every turn via
-    `print_fn(render_plan_text(plan))`. That per-turn render was removed
-    (see run_discussion's own in-loop comment) because every real caller
-    (main.py's _repl_get_user_choice) already renders the plan itself
-    right before reading the user's choice -- the old code showed the
-    plan twice, once plain (from here) and once boxed (from the caller).
-    Plan-rendering is now entirely get_user_choice's responsibility, so
-    this test asserts the actual contract that matters: get_user_choice
-    receives the edited plan on its next call, which is what lets a real
-    caller re-render the CORRECT (updated) plan.
-    """
-    edited_plan = edit_step_param(clean_temp_plan, "days", 21, registry)
+def test_edit_choice_replan_is_passed_to_next_get_user_choice_call(clean_temp_plan):
+    edited_plan = edit_command(clean_temp_plan, "find /tmp -mtime +21 -delete")
     choices = iter(["edit", "confirm"])
     received_plans = []
 
@@ -322,21 +287,42 @@ def test_edit_choice_replan_is_passed_to_next_get_user_choice_call(clean_temp_pl
     assert received_plans[1] is edited_plan  # second turn: the edited plan
 
 
-# --- edit_step_param ---------------------------------------------------------------
+# --- edit_command ---------------------------------------------------------------
 
 
-def test_edit_step_param_updates_value_and_rebuilds_steps(clean_temp_plan, registry):
-    updated = edit_step_param(clean_temp_plan, "days", 30, registry)
+def test_edit_command_replaces_command_and_rebuilds_steps(clean_temp_plan):
+    updated = edit_command(clean_temp_plan, "find /tmp -mtime +30 -delete")
 
-    assert updated.params["days"] == 30
-    assert "30" in updated.steps[0]
-
-
-def test_edit_step_param_raises_for_unknown_param(clean_temp_plan, registry):
-    with pytest.raises(KeyError):
-        edit_step_param(clean_temp_plan, "not_a_real_param", 5, registry)
+    assert updated.command == "find /tmp -mtime +30 -delete"
+    assert updated.steps == [updated.explanation.strip() or updated.command]
 
 
-def test_edit_step_param_does_not_mutate_original_plan(clean_temp_plan, registry):
-    edit_step_param(clean_temp_plan, "days", 30, registry)
-    assert clean_temp_plan.params["days"] == 7  # original untouched (Plan is frozen)
+def test_edit_command_raises_for_empty_command(clean_temp_plan):
+    with pytest.raises(ValueError):
+        edit_command(clean_temp_plan, "")
+
+
+def test_edit_command_raises_for_blank_whitespace_command(clean_temp_plan):
+    with pytest.raises(ValueError):
+        edit_command(clean_temp_plan, "   ")
+
+
+def test_edit_command_does_not_mutate_original_plan(clean_temp_plan):
+    edit_command(clean_temp_plan, "find /tmp -mtime +30 -delete")
+    assert clean_temp_plan.command == "find /tmp -mtime +7 -delete"  # original untouched (Plan is frozen)
+
+
+def test_edit_command_preserves_risk_and_explanation(clean_temp_plan):
+    updated = edit_command(clean_temp_plan, "find /tmp -mtime +30 -delete")
+    assert updated.risk == clean_temp_plan.risk
+    assert updated.explanation == clean_temp_plan.explanation
+
+
+# --- Removed: edit_step_param tests --------------------------------------------
+#
+# edit_step_param(plan, param_name, new_value, registry) was removed (see
+# discussion.py's own module docstring) -- there is no per-action params
+# dict to edit any more. test_edit_step_param_raises_for_unknown_param had
+# no equivalent (there are no longer named "params" to look up at all), so
+# it was translated into edit_command's blank/empty-command ValueError
+# tests above instead, which is the new failure mode for a bad [e] edit.

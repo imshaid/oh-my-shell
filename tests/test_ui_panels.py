@@ -30,9 +30,9 @@ def _render_to_text(panel) -> str:
 
 def _plan(**overrides) -> Plan:
     defaults = dict(
-        action="clean_temp_files",
-        params={"days": 7, "paths": ["/tmp"]},
+        command="find /tmp -mtime +7 -delete",
         risk="medium",
+        explanation="Delete files in /tmp older than 7 days.",
         steps=["Scan /tmp for files older than 7 days", "Move matched files to .trash/"],
     )
     defaults.update(overrides)
@@ -52,9 +52,9 @@ class TestRenderPlanPanel:
         text = _render_to_text(render_plan_panel(_plan(risk="high")))
         assert "High" in text
 
-    def test_includes_action_in_title(self):
-        panel = render_plan_panel(_plan(action="organize_files"))
-        assert "organize_files" in str(panel.title)
+    def test_includes_command_in_title(self):
+        panel = render_plan_panel(_plan(command="mv ~/Downloads/*.pdf ~/Documents/"))
+        assert "mv ~/Downloads/*.pdf ~/Documents/" in str(panel.title)
 
     def test_includes_confirm_edit_chat_cancel_options(self):
         text = _render_to_text(render_plan_panel(_plan()))

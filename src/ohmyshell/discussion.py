@@ -17,15 +17,18 @@ structure rather than blueprint open questions):
   intent_parser.parse_intent + plan_generator.generate_plan) so this
   module stays testable without a real model and doesn't need to import
   intent_parser itself.
-- "Direct edit" ([e]) only ever changes one param's value in place and
-  rebuilds the plan's step text from the registry's templates — no model
-  call, matching the blueprint's "AI বাইপাস করে, তাই instant" description.
-- The diff-note after a chat-adjust is a plain "list of params that
-  changed" summary (old -> new), not a semantic explanation of *why* —
-  producing a truly semantic diff-note ("Downloads excluded per your
-  request") would need the model to explain its own edit, which isn't
-  data this module has; a mechanical params diff is the honest version of
-  that feature at this step.
+- "Direct edit" ([e]) — rewritten for the open-ended architecture (see
+  validation.py's module docstring): there is no per-action params dict to
+  edit any more, so [e] now lets the user directly edit the plan's raw
+  command TEXT itself (replacing plan.command wholesale) — still no model
+  call, still instant, matching the blueprint's "AI বাইপাস করে, তাই instant"
+  description, just operating on the command string instead of a params
+  dict.
+- The diff-note after a chat-adjust now compares the old and new command
+  strings directly (not a params dict) — still a mechanical diff, not a
+  semantic explanation of *why*, for the same reason as before: producing
+  a truly semantic diff-note would need the model to explain its own edit,
+  which isn't data this module has.
 - The soft-limit nudge (Section 8.3.3: 5 turns) counts chat-adjust turns
   only, not edit turns — edits are instant/deterministic and don't carry
   the same "going in circles with the model" risk the nudge is warning
@@ -73,25 +76,15 @@ class Reparser(Protocol):
     def __call__(self, adjustment_text: str, current_plan: Plan) -> Plan | None: ...
 
 
-def _diff_note(old_params: dict, new_params: dict) -> str:
+def _diff_note(old_command: str, new_command: str) -> str:
     """
-    Mechanical, plain-text description of what changed between two params
-    dicts — added/removed/changed keys. See the module docstring for why
-    this isn't a semantic explanation.
+    Mechanical, plain-text description of what changed between two command
+    strings. See the module docstring for why this isn't a semantic
+    explanation.
     """
-    changes: list[str] = []
-    for key in sorted(set(old_params) | set(new_params)):
-        old_value = old_params.get(key)
-        new_value = new_params.get(key)
-        if key not in old_params:
-            changes.append(f"{key} added ({new_value!r})")
-        elif key not in new_params:
-            changes.append(f"{key} removed")
-        elif old_value != new_value:
-            changes.append(f"{key}: {old_value!r} -> {new_value!r}")
-    if not changes:
+    if old_command == new_command:
         return "No changes."
-    return "; ".join(changes)
+    return f"command: {old_command!r} -> {new_command!r}"
 
 
 def render_plan_text(plan: Plan) -> str:
@@ -103,29 +96,29 @@ def render_plan_text(plan: Plan) -> str:
     return "\n".join(lines)
 
 
-def edit_step_param(plan: Plan, param_name: str, new_value, registry) -> Plan:
+def edit_command(plan: Plan, new_command: str) -> Plan:
     """
-    [e] direct-edit: change one param's value and rebuild the plan's step
-    text from the registry's templates — no model call (Section 8.3.3:
-    "AI বাইপাস করে, তাই instant, কোনো model-call লাগে না").
+    [e] direct-edit, rewritten for the open-ended architecture: replace the
+    plan's raw command text outright and rebuild the plan around it — no
+    model call (Section 8.3.3: "AI বাইপাস করে, তাই instant, কোনো model-call
+    লাগে না"), same as before, just operating on a command string instead
+    of a params dict (there is no registry/params_schema to rebuild step
+    text from any more — see plan_generator.py).
 
     Raises:
-        KeyError: if `param_name` isn't a key in the plan's current params
-            (editing a param that was never set isn't what "direct edit an
-            existing value" means here — callers should offer only the
-            plan's existing param names for editing).
+        ValueError: if `new_command` is empty/blank — an edit must still
+            leave the plan with something runnable.
     """
-    if param_name not in plan.params:
-        raise KeyError(param_name)
+    if not new_command.strip():
+        raise ValueError("command cannot be empty")
 
     from ohmyshell.plan_generator import generate_plan
     from ohmyshell.validation import ValidatedIntent
 
-    new_params = dict(plan.params)
-    new_params[param_name] = new_value
-
-    updated_intent = ValidatedIntent(action=plan.action, params=new_params, risk=plan.risk)
-    return generate_plan(updated_intent, registry)
+    updated_intent = ValidatedIntent(
+        command=new_command.strip(), risk=plan.risk, explanation=plan.explanation
+    )
+    return generate_plan(updated_intent)
 
 
 def run_discussion(
@@ -215,7 +208,7 @@ def run_discussion(
             if new_plan is None:
                 print_fn("  Couldn't apply that adjustment — plan unchanged.")
                 continue
-            print_fn(f"  {_diff_note(plan.params, new_plan.params)}")
+            print_fn(f"  {_diff_note(plan.command, new_plan.command)}")
             plan = new_plan
             # Bug fix (found via manual end-to-end testing, post-Build-Order):
             # this used to compare with `>=`, so the nudge re-printed on

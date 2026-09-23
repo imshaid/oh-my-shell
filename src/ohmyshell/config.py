@@ -33,6 +33,15 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 # other default here is the literal blueprint value.
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
+        # "google_ai_studio" (Gemini 3.5/3.1 Flash Lite) is the recommended
+        # default per this project's own empirical model comparison; local
+        # Ollama models were found inadequate for open-ended command
+        # generation on typical consumer hardware (see intent_parser.py's
+        # module docstring). "ollama" is kept fully supported -- set this
+        # to "ollama" (e.g. `/config set model.provider ollama`) to roll
+        # back to local generation with no code change, per the project
+        # owner's explicit request to keep that path available.
+        "provider": "google_ai_studio",
         "active": "qwen3:8b",
         "available": ["qwen3:8b", "qwen3.5:4b", "phi4-mini", "lfm2.5-8b-a1b"],
     },

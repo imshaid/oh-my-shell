@@ -1,10 +1,35 @@
 """Tests for registry.py (Build Order Step 3) — capabilities.json loader + jsonschema integrity check."""
 
 import json
+import os
+import shlex
 
 import pytest
 
 from ohmyshell import registry as registry_module
+
+
+def _render_command_for_registry_test(template: str, params: dict) -> str:
+    """
+    Local reimplementation of the pre-rewrite executor.render_command()
+    (shlex-quote each param, expanding a leading '~' before quoting so
+    quoting doesn't defeat shell tilde expansion) -- kept here only so
+    TestCommandTemplatesActuallyRender can keep protecting registry.py's
+    own command_template data now that render_command() itself has been
+    removed from executor.py under the open-ended architecture. See that
+    class's docstring for the full explanation.
+    """
+
+    def _expand_and_quote(value) -> str:
+        if isinstance(value, (list, tuple)):
+            return " ".join(_expand_and_quote(v) for v in value)
+        text = str(value)
+        if text == "~" or text.startswith("~/"):
+            text = os.path.expanduser(text)
+        return shlex.quote(text)
+
+    quoted = {name: _expand_and_quote(value) for name, value in params.items()}
+    return template.format(**quoted)
 
 
 def test_loads_real_capabilities_json_from_default_path():
@@ -148,8 +173,18 @@ class TestCommandTemplatesActuallyRender:
         executor.render_command() does not raise. This is the direct
         regression test for the organize_files bug -- it would have failed
         loudly (KeyError) against the pre-fix command_template.
+
+        Note: render_command() itself was REMOVED from executor.py as part
+        of the open-ended-architecture rewrite (there's no longer a
+        registry/template pipeline to render at execution time -- see
+        executor.py's own module docstring). This test still exists to
+        protect registry.py's own command_template data (still on disk,
+        still validated by registry.py, kept for the explicit rollback
+        path) against the exact unescaped-brace bug described above, so it
+        uses a local reimplementation of the old render_command() logic
+        rather than importing the now-removed function.
         """
-        from ohmyshell.executor import render_command
+        render_command = _render_command_for_registry_test
 
         reg = registry_module.load()
         for cap in reg.all_capabilities():
@@ -172,8 +207,12 @@ class TestCommandTemplatesActuallyRender:
         real bash syntax, not swallowed or mangled) in the rendered
         command -- proving the fix escaped the template's braces for
         str.format() without altering what bash itself will actually run.
+
+        See test_every_registered_capability_command_template_renders'
+        docstring above for why this uses a local reimplementation of the
+        removed render_command() rather than importing it.
         """
-        from ohmyshell.executor import render_command
+        render_command = _render_command_for_registry_test
 
         reg = registry_module.load()
         template = reg.command_template_for("organize_files")

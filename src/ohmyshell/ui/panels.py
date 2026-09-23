@@ -159,7 +159,7 @@ def render_plan_panel(
 
     return Panel(
         body,
-        title=f"Plan — {plan.action}",
+        title=f"Plan — {plan.command}",
         border_style="cyan",
         expand=False,
     )

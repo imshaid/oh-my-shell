@@ -32,6 +32,36 @@ raw commands bypass the plan/trash pipeline entirely per Section 8.3.5;
 this classifier's job is only to add a confirmation step in front of
 commands recognizable as dangerous, not to guarantee safety for all of
 them).
+
+--- Independent risk-override layer (added for the open-ended architecture,
+Section 7.4's updated note; see validation.py's module docstring for the
+full rationale) ---
+
+Under the open-ended architecture, a command's `risk` starts as the
+Intent Parser model's own self-assessment (validation.py's
+ValidatedIntent.risk) rather than a static per-action registry lookup —
+there is no registry mapping a free-form, model-generated command to a
+risk level any more. This session's own empirical testing (an 84-prompt
+battery against Gemini 3.1 Flash Lite and Gemini 3.5 Flash Lite, both
+candidate providers) found BOTH models reproducibly under-risked two
+specific classes of command: opening a network port / disabling a
+firewall, and creating a passwordless or otherwise under-secured user
+account. This reproduces, on different models, the exact failure pattern
+the blueprint's original static-registry design was built to avoid
+("Kill-process risk-consistency সব মডেলেই কমবেশি অস্থির").
+
+`override_risk()` below is a small, independent, regex-based check —
+deliberately narrow (it only targets the two specific blind spots actually
+observed in testing, not a general risk re-assessment) — that force-
+escalates risk to at least "high" for a command matching one of these
+patterns, regardless of what the model itself said. It is independent of
+both the LLM-based classify() fallback above and of the model that
+produced the command in the first place, so a model that is wrong about
+its own command's risk cannot suppress this check by simply saying "low"
+more convincingly. Callers (intent_parser.py's consumers, i.e. main.py) are
+expected to call this on every AI-generated command's (command, risk) pair
+before showing the confirmation plan, exactly as they already run
+classify() on every raw-shell command.
 """
 
 from __future__ import annotations
@@ -183,6 +213,81 @@ class OllamaDangerBackend:
             return json.loads(response.message.content)
         except json.JSONDecodeError as exc:
             raise DangerClassifierError(f"Model response was not valid JSON: {exc}") from exc
+
+
+# --- Independent risk-override patterns (see module docstring) ---------------
+#
+# Each tuple: (compiled pattern, reason). Deliberately narrow -- these exist
+# to catch the SPECIFIC blind spots this session's own testing reproduced
+# on two different Gemini models, not to be a general-purpose risk model.
+_UNDER_RISKED_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (
+        # ufw/firewall-cmd/iptables allow rules, or opening a port with nc/socat
+        # in listen mode -- opening network exposure.
+        re.compile(
+            r"\bufw\s+allow\b"
+            r"|\bfirewall-cmd\s+.*--add-port\b"
+            r"|\biptables\s+.*-A\s+INPUT.*ACCEPT\b"
+            r"|\b(nc|ncat|socat)\s+.*-l\b"
+        ),
+        "This opens a network port or allows traffic through the firewall — "
+        "a real security-surface change that both tested cloud models "
+        "reproducibly under-risked in this project's own evaluation.",
+    ),
+    (
+        # useradd/adduser without a password step, or explicitly with an
+        # empty/disabled password, or passwd -d (delete password).
+        re.compile(
+            r"\buseradd\b(?!.*-p\b)"
+            r"|\badduser\b(?!.*--disabled-login\b.*--disabled-password\b)"
+            r"|\bpasswd\s+-d\b"
+        ),
+        "This creates or leaves a user account without a password (or "
+        "removes one) — both tested cloud models reproducibly under-risked "
+        "this in this project's own evaluation.",
+    ),
+]
+
+
+def override_risk(command: str, model_risk: str) -> str:
+    """
+    Independent re-check of an AI-generated command's own risk assessment
+    (see module docstring's "Independent risk-override layer"). Returns the
+    more severe of `model_risk` and whatever this function itself concludes
+    — never lowers a risk the model already flagged higher.
+
+    Args:
+        command: the raw shell command text the model produced.
+        model_risk: the model's own "low" | "medium" | "high" assessment
+            (validation.py's ValidatedIntent.risk — already normalized to
+            one of the three known levels by validate_intent()).
+
+    Returns:
+        "low" | "medium" | "high" — the effective risk to actually show the
+        user, after this independent check.
+    """
+    order = {"low": 0, "medium": 1, "high": 2}
+    baseline = model_risk if model_risk in order else "medium"
+    effective = baseline
+
+    for pattern, _reason in _UNDER_RISKED_PATTERNS:
+        if pattern.search(command):
+            effective = "high"
+            break
+
+    # Also defer to the existing regex-tier destructive patterns above --
+    # anything already recognized as classically destructive (rm -rf, dd to
+    # a device, mkfs, a fork bomb, broad chmod/chown on system paths) is at
+    # least "high" here too, independent of what the model said.
+    verdict = _regex_verdict(command)
+    if isinstance(verdict, Destructive):
+        effective = "high"
+
+    # Never LOWER what the model itself already said -- this function only
+    # escalates, it never overrides a model's own higher assessment.
+    if order[baseline] > order[effective]:
+        effective = baseline
+    return effective
 
 
 def _regex_verdict(command: str) -> Verdict | None:

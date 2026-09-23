@@ -93,6 +93,7 @@ pipeline inspects command/request text for these flags at all.
 
 from __future__ import annotations
 
+import dataclasses
 import shlex
 import subprocess
 import sys
@@ -107,13 +108,11 @@ from ohmyshell import config as config_module
 from ohmyshell import meta_commands
 from ohmyshell import trash as trash_module
 from ohmyshell import wizard as wizard_module
-from ohmyshell.danger_classifier import Destructive, DangerClassifierError, classify
-from ohmyshell.discussion import Cancelled, Confirmed, edit_step_param, run_discussion
+from ohmyshell.danger_classifier import Destructive, DangerClassifierError, classify, override_risk
+from ohmyshell.discussion import Cancelled, Confirmed, edit_command, run_discussion
 from ohmyshell.executor import StepStatus, run_plan
 from ohmyshell.intent_parser import IntentParseError, parse_intent
 from ohmyshell.plan_generator import Plan, generate_plan
-from ohmyshell.registry import Registry, RegistryError
-from ohmyshell.registry import load as load_registry
 from ohmyshell.router import InputKind, route
 from ohmyshell.ui.panels import (
     RichSudoPrompt,
@@ -334,41 +333,33 @@ def _repl_get_user_choice(
     return raw  # let run_discussion's own "unrecognized choice" branch handle it
 
 
-def _repl_edit_flow(
-    plan: Plan, registry: Registry, *, read: callable = input, console: Console | None = None
-) -> Plan:
+def _repl_edit_flow(plan: Plan, *, read: callable = input, console: Console | None = None) -> Plan:
     """
-    Drives the [e] direct-edit sub-flow: ask which param, ask its new
-    value, apply via discussion.edit_step_param, return the updated plan.
+    Drives the [e] direct-edit sub-flow (rewritten for the open-ended
+    architecture — see discussion.edit_command's own docstring): shows the
+    current command text and lets the user type a replacement outright.
 
     Design note: discussion.run_discussion's own "edit" branch just
     continues the loop and expects the caller to have already applied the
     edit before the next get_user_choice call (see its docstring) -- this
-    function is that caller-side piece. If the param name isn't valid
-    (KeyError from edit_step_param) or the plan has no params to edit at
-    all, the plan is returned unchanged and a message is printed, rather
-    than crashing the discussion loop over a typo.
+    function is that caller-side piece. An empty replacement cancels the
+    edit rather than leaving the plan with a blank command.
     """
     active_console = console if console is not None else Console()
-    if not plan.params:
-        active_console.print("  This plan has no editable params.")
-        return plan
-    active_console.print(f"  [dim]Editable params:[/dim] {', '.join(plan.params.keys())}")
-    param_name = read("  Edit which param? ").strip()
-    if not param_name:
+    active_console.print(f"  [dim]Current command:[/dim] {plan.command}")
+    new_command = read("  New command (blank to cancel): ").strip()
+    if not new_command:
         active_console.print("  Cancelled edit — plan unchanged.")
         return plan
-    new_value = read(f"  New value for {param_name!r}: ").strip()
     try:
-        return edit_step_param(plan, param_name, new_value, registry)
-    except KeyError:
-        active_console.print(f"  {param_name!r} isn't a param on this plan — unchanged.")
+        return edit_command(plan, new_command)
+    except ValueError:
+        active_console.print("  Command cannot be empty — plan unchanged.")
         return plan
 
 
 def _handle_natural_language(
     text: str,
-    registry: Registry,
     cfg: dict,
     *,
     read: callable = input,
@@ -378,9 +369,16 @@ def _handle_natural_language(
     base_dir=None,
 ) -> None:
     """
-    Full Section 4.1 pipeline: Intent Parser -> Plan Generator ->
-    Confirmation + Discussion Loop -> (Sudo Layer, only if a step needs
-    it) -> Streaming Executor -> Audit Log.
+    Full Section 4.1 pipeline (open-ended architecture — see
+    validation.py's module docstring): Intent Parser -> Independent Risk
+    Override -> Plan Generator -> Confirmation + Discussion Loop -> (Sudo
+    Layer, only if a step needs it) -> Streaming Executor -> Audit Log.
+
+    No Capability Registry is involved any more — the Intent Parser now
+    produces one real, directly-runnable command itself instead of
+    action/params for a fixed set of registered capabilities (see
+    intent_parser.py's own docstring for the full rationale and the
+    explicit local-model rollback path the project owner asked to keep).
 
     Wiring decisions (Section 16 Rule 5 -- this glue is not itself spelled
     out anywhere in the retrieved blueprint text, only each module's own
@@ -452,6 +450,12 @@ def _handle_natural_language(
     """
     active_console = console if console is not None else Console()
     model = config_module.get(cfg, "model.active")
+    # "google_ai_studio" (Gemini 3.5/3.1 Flash Lite) by default per this
+    # session's own empirical comparison; "ollama" is the explicit
+    # rollback path the project owner asked to keep available -- flip
+    # `/config set model.provider ollama` to switch back with no code
+    # change. See intent_parser.py's own docstring for the full rationale.
+    model_provider = cfg.get("model", {}).get("provider", "google_ai_studio")
 
     # `run_with_thinking_indicator` (ui/thinking.py) replaces the plain
     # `active_console.status("Thinking...")` spinner with the Section
@@ -477,7 +481,7 @@ def _handle_natural_language(
 
     try:
         result = run_with_thinking_indicator(
-            lambda: parse_intent(text, registry, model=model, on_token=_on_token),
+            lambda: parse_intent(text, model_provider=model_provider, model=model, on_token=_on_token),
             console=active_console,
             on_token_box=token_box,
         )
@@ -486,10 +490,21 @@ def _handle_natural_language(
         return
 
     if result.intent is None:
-        active_console.print("  I couldn't map that to anything I can do yet. Try `/help`.")
+        active_console.print("  I couldn't turn that into a command. Try rephrasing, or `/help`.")
         return
 
-    plan = generate_plan(result.intent, registry)
+    # Independent risk override (see danger_classifier.py's own docstring):
+    # this session's own testing found both tested Gemini models reliably
+    # under-risking port-opening and passwordless-user-creation -- never
+    # trust the model's own risk field alone for an AI-generated command,
+    # exactly as classify() already double-checks every raw-shell command.
+    effective_risk = override_risk(result.intent.command, result.intent.risk)
+    if effective_risk != result.intent.risk:
+        result = dataclasses.replace(
+            result, intent=result.intent.model_copy(update={"risk": effective_risk})
+        )
+
+    plan = generate_plan(result.intent)
     # Tracks the most recent parse's telemetry/attempts so the plan panel
     # (rendered by _repl_get_user_choice, below) always shows the numbers
     # for whichever parse actually produced the plan currently on screen --
@@ -511,7 +526,7 @@ def _handle_natural_language(
         try:
             adjusted = run_with_thinking_indicator(
                 lambda: parse_intent(
-                    adjustment_text, registry, model=model, on_token=_on_reparse_token
+                    adjustment_text, model_provider=model_provider, model=model, on_token=_on_reparse_token
                 ),
                 console=active_console,
                 on_token_box=reparse_token_box,
@@ -520,9 +535,14 @@ def _handle_natural_language(
             return None
         if adjusted.intent is None:
             return None
+        adjusted_risk = override_risk(adjusted.intent.command, adjusted.intent.risk)
+        if adjusted_risk != adjusted.intent.risk:
+            adjusted = dataclasses.replace(
+                adjusted, intent=adjusted.intent.model_copy(update={"risk": adjusted_risk})
+            )
         last_telemetry = adjusted.telemetry
         last_attempts = adjusted.attempts
-        return generate_plan(adjusted.intent, registry)
+        return generate_plan(adjusted.intent)
 
     def _get_user_choice(current_plan: Plan) -> tuple[str, Plan]:
         # `choice_read` defaults to None, which makes _repl_get_user_choice
@@ -541,7 +561,7 @@ def _handle_natural_language(
             attempts=last_attempts,
         )
         if choice == "edit":
-            current_plan = _repl_edit_flow(current_plan, registry, read=read, console=active_console)
+            current_plan = _repl_edit_flow(current_plan, read=read, console=active_console)
         return choice, current_plan
 
     def _discussion_print(line: str) -> None:
@@ -562,8 +582,8 @@ def _handle_natural_language(
     if isinstance(outcome, Cancelled):
         active_console.print("  Cancelled.")
         audit_log_module.record_action(
-            action=result.intent.action, source="natural_language", status="cancelled",
-            params=result.intent.params, risk=result.intent.risk, base_dir=base_dir,
+            action=result.intent.command, source="natural_language", status="cancelled",
+            risk=result.intent.risk, base_dir=base_dir,
         )
         return
 
@@ -574,7 +594,6 @@ def _handle_natural_language(
     with StreamingRenderer(console=active_console) as renderer:
         execution = run_plan(
             confirmed_plan,
-            registry,
             # `sudo_input_fn` defaults to None, which makes RichSudoPrompt
             # use its own real single-keypress reader (see that class's
             # "Esc/repeated-s bug fix" docstring) instead of the REPL's
@@ -622,9 +641,8 @@ def _handle_natural_language(
         status = "failed"
 
     audit_log_module.record_action(
-        action=confirmed_plan.action,
+        action=confirmed_plan.command,
         source="natural_language",
-        params=confirmed_plan.params,
         risk=confirmed_plan.risk,
         status=status,
         duration_seconds=duration,
@@ -635,7 +653,7 @@ def _handle_natural_language(
 
 
 def _handle_slash_command(
-    text: str, registry: Registry, cfg: dict, session_start: float, *, console: Console | None = None
+    text: str, cfg: dict, session_start: float, *, console: Console | None = None
 ) -> bool:
     """
     Dispatch a slash command through the full Meta-Command Handler
@@ -653,7 +671,7 @@ def _handle_slash_command(
     """
     active_console = console if console is not None else Console()
     try:
-        outcome = meta_commands.dispatch(text, cfg=cfg, registry=registry, session_start=session_start)
+        outcome = meta_commands.dispatch(text, cfg=cfg, session_start=session_start)
     except meta_commands.MetaCommandError as exc:
         active_console.print(f"  {exc}")
         return False
@@ -666,12 +684,6 @@ def _handle_slash_command(
 def run() -> None:
     """Entrypoint (see pyproject.toml's [project.scripts] and bin/oh-my-shell)."""
     console = Console()
-
-    try:
-        registry = load_registry()
-    except RegistryError as exc:
-        console.print(f"[red]Fatal: could not load capability registry: {exc}[/red]")
-        sys.exit(1)
 
     # Bug fix (found via manual end-to-end testing, post-Build-Order):
     # wizard.py (Build Order Step 13) was fully written and tested but
@@ -737,14 +749,14 @@ def run() -> None:
         # and returns to the ordinary REPL prompt instead.
         try:
             if routed.kind == InputKind.SLASH_COMMAND:
-                if _handle_slash_command(routed.text, registry, cfg, session_start, console=console):
+                if _handle_slash_command(routed.text, cfg, session_start, console=console):
                     break
                 continue
             if routed.kind == InputKind.RAW_SHELL:
                 _handle_raw_shell(routed.text, cfg, confirm=session, console=console)
                 continue
             if routed.kind == InputKind.NATURAL_LANGUAGE:
-                _handle_natural_language(routed.text, registry, cfg, read=session, console=console)
+                _handle_natural_language(routed.text, cfg, read=session, console=console)
                 continue
         except KeyboardInterrupt:
             console.print()

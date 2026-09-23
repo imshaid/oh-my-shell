@@ -1,9 +1,11 @@
 """
-Streaming Executor (Build Order Step 10, half of "executor.py + trash.py").
+Streaming Executor (Build Order Step 10, half of "executor.py + trash.py";
+rewritten for the open-ended architecture -- see validation.py's module
+docstring for the full rationale).
 
-Runs a Plan (plan_generator.py, Step 7), blocking, emitting a structured
-event stream -- Section 8.3.4's "Execution — Live Streaming ও Interrupt
-Handling" and the Module 2<->Module 4 event-format contract (Section 4.2):
+Runs a Plan (plan_generator.py), blocking, emitting a structured event
+stream -- Section 8.3.4's "Execution — Live Streaming ও Interrupt Handling"
+and the Module 2<->Module 4 event-format contract (Section 4.2):
 
     {"step": 2, "status": "running"|"done"|"failed"|"interrupted",
      "progress": {"done": 178, "total": 340}}
@@ -13,50 +15,42 @@ Step 11 (ui/streaming.py) turns these events into the blueprint's
 (same split used by plan_generator.py/discussion.py/sudo_layer.py: plain
 data + a plain-text default renderer here, `rich` panels later).
 
-Scope note: capabilities.json defines one `command_template` per capability
-action, not one per `plan_steps` entry -- `plan_steps` is display text for
-the Confirmation/Discussion Loop (Step 7), while the *executable* unit is
-the single rendered command_template. So run_plan() executes one shell
-command per plan and reports it as one StepEvent/StepResult (step 1 of 1),
-covering all of the plan's human-readable steps together. A future
-capability with a genuinely multi-command execution would need its own
-handling; none of the four registered capabilities need that yet.
+--- Architecture change ---
+Under the original 4-action registry, a Plan carried an `action`/`params`
+pair and the executable command was rendered from capabilities.json's
+`command_template` at run time (see the removed `render_command()` and its
+shell-injection-safe `shlex.quote()` param substitution — no longer needed
+here, since there are no template params to substitute any more).
+
+Under the open-ended architecture, the Intent Parser's own model call
+already produced the final, complete, directly-runnable command text
+(validation.py's ValidatedIntent.command); plan_generator.py carries it
+through unchanged onto Plan.command. So run_plan() now executes
+`plan.command` directly — no template, no registry lookup, no per-param
+quoting step. Shell-injection safety no longer applies the same way either:
+the whole command is model-generated free text, not a trusted template with
+untrusted param values spliced in, so there is no "trusted syntax vs.
+untrusted value" boundary left to enforce with shlex.quote() — the model's
+raw command IS the syntax. The one thing standing between a bad command and
+real execution is confirmation (discussion.py's plan panel) plus
+danger_classifier.py's independent risk check (both upstream of this
+module, unchanged in spirit from the raw-shell path that already worked
+this way before this rewrite).
+
+Scope note: a plan is still always exactly one executable command per run
+(same as before — nothing in the open-ended architecture introduces
+multi-command plans), so run_plan() still reports one StepEvent/StepResult
+(step 1 of 1).
 
 --- Design decisions (Section 16 Rule 5 -- confirmed with the user) ---
 
-1. Template parameter substitution & subprocess invocation: command_template
-   strings are themselves shell syntax (pipes, `-exec`, `&&`, globs -- see
-   capabilities.json), so they run via `subprocess.run(cmd, shell=True)`.
-   To avoid shell-injection through parameter VALUES (as opposed to the
-   template's own trusted shell syntax), every param value is escaped with
-   `shlex.quote()` before substitution. A list-type param (e.g.
-   `paths: ["/tmp", "~/.cache"]`) has each item quoted individually and the
-   results space-joined, so `{paths}` expands to e.g. `/tmp ~/.cache` --
-   safe to place directly into `find {paths} ...`.
+1. Sudo-escalation trigger: detection is reactive, same as before -- a step
+   runs normally first; if it fails with a shell "Permission denied" /
+   "Operation not permitted" signature in stderr, the executor treats that
+   as a permission-escalation case and calls sudo_layer.decide_step()
+   before deciding whether to retry the same command prefixed with `sudo`.
 
-   Correction (post-Build-Order, found via manual end-to-end testing): a
-   value quoted as-is with `shlex.quote()` alone -- e.g. "~/.cache" ->
-   "'~/.cache'" -- defeats shell tilde expansion, since a POSIX shell never
-   expands `~` inside single quotes; the rendered command silently failed
-   to find "'~/.cache'" as a literal directory name. `_quote_param()` (see
-   `_expand_and_quote()`'s own docstring for the full story) now expands a
-   leading `~`/`~/` to an absolute path in Python first, so the value has
-   no `~` left by the time it's quoted -- the example above now correctly
-   renders as `/tmp ~/.cache` (already expanded, so still safe once quoted
-   as an ordinary absolute path).
-
-2. Sudo-escalation trigger: capabilities.json has no static "requires_sudo"
-   flag (none of the four registered capabilities need one). Detection is
-   reactive: a step runs normally first; if it fails with a shell
-   "Permission denied" / "Operation not permitted" signature in stderr, the
-   executor treats that as a permission-escalation case and calls
-   sudo_layer.decide_step() before deciding whether to retry the same
-   command prefixed with `sudo`. This works for any capability without new
-   registry fields, at the cost of one wasted attempt on a step that turns
-   out to need sudo -- an acceptable trade for a solo/CEP-scope build,
-   documented here per Rule 5.
-
-3. Timeouts/exit codes/error handling (the blueprint is silent on all
+2. Timeouts/exit codes/error handling (the blueprint is silent on all
    three): a non-zero exit for any reason OTHER than the permission-denied
    case above is reported as "failed" (matching the event-format's status
    enum); since a plan is currently always one command, "stopping the rest
@@ -65,18 +59,13 @@ handling; none of the four registered capabilities need that yet.
    to the user's own data would be an arbitrary guess); Ctrl+C is the way
    to stop a stuck step.
 
-Audit-log tie-in: audit_log.py doesn't exist yet (Step 12). run_plan()
-returns a complete ExecutionResult (step outcomes, interrupted flag, sudo
-usage) so whatever calls it -- main.py today, the Audit Log once Step 12
-lands -- has everything needed to log it; this module does not import
-audit_log.py itself, keeping Step 10 independent of a step that comes after
-it in the Build Order.
+Audit-log tie-in: run_plan() returns a complete ExecutionResult (step
+outcomes, interrupted flag, sudo usage) so whatever calls it has everything
+needed to log it.
 """
 
 from __future__ import annotations
 
-import os
-import shlex
 import signal
 import subprocess
 from contextlib import contextmanager
@@ -143,57 +132,6 @@ class ExecutionResult:
 
 class _DoubleInterrupt(Exception):
     """Raised internally when a second Ctrl+C arrives during a running step."""
-
-
-def _expand_and_quote(item: Any) -> str:
-    """
-    shlex.quote() a single scalar param value, expanding a leading `~`/`~/`
-    to the real home directory first.
-
-    Bug fix (found via manual end-to-end testing, post-Build-Order):
-    capabilities.json's own clean_temp_files default is
-    `paths: ["/tmp", "~/.cache"]` (Section 5.4), and command_template
-    renders it straight into `find {paths} ...`. shlex.quote("~/.cache")
-    returns "'~/.cache'" (wrapped in real single quotes) -- correct
-    shell-injection-safe escaping in general, but inside single quotes a
-    POSIX shell never performs tilde expansion, so the rendered command
-    became `find /tmp '~/.cache' ...`, which `find` reports as
-    "No such file or directory" for a literal directory named "~/.cache"
-    in the current working directory (verified directly: `find '~/.cache'
-    -maxdepth 0` fails, while the unquoted `find ~/.cache -maxdepth 0`
-    correctly resolves to $HOME/.cache). Every capability using this
-    codebase's only home-relative default silently only ever cleaned
-    /tmp; the ~/.cache half of the request quietly no-op'd.
-
-    The fix expands `~`/`~/...` to an absolute path in Python (via
-    os.path.expanduser, which never touches the shell) BEFORE quoting --
-    shlex.quote() on an already-absolute path is a no-op for the
-    resulting shell safety guarantee, but now there is no leading `~`
-    left for the shell to fail to expand. Values with no leading `~` are
-    unaffected (os.path.expanduser is a no-op for them), so every other
-    existing param (a plain path, a PID, a process-name filter, a signal
-    name) quotes exactly as before.
-    """
-    text = str(item)
-    if text == "~" or text.startswith("~/"):
-        text = os.path.expanduser(text)
-    return shlex.quote(text)
-
-
-def _quote_param(value: Any) -> str:
-    """_expand_and_quote() a single param value, or space-join quoted list items."""
-    if isinstance(value, (list, tuple)):
-        return " ".join(_expand_and_quote(item) for item in value)
-    return _expand_and_quote(value)
-
-
-def render_command(command_template: str, params: dict[str, Any]) -> str:
-    """
-    Fill a capability's command_template with params, shell-escaping every
-    value with shlex.quote() first (see module docstring, decision 1).
-    """
-    quoted_params = {key: _quote_param(value) for key, value in params.items()}
-    return command_template.format(**quoted_params)
 
 
 def _looks_like_permission_denied(stderr: str) -> bool:
@@ -331,7 +269,7 @@ class _StepRunner:
         self.prompt = prompt
         self.emit = emit
         self.state = state
-        self.description = plan.steps[0] if plan.steps else plan.action
+        self.description = plan.steps[0] if plan.steps else plan.command
         self.on_before_execute = on_before_execute
         self.on_after_execute = on_after_execute
         # `on_output_line`/`popen_factory` (added post-Build-Order): purely
@@ -396,7 +334,7 @@ class _StepRunner:
             except _DoubleInterrupt:
                 self.emit(StepStatus.INTERRUPTED, "force-stopped (second Ctrl+C)")
                 return ExecutionResult(
-                    action=self.plan.action,
+                    action=self.plan.command,
                     step_results=[self._result(StepStatus.INTERRUPTED, used_sudo=used_sudo)],
                     interrupted=True,
                 )
@@ -413,7 +351,7 @@ class _StepRunner:
             # user explicitly asked to stop (Section 8.3.4).
             self.emit(StepStatus.INTERRUPTED, "stopped after current operation finished")
             return ExecutionResult(
-                action=self.plan.action,
+                action=self.plan.command,
                 step_results=[self._result(StepStatus.INTERRUPTED, completed, used_sudo=used_sudo)],
                 interrupted=True,
             )
@@ -421,7 +359,7 @@ class _StepRunner:
         if completed.returncode == 0:
             self.emit(StepStatus.DONE, completed.stdout)
             return ExecutionResult(
-                action=self.plan.action,
+                action=self.plan.command,
                 step_results=[self._result(StepStatus.DONE, completed, used_sudo=used_sudo)],
             )
 
@@ -430,7 +368,7 @@ class _StepRunner:
 
         self.emit(StepStatus.FAILED, completed.stderr)
         return ExecutionResult(
-            action=self.plan.action,
+            action=self.plan.command,
             step_results=[self._result(StepStatus.FAILED, completed, used_sudo=used_sudo)],
         )
 
@@ -448,12 +386,12 @@ class _StepRunner:
 
         if decision is SudoDecision.SKIP:
             self.emit(StepStatus.SKIPPED, "skipped (elevated permission declined)")
-            return ExecutionResult(action=self.plan.action, step_results=[self._result(StepStatus.SKIPPED)])
+            return ExecutionResult(action=self.plan.command, step_results=[self._result(StepStatus.SKIPPED)])
 
         # ABORT
         self.emit(StepStatus.INTERRUPTED, "aborted (elevated permission declined)")
         return ExecutionResult(
-            action=self.plan.action,
+            action=self.plan.command,
             step_results=[self._result(StepStatus.INTERRUPTED)],
             aborted_for_sudo=True,
         )
@@ -465,7 +403,6 @@ class _StepRunner:
 
 def run_plan(
     plan: Plan,
-    registry,
     *,
     prompt: SudoPrompt | None = None,
     on_event: Callable[[StepEvent], None] | None = None,
@@ -505,7 +442,7 @@ def run_plan(
     """
     state = interrupt_state if interrupt_state is not None else InterruptState()
     total = len(plan.steps) if plan.steps else 1
-    command = render_command(registry.command_template_for(plan.action), plan.params)
+    command = plan.command
 
     def emit(status: StepStatus, detail: str = "") -> None:
         if on_event is not None:

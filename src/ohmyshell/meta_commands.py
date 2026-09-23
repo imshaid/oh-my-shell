@@ -71,7 +71,6 @@ from ohmyshell import audit_log as audit_log_module
 from ohmyshell import config as config_module
 from ohmyshell import hardware as hardware_module
 from ohmyshell import trash as trash_module
-from ohmyshell.registry import Registry
 
 HELP_TEXT = """\
   Oh My Shell — Command Reference
@@ -238,19 +237,28 @@ def _handle_log(args: list[str], base_dir=None) -> str:
     return "\n".join(lines)
 
 
-def _handle_capabilities(registry: Registry) -> str:
-    lines = ["  Oh My Shell can do:"]
-    for cap in registry.all_capabilities():
-        lines.append(f"  {cap['action']} (risk: {cap['risk']}) — {cap['description']}")
-    return "\n".join(lines)
+def _handle_capabilities() -> str:
+    """
+    Rewritten for the open-ended architecture (see validation.py's module
+    docstring): there is no fixed capability registry to list any more —
+    the AI can generate any real shell command for any request. This now
+    explains that plainly instead of enumerating a static action list.
+    """
+    return (
+        "  Oh My Shell doesn't limit itself to a fixed list of actions.\n"
+        "  Describe what you want in plain language and the AI will write\n"
+        "  a real shell command for it — you'll always see the exact\n"
+        "  command and its risk level before anything runs.\n\n"
+        "  Raw shell syntax (ls, grep, pipes, ...) still runs directly,\n"
+        "  no AI involved, just like a normal shell."
+    )
 
 
 def _handle_explain(base_dir=None) -> str:
     entry = audit_log_module.most_recent(base_dir=base_dir)
     if entry is None:
         return "  No AI decisions recorded yet this session."
-    param_summary = ", ".join(f"{k}={v}" for k, v in entry.params.items()) or "(no params)"
-    return f"  Last action: {entry.action}  (risk: {entry.risk})\n  Params: {param_summary}\n  Outcome: {entry.status}"
+    return f"  Last action: {entry.action}  (risk: {entry.risk})\n  Outcome: {entry.status}"
 
 
 def _handle_stats(session_start: float, tokens_used: int | None = None, base_dir=None) -> str:
@@ -261,6 +269,8 @@ def _handle_stats(session_start: float, tokens_used: int | None = None, base_dir
 def _handle_system(cfg: dict, session_start: float, *, runner=subprocess.run, base_dir=None) -> str:
     snapshot = hardware_module.read_snapshot(runner=runner)
     active_model = config_module.get(cfg, "model.active")
+    provider = cfg.get("model", {}).get("provider", "google_ai_studio")
+    provider_label = "Google AI Studio (Gemini)" if provider == "google_ai_studio" else "local (Ollama)"
     uptime_seconds = max(0.0, time.time() - session_start)
     uptime_minutes = int(uptime_seconds // 60)
     session_count = len(audit_log_module.entries_since(session_start, base_dir=base_dir))
@@ -272,7 +282,7 @@ def _handle_system(cfg: dict, session_start: float, *, runner=subprocess.run, ba
         "",
         "  Oh My Shell",
         "  ────────────────────────────────",
-        f"  Active model: {active_model}  ·  Provider: local (Ollama)  ·  uptime {uptime_minutes}m",
+        f"  Active model: {active_model}  ·  Provider: {provider_label}  ·  uptime {uptime_minutes}m",
         f"  Session: {session_count} requests",
     ]
     return "\n".join(lines)
@@ -324,7 +334,6 @@ def dispatch(
     text: str,
     *,
     cfg: dict,
-    registry: Registry,
     session_start: float,
     base_dir=None,
     tokens_used: int | None = None,
@@ -369,7 +378,7 @@ def dispatch(
         return CommandOutcome(text=_handle_log(args, base_dir=base_dir))
 
     if command == "capabilities":
-        return CommandOutcome(text=_handle_capabilities(registry))
+        return CommandOutcome(text=_handle_capabilities())
 
     if command == "explain":
         return CommandOutcome(text=_handle_explain(base_dir=base_dir))

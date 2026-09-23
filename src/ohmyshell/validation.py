@@ -1,80 +1,93 @@
 """
-Harness Validation Layer (Build Order Step 4).
+Harness Validation Layer (Build Order Step 4; rewritten for the open-ended
+architecture — see Oh-My-Shell-Blueprint-FINAL.md Section 7.4's updated
+note).
 
-Section 4.2: "Model output-কে Pydantic schema দিয়ে double-check করে; ব্যর্থ হলে
-এক-বার retry, তারপর `unmapped`-এ fallback." Section 7.4/502: risk is always a
-static registry lookup, never taken from model output, even if the model
-happens to include a risk-looking field.
+--- Architecture change (explicitly authorized by the project owner) -------
+The original Section 7.4 design mapped a natural-language request to one of
+a fixed, small set of registry actions, with `risk` always a static,
+hardcoded lookup from capabilities.json — never taken from the model.
 
-Scope note (implementation decision, not a blueprint open question — logged
-here rather than in Section 15 since it's a routine code-structure call, not
-something needing external/team confirmation): this module is a *pure*
-validator. It checks one Intent Parser response against the registry and
-reports pass/fail — it does not itself call Ollama again. "One retry, then
-unmapped" is an orchestration behavior that belongs to whichever module
-calls the LLM (intent_parser.py, Build Order Step 5): that module is
-expected to call `validate_intent()` here, and on failure, re-prompt the
-model once and call `validate_intent()` again before giving up and treating
-the request as unmapped. Keeping retry out of this module keeps it a small,
-dependency-free, easily-unit-tested pass/fail check.
+That was deliberately chosen because the blueprint's own early model
+testing found risk-assessment consistency unreliable across models
+("Kill-process risk-consistency সব মডেলেই কমবেশি অস্থির"). This session's own
+empirical testing (qwen3.5:4b calling a real, catastrophic
+`rm -rf /home/*/.cache/` "low"; both tested Gemini models under-risking
+port-opening and passwordless-user-creation) reproduced that exact failure
+pattern independently, on different models, years apart — so the concern
+was real and remains real.
 
-Flow this module sits in (Section 4.3):
-    Intent Parser (schema-constrained LLM output)
-        -> Harness Validation (this module)
-        -> Capability Registry lookup (risk/params from static registry)
-        -> Plan Generator
+The project owner explicitly chose to move to open-ended AI command
+generation anyway (the fixed 4-action registry was too narrow for a
+natural-language shell), and explicitly authorized updating this locked
+decision. To keep the original safety rationale intact under the new
+architecture, `risk` is no longer a registry lookup (there is no registry
+mapping a free-form command to a risk level) — instead:
+
+  1. The model is asked for its own honest risk assessment, same as before.
+  2. danger_classifier.py's regex tier (existing, unchanged) still runs on
+     the final command, independent of what the model said.
+  3. A NEW independent override layer in danger_classifier.py (see that
+     module) specifically re-checks for the failure patterns actually
+     observed in testing (port-opening, passwordless user creation, and
+     other classically under-risked operations) and force-escalates risk
+     regardless of the model's own answer.
+
+So "risk is never blindly trusted from the model" is preserved — it's just
+enforced by a different, complementary layer (danger_classifier.py) instead
+of a static per-action table, because there is no longer a fixed action set
+to hold that table.
+
+This module is still a *pure* validator: it checks one Intent Parser
+response's SHAPE (well-formed command/risk/explanation) and does not call
+any model itself. Retry orchestration still lives in intent_parser.py.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import jsonschema
 from pydantic import BaseModel, Field, ValidationError
 
-from ohmyshell.registry import Registry
+KNOWN_RISK_LEVELS = ("low", "medium", "high")
 
 
 class RawIntent(BaseModel):
     """
-    Shape the Intent Parser (Step 5) is expected to produce, before any
-    registry-aware checking happens. This is the *first* Pydantic pass:
-    "is this even a well-formed intent object at all" — independent of
-    whether `action` names a real capability or `params` matches that
-    capability's own params_schema (that's checked separately below,
-    against the registry, since params_schema differs per action and
-    can't be expressed as one static Pydantic model).
+    Shape the Intent Parser is expected to produce: one real, runnable shell
+    command, plus the model's own risk assessment and a short explanation.
+
+    This is the *first* Pydantic pass: "is this even a well-formed response
+    at all" — independent of whether `risk` is one of the recognized levels
+    (checked separately below) or whether the command itself is dangerous
+    (checked downstream by danger_classifier.py, not here).
     """
 
-    action: str = Field(min_length=1)
-    params: dict[str, Any] = Field(default_factory=dict)
-    # Optional free-text the model may return alongside its structured pick
-    # (e.g. a short restatement of what it understood) — never used for any
-    # safety-relevant decision; purely informational if present.
-    reasoning: str | None = None
+    command: str = Field(min_length=1)
+    risk: str
+    explanation: str = ""
 
 
 class ValidatedIntent(BaseModel):
     """
-    A RawIntent that has passed both Pydantic shape-checking and
-    registry-based checking (action exists, params match that action's
-    params_schema). `risk` here is *always* the static registry value for
-    `action` — never anything the model might have supplied.
+    A RawIntent that has passed shape-checking. `risk` here is the model's
+    own assessment, normalized to one of the known levels — NOT yet
+    cross-checked against danger_classifier.py's independent rules; callers
+    (intent_parser.py / main.py) are expected to run classify() on `command`
+    afterward and take the more severe of the two verdicts, exactly as a raw
+    shell command already does today.
     """
 
-    action: str
-    params: dict[str, Any]
+    command: str
     risk: str
+    explanation: str = ""
 
 
 class ValidationOutcome(BaseModel):
     """
-    Result of a single validation attempt. Exactly one of `intent` /
-    `error` is set, matching `ok`.
-
-    This does not decide whether to retry or fall back to `unmapped` —
-    per the scope note above, that's the caller's job. This just reports
-    what happened on this one attempt.
+    Result of a single validation attempt. Exactly one of `intent` / `error`
+    is set, matching `ok`. Retry/fallback-to-unmapped orchestration is the
+    caller's job (intent_parser.py), same as before.
     """
 
     ok: bool
@@ -82,23 +95,18 @@ class ValidationOutcome(BaseModel):
     error: str | None = None
 
 
-def validate_intent(raw: Any, registry: Registry) -> ValidationOutcome:
+def validate_intent(raw: Any) -> ValidationOutcome:
     """
-    Validate a single Intent Parser response against the registry.
+    Validate a single Intent Parser response.
 
     Args:
-        raw: the model's response, either already a dict (parsed JSON) or
-            a RawIntent. Accepting a plain dict here means intent_parser.py
-            can hand this function the raw Ollama JSON output directly.
-        registry: the loaded, validated Registry (Build Order Step 3) to
-            check `action`/`params` against.
+        raw: the model's response, either already a dict (parsed JSON) or a
+            RawIntent.
 
     Returns:
-        ValidationOutcome with ok=True and a ValidatedIntent (risk filled
-        in from the registry, never from `raw`), or ok=False and a
-        human-readable `error` describing what failed.
+        ValidationOutcome with ok=True and a ValidatedIntent, or ok=False
+        and a human-readable `error` describing what failed.
     """
-    # Pass 1: is this even a well-formed intent object?
     if isinstance(raw, RawIntent):
         parsed = raw
     else:
@@ -107,73 +115,17 @@ def validate_intent(raw: Any, registry: Registry) -> ValidationOutcome:
         except ValidationError as exc:
             return ValidationOutcome(ok=False, error=f"Malformed intent shape: {exc}")
 
-    # Pass 2: does `action` name a real, registered capability?
-    if parsed.action not in registry:
+    if not parsed.command.strip():
+        return ValidationOutcome(ok=False, error="command is empty or blank.")
+
+    risk = parsed.risk.strip().lower()
+    if risk not in KNOWN_RISK_LEVELS:
         return ValidationOutcome(
             ok=False,
-            error=f"Unknown action {parsed.action!r} — not in capability registry.",
+            error=f"risk {parsed.risk!r} is not one of {KNOWN_RISK_LEVELS}.",
         )
 
-    # Pass 3: do `params` satisfy that action's own params_schema?
-    # (Registry integrity — i.e. that params_schema is itself well-formed —
-    # was already checked once at registry load time, Build Order Step 3.
-    # This is the per-call check against this specific model response,
-    # distinct from that one-time integrity check per Section 5.1's table.)
-    params_schema = registry.params_schema_for(parsed.action)
-    try:
-        jsonschema.validate(instance=parsed.params, schema=params_schema)
-    except jsonschema.ValidationError as exc:
-        return ValidationOutcome(
-            ok=False,
-            error=(
-                f"Params for action {parsed.action!r} failed schema check: "
-                f"{exc.message} (at {'/'.join(str(p) for p in exc.absolute_path) or '<root>'})"
-            ),
-        )
-
-    # Bug fix (found via manual end-to-end testing, post-Build-Order): a
-    # model response omitting a non-required param (e.g. list_processes'
-    # sort_by, which has params_schema default "none" but isn't in
-    # `required`) validates fine here -- jsonschema.validate() only checks
-    # an instance against a schema, it never *fills in* a property's
-    # "default" the way e.g. Pydantic's model defaults would. Left as-is,
-    # that missing key then reached executor.py's render_command(), which
-    # does a plain str.format(**params) with no placeholder-tolerance (unlike
-    # plan_generator.py's _LeavePlaceholder, which is plan-text-only) and
-    # crashed with a bare KeyError the first time a real Ollama response
-    # actually omitted an optional param. The correct fix belongs here, not
-    # in executor.py: a ValidatedIntent should always carry a complete params
-    # dict (every property named in the schema, defaulted where the model
-    # didn't supply one) so every downstream consumer -- Plan Generator,
-    # Executor, the Discussion Loop's edit flow -- can rely on the same
-    # complete shape, matching this module's own stated job of being the one
-    # place that reconciles a raw model response against the registry.
-    complete_params = _fill_schema_defaults(parsed.params, params_schema)
-
-    # risk is looked up from the registry — never taken from `raw`, even if
-    # the model's response happened to include a risk-like field.
     return ValidationOutcome(
         ok=True,
-        intent=ValidatedIntent(
-            action=parsed.action,
-            params=complete_params,
-            risk=registry.risk_for(parsed.action),
-        ),
+        intent=ValidatedIntent(command=parsed.command.strip(), risk=risk, explanation=parsed.explanation),
     )
-
-
-def _fill_schema_defaults(params: dict[str, Any], params_schema: dict[str, Any]) -> dict[str, Any]:
-    """
-    Return a copy of `params` with any property named in `params_schema`
-    filled in from that property's own JSON Schema "default", if the model
-    didn't supply it. Params the model DID supply are never overwritten
-    (this only adds missing keys, it doesn't second-guess given values).
-    A property with no "default" in the schema and not supplied by the
-    model is simply left absent, same as today -- only params_schema.json
-    already promises a default is safe to fill in here.
-    """
-    filled = dict(params)
-    for name, prop_schema in params_schema.get("properties", {}).items():
-        if name not in filled and "default" in prop_schema:
-            filled[name] = prop_schema["default"]
-    return filled
