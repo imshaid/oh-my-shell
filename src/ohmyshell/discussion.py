@@ -217,7 +217,15 @@ def run_discussion(
                 continue
             print_fn(f"  {_diff_note(plan.params, new_plan.params)}")
             plan = new_plan
-            if chat_turns >= soft_limit_turns:
+            # Bug fix (found via manual end-to-end testing, post-Build-Order):
+            # this used to compare with `>=`, so the nudge re-printed on
+            # EVERY chat turn once the threshold was crossed (turn 5, 6, 7,
+            # ...), not just once. Section 8.3.3 says "৫ discuss-turn-এর পর
+            # একটা gentle reminder" -- "একটা" (a/one), singular -- matching
+            # the blueprint's own mockup, which shows the reminder appearing
+            # exactly once. `==` fires the nudge only on the exact turn the
+            # threshold is first reached.
+            if chat_turns == soft_limit_turns:
                 print_fn(SOFT_LIMIT_NUDGE.format(turn=chat_turns))
             continue
 

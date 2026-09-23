@@ -165,6 +165,36 @@ def test_soft_limit_nudge_appears_after_configured_turns(clean_temp_plan, regist
     assert any("turn 3" in line.lower() for line in printed)
 
 
+def test_soft_limit_nudge_appears_only_once_not_every_turn_after(clean_temp_plan, registry):
+    """
+    Regression test (found via manual end-to-end testing): the nudge
+    condition used to be `chat_turns >= soft_limit_turns`, which re-printed
+    the reminder on EVERY chat turn once the threshold was crossed, not
+    just once. Section 8.3.3 says "একটা gentle reminder" (a/one reminder,
+    singular) after the soft limit, matching the blueprint's own mockup
+    where it appears exactly once -- not once per turn thereafter.
+    """
+    adjusted_intent = ValidatedIntent(action="clean_temp_files", params={"days": 8}, risk="medium")
+    adjusted_plan = generate_plan(adjusted_intent, registry)
+
+    printed = []
+    # 5 chat turns then confirm, with soft_limit_turns=2 -> nudge should
+    # fire exactly once, on turn 2, and never again on turns 3-5.
+    choices = iter(["chat", "chat", "chat", "chat", "chat", "confirm"])
+    run_discussion(
+        clean_temp_plan,
+        get_user_choice=lambda plan: (next(choices), plan),
+        get_adjustment_text=lambda: "tweak it",
+        reparse=lambda text, plan: adjusted_plan,
+        print_fn=printed.append,
+        soft_limit_turns=2,
+    )
+
+    nudge_lines = [line for line in printed if "raw command mode" in line.lower()]
+    assert len(nudge_lines) == 1
+    assert "turn 2" in nudge_lines[0].lower()
+
+
 def test_no_nudge_before_soft_limit_reached(clean_temp_plan, registry):
     adjusted_intent = ValidatedIntent(action="clean_temp_files", params={"days": 8}, risk="medium")
     adjusted_plan = generate_plan(adjusted_intent, registry)
