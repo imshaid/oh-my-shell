@@ -64,6 +64,28 @@ def test_params_schema_for_and_command_template_for():
     assert "{target_dir}" in template
 
 
+def test_clean_temp_files_uses_batched_exec_not_per_file_exec():
+    """
+    Performance regression guard (found via real end-to-end testing on the
+    dev machine: cleaning ~230 files took 150+ seconds). `find ... -exec
+    mv ... \\;` spawns one new `mv` process PER MATCHED FILE -- the
+    fork+exec overhead alone dominates for a few hundred stale files.
+    `-exec ... +` batches every matched file into as few `mv` invocations
+    as ARG_MAX allows (still one real per-file "renamed 'X' -> 'Y'" line
+    each, via `-v`, so the live per-file progress feature is unaffected --
+    see ui/streaming.py), which is what real coreutils-based tools do for
+    exactly this reason.
+    """
+    reg = registry_module.load()
+    template = reg.command_template_for("clean_temp_files")
+    assert template.rstrip().endswith("+"), (
+        "clean_temp_files' command_template must use `-exec ... +` "
+        "(batched) rather than `-exec ... \\;` (one process per file, "
+        "much slower for a real /tmp or ~/.cache with many stale files)"
+    )
+    assert "-v" in template  # still verbose, so per-file live progress keeps working
+
+
 def test_all_capabilities_preserves_file_order():
     reg = registry_module.load()
     actions_in_order = [c["action"] for c in reg.all_capabilities()]

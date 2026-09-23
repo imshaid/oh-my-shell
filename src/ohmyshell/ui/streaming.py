@@ -50,6 +50,26 @@ counter AND the live label text, updated in place via `update_label()` as
 each output line arrives -- `__rich_console__` reads both fresh on every
 `Live` refresh tick, so neither needs an explicit re-render call.
 
+Richer multi-line live panel (added post-Build-Order, per the user's
+explicit follow-up: a bare "N files moved · filename" text line, while
+technically live, read as "just a count, nothing real" against the
+blueprint's own mockup -- a real animated bar, a live throughput number,
+and the actual filename on its own line, updating every command, not only
+`mv -v` ones. `_LiveRunningLine` now renders THREE lines every tick
+(spinner+label+elapsed on top, an animated indeterminate bar + live
+count/rate underneath, the latest raw output line at the bottom) instead
+of one -- still zero extra threads, same mechanism as before: `Live`'s
+timer calls `__rich_console__` on this same mutable object every tick, so
+a bar animated purely from `time.monotonic()` (no state to advance
+between ticks, same trick `Spinner` itself already uses) animates for
+free even between real `update_label()`/`note_line()` calls, which is
+exactly what makes a slow step (few output lines) still look alive
+instead of frozen. The bar is indeterminate (a moving highlighted
+segment, not a filled percentage) because none of the four registered
+capabilities' command_templates report a total up front (see this
+module's older scope note below, still true) -- an honest "in progress,
+working" animation rather than a fabricated percentage.
+
 The "AI: N tokens · Ns reasoning time" line (added post-Build-Order, found
 via manual end-to-end testing): intent_parser.OllamaBackend already reads
 real prompt_eval_count/eval_count/total_duration off every ollama.chat()
@@ -71,7 +91,7 @@ import time
 from contextlib import contextmanager
 from typing import Iterator
 
-from rich.console import Console, ConsoleOptions, RenderResult
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.text import Text
@@ -87,55 +107,130 @@ _STATUS_GLYPH = {
 }
 
 _MAX_RUNNING_LABEL_CHARS = 72  # keeps the spinner line to roughly one terminal row
+_MAX_DETAIL_LINE_CHARS = 78  # keeps the raw-output line to roughly one terminal row
+
+_BAR_WIDTH = 28
+_BAR_SEGMENT_WIDTH = 6  # width of the moving highlighted segment inside the bar
+_BAR_CYCLE_SECONDS = 1.6  # how long one full sweep across the bar takes
+
+
+def _render_activity_bar(elapsed: float) -> Text:
+    """
+    An animated, INDETERMINATE progress bar -- a highlighted segment sweeps
+    back and forth across `_BAR_WIDTH` cells, computed purely from
+    `elapsed` (no stored/advanced state, same trick `Spinner.render(t)`
+    already uses -- see `_LiveRunningLine`'s docstring), so it animates on
+    every `Live` refresh tick even between real output lines.
+
+    Deliberately not a filled percentage bar: none of the four registered
+    capabilities' command_templates report a total up front (this module's
+    older scope note explains why), so a percentage would have to be
+    fabricated. A sweeping bar is the honest "actively working" signal
+    used by real tools (apt, pip) for the same reason.
+    """
+    cycle = _BAR_CYCLE_SECONDS * 2  # one full there-and-back sweep
+    phase = (elapsed % cycle) / cycle  # 0..1 over the full sweep
+    # Fold the back half of the cycle so the segment reverses direction
+    # smoothly instead of jumping from the end back to the start.
+    triangle = phase * 2 if phase < 0.5 else 2 - phase * 2
+    max_start = _BAR_WIDTH - _BAR_SEGMENT_WIDTH
+    start = round(triangle * max_start)
+    bar = Text()
+    bar.append("│", style="dim")
+    for col in range(_BAR_WIDTH):
+        if start <= col < start + _BAR_SEGMENT_WIDTH:
+            bar.append("█", style="cyan")
+        else:
+            bar.append("░", style="dim")
+    bar.append("│", style="dim")
+    return bar
 
 
 class _LiveRunningLine:
     """
-    Spinner + a genuinely live, ticking elapsed-time counter AND a
-    mutable label for the RUNNING step (added post-Build-Order, per the
-    user's explicit "make the whole shell feel alive, every operation"
-    request -- see this module's docstring for the real per-file progress
-    this now carries).
+    Spinner + a genuinely live, ticking elapsed-time counter, an animated
+    activity bar, a live throughput readout, and the most recent raw
+    output line -- all for the RUNNING step (added post-Build-Order, per
+    the user's explicit "make the whole shell feel alive, every single
+    operation, professional and rich, not a toy" request -- see this
+    module's docstring for the full story, including why an earlier
+    version of this class that only showed a bare running count wasn't
+    enough).
 
     A plain `rich.spinner.Spinner` already animates on its own under a
     `Live` display -- Live's background refresh thread re-renders whatever
     renderable is currently stored every tick, and `Spinner.render(t)`
     computes its glyph frame fresh from wall-clock time each call, with no
     extra plumbing needed. This class uses that exact same mechanism for
-    both the elapsed-time text AND the label: `__rich_console__` is called
-    by Live on every refresh tick (same as Spinner's own), and reads
-    `self._label`/computes `time.monotonic() - self._start` fresh each
-    time -- so calling `update_label()` between ticks (from
-    StreamingRenderer.on_output_line, as real command output arrives) is
-    picked up on the very next automatic repaint, with no extra
-    `live.update()` call needed. No background thread, no change to
-    `on_event`'s call pattern (still called exactly once for RUNNING,
-    since a plan is currently always one command; see executor.py's own
-    module docstring), and critically no change to run_plan()'s blocking
-    subprocess/SIGINT-handling contract: executor.py's Ctrl+C handling
-    relies on `signal.signal()`, which only works on the main thread, so
-    anything that would need a worker thread here (the pattern
-    ui/thinking.py uses for parse_intent) would risk breaking the
-    already-fixed Ctrl+C behavior (this session's own Bug #8/#9). This
-    class needs none of that -- it is a passive renderable, not an active
-    poller; executor.py's own `_run_streaming` is what makes the label
-    updates arrive incrementally, on the same main thread, not this class.
+    the elapsed-time text, the activity bar (`_render_activity_bar`,
+    above) AND the mutable label/count/detail fields: `__rich_console__`
+    is called by Live on every refresh tick (same as Spinner's own), and
+    reads everything fresh each time -- so calling `update_label()` /
+    `note_line()` between ticks (from StreamingRenderer.on_output_line, as
+    real command output arrives) is picked up on the very next automatic
+    repaint, with no extra `live.update()` call needed, and the bar itself
+    keeps sweeping even when no new output has arrived yet. No background
+    thread, no change to `on_event`'s call pattern (still called exactly
+    once for RUNNING, since a plan is currently always one command; see
+    executor.py's own module docstring), and critically no change to
+    run_plan()'s blocking subprocess/SIGINT-handling contract:
+    executor.py's Ctrl+C handling relies on `signal.signal()`, which only
+    works on the main thread, so anything that would need a worker thread
+    here (the pattern ui/thinking.py uses for parse_intent) would risk
+    breaking the already-fixed Ctrl+C behavior (this session's own Bug
+    #8/#9). This class needs none of that -- it is a passive renderable,
+    not an active poller; executor.py's own `_run_streaming` is what makes
+    the updates arrive incrementally, on the same main thread, not this
+    class.
     """
 
     def __init__(self, label: str) -> None:
         self._label = label
         self._start = time.monotonic()
         self._spinner = Spinner("dots")
+        self._count: int | None = None  # None until a countable line (e.g. mv -v) arrives
+        self._count_noun = "items"
+        self._detail_line: str | None = None
 
     def update_label(self, label: str) -> None:
         if len(label) > _MAX_RUNNING_LABEL_CHARS:
             label = "…" + label[-(_MAX_RUNNING_LABEL_CHARS - 1) :]
         self._label = label
 
+    def note_line(self, *, count: int | None, noun: str, detail: str) -> None:
+        """
+        Record one real unit of progress from the running command's
+        output: `count` (running total, e.g. files moved so far, or None
+        for a command with nothing countable), `noun` (what's being
+        counted, e.g. "files"), and `detail` (the raw/derived line itself,
+        shown on its own line so the actual thing that just happened --
+        not just a number -- stays visible).
+        """
+        if count is not None:
+            self._count = count
+            self._count_noun = noun
+        if len(detail) > _MAX_DETAIL_LINE_CHARS:
+            detail = "…" + detail[-(_MAX_DETAIL_LINE_CHARS - 1) :]
+        self._detail_line = detail
+
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         elapsed = time.monotonic() - self._start
         frame = self._spinner.render(time.monotonic())
-        yield Text.assemble(frame, f" {self._label}", (f"  ·  {elapsed:.1f}s", "dim"))
+        head = Text.assemble(frame, f" {self._label}", (f"  ·  {elapsed:.1f}s", "dim"))
+        yield head
+
+        bar = _render_activity_bar(elapsed)
+        stats = Text("  ")
+        stats.append_text(bar)
+        if self._count is not None:
+            rate = self._count / elapsed if elapsed > 0.05 else 0.0
+            stats.append(f"  {self._count} {self._count_noun}", style="bold")
+            if rate >= 0.1:
+                stats.append(f"  ·  {rate:.1f}/s", style="dim")
+        yield stats
+
+        if self._detail_line is not None:
+            yield Text(f"    {self._detail_line}", style="dim italic")
 
 
 def render_running_line(event: StepEvent) -> _LiveRunningLine:
@@ -158,14 +253,38 @@ def _running_label_for_output_line(line: str, *, files_moved_so_far: int) -> tup
     specifically (the two capabilities this project streams progress for
     both use it); any other capability's raw output is shown verbatim, so
     nothing here silently hides real output it doesn't understand.
+
+    Kept for backward compatibility with existing callers/tests that want
+    the pre-formatted "N files moved  ·  name" label string. New code
+    (`StreamingRenderer.on_output_line`) uses `_progress_for_output_line`
+    below instead, which returns the pieces (count/noun/detail)
+    separately so the live renderer can lay them out across the richer
+    multi-line display rather than one flat string.
+    """
+    label, count, _detail = _progress_for_output_line(line, files_moved_so_far=files_moved_so_far)
+    return label, count
+
+
+def _progress_for_output_line(line: str, *, files_moved_so_far: int) -> tuple[str, int, str]:
+    """
+    Parse one real line of a running command's stdout into
+    (label, updated_count, detail) for `_LiveRunningLine.note_line`:
+    - `label`/`count`: the same "N files moved" accounting
+      `_running_label_for_output_line` has always produced.
+    - `detail`: what to show on the live renderer's own detail line --
+      just the destination filename for a recognized `mv -v` line (the
+      count already says "moved", repeating the whole "renamed 'X' -> 'Y'"
+      line would be noise), or the raw line verbatim for anything else,
+      so no capability's real output is ever silently hidden.
     """
     match = _MV_VERBOSE_RE.match(line)
     if match is not None:
         files_moved_so_far += 1
         dest_name = match.group("dest").rsplit("/", 1)[-1]
         noun = "file" if files_moved_so_far == 1 else "files"
-        return f"{files_moved_so_far} {noun} moved  ·  {dest_name}", files_moved_so_far
-    return line, files_moved_so_far
+        label = f"{files_moved_so_far} {noun} moved  ·  {dest_name}"
+        return label, files_moved_so_far, dest_name
+    return line, files_moved_so_far, line
 
 
 def render_result_line(event: StepEvent) -> Text:
@@ -300,16 +419,21 @@ class StreamingRenderer:
         `executor.run_plan(..., on_output_line=...)` callback (added post-
         Build-Order, real per-file live progress -- see this module's own
         docstring): called once per line of the running command's stdout,
-        as it's produced. Updates the currently-active RUNNING line's
-        label in place; a no-op before RUNNING fires or after the display
-        has closed, same defensive shape `on_event` already uses.
+        as it's produced. Feeds the currently-active RUNNING line's
+        `note_line` (count + detail, rendered on their own lines below the
+        spinner -- see `_LiveRunningLine`'s docstring for why a bare label
+        overwrite wasn't enough); a no-op before RUNNING fires or after
+        the display has closed, same defensive shape `on_event` already
+        uses.
         """
         if self._running_line is None:
             return
-        label, self._files_moved = _running_label_for_output_line(
+        _label, self._files_moved, detail = _progress_for_output_line(
             line, files_moved_so_far=self._files_moved
         )
-        self._running_line.update_label(label)
+        noun = "file" if self._files_moved == 1 else "files"
+        count = self._files_moved if _MV_VERBOSE_RE.match(line) else None
+        self._running_line.note_line(count=count, noun=noun, detail=detail)
 
     def print_summary(self, result: ExecutionResult, *, telemetry: ParseTelemetry | None = None) -> None:
         self._console.print(render_execution_summary(result, telemetry=telemetry))

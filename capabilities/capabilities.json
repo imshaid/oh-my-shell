@@ -19,7 +19,7 @@
         "required": ["days"],
         "additionalProperties": false
       },
-      "command_template": "find {paths} -type f -mtime +{days} -exec mv -v {{}} ~/.oh-my-shell/.trash/ \\;",
+      "command_template": "find {paths} -type f -mtime +{days} -exec mv -v -t ~/.oh-my-shell/.trash/ {{}} +",
       "few_shot_examples": [
         "clean up temp files older than a week",
         "clear out my cache",

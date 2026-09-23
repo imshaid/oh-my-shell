@@ -12,6 +12,8 @@ from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.ui.streaming import (
     StreamingRenderer,
     _LiveRunningLine,
+    _progress_for_output_line,
+    _render_activity_bar,
     _running_label_for_output_line,
     render_execution_summary,
     render_result_line,
@@ -63,10 +65,13 @@ class TestRenderRunningLine:
         second_text = _render_to_text(line)
 
         def _extract_seconds(text: str) -> float:
-            # "...  ·  0.3s" -- the trailing "<number>s" segment.
+            # "⠸ Executing...  ·  0.3s" is the FIRST rendered line; later
+            # lines (the activity bar, an optional detail line) also
+            # contain "·" separators, so only the head line is parsed.
+            head_line = text.splitlines()[0]
             marker = "·  "
-            fragment = text[text.index(marker) + len(marker) :]
-            return float(fragment.strip().rstrip("s\n"))
+            fragment = head_line[head_line.index(marker) + len(marker) :]
+            return float(fragment.strip().rstrip("s"))
 
         assert _extract_seconds(second_text) > _extract_seconds(first_text)
 
@@ -140,7 +145,7 @@ class TestStreamingRendererOnOutputLine:
             renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="Executing..."))
             renderer.on_output_line("renamed '/tmp/a.log' -> '/trash/a.log'")
             text = _render_to_text(renderer._running_line)
-        assert "1 file moved" in text
+        assert "1 file" in text
         assert "a.log" in text
 
     def test_file_count_accumulates_across_multiple_output_lines(self):
@@ -152,7 +157,8 @@ class TestStreamingRendererOnOutputLine:
             renderer.on_output_line("renamed '/tmp/b.log' -> '/trash/b.log'")
             renderer.on_output_line("renamed '/tmp/c.log' -> '/trash/c.log'")
             text = _render_to_text(renderer._running_line)
-        assert "3 files moved" in text
+        assert "3 files" in text
+        assert "c.log" in text
 
     def test_file_count_resets_for_a_new_running_step(self):
         """
@@ -169,7 +175,8 @@ class TestStreamingRendererOnOutputLine:
             renderer.on_event(StepEvent(step_number=1, total_steps=1, status=StepStatus.RUNNING, detail="second"))
             renderer.on_output_line("renamed '/tmp/x.log' -> '/trash/x.log'")
             text = _render_to_text(renderer._running_line)
-        assert "1 file moved" in text  # not "2 files moved"
+        assert "1 file" in text  # not "2 files"
+        assert "x.log" in text
 
     def test_before_running_event_is_a_noop(self):
         buffer = io.StringIO()
@@ -391,3 +398,104 @@ class TestStreamingRendererSudoPause:
         renderer = StreamingRenderer(console=console)
         renderer.pause_for_sudo(True)  # no Live yet -- must not crash
         renderer.resume_after_sudo(True)
+
+class TestRenderActivityBar:
+    """
+    The animated, indeterminate progress bar (added post-Build-Order, per
+    the user's explicit "professional, animated and rich, not a toy"
+    request) -- a highlighted segment sweeps across the bar purely as a
+    function of elapsed time, same "no stored/advanced state" trick
+    Spinner.render(t) already uses (see _LiveRunningLine's docstring).
+    """
+
+    def test_bar_has_fixed_visual_width_regardless_of_elapsed_time(self):
+        for elapsed in (0.0, 0.7, 1.6, 3.3, 100.0):
+            text = _render_activity_bar(elapsed).plain
+            # Fixed cell count between the two border characters.
+            assert len(text) == 30  # 28 cells + 2 border chars
+
+    def test_bar_position_changes_as_elapsed_time_advances(self):
+        early = _render_activity_bar(0.0).plain
+        later = _render_activity_bar(0.8).plain
+        assert early != later
+
+    def test_bar_sweep_is_periodic(self):
+        # A full there-and-back sweep takes 2 * _BAR_CYCLE_SECONDS (3.2s);
+        # the same elapsed time modulo that period must render identically.
+        first = _render_activity_bar(0.5).plain
+        one_cycle_later = _render_activity_bar(0.5 + 3.2).plain
+        assert first == one_cycle_later
+
+
+class TestProgressForOutputLine:
+    """
+    `_progress_for_output_line` -- the pure parsing step behind
+    `StreamingRenderer.on_output_line`, returning (label, count, detail)
+    so the live renderer can show a real count AND the actual filename on
+    its own line, not just a flat label string.
+    """
+
+    def test_mv_verbose_line_yields_bare_filename_as_detail(self):
+        _label, count, detail = _progress_for_output_line(
+            "renamed '/tmp/a.log' -> '/trash/a.log'", files_moved_so_far=0
+        )
+        assert count == 1
+        assert detail == "a.log"  # not the whole "renamed '...' -> '...'" line
+
+    def test_non_mv_line_is_shown_verbatim_as_detail_with_no_count_bump(self):
+        _label, count, detail = _progress_for_output_line(
+            "ps output line, not mv -v", files_moved_so_far=2
+        )
+        assert count == 2  # unchanged
+        assert detail == "ps output line, not mv -v"
+
+
+class TestLiveRunningLineNoteLine:
+    """
+    `_LiveRunningLine.note_line` -- the richer replacement for a bare
+    `update_label` overwrite: the spinner's own label (the step
+    description) stays put, while a real count/rate and the latest detail
+    line render underneath, updated independently.
+    """
+
+    def test_head_label_is_unchanged_by_note_line(self):
+        line = _LiveRunningLine("Cleaning up...")
+        line.note_line(count=5, noun="files", detail="report.pdf")
+        text = _render_to_text(line)
+        assert "Cleaning up..." in text.splitlines()[0]
+
+    def test_count_and_detail_appear_on_their_own_lines(self):
+        line = _LiveRunningLine("Cleaning up...")
+        line.note_line(count=1, noun="files", detail="report.pdf")
+        text = _render_to_text(line)
+        lines = text.splitlines()
+        assert len(lines) == 3  # head, bar+stats, detail
+        assert "1 files" in lines[1]
+        assert "report.pdf" in lines[2]
+
+    def test_a_line_with_no_count_still_shows_a_detail_line(self):
+        # Generic (non-mv) command output has nothing countable, but the
+        # raw line itself must still be visible -- this is the "every
+        # single operation, not just mv" part of the request.
+        line = _LiveRunningLine("Listing processes...")
+        line.note_line(count=None, noun="items", detail="root  1  0.0  0.1 /sbin/init")
+        text = _render_to_text(line)
+        assert "root  1  0.0  0.1 /sbin/init" in text
+        # No count was ever given, so no bare number should be invented.
+        assert " items" not in text.replace("0 items", "")
+
+    def test_rate_is_shown_once_meaningfully_measurable(self):
+        line = _LiveRunningLine("Cleaning up...")
+        line._start = time.monotonic() - 2.0  # pretend 2s have already passed
+        line.note_line(count=10, noun="files", detail="z.log")
+        text = _render_to_text(line)
+        assert "/s" in text
+
+    def test_very_long_detail_line_is_tail_truncated(self):
+        line = _LiveRunningLine("Executing...")
+        long_detail = "x" * 200
+        line.note_line(count=None, noun="items", detail=long_detail)
+        text = _render_to_text(line)
+        detail_line = text.splitlines()[2]
+        assert len(detail_line.strip()) <= 79  # _MAX_DETAIL_LINE_CHARS + ellipsis
+        assert detail_line.strip().startswith("…")
