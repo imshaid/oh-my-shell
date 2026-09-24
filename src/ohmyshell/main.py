@@ -116,6 +116,7 @@ from ohmyshell.ui.panels import (
     RichSudoPrompt,
     render_destructive_command_panel,
     render_plan_panel,
+    render_update_available_panel,
 )
 from ohmyshell.ui.prompt import render_prompt_ansi
 from ohmyshell.ui.session import ReplSession
@@ -1126,10 +1127,13 @@ def run() -> None:
             update_check_thread.join(timeout=UPDATE_CHECK_JOIN_TIMEOUT_SECONDS)
             latest_version = update_check_module.pending_update()
             if latest_version is not None:
-                console.print(
-                    f"  [omsh.muted]Update available: {latest_version} — run [/omsh.muted]"
-                    f"[omsh.accent]/update[/omsh.accent][omsh.muted] to install it.[/omsh.muted]"
-                )
+                # A boxed, warning-bordered panel rather than a single
+                # muted line -- the plain-text version was easy to miss
+                # right next to the banner and the first prompt (found via
+                # real-terminal testing), so this now uses the same
+                # warning-severity panel style as render_sudo_panel's own
+                # "notice, not an error" elevated-permission box.
+                console.print(render_update_available_panel(latest_version=latest_version))
                 console.print()
 
         try:

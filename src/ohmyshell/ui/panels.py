@@ -264,6 +264,33 @@ def render_undo_confirm_panel(*, count: int) -> Panel:
     return Panel(body, border_style="omsh.accent", expand=False)
 
 
+def render_update_available_panel(*, latest_version: str) -> Panel:
+    """
+    Boxed rendering of the startup "a new version is available" notice
+    (main.py's own update_check_module.pending_update() check).
+
+    Was previously a single muted, unboxed line -- easy to miss among the
+    banner and first prompt (Shaid's own report after seeing it in a real
+    terminal). Promoted to the same warning-bordered panel style as
+    render_sudo_panel's elevated-permission notice: this is also
+    "something the user should notice, but not an error", the same
+    severity render_sudo_panel already uses omsh.warning for.
+    """
+    body = Text()
+    body.append(f"A new version ({latest_version}) is available.\n\n")
+    body.append("Run ")
+    body.append("/update", style="omsh.accent")
+    body.append(" to install it.")
+
+    return Panel(
+        body,
+        title="✦ Update available",
+        title_align="left",
+        border_style="omsh.warning",
+        expand=False,
+    )
+
+
 def print_panel(panel: RenderableType, *, console: Console | None = None) -> None:
     """Render any of the above panels to the terminal (or an injected Console)."""
     active_console = console if console is not None else themed_console()
