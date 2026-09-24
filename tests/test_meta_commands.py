@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+from rich.text import Text
 
 from ohmyshell import audit_log as audit_log_module
 from ohmyshell import config as config_module
@@ -33,6 +34,18 @@ def _dispatch(text, cfg, base_dir, session_start=0.0, tokens_used=None):
     return meta_commands.dispatch(
         text, cfg=cfg, session_start=session_start, base_dir=base_dir, tokens_used=tokens_used
     )
+
+
+def _plain(markup_text: str) -> str:
+    """Strips rich markup tags (e.g. "[omsh.accent]...[/omsh.accent]") down
+    to the plain rendered text, so tests can assert on content without
+    caring about which omsh.* styling tags wrap it. meta_commands.py now
+    returns strings with rich markup throughout (Build Order color-audit
+    pass); Text.from_markup() parses and discards the tags without needing
+    a real theme/console (it only needs style *names* to be syntactically
+    valid, not registered).
+    """
+    return Text.from_markup(markup_text).plain
 
 
 class TestParsing:
@@ -62,10 +75,11 @@ class TestClear:
 class TestHelp:
     def test_bare_help_matches_blueprint_shape(self, cfg, base_dir):
         outcome = _dispatch("/help", cfg, base_dir)
-        assert "Oh My Shell — Command Reference" in outcome.text
-        assert "Just type naturally:" in outcome.text
-        assert "/model" in outcome.text
-        assert "Type /help <command> for details." in outcome.text
+        plain = _plain(outcome.text)
+        assert "Oh My Shell — Command Reference" in plain
+        assert "Just type naturally:" in plain
+        assert "/model" in plain
+        assert "Type /help <command> for details." in plain
 
     def test_help_with_known_topic_gives_detail(self, cfg, base_dir):
         outcome = _dispatch("/help model", cfg, base_dir)
@@ -141,7 +155,7 @@ class TestTrash:
         source.write_text("x")
         trash_module.move_to_trash(source, base_dir=base_dir)
         outcome = _dispatch("/trash status", cfg, base_dir)
-        assert "1 item" in outcome.text
+        assert "1 item" in _plain(outcome.text)
 
     def test_clear_removes_everything(self, cfg, base_dir, tmp_path):
         source = tmp_path / "f.txt"
@@ -294,13 +308,13 @@ class TestSystem:
     def test_shows_google_ai_studio_provider_label_by_default(self, cfg, base_dir, monkeypatch):
         monkeypatch.setattr("ohmyshell.hardware.shutil.which", lambda name: None)
         outcome = meta_commands._handle_system(cfg, session_start=0.0, base_dir=base_dir)
-        assert "Provider: Google AI Studio (Gemini)" in outcome
+        assert "Provider: Google AI Studio (Gemini)" in _plain(outcome)
 
     def test_shows_local_ollama_provider_label_when_configured(self, cfg, base_dir, monkeypatch):
         monkeypatch.setattr("ohmyshell.hardware.shutil.which", lambda name: None)
         cfg["model"]["provider"] = "ollama"
         outcome = meta_commands._handle_system(cfg, session_start=0.0, base_dir=base_dir)
-        assert "Provider: local (Ollama)" in outcome
+        assert "Provider: local (Ollama)" in _plain(outcome)
 
     def test_via_dispatch(self, cfg, base_dir, monkeypatch):
         monkeypatch.setattr("ohmyshell.hardware.shutil.which", lambda name: None)

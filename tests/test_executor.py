@@ -407,6 +407,86 @@ class TestRunPlanLiveOutputStreaming:
         assert fake_popen.killed is True
 
 
+class TestPtyPopenShellSelection:
+    """
+    `_PtyPopen` (the real, non-test `popen_factory`) -- two bug fixes found
+    via a real screenshot: `la` (an AI-generated plan's `eza`-aliased
+    command) came out with zero color/no custom alias output at all, while
+    the exact same `ls -la` run as a raw shell command showed full color.
+    See `_PtyPopen`'s own docstring, "Second bug fix", for the full story.
+    These tests exercise the real class directly (not through a fake
+    popen_factory) against a real, disposable `bash` invocation -- `bash`
+    stands in for "the person's real $SHELL" here since it's reliably
+    present in this test environment and supports the same `-c` flag
+    fish/zsh/bash all share.
+    """
+
+    def test_uses_dollar_shell_as_the_executable_when_it_exists(self, monkeypatch):
+        import shutil
+
+        bash_path = shutil.which("bash")
+        assert bash_path is not None, "bash must be on PATH for this test to mean anything"
+        monkeypatch.setenv("SHELL", bash_path)
+
+        # $BASH is bash's own equivalent of $0 -- only set when bash itself
+        # is the interpreter actually running this string, which confirms
+        # `executable=` was actually honored, not silently ignored.
+        proc = executor._PtyPopen("echo $BASH", shell=True, text=True, bufsize=1)
+        proc.wait()
+        output = "".join(proc.stdout).strip()
+        assert output == bash_path
+
+    def test_falls_back_to_default_shell_when_dollar_shell_is_unset(self, monkeypatch):
+        monkeypatch.delenv("SHELL", raising=False)
+
+        # Must not raise, and must still run the command successfully via
+        # whatever Popen's own shell=True default is (/bin/sh) -- this is
+        # the pre-existing, always-correct-if-less-rich fallback behavior,
+        # unchanged by this fix.
+        proc = executor._PtyPopen("echo hello", shell=True, text=True, bufsize=1)
+        proc.wait()
+        output = "".join(proc.stdout).strip()
+        assert output == "hello"
+        assert proc.returncode == 0
+
+    def test_falls_back_when_dollar_shell_points_at_a_nonexistent_file(self, monkeypatch):
+        monkeypatch.setenv("SHELL", "/not/a/real/shell/binary")
+
+        proc = executor._PtyPopen("echo hello", shell=True, text=True, bufsize=1)
+        proc.wait()
+        output = "".join(proc.stdout).strip()
+        assert output == "hello"
+        assert proc.returncode == 0
+
+    def test_sets_omsh_raw_exec_so_the_fish_greeting_guard_fires(self, monkeypatch):
+        """
+        Now that AI-generated plan commands run through the person's real
+        shell (this class's first fix), a fish user's config.fish would
+        reprint its fastfetch/neofetch banner before every single
+        AI-executed command too -- the exact noise
+        `main.ensure_fish_guard_installed()` already wraps that call to
+        prevent for raw shell commands (keyed off `OMSH_RAW_EXEC` being
+        set). This must set the same env var for the child process here,
+        so that wrapped guard fires for AI-executed commands as well.
+        """
+        import shutil
+
+        bash_path = shutil.which("bash")
+        assert bash_path is not None
+        monkeypatch.setenv("SHELL", bash_path)
+        monkeypatch.delenv("OMSH_RAW_EXEC", raising=False)
+
+        proc = executor._PtyPopen("echo $OMSH_RAW_EXEC", shell=True, text=True, bufsize=1)
+        proc.wait()
+        output = "".join(proc.stdout).strip()
+        assert output == "1"
+        # The real environment (this test process's own os.environ) must
+        # NOT have been mutated -- only the child's own env.
+        import os
+
+        assert "OMSH_RAW_EXEC" not in os.environ
+
+
 # ---------------------------------------------------------------------------
 # Removed: TestRenderCommand / TestTildeExpansion / TestRunPlanWithRealRegistry
 # ---------------------------------------------------------------------------

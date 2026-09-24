@@ -67,48 +67,64 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from rich.markup import escape as _escape_markup
+
 from ohmyshell import audit_log as audit_log_module
 from ohmyshell import config as config_module
 from ohmyshell import hardware as hardware_module
 from ohmyshell import trash as trash_module
 
+# Fixed accent palette (post-Build-Order, user-requested full-UI color
+# audit): every user-facing string in this module now carries rich markup
+# using ui/theme.py's fixed "omsh.*" style names, the same rule the rest
+# of the app's own chrome already follows -- see ui/theme.py's own module
+# docstring for the full rationale. This module was previously plain text
+# by explicit design ("thin wrapper... no new logic" -- see this module's
+# own docstring above); embedding markup here is a deliberate scope change
+# confirmed with the user, not a violation of that "thin wrapper" intent
+# -- these strings still carry no new LOGIC, only presentation markup
+# around the exact same data. Every string returned by this module is
+# printed via `active_console.print(outcome.text, highlight=False)`
+# (main.py) -- `highlight=False` only disables rich's automatic pattern
+# detection (numbers, paths, etc.), it does not disable markup parsing,
+# so `[omsh.accent]...[/omsh.accent]` tags below render correctly.
 HELP_TEXT = """\
-  Oh My Shell — Command Reference
-  ────────────────────────────────────────────
+  [bold][omsh.accent]✦ Oh My Shell[/omsh.accent][/bold] [omsh.muted]— Command Reference[/omsh.muted]
+  [omsh.muted]────────────────────────────────────────────[/omsh.muted]
   Just type naturally:
-    "clean up temp files"          →  AI creates a plan
-    ls -la, cd, grep ...            →  runs directly, no AI involved
+    [omsh.path]"clean up temp files"[/omsh.path]          →  AI creates a plan
+    [omsh.path]ls -la, cd, grep ...[/omsh.path]            →  runs directly, no AI involved
 
   Slash commands
-    /model          Show/change current model
-    /history        This session's earlier requests
-    /undo           Revert the last destructive action
-    /trash          View/manage .trash/ (status/keep/clear)
-    /log            View audit log (or /log export)
-    /capabilities   List what Oh My Shell can do
-    /explain        Why did the AI choose that last action?
-    /stats          Session token usage & average latency
-    /system         Full hardware & shell status
-    /config         View or change settings
-    /clear          Clear the screen
-    /exit           Quit
+    [omsh.accent]/model[/omsh.accent]          Show/change current model
+    [omsh.accent]/history[/omsh.accent]        This session's earlier requests
+    [omsh.accent]/undo[/omsh.accent]           Revert the last destructive action
+    [omsh.accent]/trash[/omsh.accent]          View/manage .trash/ (status/keep/clear)
+    [omsh.accent]/log[/omsh.accent]            View audit log (or /log export)
+    [omsh.accent]/capabilities[/omsh.accent]   List what Oh My Shell can do
+    [omsh.accent]/explain[/omsh.accent]        Why did the AI choose that last action?
+    [omsh.accent]/stats[/omsh.accent]          Session token usage & average latency
+    [omsh.accent]/system[/omsh.accent]         Full hardware & shell status
+    [omsh.accent]/config[/omsh.accent]         View or change settings
+    [omsh.accent]/clear[/omsh.accent]          Clear the screen
+    [omsh.accent]/exit[/omsh.accent]           Quit
 
-  Type /help <command> for details."""
+  [omsh.muted]Type /help <command> for details.[/omsh.muted]"""
 
 _PER_COMMAND_HELP: dict[str, str] = {
-    "model": "  /model              Show the active model and available models.\n"
-    "  /model list         List all available models.\n"
-    "  /model switch <n>   Switch the active model to <n> (must be in the available list).",
-    "undo": "  /undo   Restore the most recent destructive action from .trash/.",
-    "trash": "  /trash status   Show what's currently in .trash/ and when it expires.\n"
-    "  /trash keep     Reset the retention timer, keeping everything a while longer.\n"
-    "  /trash clear    Permanently delete everything in .trash/ right now.",
-    "log": "  /log          Show recent audit log entries.\n  /log export   Print the full audit log as JSON Lines.",
-    "capabilities": "  /capabilities   List every action Oh My Shell can take, with its risk level.",
-    "explain": "  /explain   Show the reasoning (action/params/risk) behind the most recent AI decision.",
-    "config": "  /config                View all current settings.\n"
-    "  /config set <k> <v>   Change one setting (dot-notation, e.g. trash.retention_days).",
-    "system": "  /system   Show OS, CPU, RAM, GPU, active model, and session stats.",
+    "model": "  [omsh.accent]/model[/omsh.accent]              Show the active model and available models.\n"
+    "  [omsh.accent]/model list[/omsh.accent]         List all available models.\n"
+    "  [omsh.accent]/model switch <n>[/omsh.accent]   Switch the active model to <n> (must be in the available list).",
+    "undo": "  [omsh.accent]/undo[/omsh.accent]   Restore the most recent destructive action from .trash/.",
+    "trash": "  [omsh.accent]/trash status[/omsh.accent]   Show what's currently in .trash/ and when it expires.\n"
+    "  [omsh.accent]/trash keep[/omsh.accent]     Reset the retention timer, keeping everything a while longer.\n"
+    "  [omsh.accent]/trash clear[/omsh.accent]    Permanently delete everything in .trash/ right now.",
+    "log": "  [omsh.accent]/log[/omsh.accent]          Show recent audit log entries.\n  [omsh.accent]/log export[/omsh.accent]   Print the full audit log as JSON Lines.",
+    "capabilities": "  [omsh.accent]/capabilities[/omsh.accent]   List every action Oh My Shell can take, with its risk level.",
+    "explain": "  [omsh.accent]/explain[/omsh.accent]   Show the reasoning (action/params/risk) behind the most recent AI decision.",
+    "config": "  [omsh.accent]/config[/omsh.accent]                View all current settings.\n"
+    "  [omsh.accent]/config set <k> <v>[/omsh.accent]   Change one setting (dot-notation, e.g. trash.retention_days).",
+    "system": "  [omsh.accent]/system[/omsh.accent]   Show OS, CPU, RAM, GPU, active model, and session stats.",
 }
 
 
@@ -139,7 +155,7 @@ def _handle_help(args: list[str]) -> str:
     topic = args[0].lstrip("/").lower()
     detail = _PER_COMMAND_HELP.get(topic)
     if detail is None:
-        return f"  No detailed help for /{topic}. Try /help for the full list."
+        return f"  [omsh.warning]No detailed help for /{topic}. Try /help for the full list.[/omsh.warning]"
     return detail
 
 
@@ -148,10 +164,12 @@ def _handle_model(args: list[str], cfg: dict) -> str:
     active = config_module.get(cfg, "model.active")
 
     if not args or args[0] == "list":
-        lines = [f"  Available models ({'active: ' + active})"]
+        lines = [f"  Available models [omsh.muted](active: [/omsh.muted][omsh.accent]{active}[/omsh.accent][omsh.muted])[/omsh.muted]"]
         for name in available:
-            marker = "→" if name == active else " "
-            lines.append(f"  {marker} {name}")
+            if name == active:
+                lines.append(f"  [omsh.accent]→ {name}[/omsh.accent]")
+            else:
+                lines.append(f"  [omsh.muted]  {name}[/omsh.muted]")
         return "\n".join(lines)
 
     if args[0] == "switch":
@@ -162,18 +180,63 @@ def _handle_model(args: list[str], cfg: dict) -> str:
             raise MetaCommandError(f"Unknown model {target!r}. Available: {', '.join(available)}")
         config_module.set_value(cfg, "model.active", target)
         config_module.save(cfg)
-        return f"  Switched active model to {target}."
+        return f"  [omsh.success]Switched active model to {target}.[/omsh.success]"
 
     raise MetaCommandError(f"Usage: /model, /model list, or /model switch <name> (got {args[0]!r}).")
+
+
+def _status_style(status: str) -> str:
+    """Maps an audit-log entry's status string to a semantic omsh.* style,
+    the same three-way success/failure/in-between distinction the rest of
+    this app's UI already uses for risk levels and step outcomes."""
+    if status in ("done",):
+        return "omsh.success"
+    if status in ("failed", "error"):
+        return "omsh.danger"
+    return "omsh.warning"  # cancelled, skipped, interrupted, or anything else
+
+
+def _risk_style(risk: str) -> str:
+    return {"low": "omsh.risk.low", "medium": "omsh.risk.medium", "high": "omsh.risk.high"}.get(risk, "omsh.muted")
+
+
+def _usage_style(percent: float) -> str:
+    """Same low/medium/high usage-color mapping as ui/thinking.py's own
+    `_usage_style` (not imported directly -- this module has no other
+    reason to import from ui/thinking.py, and the mapping is one line),
+    used here for /system's CPU/RAM/GPU usage figures for the same
+    at-a-glance "is this fine or not" reason."""
+    if percent < 50:
+        return "omsh.risk.low"
+    if percent < 80:
+        return "omsh.risk.medium"
+    return "omsh.risk.high"
 
 
 def _handle_history(session_start: float, base_dir=None) -> str:
     entries = audit_log_module.entries_since(session_start, base_dir=base_dir)
     if not entries:
-        return "  No requests yet this session."
-    lines = ["  This session's requests:"]
+        return "  [omsh.muted]No requests yet this session.[/omsh.muted]"
+    # Bug fix (found during a wider real-terminal color audit): this header
+    # line had no markup at all, unlike every other line this module
+    # prints -- rendered as plain uncolored text alongside colored entries
+    # right below it.
+    lines = ["  [omsh.accent]This session's requests:[/omsh.accent]"]
     for i, entry in enumerate(entries, start=1):
-        lines.append(f"  {i}. {entry.action} ({entry.status})")
+        status_style = _status_style(entry.status)
+        # `_escape_markup` on `entry.action` (post-Build-Order, found
+        # during the same color-audit pass that added this markup):
+        # `entry.action` is a real, previously-run shell command/AI
+        # request string -- it can contain literal "[" / "]" characters
+        # (e.g. a command with a bracket-glob argument), which rich's
+        # markup parser would otherwise misinterpret as the start of a
+        # (nonexistent) style tag. Escaping only the untrusted, freeform
+        # value -- never the omsh.* tags this module writes itself -- is
+        # the same rule Text-based command displays elsewhere in this app
+        # already follow implicitly (Text.append() never markup-parses
+        # its own text argument; a markup STRING like this one has no
+        # such protection built in, so it has to be applied explicitly).
+        lines.append(f"  {i}. {_escape_markup(entry.action)} [{status_style}]({entry.status})[/{status_style}]")
     return "\n".join(lines)
 
 
@@ -181,9 +244,9 @@ def _handle_undo(base_dir=None) -> str:
     try:
         restored = trash_module.undo_last_action(base_dir=base_dir)
     except trash_module.TrashError as exc:
-        return f"  Nothing to undo: {exc}"
+        return f"  [omsh.warning]Nothing to undo: {exc}[/omsh.warning]"
     noun = "file" if len(restored) == 1 else "files"
-    return f"  Restored {len(restored)} {noun} from .trash/."
+    return f"  [omsh.success]Restored {len(restored)} {noun} from .trash/.[/omsh.success]"
 
 
 def _handle_trash(args: list[str], cfg: dict, base_dir=None) -> str:
@@ -192,13 +255,13 @@ def _handle_trash(args: list[str], cfg: dict, base_dir=None) -> str:
     if subcommand == "status":
         entries = trash_module.list_trash(base_dir=base_dir)
         if not entries:
-            return "  .trash/ is empty."
+            return "  [omsh.muted].trash/ is empty.[/omsh.muted]"
         retention_days = config_module.get(cfg, "trash.retention_days")
-        return f"  {len(entries)} item(s) in .trash/ (retention: {retention_days} days)."
+        return f"  [omsh.accent]{len(entries)}[/omsh.accent] item(s) in .trash/ (retention: [omsh.accent]{retention_days}[/omsh.accent] days)."
 
     if subcommand == "clear":
         count = trash_module.clear_trash(base_dir=base_dir)
-        return f"  Permanently deleted {count} item(s) from .trash/."
+        return f"  [omsh.success]Permanently deleted {count} item(s) from .trash/.[/omsh.success]"
 
     if subcommand == "keep":
         # "Reset the retention timer" -- re-stamps every entry's trashed_at
@@ -207,10 +270,10 @@ def _handle_trash(args: list[str], cfg: dict, base_dir=None) -> str:
         # is the whole operation and no new on-disk shape was needed).
         count = trash_module.keep_all(base_dir=base_dir)
         if count == 0:
-            return "  .trash/ is empty -- nothing to keep."
+            return "  [omsh.muted].trash/ is empty -- nothing to keep.[/omsh.muted]"
         noun = "item" if count == 1 else "items"
         retention_days = config_module.get(cfg, "trash.retention_days")
-        return f"  Reset the retention timer for {count} {noun} -- kept for another {retention_days} days."
+        return f"  [omsh.success]Reset the retention timer for {count} {noun} -- kept for another {retention_days} days.[/omsh.success]"
 
     raise MetaCommandError(f"Usage: /trash status|keep|clear (got {subcommand!r}).")
 
@@ -219,10 +282,14 @@ def _handle_log(args: list[str], base_dir=None) -> str:
     try:
         entries = audit_log_module.read_entries(base_dir=base_dir)
     except audit_log_module.AuditLogError as exc:
-        return f"  Could not read the audit log: {exc}"
+        # Bug fix (found during a wider real-terminal color audit): this
+        # was the one error message in the module with no [omsh.*] markup
+        # at all -- every other error/status line here uses omsh.danger or
+        # omsh.warning.
+        return f"  [omsh.danger]Could not read the audit log: {exc}[/omsh.danger]"
 
     if not entries:
-        return "  Audit log is empty."
+        return "  [omsh.muted]Audit log is empty.[/omsh.muted]"
 
     if args and args[0] == "export":
         import json
@@ -231,9 +298,16 @@ def _handle_log(args: list[str], base_dir=None) -> str:
 
         return "\n".join(json.dumps(asdict(e)) for e in entries)
 
-    lines = ["  Recent audit log entries:"]
+    # Bug fix (same color-audit pass): this header line had no markup at
+    # all, unlike every entry line right below it.
+    lines = ["  [omsh.accent]Recent audit log entries:[/omsh.accent]"]
     for entry in entries[-10:]:
-        lines.append(f"  {entry.action}  [{entry.status}]  risk={entry.risk}")
+        status_style = _status_style(entry.status)
+        risk_style = _risk_style(entry.risk)
+        lines.append(
+            f"  {_escape_markup(entry.action)}  [{status_style}][{entry.status}][/{status_style}]"
+            f"  risk=[{risk_style}]{entry.risk}[/{risk_style}]"
+        )
     return "\n".join(lines)
 
 
@@ -245,25 +319,63 @@ def _handle_capabilities() -> str:
     explains that plainly instead of enumerating a static action list.
     """
     return (
-        "  Oh My Shell doesn't limit itself to a fixed list of actions.\n"
+        "  [omsh.muted]Oh My Shell doesn't limit itself to a fixed list of actions.\n"
         "  Describe what you want in plain language and the AI will write\n"
         "  a real shell command for it — you'll always see the exact\n"
         "  command and its risk level before anything runs.\n\n"
         "  Raw shell syntax (ls, grep, pipes, ...) still runs directly,\n"
-        "  no AI involved, just like a normal shell."
+        "  no AI involved, just like a normal shell.[/omsh.muted]"
     )
 
 
 def _handle_explain(base_dir=None) -> str:
     entry = audit_log_module.most_recent(base_dir=base_dir)
     if entry is None:
-        return "  No AI decisions recorded yet this session."
-    return f"  Last action: {entry.action}  (risk: {entry.risk})\n  Outcome: {entry.status}"
+        return "  [omsh.muted]No AI decisions recorded yet this session.[/omsh.muted]"
+    risk_style = _risk_style(entry.risk)
+    status_style = _status_style(entry.status)
+    return (
+        f"  Last action: [omsh.accent]{_escape_markup(entry.action)}[/omsh.accent]"
+        f"  (risk: [{risk_style}]{entry.risk}[/{risk_style}])\n"
+        f"  Outcome: [{status_style}]{entry.status}[/{status_style}]"
+    )
 
 
 def _handle_stats(session_start: float, tokens_used: int | None = None, base_dir=None) -> str:
     summary = audit_log_module.summarize_session(session_start, base_dir=base_dir, tokens_used=tokens_used)
-    return f"  {audit_log_module.render_session_summary(summary)}"
+    return f"  [omsh.muted]{_escape_markup(audit_log_module.render_session_summary(summary))}[/omsh.muted]"
+
+
+def _render_system_line_colored(snapshot: hardware_module.HardwareSnapshot) -> str:
+    """
+    Bug fix (found during a wider real-terminal color audit): /system's
+    CPU/RAM/GPU line used to come straight from
+    `hardware.render_system_line()` -- a plain string, rendered with no
+    color at all, the one line in /system's whole output that wasn't.
+    Rebuilt here (rather than adding rich markup inside hardware.py itself,
+    which stays a plain data module on purpose -- see its own module
+    docstring) with the same usage-based low/medium/high coloring
+    ui/thinking.py's live indicator uses for the identical CPU/RAM/GPU
+    percentages, via this module's own `_usage_style`.
+    """
+    cpu = snapshot.cpu
+    parts = [
+        f"CPU: {cpu.core_count} cores, [{_usage_style(cpu.usage_percent)}]{cpu.usage_percent:.0f}% used[/{_usage_style(cpu.usage_percent)}]"
+    ]
+    ram = snapshot.ram
+    ram_percent = (ram.used_gb / ram.total_gb * 100) if ram.total_gb else 0.0
+    parts.append(
+        f"RAM: {ram.total_gb}GB total, "
+        f"[{_usage_style(ram_percent)}]{ram.used_gb}GB used[/{_usage_style(ram_percent)}]"
+    )
+    if snapshot.gpu is not None:
+        gpu = snapshot.gpu
+        gpu_percent = (gpu.vram_used_mb / gpu.vram_total_mb * 100) if gpu.vram_total_mb else 0.0
+        parts.append(
+            f"GPU: {_escape_markup(gpu.name)}, "
+            f"[{_usage_style(gpu_percent)}]{gpu.vram_used_mb:.0f}MB/{gpu.vram_total_mb:.0f}MB VRAM[/{_usage_style(gpu_percent)}]"
+        )
+    return "  ·  ".join(parts)
 
 
 def _handle_system(cfg: dict, session_start: float, *, runner=subprocess.run, base_dir=None) -> str:
@@ -276,14 +388,14 @@ def _handle_system(cfg: dict, session_start: float, *, runner=subprocess.run, ba
     session_count = len(audit_log_module.entries_since(session_start, base_dir=base_dir))
 
     lines = [
-        "  System Info",
-        "  ────────────────────────────────",
-        f"  {hardware_module.render_system_line(snapshot)}",
+        "  [bold][omsh.accent]System Info[/omsh.accent][/bold]",
+        "  [omsh.muted]────────────────────────────────[/omsh.muted]",
+        f"  {_render_system_line_colored(snapshot)}",
         "",
-        "  Oh My Shell",
-        "  ────────────────────────────────",
-        f"  Active model: {active_model}  ·  Provider: {provider_label}  ·  uptime {uptime_minutes}m",
-        f"  Session: {session_count} requests",
+        "  [bold][omsh.accent]Oh My Shell[/omsh.accent][/bold]",
+        "  [omsh.muted]────────────────────────────────[/omsh.muted]",
+        f"  Active model: [omsh.accent]{active_model}[/omsh.accent]  ·  Provider: [omsh.accent]{provider_label}[/omsh.accent]  ·  uptime [omsh.muted]{uptime_minutes}m[/omsh.muted]",
+        f"  Session: [omsh.accent]{session_count}[/omsh.accent] requests",
     ]
     return "\n".join(lines)
 
@@ -304,7 +416,7 @@ def _handle_config(args: list[str], cfg: dict) -> str:
         except KeyError:
             raise MetaCommandError(f"Unknown config key: {key!r}") from None
         config_module.save(cfg)
-        return f"  Set {key} = {value!r}"
+        return f"  [omsh.success]Set {key} = {value!r}[/omsh.success]"
 
     raise MetaCommandError(f"Usage: /config or /config set <key> <value> (got {args[0]!r}).")
 

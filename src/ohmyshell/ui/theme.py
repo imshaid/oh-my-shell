@@ -45,15 +45,55 @@ worst case on an old/limited terminal, the accent color is a close
 approximation instead of the exact hex, never a crash or missing color.
 
 --- The palette ---
-One accent family (an indigo/violet "brand" hue, distinct from any of the
-8 standard ANSI colors so it doesn't collide with -- and stays visually
-distinct from -- whatever the person's terminal theme does to actual
-named colors), plus the existing semantic meanings (success/warning/
-danger/info) pinned to fixed, WCAG-readable-on-both-light-and-dark-
-background shades rather than left to each theme's own interpretation of
-"green"/"yellow"/"red". Chosen to stay legible on both a near-black and a
-near-white background (the two extremes most real terminal themes fall
-between), verified by eye against both.
+User-requested, THIRD major revision of this palette: the original
+indigo/violet "brand" accent (chosen to stay distinct from any real
+terminal theme) turned out to read as visually "off" against a real
+Nord-themed terminal (the person's own daily setup), and a separate
+attempt to paint a fixed full-window background behind it (so the
+accent palette would have a guaranteed-consistent backdrop) was itself
+abandoned after several rounds of real-terminal testing showed no
+reliable, scrollback-safe way to keep a painted background in sync with
+a continuously scrolling terminal (see git history / prior session
+notes for that full investigation). The person's explicit direction
+after that: give up the fixed-background approach entirely, and instead
+choose colors that work WITH their actual terminal theme (Nord) rather
+than fighting it with a competing fixed backdrop.
+
+So this palette is now mapped directly onto the Nord color palette
+(https://www.nordtheme.com/docs/colors-and-palettes) -- the same named
+hex values Nord itself defines for exactly the semantic roles
+(errors/warnings/success/accent) this app already needed, rather than
+an invented brand hue. Nord's own "Aurora" accent colors are
+deliberately tuned by the Nord project to already read well against
+Nord's own "Polar Night" dark backgrounds -- since the person's real
+terminal IS Nord-themed, using Nord's own colors means this app's
+chrome will look native to their setup instead of clashing with it,
+and stays reasonably legible on any other dark theme too since Nord's
+Aurora colors are moderate/muted rather than neon.
+
+No fixed background is set by this module at all anymore -- oh-my-shell's
+own chrome renders with these foreground colors directly against
+whatever background the person's own terminal already has, the same
+principle this file's own command-output rule (below) already applied
+to raw command output; the app's chrome and raw command output are now
+both consistently "respect the person's own terminal", just for
+different reasons (raw output because it was always meant to be
+system-theme-respecting; the app's own chrome because fighting a real
+terminal theme with a competing painted background was tried and
+explicitly abandoned).
+
+--- Follow-up fix: dim/muted text contrast (same session) ---
+The first pass of this Nord remap used Nord3 (`#4C566A`) for every
+dim/secondary role (panel footers, key-hint lines, hardware stats,
+`/help` separators). A real screenshot from the person's own dark-navy
+Ptyxis window showed that text as almost unreadable -- too little
+contrast against a DARK background specifically. Root cause: Nord3 is
+the shade Nord's own docs/mockups use for dim text sitting on Nord's
+LIGHT "Snow Storm" surfaces, not on a dark background -- it was picked
+for the wrong side of Nord's own light/dark split. Fixed by using Nord4
+(`#D8DEE9`, "Snow Storm") for MUTED/ACCENT_DIM instead: still visibly
+dimmer than the saturated Aurora/Frost accents used elsewhere in this
+palette, but light enough to actually read against a dark terminal.
 """
 
 from __future__ import annotations
@@ -63,26 +103,47 @@ from rich.theme import Theme
 # Brand accent -- oh-my-shell's own signature color, used for its normal
 # (non-alert) chrome: the default prompt icon, plan-panel borders,
 # neutral confirmation panels, the startup banner accent.
-ACCENT = "#8B7FE8"       # soft indigo/violet
-ACCENT_DIM = "#5D53A8"   # same hue, darker -- secondary/dim accent text
+# Nord10 ("Frost", the deeper of Nord's two primary blues) -- Nord's own
+# tertiary-accent blue, distinct enough from nord8/nord9 (used elsewhere
+# in this palette) to read as this app's own signature color rather than
+# blending into ordinary Nord-themed syntax highlighting.
+ACCENT = "#5E81AC"
+# Nord3 (`#4C566A`) was tried first here since Nord's own docs call it the
+# "comments/subtle UI" shade -- but Nord picks that shade to sit against
+# Nord's LIGHT "Snow Storm" panels/gutters (its own editor mockups use it
+# on nord4/nord5/nord6 backgrounds), not against a dark terminal's own
+# near-black background. Confirmed against a real screenshot (the user's
+# own Ptyxis window, a dark navy background close to nord0): Nord3 text
+# there reads as almost invisible -- too little contrast against a DARK
+# background specifically, even though it's a perfectly readable "muted"
+# tone against a light one. Nord4 (`#D8DEE9`, "Snow Storm") is used
+# instead for every dim/secondary role below -- still visibly dimmer than
+# the saturated Aurora/Frost accent colors, but light enough to actually
+# read against a dark terminal background.
+ACCENT_DIM = "#D8DEE9"   # Nord4 -- dim/secondary accent (see note above)
 
 # AI-active state (prompt icon while a natural-language request is being
-# parsed/planned) -- a second, brighter hue so it reads as "something is
-# actively happening" distinctly from the resting accent color above.
-ACTIVE = "#E88BD4"       # warm magenta/pink
+# parsed/planned) -- a second, distinct hue so it reads as "something is
+# actively happening" separately from the resting accent color above.
+# Nord15 ("Aurora" purple) -- Nord's own color for "numbers and uncommon
+# functionality," repurposed here for the same "something unusual/active
+# is happening" role.
+ACTIVE = "#B48EAD"
 
-# Semantic status colors -- fixed shades for the same meanings
-# ui/panels.py and ui/streaming.py already used named colors for
-# (risk levels, step-result glyphs, warning/destructive panels).
-SUCCESS = "#4FD68C"      # step done / low risk
-WARNING = "#E8B04F"      # medium risk / destructive-command / sudo panels
-DANGER = "#E85F5F"       # failed step / high risk
-MUTED = "#8A8A9A"        # dim/secondary text (footers, hints, timestamps)
+# Semantic status colors -- Nord's own Aurora accent colors, used for
+# exactly the roles Nord itself defines them for.
+SUCCESS = "#A3BE8C"      # Nord14 -- Nord's own success/string green
+WARNING = "#EBCB8B"      # Nord13 -- Nord's own warning/escape-character yellow
+DANGER = "#BF616A"       # Nord11 -- Nord's own error/deletion red
+MUTED = "#D8DEE9"        # Nord4 -- dim/secondary text (footers, hints, timestamps); see ACCENT_DIM's note above for why Nord3 was replaced
 
 # Folder name in the prompt -- kept distinct from the accent color so the
 # two pieces of the prompt (location vs. the app's own icon) read as
 # separate visual elements at a glance.
-PATH = "#6FA8E8"         # soft blue
+# Nord8 ("Frost", Nord's own primary accent blue -- function declarations
+# in Nord's own syntax-highlighting role) -- brighter and more saturated
+# than ACCENT's Nord10, giving the two blues visible separation.
+PATH = "#88C0D0"
 
 
 # A `rich.theme.Theme` mapping semantic style *names* (not raw colors) to
@@ -123,6 +184,13 @@ def themed_console(*args, **kwargs):
     (accepts and forwards all the same *args/**kwargs Console itself
     does, e.g. `file=`, `force_terminal=`, `width=` for tests), so this is
     a drop-in replacement.
+
+    No forced background is applied here (see this module's own top
+    docstring, "THIRD major revision" -- the fixed-full-window-background
+    approach was tried and explicitly abandoned after it proved
+    impossible to keep reliably in sync with a scrolling terminal). This
+    app's chrome renders with `OMSH_THEME`'s foreground colors directly
+    against whatever background the person's own terminal already has.
     """
     from rich.console import Console
 
@@ -227,6 +295,12 @@ def bordered_console(real_console, *, bar_style: str = "omsh.accent_dim") -> "Co
     same theme as `themed_console()`), defaulting to the dimmer accent
     shade so the border reads as a quiet margin marker, not a second loud
     accent competing with the panels it's wrapping.
+
+    No forced background here (see this module's own top docstring,
+    "THIRD major revision" -- the fixed-background approach was tried and
+    explicitly abandoned). This Console's panels render with `OMSH_THEME`'s
+    foreground colors directly against the person's own terminal
+    background, same as `themed_console()`.
     """
     from rich.console import Console
     from rich.style import Style

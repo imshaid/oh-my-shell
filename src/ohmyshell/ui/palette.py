@@ -54,15 +54,38 @@ being one example, not the universal case.
 
 This round replaces the whole `Completer`-based approach with
 `prompt_toolkit.PromptSession`'s `bottom_toolbar` -- a plain text region
-that redraws live under the input line as you type, with no border, no
-menu chrome, and (per the explicit `Style.from_dict({"bottom-toolbar": ""})`
-override in ui/session.py) no forced background/foreground color at all,
-so it renders in the terminal's own default text color exactly like any
-other line this app prints via `rich`. `visible_commands(text)` below is
-the pure function that decides what to show (empty list unless `text`
-starts with "/"); `render_toolbar_text(text)` turns that into the actual
-lines ui/session.py's `bottom_toolbar` callable returns -- separated so
-each is independently testable without constructing a real PromptSession.
+that redraws live under the input line as you type, with no border and
+no menu chrome. `visible_commands(text)` below is the pure function that
+decides what to show (empty list unless `text` starts with "/");
+`render_toolbar_text(text)` turns that into the actual lines
+ui/session.py's `bottom_toolbar` callable returns -- separated so each is
+independently testable without constructing a real PromptSession.
+
+--- Round 4 (post-Build-Order, "I want to add color in everywhere") ---
+Round 3 above deliberately used NO color at all here -- the reverse-video
+bar prompt_toolkit paints behind an unstyled bottom_toolbar by default
+was mistaken, during that round, for "this app forcing a color," so the
+fix at the time was to strip color entirely (`noreverse`, plain text).
+Revisited now that the person has asked, explicitly and repeatedly, for
+color everywhere in this app's own chrome ("I want to add color in
+everywhere every types of operation") -- and clarified directly, when
+asked whether this palette should use this app's own fixed Nord accent
+palette (ui/theme.py) or bare ANSI attributes, that it should use this
+app's own theme, consistent with every other piece of chrome (panels,
+prompt, streaming, hardware stats). ui/theme.py's own module docstring
+already draws exactly this line: raw *command output* stays
+system-theme-respecting (LS_COLORS, a tool's own --color), but this
+app's OWN chrome (which this palette is -- it lists oh-my-shell's own
+slash commands, not any external program's output) is deliberately fixed
+to this app's own Nord-mapped truecolor palette, the same as the prompt
+icon, panel borders, and risk labels. So `render_toolbar_text` below now
+returns a small list of `(style, text)` tuples instead of a bare `str`,
+using `omsh.accent` (command name) and `omsh.muted` (description) --
+`noreverse` in ui/session.py's own `Style.from_dict` override is kept
+disabling the *forced reverse-video* default, which is a genuinely
+separate concern (visual glitch, not this app's own accent color) from
+whether this app *adds its own* color on top; the follow-up note in that
+module records how the two combine.
 """
 
 from __future__ import annotations
@@ -124,20 +147,42 @@ def visible_commands(text: str) -> list[tuple[str, str]]:
     return [(name, desc) for name, desc in COMMANDS if name.startswith(typed)]
 
 
-def render_toolbar_text(text: str) -> str:
+def render_toolbar_text(text: str) -> list[tuple[str, str]]:
     """
-    Plain-text rendering of visible_commands(text), one command per line,
-    name left-padded to a fixed column so descriptions line up -- the
-    actual string ui/session.py's `bottom_toolbar` callable returns.
-    Deliberately returns a bare `str`, not any rich/prompt_toolkit markup
-    object: no color or style is attached here at all, so whatever the
-    terminal's own default foreground/background is is what's shown (see
-    ui/session.py's matching `Style.from_dict({"bottom-toolbar": ""})`
-    override, which is what stops prompt_toolkit's own default reverse-
-    video toolbar styling from applying here).
+    Styled rendering of visible_commands(text), one command per line, name
+    left-padded to a fixed column so descriptions line up -- the actual
+    value ui/session.py's `bottom_toolbar` callable returns.
+
+    Returns a list of `(style, text)` tuples (prompt_toolkit's own
+    `AnyFormattedText` shape), not a bare `str` -- see this module's
+    "Round 4" docstring note for why color was added here: the command
+    name ("/help") is styled with this app's own `omsh.accent` hex
+    (ui/theme.py's ACCENT), the description with `omsh.muted` (ACCENT_DIM
+    / MUTED), matching how `/help`'s own output (meta_commands.py's
+    HELP_TEXT) already colors the exact same two pieces. Styles are
+    passed as the SAME hex strings ui/theme.py defines (not the
+    `rich`-only "omsh.accent" theme name, which prompt_toolkit's own
+    `Style` object doesn't know how to resolve -- prompt_toolkit and rich
+    are two separate styling systems here, each fed the same underlying
+    hex values from ui/theme.py rather than one trying to reuse the
+    other's theme object directly), each prefixed with the required
+    leading "#" `Style.from_dict`/prompt_toolkit hex syntax expects
+    (ui/theme.py's own constants already include it).
+    A row break between entries is its own `("", "\\n")` tuple -- a plain
+    literal newline embedded inside one of the styled strings would work
+    for rendering, but keeping it as a separate, unstyled tuple keeps
+    every visible run of text attributable to exactly one style, matching
+    how the rest of this tuple list is built.
     """
+    from ohmyshell.ui.theme import ACCENT, MUTED
+
     commands = visible_commands(text)
     if not commands:
-        return ""
-    lines = [f"  /{name:<{_NAME_COLUMN_WIDTH}}{desc}" for name, desc in commands]
-    return "\n".join(lines)
+        return []
+    fragments: list[tuple[str, str]] = []
+    for index, (name, desc) in enumerate(commands):
+        if index:
+            fragments.append(("", "\n"))
+        fragments.append((f"fg:{ACCENT} bold", f"  /{name:<{_NAME_COLUMN_WIDTH}}"))
+        fragments.append((f"fg:{MUTED}", desc))
+    return fragments

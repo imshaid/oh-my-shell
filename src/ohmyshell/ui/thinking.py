@@ -134,6 +134,23 @@ def _bar(percent: float, *, width: int = _BAR_WIDTH) -> str:
     return "▓" * filled + "░" * (width - filled)
 
 
+# Usage-based dynamic color (user-requested, replacing every hardware line's
+# earlier flat `omsh.muted`): low/medium/high usage maps onto the same
+# three semantic shades this app already uses everywhere else for exactly
+# this low/medium/high distinction (ui/panels.py's risk-level text,
+# ui/streaming.py's step-status glyphs) -- reusing `OMSH_THEME`'s own
+# `omsh.risk.*` names here too, rather than inventing a fourth set of
+# thresholds/colors, keeps "what green/yellow/red mean" consistent across
+# the whole app. Thresholds (< 50% low, < 80% medium, else high) match
+# common system-monitor convention (htop/fastfetch's own bar coloring).
+def _usage_style(percent: float) -> str:
+    if percent < 50:
+        return "omsh.risk.low"
+    if percent < 80:
+        return "omsh.risk.medium"
+    return "omsh.risk.high"
+
+
 _ROW_LABEL_WIDTH = len("CPU")  # "CPU"/"RAM"/"GPU" are always this length
 
 
@@ -157,34 +174,50 @@ def render_hardware_lines(snapshot: hardware_module.HardwareSnapshot) -> list[Te
     (CPU temperature, fan RPM, CPU model, GPU temperature) rather than
     showing a placeholder -- the same rule this module and hardware.py
     have followed for every optional field from the start.
+
+    Bug fix (user-requested, found alongside a wider real-terminal color
+    audit): every line used to be one flat `omsh.muted` color end to end,
+    including the bar and percentage themselves -- exactly the numbers a
+    person glancing at this indicator most wants a fast, at-a-glance
+    reading of "is this fine or not." The label stays `omsh.muted` (a
+    constant, not something that needs to draw the eye), but the bar glyph
+    string and its percentage now carry `_usage_style()`'s low/medium/high
+    color -- everything else on the line (temperature, RPM, model/part
+    name) stays `omsh.muted`, the same "quiet detail, not the headline
+    number" role it already had.
     """
     lines: list[Text] = []
 
     cpu = snapshot.cpu
-    cpu_line = Text(style="dim")
-    cpu_line.append(f"{'CPU':<{_ROW_LABEL_WIDTH}} {_bar(cpu.usage_percent)} {cpu.usage_percent:.0f}%")
+    cpu_style = _usage_style(cpu.usage_percent)
+    cpu_line = Text()
+    cpu_line.append(f"{'CPU':<{_ROW_LABEL_WIDTH}} ", style="omsh.muted")
+    cpu_line.append(f"{_bar(cpu.usage_percent)} {cpu.usage_percent:.0f}%", style=cpu_style)
     if cpu.temperature_celsius is not None:
-        cpu_line.append(f" · {cpu.temperature_celsius:.0f}°C")
+        cpu_line.append(f" · {cpu.temperature_celsius:.0f}°C", style="omsh.muted")
     if cpu.fan_rpm is not None:
-        cpu_line.append(f" · {cpu.fan_rpm} RPM")
+        cpu_line.append(f" · {cpu.fan_rpm} RPM", style="omsh.muted")
     if cpu.model_name is not None:
-        cpu_line.append(f" · {cpu.model_name}")
+        cpu_line.append(f" · {cpu.model_name}", style="omsh.muted")
     lines.append(cpu_line)
 
     ram = snapshot.ram
     ram_percent = (ram.used_gb / ram.total_gb * 100) if ram.total_gb else 0.0
-    ram_line = Text(style="dim")
-    ram_line.append(f"{'RAM':<{_ROW_LABEL_WIDTH}} {_bar(ram_percent)} {ram_percent:.0f}% · {ram.used_gb}/{ram.total_gb}GB")
+    ram_line = Text()
+    ram_line.append(f"{'RAM':<{_ROW_LABEL_WIDTH}} ", style="omsh.muted")
+    ram_line.append(f"{_bar(ram_percent)} {ram_percent:.0f}%", style=_usage_style(ram_percent))
+    ram_line.append(f" · {ram.used_gb}/{ram.total_gb}GB", style="omsh.muted")
     lines.append(ram_line)
 
     if snapshot.gpu is not None:
         gpu = snapshot.gpu
         gpu_percent = (gpu.vram_used_mb / gpu.vram_total_mb * 100) if gpu.vram_total_mb else 0.0
-        gpu_line = Text(style="dim")
-        gpu_line.append(f"{'GPU':<{_ROW_LABEL_WIDTH}} {_bar(gpu_percent)} {gpu_percent:.0f}% VRAM")
+        gpu_line = Text()
+        gpu_line.append(f"{'GPU':<{_ROW_LABEL_WIDTH}} ", style="omsh.muted")
+        gpu_line.append(f"{_bar(gpu_percent)} {gpu_percent:.0f}% VRAM", style=_usage_style(gpu_percent))
         if gpu.temperature_celsius is not None:
-            gpu_line.append(f" · {gpu.temperature_celsius:.0f}°C")
-        gpu_line.append(f" · {gpu.name}")
+            gpu_line.append(f" · {gpu.temperature_celsius:.0f}°C", style="omsh.muted")
+        gpu_line.append(f" · {gpu.name}", style="omsh.muted")
         lines.append(gpu_line)
 
     return lines
@@ -207,7 +240,7 @@ def _thinking_line(
     available -- the finished call's own numbers are that same count's
     final, authoritative value, so showing both would just repeat it.
     """
-    line = Text(f"⚟ Thinking... {elapsed_seconds:.1f}s", style="dim")
+    line = Text(f"⚟ Thinking... {elapsed_seconds:.1f}s", style="omsh.muted")
     if telemetry is None:
         if live_tokens_in is not None or live_tokens_out is not None:
             in_part = f"{live_tokens_in} in" if live_tokens_in is not None else "? in"

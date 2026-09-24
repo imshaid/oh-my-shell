@@ -95,11 +95,12 @@ from rich.ansi import AnsiDecoder
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
 from rich.spinner import Spinner
+from rich.style import Style
 from rich.text import Text
 
 from ohmyshell.executor import ExecutionResult, StepEvent, StepStatus
 from ohmyshell.intent_parser import ParseTelemetry
-from ohmyshell.ui.theme import themed_console
+from ohmyshell.ui.theme import OMSH_THEME, themed_console
 
 # Fixed accent palette (post-Build-Order, user-requested) -- see
 # ui/theme.py's own module docstring: these status glyphs are this app's
@@ -143,13 +144,13 @@ def _render_activity_bar(elapsed: float) -> Text:
     max_start = _BAR_WIDTH - _BAR_SEGMENT_WIDTH
     start = round(triangle * max_start)
     bar = Text()
-    bar.append("│", style="dim")
+    bar.append("│", style="omsh.muted")
     for col in range(_BAR_WIDTH):
         if start <= col < start + _BAR_SEGMENT_WIDTH:
             bar.append("█", style="omsh.accent")
         else:
-            bar.append("░", style="dim")
-    bar.append("│", style="dim")
+            bar.append("░", style="omsh.muted")
+    bar.append("│", style="omsh.muted")
     return bar
 
 
@@ -223,7 +224,7 @@ class _LiveRunningLine:
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         elapsed = time.monotonic() - self._start
         frame = self._spinner.render(time.monotonic())
-        head = Text.assemble(frame, f" {self._label}", (f"  ·  {elapsed:.1f}s", "dim"))
+        head = Text.assemble(frame, f" {self._label}", (f"  ·  {elapsed:.1f}s", "omsh.muted"))
         yield head
 
         bar = _render_activity_bar(elapsed)
@@ -231,13 +232,19 @@ class _LiveRunningLine:
         stats.append_text(bar)
         if self._count is not None:
             rate = self._count / elapsed if elapsed > 0.05 else 0.0
-            stats.append(f"  {self._count} {self._count_noun}", style="bold")
+            # Composite style (bold + a theme-registered omsh.* name) built
+            # as a real `Style` object rather than the string "bold
+            # omsh.accent" -- see ui/prompt.py's own "bold omsh.path" fix
+            # for the full root-cause story: a composite STYLE STRING
+            # mixing a plain attribute with an omsh.* theme name silently
+            # renders completely unstyled in rich.
+            stats.append(f"  {self._count} {self._count_noun}", style=Style(bold=True) + OMSH_THEME.styles["omsh.accent"])
             if rate >= 0.1:
-                stats.append(f"  ·  {rate:.1f}/s", style="dim")
+                stats.append(f"  ·  {rate:.1f}/s", style="omsh.muted")
         yield stats
 
         if self._detail_line is not None:
-            yield Text(f"    {self._detail_line}", style="dim italic")
+            yield Text(f"    {self._detail_line}", style=Style(dim=True, italic=True) + OMSH_THEME.styles["omsh.muted"])
 
 
 def render_running_line(event: StepEvent) -> _LiveRunningLine:
@@ -299,18 +306,18 @@ def render_result_line(event: StepEvent) -> Text:
     One collapsed summary line for a finished step (DONE/FAILED/
     INTERRUPTED/SKIPPED), matching the "✓ Cleanup complete [12.3s]" style.
     """
-    glyph, color = _STATUS_GLYPH.get(event.status, ("?", "white"))
+    glyph, color = _STATUS_GLYPH.get(event.status, ("?", "omsh.muted"))
     text = Text(f"{glyph} ", style=color)
     if event.status is StepStatus.DONE:
-        text.append("Done")
+        text.append("Done", style=color)
     elif event.status is StepStatus.FAILED:
-        text.append("Failed")
+        text.append("Failed", style=color)
     elif event.status is StepStatus.INTERRUPTED:
-        text.append("Interrupted")
+        text.append("Interrupted", style=color)
     elif event.status is StepStatus.SKIPPED:
-        text.append("Skipped")
+        text.append("Skipped", style=color)
     if event.detail:
-        text.append(f"  —  {event.detail.strip()}")
+        text.append(f"  —  {event.detail.strip()}", style="omsh.muted")
     return text
 
 
@@ -398,9 +405,16 @@ def render_execution_summary(
     header = Text()
     output_blocks: list[Text] = []
     for step_result in result.step_results:
-        glyph, color = _STATUS_GLYPH.get(step_result.status, ("?", "white"))
+        glyph, color = _STATUS_GLYPH.get(step_result.status, ("?", "omsh.muted"))
         header.append(f"{glyph} ", style=color)
-        header.append(f"Step {step_result.step_number}: {step_result.description}\n")
+        # Bug fix (found via a real-terminal screenshot showing this line
+        # as plain, uncolored white text -- the step glyph carries a
+        # semantic color, but the step description right next to it had
+        # no style at all): give the description text itself the same
+        # semantic color as its own glyph (success/danger/warning), so a
+        # DONE step's whole line reads as "this succeeded" at a glance,
+        # not just its leading checkmark.
+        header.append(f"Step {step_result.step_number}: {step_result.description}\n", style=color)
         if step_result.status is StepStatus.DONE and step_result.stdout.strip():
             output_blocks.extend(_decode_ansi_block(step_result.stdout.rstrip()))
         elif step_result.status is StepStatus.FAILED and step_result.stderr.strip():
@@ -411,7 +425,18 @@ def render_execution_summary(
     lines = trailer
     ai_line = _ai_telemetry_line(telemetry)
     if ai_line is not None:
-        lines.append(f"\n{ai_line}", style="dim")
+        # Color audit fix (post-Build-Order, "I want to add color in
+        # everywhere"): this line used to share the same `omsh.muted`
+        # (Nord4, a very light near-white shade) as every other secondary/
+        # metadata line -- on a real dark terminal that reads as almost
+        # indistinguishable from plain unstyled text (see ui/theme.py's own
+        # "Follow-up fix" note for the same shade's earlier legibility
+        # issue against dim/muted text generally). `omsh.active` (Nord15
+        # Aurora purple, this app's own "something the AI did" accent,
+        # already used for the AI-active prompt icon) makes this line read
+        # as its own distinct, AI-attributed piece of chrome instead of
+        # blending into the muted metadata around it.
+        lines.append(f"\n{ai_line}", style="omsh.active")
     if result.interrupted:
         lines.append("\n[Ctrl+C] Stopped early — see above for what completed.", style="omsh.warning")
         # Bug fix (found via manual end-to-end testing, in a real terminal
@@ -427,11 +452,20 @@ def render_execution_summary(
         # which is a genuinely unimplemented, separate feature (resuming a
         # partially-completed plan) -- not offered here, so this line only
         # ever promises what actually works today.
-        lines.append("\n▸ [u] Undo this action", style="dim")
+        #
+        # Color audit fix (same round as the AI-telemetry-line fix above):
+        # this is a real, clickable-feeling action hint (like /help's own
+        # command names), not passive metadata -- `omsh.accent` (this
+        # app's signature blue, already used for /help's own command
+        # names) marks the "[u]" key hint as actionable, matching how
+        # every other keyed hint in this app is colored, instead of
+        # blending into `omsh.muted`'s dim near-white the way a footnote
+        # would.
+        lines.append("\n▸ [u] Undo this action", style="omsh.accent")
     elif result.aborted_for_sudo:
         lines.append("\nAborted — elevated permission was declined.", style="omsh.warning")
     elif result.all_done:
-        lines.append("\n▸ [u] Undo this action", style="dim")
+        lines.append("\n▸ [u] Undo this action", style="omsh.accent")
     return Group(header, *output_blocks, trailer)
 
 

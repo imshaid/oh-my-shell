@@ -19,6 +19,8 @@ from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.ui.thinking import (
     _streamed_text_line,
     _thinking_line,
+    _usage_style,
+    render_hardware_lines,
     render_thinking_display,
     run_with_thinking_indicator,
 )
@@ -40,6 +42,48 @@ def _fake_snapshot(*, gpu: bool = False) -> hardware_module.HardwareSnapshot:
         else None
     )
     return hardware_module.HardwareSnapshot(cpu=cpu, ram=ram, gpu=gpu_info)
+
+
+class TestUsageStyle:
+    """
+    User-requested (replacing every hardware line's earlier flat
+    `omsh.muted`): low/medium/high usage maps onto this app's existing
+    risk-level color names, so "is this fine or not" reads at a glance.
+    """
+
+    def test_low_usage_is_risk_low(self):
+        assert _usage_style(0) == "omsh.risk.low"
+        assert _usage_style(49.9) == "omsh.risk.low"
+
+    def test_medium_usage_is_risk_medium(self):
+        assert _usage_style(50) == "omsh.risk.medium"
+        assert _usage_style(79.9) == "omsh.risk.medium"
+
+    def test_high_usage_is_risk_high(self):
+        assert _usage_style(80) == "omsh.risk.high"
+        assert _usage_style(100) == "omsh.risk.high"
+
+
+class TestRenderHardwareLinesColoring:
+    def test_cpu_bar_and_percent_carry_the_usage_style_not_muted(self):
+        snapshot = _fake_snapshot()  # cpu.usage_percent=42.0 -> low
+        lines = render_hardware_lines(snapshot)
+        cpu_line = lines[0]
+        # The label ("CPU ") stays muted; the bar+percent segment right
+        # after it must carry the usage color instead, not omsh.muted.
+        styles = {(span.start, span.end): span.style for span in cpu_line.spans}
+        assert ("omsh.muted", "CPU ") == (styles[(0, 4)], cpu_line.plain[0:4])
+        bar_span_style = next(style for (start, end), style in styles.items() if start == 4)
+        assert bar_span_style == "omsh.risk.low"
+        assert bar_span_style != "omsh.muted"
+
+    def test_label_stays_muted(self):
+        snapshot = _fake_snapshot()
+        lines = render_hardware_lines(snapshot)
+        cpu_line = lines[0]
+        first_span = cpu_line.spans[0]
+        assert first_span.style == "omsh.muted"
+        assert cpu_line.plain[first_span.start : first_span.end] == "CPU "
 
 
 class TestThinkingLineLiveTokens:

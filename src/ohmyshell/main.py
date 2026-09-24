@@ -153,8 +153,8 @@ EXIT_COMMANDS = {"/exit", "/quit"}
 # in one string) for exactly this case.
 _BANNER = Text()
 _BANNER.append("✦ Oh My Shell", style=Style(bold=True) + OMSH_THEME.styles["omsh.accent"])
-_BANNER.append(" — natural-language Linux shell\n", style="dim")
-_BANNER.append("Type naturally, or /help for commands.", style="dim")
+_BANNER.append(" — natural-language Linux shell\n", style="omsh.muted")
+_BANNER.append("Type naturally, or /help for commands.", style="omsh.muted")
 
 
 def _extract_trash_target(text: str) -> str | None:
@@ -261,27 +261,37 @@ def _handle_raw_shell(
     keeps interactive full-screen programs (vim/top) working exactly as
     before despite this capture.
 
-    Deliberately NOT silent/automatic: the user explicitly asked for a
-    confirmation step here, not auto-reinterpretation -- a real typo
-    against an existing command (e.g. "gerp foo" -> "command not found")
-    matches the same signatures a genuine misroute would, and only the
-    user actually knows which one it was.
+    Automatic, no confirmation (revised, user-requested): an earlier
+    version of this function asked "Did you mean that as natural
+    language? [y/N]" and only reinterpreted on an explicit "y". The user
+    explicitly asked for that prompt to be removed ("here no need to ask
+    user, directly fall back for any commands"), and confirmed via
+    AskUserQuestion that this should apply unconditionally to every
+    command-not-understood failure, not just a subset ("সবসময় সরাসরি
+    fallback করো, কখনো জিজ্ঞেস কোরো না" -- always fall back directly,
+    never ask). So whenever `_looks_like_command_not_understood` matches,
+    this now falls straight through to `_handle_natural_language` with no
+    prompt and no confirm() call at all -- a real typo against an
+    existing command (e.g. "gerp foo") is reinterpreted as natural
+    language exactly the same as a genuine misroute; the user's own
+    instruction accepts that trade-off in exchange for never being
+    interrupted here.
 
-    On "yes", falls through to the exact same `_handle_natural_language`
-    pipeline a NATURAL_LANGUAGE-routed input would have used, with the
-    *original* text (not re-routed) -- this function's own audit-log
-    entry above is skipped in that case, since `_handle_natural_language`
-    logs its own outcome (source="natural_language"), and logging both
-    would double-count one user action across two different sources.
+    Falls through to the exact same `_handle_natural_language` pipeline a
+    NATURAL_LANGUAGE-routed input would have used, with the *original*
+    text (not re-routed) -- this function's own audit-log entry above is
+    skipped in that case, since `_handle_natural_language` logs its own
+    outcome (source="natural_language"), and logging both would
+    double-count one user action across two different sources.
     """
     active_console = console if console is not None else themed_console()
     try:
         result = classify(text, model=config_module.get(cfg, "model.active"))
     except DangerClassifierError as exc:
         active_console.print(
-            f"  [omsh.warning]⚠[/omsh.warning] Could not classify this command ({exc}) — not running it automatically."
+            f"  [omsh.warning]⚠ Could not classify this command ({exc}) — not running it automatically.[/omsh.warning]"
         )
-        active_console.print(f"  [dim]Re-run manually if you're sure: {text}[/dim]")
+        active_console.print(f"  [omsh.muted]Re-run manually if you're sure: {text}[/omsh.muted]")
         return
 
     if isinstance(result.verdict, Destructive):
@@ -291,7 +301,7 @@ def _handle_raw_shell(
         if choice == "t" and result.verdict.trash_alternative_possible:
             target = _extract_trash_target(text)
             if target is None:
-                active_console.print("  Couldn't tell what to move to trash — cancelled. Nothing changed.")
+                active_console.print("  [omsh.warning]Couldn't tell what to move to trash — cancelled. Nothing changed.[/omsh.warning]")
                 audit_log_module.record_action(
                     action=text, source="raw_shell", status="cancelled",
                     detail="trash target not determinable", base_dir=base_dir,
@@ -300,7 +310,7 @@ def _handle_raw_shell(
             try:
                 trash_module.move_to_trash(target, base_dir=base_dir)
             except trash_module.TrashError as exc:
-                active_console.print(f"  Could not move {target!r} to trash: {exc}")
+                active_console.print(f"  [omsh.danger]Could not move {target!r} to trash: {exc}[/omsh.danger]")
                 audit_log_module.record_action(
                     action=text, source="raw_shell", status="failed",
                     error=str(exc), detail=f"target={target}", base_dir=base_dir,
@@ -314,25 +324,23 @@ def _handle_raw_shell(
             return
 
         if choice != "y":
-            active_console.print("  Cancelled.")
+            active_console.print("  [omsh.warning]Cancelled.[/omsh.warning]")
             audit_log_module.record_action(action=text, source="raw_shell", status="cancelled", base_dir=base_dir)
             return
 
     exit_code, stderr_text = _run_shell_command(text)
 
     if exit_code is not None and exit_code != 0 and _looks_like_command_not_understood(stderr_text):
-        retry_choice = confirm("  Did you mean that as natural language? [y/N] > ").strip().lower()
-        if retry_choice == "y":
-            audit_log_module.record_action(
-                action=text, source="raw_shell", status="cancelled",
-                detail="command not understood — reinterpreted as natural language", base_dir=base_dir,
-            )
-            _handle_natural_language(
-                text, cfg,
-                read=nl_read, choice_read=nl_choice_read, sudo_input_fn=nl_sudo_input_fn,
-                console=active_console, base_dir=base_dir,
-            )
-            return
+        audit_log_module.record_action(
+            action=text, source="raw_shell", status="cancelled",
+            detail="command not understood — auto-reinterpreted as natural language", base_dir=base_dir,
+        )
+        _handle_natural_language(
+            text, cfg,
+            read=nl_read, choice_read=nl_choice_read, sudo_input_fn=nl_sudo_input_fn,
+            console=active_console, base_dir=base_dir,
+        )
+        return
 
     audit_log_module.record_action(action=text, source="raw_shell", status="done", base_dir=base_dir)
 
@@ -429,23 +437,51 @@ def _raw_shell_popen_args(text: str) -> list[str] | str:
 # instead would silently drop the very env setup (LS_COLORS etc.) the
 # shell-preference fix above exists to preserve.
 #
-# The fix that actually works for every user, unattended: install (once,
-# idempotently) a tiny early-exit guard at the very TOP of the person's own
-# config.fish, keyed off an env var oh-my-shell itself sets only when IT is
-# the one invoking fish non-interactively. Since fish sources config.fish
-# top-to-bottom and `exit` inside it stops that immediately, everything
-# below the guard (the person's own aliases, LS_COLORS exports, fastfetch
-# call, whatever) never runs for oh-my-shell's own raw-command invocations,
-# while a real interactive fish session the person opens themselves (no env
-# var set) is completely unaffected and sees its config exactly as before.
+# Second bug fix, on top of the first (found via a real screenshot: `fish
+# (line 3): function: status: cannot use reserved keyword as function name`
+# -- config.fish failed to source at all, every single raw command). The
+# first fix's approach -- define a fish FUNCTION named `status` wrapping
+# the real builtin, so `status is-interactive` could be made to report
+# false during raw exec -- doesn't work: `status` is one of fish's actual
+# reserved keywords (confirmed directly by this exact error), not an
+# ordinary builtin a function can shadow the way `ls`/`grep`/etc. can.
+# There is no way to override what `status is-interactive` returns from
+# outside fish's own C++ implementation.
+#
+# The actual fix, confirmed against the person's own real config.fish (a
+# stock Ubuntu default -- see this project's own working notes): the
+# `fastfetch` call there is NOT wrapped in `if status is-interactive` at
+# all -- it's a bare, unguarded top-level line (a very common real-world
+# fish config; the `if status is-interactive ... end` block right above it
+# in fish's own generated default config.fish is an empty template with
+# nothing in it, a decoy that looks like a guard but guards nothing). Since
+# there's no `status` call to intercept in the first place for a config
+# like this, the only fix that actually works is rewriting the noisy
+# command's OWN line directly -- wrapping known-noisy startup commands
+# (fastfetch, neofetch -- the two near-ubiquitous real-world fish greeting
+# tools; `screenfetch`/others can be added the same way if ever reported)
+# in their own `if not set -q OMSH_RAW_EXEC ... end` guard, in place, the
+# first time oh-my-shell finds one bare/unguarded. Every other line in the
+# file (aliases, LS_COLORS, PATH exports, zoxide/starship/fzf init, ...) is
+# left completely untouched -- only the specific noisy line itself gets
+# wrapped, so raw commands keep every bit of real shell setup that makes
+# `ls`/`grep`/etc. colorize and behave the way the person's own interactive
+# shell does.
 _FISH_GUARD_ENV = "OMSH_RAW_EXEC"
-_FISH_GUARD_MARKER = "# oh-my-shell: skip rest of config.fish for non-interactive raw exec"
-_FISH_GUARD_BLOCK = (
-    f"{_FISH_GUARD_MARKER}\n"
-    f"if set -q {_FISH_GUARD_ENV}\n"
-    f"    exit\n"
-    f"end\n"
-)
+_FISH_GUARD_MARKER = "# oh-my-shell: greeting-noise guard installed"
+# Command names known to print a startup greeting/banner in a real-world
+# fish config -- each bare/unguarded invocation of one of these (a line
+# that is exactly the command name, optionally with arguments, at column
+# 0 -- not already inside an `if`/piped/commented out) gets wrapped.
+_FISH_NOISY_COMMANDS = ("fastfetch", "neofetch")
+# A fragment unique to the OLD (first-fix) `function status` guard block --
+# used by `ensure_fish_guard_installed`'s migration path to detect and
+# remove an already-installed old guard (which fails to source at all, per
+# the bug this comment documents) before applying the new, working fix.
+_FISH_GUARD_OLD_STATUS_FUNCTION_LINE = "function status --wraps status"
+# A fragment unique to the very first (`exit`-based) guard block, from
+# before that too -- see this module's own history for why it was replaced.
+_FISH_GUARD_OLD_EXIT_LINE = f"if set -q {_FISH_GUARD_ENV}\n    exit\nend"
 
 
 def _fish_config_path() -> Path:
@@ -458,19 +494,81 @@ def _fish_config_path() -> Path:
     return base / "fish" / "config.fish"
 
 
+_FISH_BLOCK_OPENERS = ("if", "for", "while", "function", "begin", "switch")
+
+
+def _wrap_noisy_command_line(line: str) -> list[str] | None:
+    """
+    If `line` (one physical line of config.fish, no trailing newline) is a
+    bare invocation of one of `_FISH_NOISY_COMMANDS` -- the command name is
+    the first whitespace-separated token, ignoring leading indentation --
+    returns the replacement lines to wrap it in an
+    `if not set -q OMSH_RAW_EXEC ... end` guard (indented one level deeper
+    than the original line, matching the original line's own indentation
+    as the `if`/`end` lines' indentation). Returns None for anything else
+    (blank lines, comments, unrelated commands). Whether this specific
+    occurrence is already nested inside some OTHER conditional (e.g. the
+    person's own `if status is-interactive ... fastfetch ... end`, which
+    needs no further wrapping at all) is a property of the surrounding
+    lines, not of this one line alone -- `ensure_fish_guard_installed`'s
+    own scan tracks that nesting depth and simply never calls this
+    function for a line it already knows is nested.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    first_token = stripped.split(None, 1)[0]
+    if first_token not in _FISH_NOISY_COMMANDS:
+        return None
+    indent = line[: len(line) - len(line.lstrip(" \t"))]
+    return [
+        f"{indent}if not set -q {_FISH_GUARD_ENV}",
+        f"{indent}    {stripped}",
+        f"{indent}end",
+    ]
+
+
 def ensure_fish_guard_installed() -> None:
     """
-    Idempotently install `_FISH_GUARD_BLOCK` at the top of the person's own
-    fish config.fish, if (and only if): fish is their real shell
-    (`$SHELL`), config.fish already exists (never creates one from
-    scratch -- if the person has no fish config at all, there's nothing
-    unguarded to skip), and the guard isn't already present (checked via
-    `_FISH_GUARD_MARKER`, so re-running this on every startup is a no-op
-    after the first time). Never touches anything else in the file --
-    every line the person already had stays, byte-for-byte, just pushed
-    below the new guard block. Failures (permission error, unreadable
-    file, etc.) are swallowed -- this is a quality-of-life fix, not
-    something that should ever block the REPL from starting.
+    Idempotently rewrite the person's own fish config.fish so any bare/
+    unguarded call to a known-noisy startup command (`_FISH_NOISY_COMMANDS`
+    -- fastfetch, neofetch) only runs for a REAL interactive fish session,
+    not for oh-my-shell's own non-interactive raw-command invocations (see
+    this module's own comment above `_FISH_GUARD_ENV` for the full story of
+    why this replaced two earlier, broken approaches). Does nothing unless
+    fish is the person's real shell (`$SHELL`) and config.fish already
+    exists (never creates one from scratch -- if the person has no fish
+    config at all, there's nothing unguarded to wrap). Every other line in
+    the file -- aliases, LS_COLORS, PATH exports, tool init lines, comments,
+    blank lines, anything not an exact bare noisy-command invocation -- is
+    left completely untouched, byte-for-byte. Failures (permission error,
+    unreadable file, etc.) are swallowed -- this is a quality-of-life fix,
+    not something that should ever block the REPL from starting.
+
+    Idempotent via `_FISH_GUARD_MARKER`, a comment line inserted once at the
+    very top of the file the first time any wrapping happens at all -- its
+    presence alone means "this file has already been scanned/wrapped",
+    so re-running this on every startup after the first is a fast no-op
+    (this function does still open and read the file every time, to catch
+    a noisy command the person might add to their config.fish later, but
+    stops immediately once the marker is found, without re-scanning or
+    re-wrapping anything -- a line already wrapped by an earlier run stays
+    wrapped, and this never wraps the same line twice).
+
+    --- Migration for the two earlier, broken guard attempts ---
+    Anyone who ran an earlier version of oh-my-shell has one of two broken
+    guards already installed at the top of their config.fish: the very
+    first attempt did `exit` at the top of the whole file whenever
+    OMSH_RAW_EXEC was set (silently broke every raw command's LS_COLORS/
+    alias setup -- see `_FISH_GUARD_OLD_EXIT_LINE`'s own comment), and the
+    second attempt tried to redefine `status` as a fish function (a syntax
+    error -- `status` is a reserved keyword, confirmed directly by fish's
+    own error message -- which made config.fish fail to source AT ALL, for
+    every single raw command). Both are detected via their own distinctive
+    fragment (`_FISH_GUARD_OLD_EXIT_LINE` / `_FISH_GUARD_OLD_STATUS_FUNCTION_LINE`)
+    and their whole old guard block is stripped out entirely before this
+    function's normal line-wrapping logic runs on what's left -- neither
+    old approach has any part worth keeping.
     """
     shell_path = os.environ.get("SHELL", "")
     if "fish" not in Path(shell_path).name:
@@ -481,11 +579,111 @@ def ensure_fish_guard_installed() -> None:
         if not config_path.is_file():
             return
         existing = config_path.read_text()
+
+        if _FISH_GUARD_OLD_EXIT_LINE in existing or _FISH_GUARD_OLD_STATUS_FUNCTION_LINE in existing:
+            existing = _strip_old_fish_guard_block(existing)
+
         if _FISH_GUARD_MARKER in existing:
+            if existing != config_path.read_text():
+                config_path.write_text(existing)
             return
-        config_path.write_text(_FISH_GUARD_BLOCK + "\n" + existing)
+
+        lines = existing.splitlines()
+        new_lines: list[str] = []
+        wrapped_anything = False
+        # Tracks how many `if`/`for`/`function`/etc. blocks the scan is
+        # currently nested inside -- a noisy-command line only gets
+        # wrapped at depth 0 (a true top-level, unguarded call). A line
+        # already inside the person's own `if status is-interactive ...
+        # fastfetch ... end` (depth 1+ at that point) is left completely
+        # alone: it's already conditional, wrapping it again would just
+        # nest a redundant, harmless-but-pointless second `if` around it.
+        depth = 0
+        for line in lines:
+            stripped = line.strip()
+            first_token = stripped.split(None, 1)[0] if stripped and not stripped.startswith("#") else ""
+            if depth == 0:
+                replacement = _wrap_noisy_command_line(line)
+            else:
+                replacement = None
+            if replacement is None:
+                new_lines.append(line)
+            else:
+                new_lines.extend(replacement)
+                wrapped_anything = True
+            if first_token in _FISH_BLOCK_OPENERS:
+                depth += 1
+            elif first_token == "end":
+                depth = max(0, depth - 1)
+
+        rebuilt = "\n".join(new_lines)
+        if existing.endswith("\n"):
+            rebuilt += "\n"
+        if wrapped_anything:
+            rebuilt = f"{_FISH_GUARD_MARKER}\n" + rebuilt
+        if rebuilt != config_path.read_text():
+            config_path.write_text(rebuilt)
     except OSError:
         pass
+
+
+def _strip_old_fish_guard_block(existing: str) -> str:
+    """
+    Removes either of the two earlier, broken guard blocks (see
+    `ensure_fish_guard_installed`'s own "Migration" docstring section) from
+    `existing`, whichever is present, leaving every other line untouched.
+    Both old blocks always start with the same first line
+    (`# oh-my-shell: skip rest of config.fish for non-interactive raw
+    exec`, this module's original marker text before it changed) and end
+    with the first bare `end` line that closes their own single top-level
+    `if set -q OMSH_RAW_EXEC` -- found here by counting `if`/`end` nesting
+    from that first line, so this works for either old block's own
+    (different) body without needing two separate hardcoded copies of it.
+    """
+    old_first_line = "# oh-my-shell: skip rest of config.fish for non-interactive raw exec"
+    lines = existing.splitlines(keepends=True)
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == old_first_line:
+            start = i
+            break
+    if start is None:
+        return existing
+
+    # `start + 1` is the block's own opening `if set -q OMSH_RAW_EXEC` line
+    # (both old blocks' second line, always) -- that line has already
+    # opened one level of if/end nesting before this loop's first
+    # iteration even begins, so `depth` starts at 1 (not 0) to account for
+    # it; the loop itself starts scanning at `start + 2`, the line right
+    # after that opening `if`. Each further `if`/`function`/etc. opens
+    # another level, each `end` closes one -- the `end` that brings `depth`
+    # back down to 0 is the one that closes the block's own OUTERMOST `if`,
+    # which is exactly the end of the whole guard block, regardless of how
+    # much nested if/function/end structure the block's own body has
+    # (verified directly against both old blocks' real, different bodies).
+    depth = 1
+    end = None
+    for i in range(start + 2, len(lines)):
+        stripped = lines[i].strip()
+        first_token = stripped.split(None, 1)[0] if stripped else ""
+        if first_token in ("if", "for", "while", "function", "begin", "switch"):
+            depth += 1
+        elif first_token == "end":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end is None:
+        return existing
+    # Also swallow one blank separator line right after the old block, if
+    # present (both old blocks were always installed with a trailing blank
+    # line before the person's own original content) -- keeps the
+    # stripped file from picking up an extra blank line at the top that
+    # wasn't part of the person's own original config.fish.
+    after = end + 1
+    if after < len(lines) and lines[after].strip() == "":
+        after += 1
+    return "".join(lines[:start] + lines[after:])
 
 
 def _run_shell_command(text: str) -> tuple[int | None, str]:
@@ -625,15 +823,15 @@ def _repl_edit_flow(plan: Plan, *, read: callable = input, console: Console | No
     edit rather than leaving the plan with a blank command.
     """
     active_console = console if console is not None else themed_console()
-    active_console.print(f"  [dim]Current command:[/dim] {plan.command}")
+    active_console.print(f"  [omsh.muted]Current command:[/omsh.muted] [omsh.accent]{plan.command}[/omsh.accent]")
     new_command = read("  New command (blank to cancel): ").strip()
     if not new_command:
-        active_console.print("  Cancelled edit — plan unchanged.")
+        active_console.print("  [omsh.warning]Cancelled edit — plan unchanged.[/omsh.warning]")
         return plan
     try:
         return edit_command(plan, new_command)
     except ValueError:
-        active_console.print("  Command cannot be empty — plan unchanged.")
+        active_console.print("  [omsh.danger]Command cannot be empty — plan unchanged.[/omsh.danger]")
         return plan
 
 
@@ -777,11 +975,11 @@ def _handle_natural_language(
             on_token_box=token_box,
         )
     except IntentParseError as exc:
-        active_console.print(f"  [omsh.warning]⚠[/omsh.warning] Could not reach the model: {exc}")
+        active_console.print(f"  [omsh.danger]⚠ Could not reach the model: {exc}[/omsh.danger]")
         return
 
     if result.intent is None:
-        active_console.print("  I couldn't turn that into a command. Try rephrasing, or `/help`.")
+        active_console.print("  [omsh.muted]I couldn't turn that into a command. Try rephrasing, or `/help`.[/omsh.muted]")
         return
 
     # Independent risk override (see danger_classifier.py's own docstring):
@@ -860,7 +1058,7 @@ def _handle_natural_language(
         # "couldn't apply that adjustment", "unrecognized choice") are short
         # single lines -- rendered dim rather than boxed, so they read as
         # secondary/system text next to the boxed plan panel above them.
-        active_console.print(f"[dim]{line}[/dim]" if line.strip() else line)
+        active_console.print(f"[omsh.muted]{line}[/omsh.muted]" if line.strip() else line)
 
     outcome = run_discussion(
         plan,
@@ -871,7 +1069,7 @@ def _handle_natural_language(
     )
 
     if isinstance(outcome, Cancelled):
-        active_console.print("  Cancelled.")
+        active_console.print("  [omsh.warning]Cancelled.[/omsh.warning]")
         audit_log_module.record_action(
             action=result.intent.command, source="natural_language", status="cancelled",
             risk=result.intent.risk, base_dir=base_dir,
@@ -964,7 +1162,7 @@ def _handle_slash_command(
     try:
         outcome = meta_commands.dispatch(text, cfg=cfg, session_start=session_start)
     except meta_commands.MetaCommandError as exc:
-        active_console.print(f"  {exc}")
+        active_console.print(f"  [omsh.danger]{exc}[/omsh.danger]")
         return False
 
     if outcome.text:
@@ -1067,7 +1265,12 @@ def run() -> None:
                 continue
         except KeyboardInterrupt:
             console.print()
-            console.print("  Cancelled.")
+            # Bug fix (found via a real-terminal screenshot showing this
+            # line as plain uncolored white text, alongside every other
+            # "[omsh.*]"-wrapped cancel/status message in this module):
+            # this was the one plain `console.print("  Cancelled.")` call
+            # left over without its own omsh.warning markup.
+            console.print("  [omsh.warning]Cancelled.[/omsh.warning]")
             continue
 
 

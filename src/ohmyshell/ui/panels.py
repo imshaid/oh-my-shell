@@ -62,6 +62,8 @@ caller.
 
 from __future__ import annotations
 
+import re
+
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.rule import Rule
@@ -75,9 +77,52 @@ from ohmyshell.ui.theme import themed_console
 
 _RISK_STYLES = {"low": "omsh.risk.low", "medium": "omsh.risk.medium", "high": "omsh.risk.high"}
 
+# Matches one bracketed key token, e.g. "[Enter]", "[e]", "[Esc/q]" -- used
+# by `_key_hint_text` to split an option-hint line ("[Enter] Confirm   [e]
+# Edit   ...") into its "[key]" and "label" pieces so each can carry its
+# own style, without needing a second hand-maintained copy of the line's
+# text in a structured (list-of-tuples) shape at every call site.
+_KEY_TOKEN_RE = re.compile(r"(\[[^\]]+\])")
+
+
+def _key_hint_text(line: str) -> Text:
+    """
+    Color-audit fix (post-Build-Order, "I want to add color in
+    everywhere", extended to every "[key] Label" option-hint line in this
+    module): these lines used to be one flat `omsh.muted` string --
+    Nord4, a very light near-white shade that reads as almost
+    indistinguishable from plain unstyled text on a real dark terminal
+    (see ui/theme.py's own docstring for the same shade's earlier
+    legibility issue elsewhere). The person confirmed (asked directly,
+    since this is a judgment call affecting every panel in this module,
+    not just one line) that every "[key]" token app-wide should be
+    colored consistently with `omsh.accent` -- this app's own signature
+    accent, already used for /help's own command names and the palette's
+    command-name column (ui/palette.py) -- while the label text after it
+    stays `omsh.muted`, so a person scanning a panel can pick out "what
+    key do I press" at a glance the same way they scan `/help`'s own
+    command list for a name.
+
+    Splits on `_KEY_TOKEN_RE` rather than hand-building a fresh `Text`
+    per call site with hardcoded slice indices -- call sites (plan panel,
+    destructive-command panel, sudo panel) already have this exact
+    "[key] Label   [key] Label   ..." string built for other reasons
+    (matching the blueprint's verbatim mockups); this only needs to
+    re-style it, not reconstruct the wording.
+    """
+    text = Text()
+    for chunk in _KEY_TOKEN_RE.split(line):
+        if not chunk:
+            continue
+        if _KEY_TOKEN_RE.fullmatch(chunk):
+            text.append(chunk, style="omsh.accent")
+        else:
+            text.append(chunk, style="omsh.muted")
+    return text
+
 
 def _risk_text(risk: str) -> Text:
-    style = _RISK_STYLES.get(risk, "white")
+    style = _RISK_STYLES.get(risk, "omsh.muted")
     return Text(risk.capitalize(), style=style)
 
 
@@ -127,7 +172,7 @@ def _telemetry_footer_text(telemetry: ParseTelemetry, *, attempts: int | None = 
         parts.append(f"{retry_count} {noun}")
     if not parts:
         return None
-    return Text(f"↯ {' · '.join(parts)}", style="dim")
+    return Text(f"↯ {' · '.join(parts)}", style="omsh.muted")
 
 
 def render_plan_panel(
@@ -163,13 +208,13 @@ def render_plan_panel(
     body_text.append("Risk: ")
     body_text.append(_risk_text(plan.risk))
     body_text.append("\n")
-    body_text.append("[Enter] Confirm   [e] Edit   [c] Chat/adjust   [Esc] Cancel", style="dim")
+    body_text.append_text(_key_hint_text("[Enter] Confirm   [e] Edit   [c] Chat/adjust   [Esc] Cancel"))
 
     footer = _telemetry_footer_text(telemetry, attempts=attempts) if telemetry is not None else None
     if footer is None:
         body: RenderableType = body_text
     else:
-        body = Group(body_text, Rule(style="dim"), footer)
+        body = Group(body_text, Rule(style="omsh.muted"), footer)
 
     return Panel(
         body,
@@ -202,7 +247,7 @@ def render_destructive_command_panel(result: ClassificationResult) -> Panel:
     options = "[y] Run anyway   [n] Cancel"
     if verdict.trash_alternative_possible:
         options += "   [t] Move to trash instead"
-    body.append(options, style="dim")
+    body.append_text(_key_hint_text(options))
 
     return Panel(
         body,
@@ -228,7 +273,7 @@ def render_sudo_panel(step: ElevatedStep) -> Panel:
     body = Text()
     body.append(f"Step {step.step_number}/{step.total_steps}: {step.description}\n")
     body.append(f"Reason: {step.reason}\n\n")
-    body.append("[Enter] Grant (sudo)   [s] Skip this step   [Esc/q] Abort", style="dim")
+    body.append_text(_key_hint_text("[Enter] Grant (sudo)   [s] Skip this step   [Esc/q] Abort"))
 
     return Panel(
         body,
@@ -249,7 +294,7 @@ def render_undo_confirm_panel(*, count: int) -> Panel:
     noun = "file" if count == 1 else "files"
     body = Text()
     body.append(f"↺ Undo: Restore {count} {noun} from .trash/?\n\n")
-    body.append("[Enter] Confirm undo   [Esc] Cancel", style="dim")
+    body.append_text(_key_hint_text("[Enter] Confirm undo   [Esc] Cancel"))
 
     return Panel(body, border_style="omsh.accent", expand=False)
 
@@ -319,5 +364,5 @@ class RichSudoPrompt:
             if choice in ("esc", "q", "abort"):
                 return SudoDecision.ABORT
             self._console.print(
-                "[dim]Please press Enter to grant, 's' to skip, or 'esc'/'q' to abort.[/dim]"
+                "[omsh.muted]Please press Enter to grant, 's' to skip, or 'esc'/'q' to abort.[/omsh.muted]"
             )

@@ -62,32 +62,70 @@ class TestVisibleCommands:
         assert names == sorted(names)
 
 
+def _toolbar_plain_text(fragments: list[tuple[str, str]]) -> str:
+    """Test helper: concatenate a render_toolbar_text() result's text
+    pieces back into one plain string, the same way prompt_toolkit itself
+    would when actually drawing the fragments -- lets most assertions
+    below stay about *content* without caring about style boundaries."""
+    return "".join(text for _style, text in fragments)
+
+
 class TestRenderToolbarText:
-    def test_no_match_renders_empty_string(self):
-        assert render_toolbar_text("clean up temp files") == ""
-        assert render_toolbar_text("") == ""
+    """
+    Round 4 (post-Build-Order, "I want to add color in everywhere"):
+    render_toolbar_text now returns a list of (style, text) tuples
+    (prompt_toolkit's own AnyFormattedText shape) instead of a bare str,
+    so the command name and description carry this app's own ACCENT/
+    MUTED colors -- see the module docstring's "Round 4" note for the
+    full reversal-of-Round-3 story.
+    """
+
+    def test_no_match_renders_empty_list(self):
+        assert render_toolbar_text("clean up temp files") == []
+        assert render_toolbar_text("") == []
 
     def test_matches_render_as_one_line_per_command(self):
-        text = render_toolbar_text("/")
+        fragments = render_toolbar_text("/")
+        text = _toolbar_plain_text(fragments)
         lines = text.split("\n")
         assert len(lines) == len(COMMANDS)
 
     def test_each_line_carries_its_command_name_and_description(self):
-        text = render_toolbar_text("/mo")
+        fragments = render_toolbar_text("/mo")
+        text = _toolbar_plain_text(fragments)
         assert "/model" in text
         assert "Show or switch the active model" in text
 
-    def test_output_is_a_plain_string_with_no_markup(self):
+    def test_output_is_a_list_of_style_text_tuples(self):
+        fragments = render_toolbar_text("/")
+        assert isinstance(fragments, list)
+        assert fragments  # non-empty for a bare "/"
+        for style, text in fragments:
+            assert isinstance(style, str)
+            assert isinstance(text, str)
+
+    def test_command_name_is_styled_with_this_apps_accent_color(self):
         """
-        Round 3's whole point: no color/style is attached here -- callers
-        (ui/session.py) rely on this being an unstyled str so the terminal's
-        own ambient colors show through. This just guards against a future
-        change accidentally returning rich markup or a FormattedText object
-        instead of plain text.
+        The whole point of Round 4: the command name must carry this
+        app's own fixed ACCENT hex (ui/theme.py), not an empty/plain
+        style -- matching how /help's own output colors the same piece.
         """
-        text = render_toolbar_text("/")
-        assert isinstance(text, str)
-        assert "[" not in text or "]" not in text  # no rich-style markup slipped in
+        from ohmyshell.ui.theme import ACCENT
+
+        fragments = render_toolbar_text("/mo")
+        name_styles = [style for style, text in fragments if "/model" in text]
+        assert name_styles
+        assert all(ACCENT in style for style in name_styles)
+
+    def test_description_is_styled_with_this_apps_muted_color(self):
+        from ohmyshell.ui.theme import MUTED
+
+        fragments = render_toolbar_text("/mo")
+        desc_styles = [
+            style for style, text in fragments if "Show or switch the active model" in text
+        ]
+        assert desc_styles
+        assert all(MUTED in style for style in desc_styles)
 
 
 class TestCommandsMatchMetaCommandsDispatchTable:

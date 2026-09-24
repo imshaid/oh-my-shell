@@ -314,6 +314,18 @@ class ReplSession:
                 # `"noreverse"` token actually clears it, verified the same
                 # way). `noreverse` is the fix -- an explicit instruction to
                 # turn reverse-video off, not merely "no color specified."
+                #
+                # Round 4 (ui/palette.py's own docstring has the full
+                # story): `_bottom_toolbar_text` now returns per-fragment
+                # `fg:#hex` styles (this app's own ACCENT/MUTED from
+                # ui/theme.py) instead of plain unstyled text. `noreverse`
+                # here still matters just as much as before -- it's
+                # disabling prompt_toolkit's own forced reverse-video
+                # class default, a separate mechanism from the per-
+                # fragment `fg:` colors this app now adds on top; without
+                # `noreverse`, those explicit foreground colors would still
+                # render inverted against a filled bar rather than as
+                # plain colored text on the terminal's own background.
                 style=Style.from_dict({"bottom-toolbar": "noreverse"}),
             )
 

@@ -12,6 +12,7 @@ from ohmyshell.plan_generator import Plan
 from ohmyshell.sudo_layer import ElevatedStep, SudoDecision
 from ohmyshell.ui.panels import (
     RichSudoPrompt,
+    _key_hint_text,
     print_panel,
     render_destructive_command_panel,
     render_plan_panel,
@@ -46,6 +47,53 @@ def _plan(**overrides) -> Plan:
     )
     defaults.update(overrides)
     return Plan(**defaults)
+
+
+class TestKeyHintText:
+    """
+    Color-audit fix (post-Build-Order, "I want to add color in
+    everywhere", confirmed via AskUserQuestion to apply to every
+    "[key] Label" hint line in this module, not just the two touched
+    first in ui/streaming.py): every bracketed "[key]" token in an
+    option-hint line must carry `omsh.accent` (this app's own signature
+    accent, matching /help's own command names and the palette's command
+    column), with the label text around it staying `omsh.muted` -- these
+    lines used to be one flat `omsh.muted` string, which on a real dark
+    terminal reads as almost indistinguishable from plain unstyled text.
+    """
+
+    def test_key_tokens_carry_accent_style(self):
+        text = _key_hint_text("[Enter] Confirm   [e] Edit   [Esc] Cancel")
+        key_spans = {
+            text.plain[span.start : span.end]: span.style
+            for span in text.spans
+            if text.plain[span.start : span.end].startswith("[")
+        }
+        assert key_spans["[Enter]"] == "omsh.accent"
+        assert key_spans["[e]"] == "omsh.accent"
+        assert key_spans["[Esc]"] == "omsh.accent"
+
+    def test_label_text_stays_muted(self):
+        text = _key_hint_text("[Enter] Confirm   [e] Edit")
+        label_spans = {
+            text.plain[span.start : span.end]: span.style
+            for span in text.spans
+            if not text.plain[span.start : span.end].startswith("[")
+        }
+        assert all(style == "omsh.muted" for style in label_spans.values())
+
+    def test_plain_text_is_unchanged(self):
+        line = "[Enter] Confirm   [e] Edit   [c] Chat/adjust   [Esc] Cancel"
+        assert _key_hint_text(line).plain == line
+
+    def test_a_multi_character_key_like_esc_slash_q_is_one_token(self):
+        text = _key_hint_text("[Esc/q] Abort")
+        key_spans = {
+            text.plain[span.start : span.end]: span.style
+            for span in text.spans
+            if text.plain[span.start : span.end].startswith("[")
+        }
+        assert key_spans["[Esc/q]"] == "omsh.accent"
 
 
 class TestRenderPlanPanel:
@@ -149,6 +197,43 @@ class TestRenderUndoConfirmPanel:
         text = _render_to_text(render_undo_confirm_panel(count=5))
         assert "Confirm undo" in text
         assert "Cancel" in text
+
+
+class TestPanelKeyHintsCarryRealColorEscapes:
+    """
+    Regression coverage using a themed, truecolor-forced Console (the same
+    pattern test_ui_thinking.py's own "carries a real color escape" test
+    uses) -- guards against a future change to one of these panels'
+    "[key] Label" lines silently reverting to a flat/unstyled string,
+    which `_render_to_text`'s own untruecolored Console can't catch.
+    """
+
+    def _capture(self, panel) -> str:
+        console = themed_console(force_terminal=True, color_system="truecolor", no_color=False)
+        with console.capture() as capture:
+            console.print(panel)
+        return capture.get()
+
+    def test_plan_panel_key_hints_are_colored(self):
+        rendered = self._capture(render_plan_panel(_plan()))
+        assert "\x1b[" in rendered
+
+    def test_destructive_panel_key_hints_are_colored(self):
+        result = ClassificationResult(
+            verdict=Destructive(explanation="deletes everything", trash_alternative_possible=True),
+            source="regex",
+        )
+        rendered = self._capture(render_destructive_command_panel(result))
+        assert "\x1b[" in rendered
+
+    def test_sudo_panel_key_hints_are_colored(self):
+        step = ElevatedStep(step_number=1, total_steps=1, description="x", reason="y")
+        rendered = self._capture(render_sudo_panel(step))
+        assert "\x1b[" in rendered
+
+    def test_undo_confirm_panel_key_hints_are_colored(self):
+        rendered = self._capture(render_undo_confirm_panel(count=1))
+        assert "\x1b[" in rendered
 
 
 class TestPrintPanel:

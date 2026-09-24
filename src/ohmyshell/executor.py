@@ -69,6 +69,7 @@ from __future__ import annotations
 import os
 import pty
 import select
+import shutil
 import signal
 import subprocess
 from contextlib import contextmanager
@@ -251,14 +252,56 @@ class _PtyPopen:
     Only the *default* `popen_factory` (this class, via
     `_default_popen_factory`) uses real ptys; every existing test injects
     its own `popen_factory` and is completely unaffected.
+
+    --- Second bug fix: wrong shell binary (found via a real screenshot --
+    `la` through an AI-generated plan came out with zero color/no custom
+    `eza` output at all, while the exact same `ls -la` run as a raw shell
+    command showed full color) ---
+    `subprocess.Popen(command, shell=True, ...)` with no `executable=`
+    kwarg always runs the command through `/bin/sh` (dash, on Ubuntu/most
+    distros) -- NOT the person's own real login shell, regardless of what
+    `$SHELL` is set to. That's a completely different bug from the pty-vs-
+    pipe one above: even with a real pty giving `isatty()` a true answer,
+    `/bin/sh` never sources the person's fish `config.fish`, so their own
+    aliases (`alias la=...`/`alias ls="eza ..."`) and `LS_COLORS`/similar
+    exports are simply never in scope for an AI-generated plan's command --
+    `main.py`'s OWN raw-shell path (`_raw_shell_popen_args`) already had
+    the right fix for the identical problem (prefer `$SHELL` when it points
+    at a real, existing executable); this constructor now does the same,
+    via `subprocess.Popen`'s `executable=` kwarg, which is precisely what
+    it exists for: pick a specific interpreter to run a `shell=True`
+    command string with, while `shell=True` itself is kept (pipes/
+    redirects/chaining an AI-generated command might use still need a real
+    shell to interpret the whole string, exactly as before).
     """
 
     def __init__(self, command: str, *, shell: bool, text: bool, bufsize: int) -> None:
         out_master, out_slave = pty.openpty()
         err_master, err_slave = pty.openpty()
+        shell_path = os.environ.get("SHELL")
+        executable = shell_path if shell_path and shutil.which(shell_path) else None
+        # Same fish-greeting-noise env var main.py's OWN raw-shell path sets
+        # (`main._FISH_GUARD_ENV`, value "OMSH_RAW_EXEC") -- not imported
+        # directly (main.py imports FROM executor.py, so the reverse import
+        # would be circular), just the same literal string. Now that this
+        # constructor runs AI-generated plan commands through the person's
+        # real fish (see this class's own docstring, "Second bug fix"
+        # above), config.fish's fastfetch/neofetch call would otherwise
+        # reprint before every single AI-executed command too, exactly the
+        # noise `ensure_fish_guard_installed()` already wraps that call to
+        # prevent for raw shell commands -- this makes that same wrapped
+        # guard fire here as well, so an AI-executed `ls`/`la`/etc. gets the
+        # person's real aliases/LS_COLORS without the banner coming back.
+        child_env = dict(os.environ, OMSH_RAW_EXEC="1")
         try:
             self._proc = subprocess.Popen(
-                command, shell=shell, stdout=out_slave, stderr=err_slave, close_fds=True
+                command,
+                shell=shell,
+                executable=executable,
+                stdout=out_slave,
+                stderr=err_slave,
+                close_fds=True,
+                env=child_env,
             )
         finally:
             # The child has its own duplicated fds now; this process's

@@ -214,6 +214,20 @@ class TestReplSessionRealConstructionWiresInlineToolbar:
         session = ReplSession()
         assert session._reader.completer is None
 
+    def test_default_construction_sets_no_fixed_background_style(self):
+        """
+        The fixed-full-window-background feature was tried across several
+        revisions and explicitly abandoned by the user ("not solve, ok,
+        give up it, just properly color the syntax based on the nord
+        theme"): the top-level (`""`) style rule must no longer force any
+        `bg:` -- the prompt renders against whatever background the
+        person's own terminal already has, same as the rest of this app's
+        chrome (see ui/theme.py's own module docstring).
+        """
+        session = ReplSession()
+        rules = dict(session._reader.style.style_rules)
+        assert "" not in rules or "bg:" not in rules.get("", "")
+
 
 class TestBottomToolbarText:
     """
@@ -242,9 +256,16 @@ class TestBottomToolbarText:
         return session_module._bottom_toolbar_text()
 
     def test_renders_matching_commands_for_current_buffer_text(self, monkeypatch):
+        """
+        Round 4 (ui/palette.py's own docstring): render_toolbar_text now
+        returns a list of (style, text) tuples, not a bare str, so this
+        callable's own result is checked the same way -- concatenating
+        the text pieces to look for the expected command name.
+        """
         result = self._call_with_text("/mo", monkeypatch)
-        assert "/model" in result
+        plain_text = "".join(text for _style, text in result)
+        assert "/model" in plain_text
 
-    def test_renders_empty_string_when_buffer_has_no_slash(self, monkeypatch):
+    def test_renders_empty_list_when_buffer_has_no_slash(self, monkeypatch):
         result = self._call_with_text("clean up temp files", monkeypatch)
-        assert result == ""
+        assert result == []

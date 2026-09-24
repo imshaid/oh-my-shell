@@ -394,11 +394,12 @@ def test_handle_raw_shell_logs_audit_entry_on_run(default_cfg, tmp_path):
     assert entries[0].status == "done"
 
 
-def test_handle_raw_shell_command_not_found_offers_ai_fallback(default_cfg, tmp_path):
+def test_handle_raw_shell_command_not_found_automatically_falls_back(default_cfg, tmp_path):
     """
-    A shell "command not found" signature in stderr -- e.g. a genuinely
-    missing command -- must prompt for confirmation, not silently
-    reinterpret or silently do nothing.
+    Revised (user-requested): a shell "command not found" signature in
+    stderr -- e.g. a genuinely missing command -- must now silently and
+    automatically reinterpret as natural language, with no [y/N] prompt
+    and no confirm() call at all.
     """
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
@@ -411,12 +412,17 @@ def test_handle_raw_shell_command_not_found_offers_ai_fallback(default_cfg, tmp_
                 main_module._handle_raw_shell(
                     "frefox", default_cfg, confirm=confirm_fn, console=console, base_dir=tmp_path
                 )
-    prompt_arg = confirm_fn.call_args[0][0]
-    assert "natural language" in prompt_arg.lower()
-    mock_nl.assert_not_called()
+    # No confirmation question is printed anymore, and confirm() is never
+    # called for this path (it's still used elsewhere in the function for
+    # the Destructive-verdict [y/n/t] prompt, just not here).
+    assert "natural language" not in buffer.getvalue().lower()
+    confirm_fn.assert_not_called()
+    mock_nl.assert_called_once()
+    args, kwargs = mock_nl.call_args
+    assert args[0] == "frefox"
 
 
-def test_handle_raw_shell_misrouted_existing_command_offers_ai_fallback(default_cfg, tmp_path):
+def test_handle_raw_shell_misrouted_existing_command_automatically_falls_back(default_cfg, tmp_path):
     """
     The real bug this feature targets: "open firefox" misrouted as
     RAW_SHELL (router.py's own documented margin case -- `open` is a real
@@ -425,7 +431,8 @@ def test_handle_raw_shell_misrouted_existing_command_offers_ai_fallback(default_
     argument-parsing error instead (xdg-open's "unexpected argument", or
     gio's "No such file or directory" when it treats "firefox" as a
     filename). Detection here must be stderr-text-based, not exit-code-127
-    -only, to actually catch this real-world case.
+    -only, to actually catch this real-world case -- and now it must fall
+    back automatically, without ever calling confirm().
     """
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
@@ -439,34 +446,60 @@ def test_handle_raw_shell_misrouted_existing_command_offers_ai_fallback(default_
                 main_module._handle_raw_shell(
                     "open firefox", default_cfg, confirm=confirm_fn, base_dir=tmp_path
                 )
-    confirm_fn.assert_called_once()
-    mock_nl.assert_not_called()
+    confirm_fn.assert_not_called()
+    mock_nl.assert_called_once()
+    args, kwargs = mock_nl.call_args
+    assert args[0] == "open firefox"
 
 
-def test_handle_raw_shell_command_not_found_confirmed_falls_back_to_nl(default_cfg, tmp_path):
+def test_handle_raw_shell_command_not_understood_logs_cancelled_before_nl_takes_over(default_cfg, tmp_path):
+    """
+    Before handing off to _handle_natural_language (which logs its own
+    outcome under source="natural_language"), this function still records
+    its own audit-log entry marking the raw-shell attempt as cancelled/
+    reinterpreted -- unchanged from the old confirmed-path behavior,
+    just reached unconditionally now instead of behind a "y" answer.
+    """
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
     fake_popen = _FakeRawPopen(returncode=127, stderr_text="sh: 1: frefox: not found\n")
     with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
         with patch("ohmyshell.main.subprocess.Popen", fake_popen):
             with patch("ohmyshell.main._handle_natural_language") as mock_nl:
-                main_module._handle_raw_shell(
-                    "frefox", default_cfg, confirm=lambda _: "y", base_dir=tmp_path
-                )
+                main_module._handle_raw_shell("frefox", default_cfg, base_dir=tmp_path)
     mock_nl.assert_called_once()
     args, kwargs = mock_nl.call_args
     assert args[0] == "frefox"
 
+    from ohmyshell import audit_log as audit_log_module
 
-def test_handle_raw_shell_command_not_found_declined_logs_done_not_reinterpreted(default_cfg, tmp_path):
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert len(entries) == 1
+    assert entries[0].status == "cancelled"
+    assert entries[0].source == "raw_shell"
+
+
+def test_handle_raw_shell_ordinary_nonzero_exit_never_falls_back(default_cfg, tmp_path):
+    """
+    A generic non-zero exit with no "command not understood" style stderr
+    -- e.g. `grep` finding nothing, or `rmdir` on a non-empty directory --
+    is a completely ordinary, correctly classified raw-shell failure and
+    must never trigger the AI fallback.
+    """
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
-    fake_popen = _FakeRawPopen(returncode=127, stderr_text="sh: 1: gerp: not found\n")
+    fake_popen = _FakeRawPopen(returncode=1, stderr_text="")
+    confirm_fn = MagicMock(return_value="n")
+    buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
         with patch("ohmyshell.main.subprocess.Popen", fake_popen):
-            main_module._handle_raw_shell(
-                "gerp foo", default_cfg, confirm=lambda _: "n", base_dir=tmp_path
-            )
+            with patch("ohmyshell.main._handle_natural_language") as mock_nl:
+                main_module._handle_raw_shell(
+                    "grep foo bar.txt", default_cfg, confirm=confirm_fn, console=console, base_dir=tmp_path
+                )
+    confirm_fn.assert_not_called()
+    mock_nl.assert_not_called()
+    assert "natural language" not in buffer.getvalue().lower()
 
     from ohmyshell import audit_log as audit_log_module
 
@@ -476,41 +509,29 @@ def test_handle_raw_shell_command_not_found_declined_logs_done_not_reinterpreted
     assert entries[0].source == "raw_shell"
 
 
-def test_handle_raw_shell_ordinary_nonzero_exit_never_offers_fallback(default_cfg, tmp_path):
-    """
-    A generic non-zero exit with no "command not understood" style stderr
-    -- e.g. `grep` finding nothing, or `rmdir` on a non-empty directory --
-    is a completely ordinary, correctly classified raw-shell failure and
-    must never trigger the AI-fallback prompt.
-    """
-    from ohmyshell.danger_classifier import ClassificationResult, Safe
-
-    fake_popen = _FakeRawPopen(returncode=1, stderr_text="")
-    confirm_fn = MagicMock(return_value="n")
-    buffer, console = _buffer_console()
-    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
-        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
-            main_module._handle_raw_shell(
-                "grep foo bar.txt", default_cfg, confirm=confirm_fn, console=console, base_dir=tmp_path
-            )
-    confirm_fn.assert_not_called()
-    assert "natural language" not in buffer.getvalue().lower()
-
-
 def test_handle_raw_shell_tees_stderr_to_real_stderr(default_cfg, tmp_path, capsys):
     """
     The captured-for-signature-matching stderr must still reach the real
     terminal live -- this function must not swallow error output the user
     would otherwise see.
+
+    Regression note: the stderr text here must NOT match any
+    `_COMMAND_NOT_UNDERSTOOD_SIGNATURES` phrase (e.g. "No such file or
+    directory" would), since with the automatic-fallback behavior a
+    matching signature now hands off straight to
+    `_handle_natural_language` -- unrelated to what this test actually
+    checks (that stderr is teed live), and that path isn't mocked out
+    here. "Permission denied" is an ordinary, unrelated raw-shell failure
+    that keeps this test on its own concern.
     """
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
-    fake_popen = _FakeRawPopen(returncode=2, stderr_text="ls: cannot access 'nope': No such file or directory\n")
+    fake_popen = _FakeRawPopen(returncode=1, stderr_text="chmod: changing permissions of 'nope': Operation not permitted\n")
     with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
         with patch("ohmyshell.main.subprocess.Popen", fake_popen):
-            main_module._handle_raw_shell("ls nope", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
+            main_module._handle_raw_shell("chmod 700 nope", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
     captured = capsys.readouterr()
-    assert "cannot access 'nope'" in captured.err
+    assert "changing permissions of 'nope'" in captured.err
 
 
 # --- _handle_natural_language --------------------------------------------------------
@@ -1033,24 +1054,148 @@ class TestEnsureFishGuardInstalled:
 
         assert not (tmp_path / ".config" / "fish" / "config.fish").exists()
 
-    def test_injects_guard_above_existing_unguarded_fastfetch(self, monkeypatch, tmp_path):
+    def test_wraps_a_bare_unguarded_fastfetch_line_in_place(self, monkeypatch, tmp_path):
+        """
+        Third bug fix, on top of two earlier broken attempts (see main.py's
+        own module-level comment above `_FISH_GUARD_ENV` for the full
+        story): the actual fix wraps the noisy command's OWN line directly
+        -- `if not set -q OMSH_RAW_EXEC / <line> / end` -- in place, rather
+        than trying to prepend a block that intercepts `status
+        is-interactive` (impossible -- `status` is a fish reserved keyword,
+        confirmed by a real `function: status: cannot use reserved keyword
+        as function name` error) or `exit`ing the whole file (which broke
+        every raw command's LS_COLORS/alias setup along with the banner it
+        was meant to silence).
+        """
         monkeypatch.setenv("SHELL", "/usr/bin/fish")
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         config_path = tmp_path / ".config" / "fish" / "config.fish"
         config_path.parent.mkdir(parents=True)
-        config_path.write_text("fastfetch\n")
+        config_path.write_text(
+            "starship init fish | source\n"
+            "fastfetch\n"
+            'alias ls="eza --icons --group-directories-first"\n'
+            "zoxide init fish | source\n"
+        )
 
         _real_ensure_fish_guard_installed()
 
         new_content = config_path.read_text()
-        assert "if set -q OMSH_RAW_EXEC" in new_content
-        assert "    exit" in new_content
-        assert "fastfetch" in new_content
-        # Guard must come before the person's own existing content.
-        assert new_content.index("OMSH_RAW_EXEC") < new_content.index("fastfetch")
+        assert "    exit\n" not in new_content
+        assert "function status" not in new_content
+        assert (
+            "if not set -q OMSH_RAW_EXEC\n"
+            "    fastfetch\n"
+            "end"
+        ) in new_content
+        # Every other line must survive completely untouched.
+        assert "starship init fish | source" in new_content
+        assert 'alias ls="eza --icons --group-directories-first"' in new_content
+        assert "zoxide init fish | source" in new_content
 
-    def test_is_idempotent_does_not_double_inject(self, monkeypatch, tmp_path):
+    def test_does_not_wrap_a_fastfetch_call_that_is_already_guarded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SHELL", "/usr/bin/fish")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        config_path = tmp_path / ".config" / "fish" / "config.fish"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("if status is-interactive\n    fastfetch\nend\n")
+
+        _real_ensure_fish_guard_installed()
+
+        # Already-interactive-guarded -- nothing here needed wrapping, so
+        # this run is a no-op (no OMSH_RAW_EXEC guard anywhere at all).
+        new_content = config_path.read_text()
+        assert "OMSH_RAW_EXEC" not in new_content
+        assert new_content == "if status is-interactive\n    fastfetch\nend\n"
+
+    def test_migrates_an_already_installed_old_exit_based_guard(self, monkeypatch, tmp_path):
+        """
+        Anyone who ran the very first version of this fix already has the
+        old, `exit`-based guard installed in their real config.fish. A
+        naive "marker already present -> skip" check would leave that
+        broken block in place forever. This must detect and strip it
+        entirely before applying the new, working per-line wrap.
+        """
+        monkeypatch.setenv("SHELL", "/usr/bin/fish")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        config_path = tmp_path / ".config" / "fish" / "config.fish"
+        config_path.parent.mkdir(parents=True)
+        old_guard = (
+            "# oh-my-shell: skip rest of config.fish for non-interactive raw exec\n"
+            "if set -q OMSH_RAW_EXEC\n"
+            "    exit\n"
+            "end\n"
+        )
+        config_path.write_text(old_guard + "\nalias ls 'ls --color=auto'\nfastfetch\n")
+
+        _real_ensure_fish_guard_installed()
+
+        new_content = config_path.read_text()
+        assert "    exit\n" not in new_content
+        assert "function status" not in new_content
+        assert "if set -q OMSH_RAW_EXEC" not in new_content  # old block's own opening line, fully gone
+        # The person's own real content must survive the migration untouched.
+        assert "alias ls 'ls --color=auto'" in new_content
+        assert (
+            "if not set -q OMSH_RAW_EXEC\n"
+            "    fastfetch\n"
+            "end"
+        ) in new_content
+        # Migrating twice in a row must not double-wrap anything.
+        _real_ensure_fish_guard_installed()
+        assert config_path.read_text() == new_content
+
+    def test_migrates_an_already_installed_old_status_function_guard(self, monkeypatch, tmp_path):
+        """
+        The SECOND broken attempt -- redefining `status` as a fish function
+        -- doesn't `exit`, it fails to source config.fish at ALL (`status`
+        is a reserved keyword; a real fish error confirmed this directly).
+        Same migration requirement as the `exit`-based guard: strip the
+        whole broken block, then apply the real per-line fix underneath.
+        """
+        monkeypatch.setenv("SHELL", "/usr/bin/fish")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        config_path = tmp_path / ".config" / "fish" / "config.fish"
+        config_path.parent.mkdir(parents=True)
+        old_guard = (
+            "# oh-my-shell: skip rest of config.fish for non-interactive raw exec\n"
+            "if set -q OMSH_RAW_EXEC\n"
+            "    function status --wraps status\n"
+            '        if test "$argv" = "is-interactive"\n'
+            "            return 1\n"
+            "        end\n"
+            "        builtin status $argv\n"
+            "    end\n"
+            "end\n"
+        )
+        config_path.write_text(
+            old_guard
+            + "\nif status is-interactive\n    # Commands to run in interactive sessions can go here\nend\n"
+            "starship init fish | source\n"
+            "fastfetch\n"
+            'alias ls="eza --icons --group-directories-first"\n'
+        )
+
+        _real_ensure_fish_guard_installed()
+
+        new_content = config_path.read_text()
+        assert "function status" not in new_content
+        assert "if set -q OMSH_RAW_EXEC" not in new_content
+        assert "starship init fish | source" in new_content
+        assert 'alias ls="eza --icons --group-directories-first"' in new_content
+        assert (
+            "if not set -q OMSH_RAW_EXEC\n"
+            "    fastfetch\n"
+            "end"
+        ) in new_content
+        _real_ensure_fish_guard_installed()
+        assert config_path.read_text() == new_content
+
+    def test_is_idempotent_does_not_double_wrap(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SHELL", "/usr/bin/fish")
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
