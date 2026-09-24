@@ -25,18 +25,12 @@ wires all of them together end to end:
   /log, /capabilities, /explain, /stats, /system, /config, /clear, /exit,
   /quit are all recognized.
 
---- Step 11 visual-polish wiring (post-Build-Order) ---
-Until this pass, every render in this module went through plain `print`/
-`print_fn`, even though ui/panels.py (boxed rich.Panel confirmation/warning
-prompts) and ui/streaming.py (rich.Live execution progress) already existed
-and were already unit-tested — they were simply never called from here.
-Found and fixed after the person compared a real session's output against
-other CLIs' prompt/output styling (fish, nushell, exa) and it looked
-"noisy, non-aligned, generic" by contrast — not a functional bug, but a
-real gap between what Step 11 was supposed to deliver and what actually
-reached the terminal.
+--- Step 11 visual-polish wiring ---
+Every render in this module goes through ui/panels.py (boxed rich.Panel
+confirmation/warning prompts) and ui/streaming.py (rich.Live execution
+progress) rather than plain `print`.
 
-What changed, module by module:
+What each module contributes:
   - ui/prompt.py: `_render_prompt` (plain "<folder> (<model>) ❯ " string)
     is replaced by ui/prompt.py's `render_prompt_ansi`, which reuses the
     same content/logic but colors the folder name and the icon (cyan ❯).
@@ -72,16 +66,15 @@ What changed, module by module:
     `StreamingRenderer` (a `rich.Live` spinner that collapses to a
     ✓/✗/⚠/⊘ summary line per step) instead of one flat print per StepEvent.
 
-Every function below that used to take `print_fn: callable = print` now
-takes `console: Console | None = None` instead (defaulting to a fresh rich
-Console, matching ui/panels.py's own `print_panel` convention) — tests
-inject a `Console(file=io.StringIO(), force_terminal=False)` and assert
-against the buffer's rendered text, the same pattern ui/panels.py's and
-ui/streaming.py's own test suites already established. `read: callable`
-parameters are unchanged in shape (still "a thing callable with an
-optional prompt string that returns str") — a `ReplSession` or a plain
-test fake both satisfy that shape identically, so discussion.py and
-sudo_layer.py needed no contract changes at all for this pass.
+Every function below takes `console: Console | None = None` (defaulting
+to a fresh rich Console, matching ui/panels.py's own `print_panel`
+convention) — tests inject a `Console(file=io.StringIO(),
+force_terminal=False)` and assert against the buffer's rendered text, the
+same pattern ui/panels.py's and ui/streaming.py's own test suites use.
+`read: callable` parameters stay "a thing callable with an optional
+prompt string that returns str" — a `ReplSession` or a plain test fake
+both satisfy that shape identically, so discussion.py and sudo_layer.py
+need no contract changes.
 
 `--yes`/`-y`/`--dry-run`/`--verbose`/`--quiet` (Section 8.5) are still not
 implemented — no inline-modifier parsing exists on either the raw-shell or
@@ -132,25 +125,20 @@ from ohmyshell.ui.thinking import run_with_thinking_indicator
 EXIT_COMMANDS = {"/exit", "/quit"}
 
 # One consistent banner shown once at startup — gives the app a signature
-# look on launch rather than dropping straight into a bare prompt (no
-# blueprint mockup covers this exactly; kept intentionally small/quiet so
-# it doesn't compete with /help's own reference text).
+# look on launch rather than dropping straight into a bare prompt, kept
+# intentionally small/quiet so it doesn't compete with /help's own
+# reference text.
 #
-# Fixed accent palette (post-Build-Order, user-requested): "bold cyan" ->
-# "bold omsh.accent" -- this banner is oh-my-shell's own signature look,
-# so it uses ui/theme.py's fixed hex accent rather than a terminal-theme-
-# relative named color. See ui/theme.py's own module docstring.
+# This banner is oh-my-shell's own signature look, so it uses
+# ui/theme.py's fixed hex accent rather than a terminal-theme-relative
+# named color. See ui/theme.py's own module docstring.
 #
-# Bug fix (post-Build-Order, found via real-terminal testing -- see
-# ui/prompt.py's "bold omsh.path" fix for the full root-cause story): a
-# composite markup tag mixing a plain attribute with a ui/theme.py
-# "omsh.*" theme name -- "[bold omsh.accent]...[/bold omsh.accent]" --
-# rendered the whole banner headline completely unstyled (no color, no
-# bold) rather than raising or falling back to the color alone. Built by
-# hand with a real `Style` object instead of `Text.from_markup()` for the
-# composite span, sidestepping rich's markup/style-string parser (which
-# cannot resolve a theme-registered name combined with another attribute
-# in one string) for exactly this case.
+# Built by hand with a real `Style` object instead of `Text.from_markup()`
+# for the composite span: a composite markup tag mixing a plain attribute
+# with a ui/theme.py "omsh.*" theme name (e.g. "[bold omsh.accent]...
+# [/bold omsh.accent]") renders completely unstyled in rich rather than
+# falling back to the color alone. Building the Style directly sidesteps
+# rich's markup/style-string parser for this composite case.
 _BANNER = Text()
 _BANNER.append("✦ Oh My Shell", style=Style(bold=True) + OMSH_THEME.styles["omsh.accent"])
 _BANNER.append(" — natural-language Linux shell\n", style="omsh.muted")
@@ -162,12 +150,11 @@ def _extract_trash_target(text: str) -> str | None:
     Best-effort guess at "the path this raw command would have deleted",
     for the [t] move-to-trash-instead option on a raw shell command.
 
-    Design note (Section 16 Rule 5 -- this is this file's own decision, not
-    blueprint text): a raw command is free-form shell syntax (e.g.
-    "rm -rf /tmp/build", "rm -rf ./old_logs/*"), not a structured plan with
-    a named `path` param the way Plan Generator/Executor's params dict is.
-    There is no reliable general way to know "the target" of an arbitrary
-    shell command. The heuristic used here: take the last whitespace-
+    A raw command is free-form shell syntax (e.g. "rm -rf /tmp/build",
+    "rm -rf ./old_logs/*"), not a structured plan with a named `path`
+    param. There is no reliable general way to know "the target" of an
+    arbitrary shell command. The heuristic used here: take the last
+    whitespace-
     separated token that isn't a flag (doesn't start with "-") -- this
     covers the common `rm [-flags...] <path>` shape (including the
     trailing-glob case `rm -rf ./old_logs/*`, since glob expansion is the
@@ -227,55 +214,41 @@ def _handle_raw_shell(
     verdict — that flag has no special handling anywhere in this function,
     which is what makes it unable to bypass this confirmation.
 
-    Fail-safe policy (this function's own choice, not the classifier's):
-    if the LLM fallback itself fails, the command is treated as
-    unclassifiable and NOT run automatically — the user is told why and
-    asked to re-run manually, rather than silently executing something
-    that couldn't be checked.
+    Fail-safe policy: if the LLM fallback itself fails, the command is
+    treated as unclassifiable and not run automatically — the user is
+    told why and asked to re-run manually, rather than silently executing
+    something that couldn't be checked.
 
     Every outcome (run / cancelled / trashed) is recorded to the audit log
     (source="raw_shell") so /history, /log, and /stats see raw-shell
-    activity too, not just natural-language actions -- there is no
-    blueprint text specifically calling this out, but Section 4.2's Audit
-    Log row ("প্রতিটা action ... রেকর্ড করে") does not scope itself to
-    AI-originated actions only, so this module logs both paths uniformly.
+    activity too, not just natural-language actions.
 
-    --- AI-fallback-on-misroute (post-Build-Order, user-requested) ---
+    --- AI-fallback-on-misroute ---
     router.py's own docstring already admits its heuristic has margin
     cases: a natural-language phrase whose first word happens to be a
     real PATH executable (e.g. "open firefox", "open setting" -- `open`
     is a real xdg-open/gio wrapper on most systems) gets classified
-    RAW_SHELL and lands here instead of going to the AI. Confirmed via
-    real-terminal testing that exit code alone can't reliably catch this:
-    a genuinely-missing command gives the classic shell 127, but a
-    misrouted phrase whose first word IS a real, existing command (like
-    `open`) fails with that command's OWN ordinary argument-parsing error
-    instead ("gio: ... No such file or directory", "xdg-open: unexpected
-    option ...") -- typically exit code 1 or 2, indistinguishable by
-    number alone from an ordinary command failure. So detection here is
-    stderr-*text*-based (`_looks_like_command_not_understood`, a sibling
-    of executor.py's own `_looks_like_permission_denied`), checked
-    whenever the exit code is simply non-zero at all -- see
-    `_run_shell_command`'s own docstring for how that text is captured
-    (a teed stderr pipe) without disturbing stdout/stdin, which is what
-    keeps interactive full-screen programs (vim/top) working exactly as
-    before despite this capture.
+    RAW_SHELL and lands here instead of going to the AI. Exit code alone
+    can't reliably catch this: a genuinely-missing command gives the
+    classic shell 127, but a misrouted phrase whose first word is a real,
+    existing command (like `open`) fails with that command's own ordinary
+    argument-parsing error instead ("gio: ... No such file or directory",
+    "xdg-open: unexpected option ...") -- typically exit code 1 or 2,
+    indistinguishable by number alone from an ordinary command failure.
+    So detection here is stderr-text-based
+    (`_looks_like_command_not_understood`, a sibling of executor.py's own
+    `_looks_like_permission_denied`), checked whenever the exit code is
+    simply non-zero at all -- see `_run_shell_command`'s own docstring for
+    how that text is captured (a teed stderr pipe) without disturbing
+    stdout/stdin, which is what keeps interactive full-screen programs
+    (vim/top) working despite this capture.
 
-    Automatic, no confirmation (revised, user-requested): an earlier
-    version of this function asked "Did you mean that as natural
-    language? [y/N]" and only reinterpreted on an explicit "y". The user
-    explicitly asked for that prompt to be removed ("here no need to ask
-    user, directly fall back for any commands"), and confirmed via
-    AskUserQuestion that this should apply unconditionally to every
-    command-not-understood failure, not just a subset ("সবসময় সরাসরি
-    fallback করো, কখনো জিজ্ঞেস কোরো না" -- always fall back directly,
-    never ask). So whenever `_looks_like_command_not_understood` matches,
-    this now falls straight through to `_handle_natural_language` with no
-    prompt and no confirm() call at all -- a real typo against an
-    existing command (e.g. "gerp foo") is reinterpreted as natural
-    language exactly the same as a genuine misroute; the user's own
-    instruction accepts that trade-off in exchange for never being
-    interrupted here.
+    Whenever `_looks_like_command_not_understood` matches, this falls
+    straight through to `_handle_natural_language` with no confirmation
+    prompt -- a real typo against an existing command (e.g. "gerp foo")
+    is reinterpreted as natural language exactly the same as a genuine
+    misroute, trading a rare wrong reinterpretation for never
+    interrupting the user here.
 
     Falls through to the exact same `_handle_natural_language` pipeline a
     NATURAL_LANGUAGE-routed input would have used, with the *original*
@@ -376,36 +349,28 @@ def _raw_shell_popen_args(text: str) -> list[str] | str:
     spawns, preferring the person's own real login shell over Python's
     hardcoded `shell=True` default.
 
-    Bug fix (post-Build-Order, found via real-terminal testing): plain
-    `subprocess.run(text, shell=True)` always used `/bin/sh` (dash on most
-    distros), spawned non-login/non-interactive -- NOT the person's actual
-    shell (fish, in this project's own dev environment). That meant every
-    environment variable their real shell's own config sets up (most
-    visibly `LS_COLORS`, which fish populates from its own `fish_vars`/
-    `config.fish`, not from anything `/bin/sh` would ever read) was simply
-    never present for a raw command run this way -- so `ls -la
-    --color=always` had color (`--color=always` forces the FEATURE on
-    regardless of environment) but nothing to color WITH: `ls` fell back
-    to its own built-in default dircolors database, which colors a
-    handful of generic entries (directories, `..`) but not most ordinary
-    filenames the way the person's actual configured LS_COLORS does.
+    Plain `subprocess.run(text, shell=True)` always uses `/bin/sh` (dash
+    on most distros), spawned non-login/non-interactive -- not the
+    person's actual shell. That means every environment variable their
+    real shell's own config sets up (most visibly `LS_COLORS`) is never
+    present for a raw command run this way -- so `ls -la --color=always`
+    would have color forced on but nothing to color WITH, falling back to
+    a generic built-in dircolors database instead of the person's own
+    configured LS_COLORS.
 
-    Detection: `$SHELL` (the standard POSIX-set "this is my login shell"
-    variable, set by the OS/login manager, not something oh-my-shell has
-    to guess or hardcode to "fish" specifically -- this works the same
-    way for a bash or zsh user too) is used when it points at a real,
-    existing executable; `["$SHELL", "-c", text]` is real argv (no shell
+    Detection: `$SHELL` (the standard POSIX "this is my login shell"
+    variable, set by the OS/login manager -- works the same way for
+    fish, bash, or zsh) is used when it points at a real, existing
+    executable; `["$SHELL", "-c", text]` is real argv (no shell
     metacharacter quoting/injection risk from wrapping `text` in another
-    shell=True string) and the WHOLE point is that this exact shell binary
-    then does its own full normal startup (reading its own config/env
-    setup) before running `text` -- exactly the environment the person
-    sees when they type the same raw command directly into their own
-    terminal.
+    shell=True string), and this exact shell binary does its own full
+    normal startup (reading its own config/env setup) before running
+    `text` -- exactly the environment the person sees when they type the
+    same raw command directly into their own terminal.
 
-    Falls back to `shell=True` (the previous, always-correct-if-less-rich
-    behavior) when `$SHELL` is unset or doesn't point at a real file --
-    keeps this project running in any environment (this sandbox included)
-    that has no shell entry set up, rather than hard-failing.
+    Falls back to `shell=True` when `$SHELL` is unset or doesn't point at
+    a real file -- keeps this project running in any environment that has
+    no shell entry set up, rather than hard-failing.
     """
     shell_path = os.environ.get("SHELL")
     if shell_path and shutil.which(shell_path) is not None:
@@ -413,60 +378,41 @@ def _raw_shell_popen_args(text: str) -> list[str] | str:
     return text
 
 
-# --- fish "greeting noise on every raw command" fix (post-Build-Order,
-# found via real-terminal testing) ---
+# --- fish "greeting noise on every raw command" fix ---
 #
-# `_raw_shell_popen_args` above (deliberately) makes every raw command run
-# through the person's own real login shell so their own config (LS_COLORS,
-# aliases, etc.) is present. For a fish user, that means `fish -c "text"`
-# runs fish's own `config.fish` in full before `text` -- and if THAT
-# config.fish calls something like `fastfetch`/`neofetch`/a banner script
-# with no `status is-interactive` guard around it (a very common real-world
-# fish config, not something oh-my-shell controls or can predict), that
-# banner now reprints before every single raw command, not just once at
-# real interactive shell startup.
+# `_raw_shell_popen_args` above makes every raw command run through the
+# person's own real login shell so their own config (LS_COLORS, aliases,
+# etc.) is present. For a fish user, that means `fish -c "text"` runs
+# fish's own `config.fish` in full before `text` -- and if that config.fish
+# calls something like `fastfetch`/`neofetch`/a banner script with no
+# `status is-interactive` guard around it (a common real-world fish
+# config), that banner reprints before every single raw command, not just
+# once at real interactive shell startup.
 #
-# This is a bug in the person's own config, not in oh-my-shell -- fish
+# This is a gap in the person's own config, not in oh-my-shell -- fish
 # itself already has the right primitive (`status is-interactive`) for a
-# config to guard against exactly this. But telling every single user to
-# go hand-edit their own dotfiles is not a real fix for a tool meant to be
-# installed and just work: different users' config.fish files call
-# different unguarded things (fastfetch, neofetch, a cowsay motd,
-# anything), so there's no fixed string oh-my-shell could detect and patch
-# around at the source-analysis level, and shipping `fish --no-config`
-# instead would silently drop the very env setup (LS_COLORS etc.) the
-# shell-preference fix above exists to preserve.
+# config to guard against exactly this. But different users' config.fish
+# files call different unguarded things, so there's no fixed string
+# oh-my-shell could detect and patch around at the source-analysis level,
+# and shipping `fish --no-config` instead would silently drop the very env
+# setup (LS_COLORS etc.) the shell-preference fix above exists to preserve.
 #
-# Second bug fix, on top of the first (found via a real screenshot: `fish
-# (line 3): function: status: cannot use reserved keyword as function name`
-# -- config.fish failed to source at all, every single raw command). The
-# first fix's approach -- define a fish FUNCTION named `status` wrapping
-# the real builtin, so `status is-interactive` could be made to report
-# false during raw exec -- doesn't work: `status` is one of fish's actual
-# reserved keywords (confirmed directly by this exact error), not an
-# ordinary builtin a function can shadow the way `ls`/`grep`/etc. can.
-# There is no way to override what `status is-interactive` returns from
-# outside fish's own C++ implementation.
+# Defining a fish FUNCTION named `status` to make `status is-interactive`
+# report false during raw exec does not work: `status` is one of fish's
+# reserved keywords, not an ordinary builtin a function can shadow the way
+# `ls`/`grep`/etc. can. There is no way to override what
+# `status is-interactive` returns from outside fish's own implementation.
 #
-# The actual fix, confirmed against the person's own real config.fish (a
-# stock Ubuntu default -- see this project's own working notes): the
-# `fastfetch` call there is NOT wrapped in `if status is-interactive` at
-# all -- it's a bare, unguarded top-level line (a very common real-world
-# fish config; the `if status is-interactive ... end` block right above it
-# in fish's own generated default config.fish is an empty template with
-# nothing in it, a decoy that looks like a guard but guards nothing). Since
-# there's no `status` call to intercept in the first place for a config
-# like this, the only fix that actually works is rewriting the noisy
-# command's OWN line directly -- wrapping known-noisy startup commands
-# (fastfetch, neofetch -- the two near-ubiquitous real-world fish greeting
-# tools; `screenfetch`/others can be added the same way if ever reported)
-# in their own `if not set -q OMSH_RAW_EXEC ... end` guard, in place, the
-# first time oh-my-shell finds one bare/unguarded. Every other line in the
-# file (aliases, LS_COLORS, PATH exports, zoxide/starship/fzf init, ...) is
-# left completely untouched -- only the specific noisy line itself gets
-# wrapped, so raw commands keep every bit of real shell setup that makes
-# `ls`/`grep`/etc. colorize and behave the way the person's own interactive
-# shell does.
+# The actual fix rewrites the noisy command's own line directly --
+# wrapping known-noisy startup commands (fastfetch, neofetch; others can
+# be added the same way if ever needed) in their own
+# `if not set -q OMSH_RAW_EXEC ... end` guard, in place, the first time
+# oh-my-shell finds one bare/unguarded. Every other line in the file
+# (aliases, LS_COLORS, PATH exports, zoxide/starship/fzf init, ...) is
+# left untouched -- only the specific noisy line itself gets wrapped, so
+# raw commands keep every bit of real shell setup that makes `ls`/`grep`/
+# etc. colorize and behave the way the person's own interactive shell
+# does.
 _FISH_GUARD_ENV = "OMSH_RAW_EXEC"
 _FISH_GUARD_MARKER = "# oh-my-shell: greeting-noise guard installed"
 # Command names known to print a startup greeting/banner in a real-world
@@ -474,13 +420,10 @@ _FISH_GUARD_MARKER = "# oh-my-shell: greeting-noise guard installed"
 # that is exactly the command name, optionally with arguments, at column
 # 0 -- not already inside an `if`/piped/commented out) gets wrapped.
 _FISH_NOISY_COMMANDS = ("fastfetch", "neofetch")
-# A fragment unique to the OLD (first-fix) `function status` guard block --
-# used by `ensure_fish_guard_installed`'s migration path to detect and
-# remove an already-installed old guard (which fails to source at all, per
-# the bug this comment documents) before applying the new, working fix.
+# Fragments unique to two earlier, broken guard approaches -- used by
+# `ensure_fish_guard_installed`'s migration path to detect and remove an
+# already-installed old guard before applying the current, working fix.
 _FISH_GUARD_OLD_STATUS_FUNCTION_LINE = "function status --wraps status"
-# A fragment unique to the very first (`exit`-based) guard block, from
-# before that too -- see this module's own history for why it was replaced.
 _FISH_GUARD_OLD_EXIT_LINE = f"if set -q {_FISH_GUARD_ENV}\n    exit\nend"
 
 
@@ -532,43 +475,34 @@ def ensure_fish_guard_installed() -> None:
     """
     Idempotently rewrite the person's own fish config.fish so any bare/
     unguarded call to a known-noisy startup command (`_FISH_NOISY_COMMANDS`
-    -- fastfetch, neofetch) only runs for a REAL interactive fish session,
+    -- fastfetch, neofetch) only runs for a real interactive fish session,
     not for oh-my-shell's own non-interactive raw-command invocations (see
-    this module's own comment above `_FISH_GUARD_ENV` for the full story of
-    why this replaced two earlier, broken approaches). Does nothing unless
+    this module's own comment above `_FISH_GUARD_ENV`). Does nothing unless
     fish is the person's real shell (`$SHELL`) and config.fish already
-    exists (never creates one from scratch -- if the person has no fish
-    config at all, there's nothing unguarded to wrap). Every other line in
-    the file -- aliases, LS_COLORS, PATH exports, tool init lines, comments,
-    blank lines, anything not an exact bare noisy-command invocation -- is
-    left completely untouched, byte-for-byte. Failures (permission error,
-    unreadable file, etc.) are swallowed -- this is a quality-of-life fix,
-    not something that should ever block the REPL from starting.
+    exists (never creates one from scratch). Every other line in the file
+    -- aliases, LS_COLORS, PATH exports, tool init lines, comments, blank
+    lines, anything not an exact bare noisy-command invocation -- is left
+    untouched, byte-for-byte. Failures (permission error, unreadable file,
+    etc.) are swallowed -- this is a quality-of-life fix, not something
+    that should ever block the REPL from starting.
 
-    Idempotent via `_FISH_GUARD_MARKER`, a comment line inserted once at the
-    very top of the file the first time any wrapping happens at all -- its
-    presence alone means "this file has already been scanned/wrapped",
-    so re-running this on every startup after the first is a fast no-op
-    (this function does still open and read the file every time, to catch
-    a noisy command the person might add to their config.fish later, but
-    stops immediately once the marker is found, without re-scanning or
-    re-wrapping anything -- a line already wrapped by an earlier run stays
-    wrapped, and this never wraps the same line twice).
+    Idempotent via `_FISH_GUARD_MARKER`, a comment line inserted once at
+    the top of the file the first time any wrapping happens -- its
+    presence alone means "this file has already been scanned/wrapped", so
+    re-running this on every startup after the first is a fast no-op (the
+    file is still opened and read every time, to catch a noisy command
+    the person might add later, but scanning stops immediately once the
+    marker is found).
 
-    --- Migration for the two earlier, broken guard attempts ---
-    Anyone who ran an earlier version of oh-my-shell has one of two broken
-    guards already installed at the top of their config.fish: the very
-    first attempt did `exit` at the top of the whole file whenever
-    OMSH_RAW_EXEC was set (silently broke every raw command's LS_COLORS/
-    alias setup -- see `_FISH_GUARD_OLD_EXIT_LINE`'s own comment), and the
-    second attempt tried to redefine `status` as a fish function (a syntax
-    error -- `status` is a reserved keyword, confirmed directly by fish's
-    own error message -- which made config.fish fail to source AT ALL, for
-    every single raw command). Both are detected via their own distinctive
-    fragment (`_FISH_GUARD_OLD_EXIT_LINE` / `_FISH_GUARD_OLD_STATUS_FUNCTION_LINE`)
-    and their whole old guard block is stripped out entirely before this
-    function's normal line-wrapping logic runs on what's left -- neither
-    old approach has any part worth keeping.
+    --- Migration for two earlier, broken guard attempts ---
+    Anyone who ran an earlier version of oh-my-shell may have one of two
+    broken guards already installed at the top of their config.fish: an
+    `exit`-based guard that silently broke every raw command's LS_COLORS/
+    alias setup (see `_FISH_GUARD_OLD_EXIT_LINE`), and a `function status`
+    redefinition that fails to source at all since `status` is a fish
+    reserved keyword. Both are detected via their own distinctive fragment
+    and their whole old guard block is stripped out before this function's
+    normal line-wrapping logic runs on what's left.
     """
     shell_path = os.environ.get("SHELL", "")
     if "fish" not in Path(shell_path).name:
@@ -632,10 +566,9 @@ def _strip_old_fish_guard_block(existing: str) -> str:
     Removes either of the two earlier, broken guard blocks (see
     `ensure_fish_guard_installed`'s own "Migration" docstring section) from
     `existing`, whichever is present, leaving every other line untouched.
-    Both old blocks always start with the same first line
-    (`# oh-my-shell: skip rest of config.fish for non-interactive raw
-    exec`, this module's original marker text before it changed) and end
-    with the first bare `end` line that closes their own single top-level
+    Both old blocks start with the same first line (`# oh-my-shell: skip
+    rest of config.fish for non-interactive raw exec`) and end with the
+    first bare `end` line that closes their own single top-level
     `if set -q OMSH_RAW_EXEC` -- found here by counting `if`/`end` nesting
     from that first line, so this works for either old block's own
     (different) body without needing two separate hardcoded copies of it.
@@ -694,7 +627,7 @@ def _run_shell_command(text: str) -> tuple[int | None, str]:
     `LS_COLORS`, which a hardcoded `/bin/sh` never would), falling back to
     `shell=True` (Python's own `/bin/sh`) only when no real shell can be
     found -- either way, pipes/redirects/chaining the router already
-    detected keep working, since both paths still hand the WHOLE original
+    detected keep working, since both paths still hand the whole original
     command string to a real shell to interpret, never split/re-parsed by
     this function itself.
 
@@ -715,14 +648,13 @@ def _run_shell_command(text: str) -> tuple[int | None, str]:
     always "".
     """
     args = _raw_shell_popen_args(text)
-    # `_FISH_GUARD_ENV=1` in the child's own env -- read by the early-exit
-    # guard `ensure_fish_guard_installed()` puts at the top of the
+    # `_FISH_GUARD_ENV=1` in the child's own env -- read by the guard
+    # `ensure_fish_guard_installed()` wraps around noisy commands in the
     # person's config.fish (fish-only; harmless/unused for any other
-    # shell), so THIS invocation's config.fish sourcing stops immediately
-    # instead of running the person's full interactive setup (fastfetch,
-    # etc.) on every single raw command. `os.environ` itself is left
-    # untouched -- only this one child process sees the var, never
-    # oh-my-shell's own process or anything else on the person's system.
+    # shell), so this invocation skips the person's full interactive
+    # startup output (fastfetch, etc.) on every single raw command.
+    # `os.environ` itself is left untouched -- only this one child process
+    # sees the var.
     child_env = dict(os.environ, **{_FISH_GUARD_ENV: "1"})
     try:
         if isinstance(args, list):
@@ -762,11 +694,10 @@ def _repl_get_user_choice(
     (Section 8.3.3), mapped onto discussion.run_discussion's expected
     "confirm"/"edit"/"chat"/"cancel" return values.
 
-    Design note (this file's own glue, Section 16 Rule 5): discussion.py's
-    own docstring says the raw-keypress-to-choice mapping belongs to the
-    REPL layer (Step 11/main.py), not to run_discussion itself -- this is
-    that mapping, now rendering the plan via ui/panels.render_plan_panel
-    (boxed) instead of discussion.render_plan_text (plain).
+    Design note: discussion.py's own docstring says the raw-keypress-to-
+    choice mapping belongs to the REPL layer (main.py), not to
+    run_discussion itself -- this is that mapping, rendering the plan via
+    ui/panels.render_plan_panel (boxed) instead of a plain text renderer.
 
     `telemetry`/`attempts` (intent_parser.ParseTelemetry / ParseResult.attempts,
     both optional) are passed straight through to render_plan_panel so the
@@ -774,22 +705,15 @@ def _repl_get_user_choice(
     duration, tok/s, model, and retry-count footer (Section 8.3.3's mockup)
     -- see _handle_natural_language's own wiring for where these come from.
 
-    --- Esc bug fix (post-Build-Order, found via real-terminal testing) ---
-    `read`, when not overridden, now defaults to
+    `read`, when not overridden, defaults to
     `ui.session.read_plan_choice_keypress` -- a real single-keypress reader
-    bound to the actual Esc key event, not `ReplSession.prompt()`'s
-    line-editing read compared against the literal typed text "esc". The
-    previous default (`read: callable = input`, later effectively
-    `ReplSession`) could only ever match "esc" if someone typed those three
-    letters and pressed Enter; a real Esc keypress produced nothing
-    `input()`/`PromptSession.prompt()` would submit on its own, so only
-    "q" + Enter ever actually worked. `read_plan_choice_keypress` returns
-    already-lowercase/short tokens ("cancel"/"edit"/"chat"/<typed text>)
-    directly, not a raw line needing the same "esc"/"q"/"cancel" string
-    comparison this function used to do -- so that comparison is kept only
-    for backward compatibility with callers/tests that still inject a
-    plain `read: callable` returning ordinary typed lines (e.g. a test
-    lambda returning "q" or "esc").
+    bound to the actual Esc key event rather than a line-editing read
+    compared against the literal typed text "esc" (see that function's own
+    docstring). `read_plan_choice_keypress` returns already-lowercase/short
+    tokens ("cancel"/"edit"/"chat"/<typed text>) directly, not a raw line
+    needing the same "esc"/"q"/"cancel" string comparison below -- that
+    comparison is kept for backward compatibility with callers/tests that
+    still inject a plain `read: callable` returning ordinary typed lines.
     """
     from ohmyshell.ui.session import read_plan_choice_keypress
 
@@ -851,55 +775,26 @@ def _handle_natural_language(
     Override -> Plan Generator -> Confirmation + Discussion Loop -> (Sudo
     Layer, only if a step needs it) -> Streaming Executor -> Audit Log.
 
-    No Capability Registry is involved any more — the Intent Parser now
-    produces one real, directly-runnable command itself instead of
-    action/params for a fixed set of registered capabilities (see
-    intent_parser.py's own docstring).
+    No Capability Registry is involved — the Intent Parser produces one
+    real, directly-runnable command itself instead of action/params for a
+    fixed set of registered capabilities (see intent_parser.py's own
+    docstring).
 
-    Wiring decisions (Section 16 Rule 5 -- this glue is not itself spelled
-    out anywhere in the retrieved blueprint text, only each module's own
-    piece of it is; documented here rather than guessed at silently):
+    Wiring decisions:
 
     1. Intent Parser failure (backend unreachable) and "unmapped" both end
-       the request here with a message -- same behavior as the Step 5-era
-       preview-only version, nothing to plan or execute yet.
-    2. Plan Generator runs once up front (Step 7), then the Discussion Loop
+       the request here with a message -- nothing to plan or execute yet.
+    2. Plan Generator runs once up front, then the Discussion Loop
        (discussion.run_discussion) drives confirm/edit/chat/cancel using
        the REPL callbacks above. "chat" reparses via parse_intent + a
        fresh generate_plan (the `reparse` callback below) -- the adjustment
        text is sent to the Intent Parser as a fresh request rather than
        appended to the original text, since intent_parser.parse_intent's
-       contract only takes one user_message string; a real "conversation
-       history" concept doesn't exist in this module yet, so each chat-turn
-       is its own independent parse. This is a simplification worth
-       disclosing: a multi-turn *contextual* adjustment (e.g. "no wait,
-       just the Downloads folder") only works as well as the Intent Parser
-       can infer from that fragment alone.
-
-       Known limitation, confirmed via manual end-to-end testing
-       (post-Build-Order, local qwen3:8b / qwen3.5:4b): a chat-adjust whose
-       intent is to change a capability's non-required, no-enum param (e.g.
-       clean_temp_files' `paths`, an array with no fixed value set) is
-       unreliable even after intent_parser._build_system_prompt was fixed
-       to actually splice each capability's few_shot_examples into the
-       prompt (that fix was itself a real bug -- the field existed in
-       capabilities.json since Step 3 but was never read into the prompt
-       the model saw). With the fix in place and a matching example added
-       ("clean up my downloads folder instead"), standalone single-sentence
-       adjustments still sometimes came back "unmapped", and in one
-       observed case the model produced a schema-valid but semantically
-       wrong result (organize_files with target_dir hallucinated as
-       "~/.cache" -- a value copied from clean_temp_files' unrelated
-       default, not from the user's actual words). This is model reasoning
-       capacity, not a code defect: the schema-constrained decoding
-       (Section 7.4a) and harness validation (Step 4) both did their job --
-       the JSON was well-formed and passed its schema -- the *content* was
-       just wrong, which those layers are not designed to catch (semantic
-       correctness of free-form param values is fundamentally the model's
-       job, not the harness's). No further attempt was made to prompt-
-       engineer around this within this project's scope; a larger/different
-       local model, or a future context-carrying reparse contract, are the
-       two directions noted for anyone picking this up later.
+       contract only takes one user_message string; there is no
+       "conversation history" concept in this module, so each chat-turn is
+       its own independent parse. A multi-turn contextual adjustment (e.g.
+       "no wait, just the Downloads folder") only works as well as the
+       Intent Parser can infer from that fragment alone.
     3. On Cancelled(): the request ends, logged as status="cancelled" (no
        execution happened).
     4. On Confirmed(plan): run_plan() executes it, streaming StepEvents
@@ -931,27 +826,19 @@ def _handle_natural_language(
     # (run_with_thinking_indicator, StreamingRenderer) must use the real,
     # un-prefixed Console it carries as `.unbordered` instead -- printing
     # a Live display through the bar-prefixing wrapper produces visual
-    # glitches (verified directly; see that module's docstring for the
-    # full explanation). A plain Console (e.g. every existing test's
-    # injected `console=`) has no such attribute, so `getattr(...,
-    # console)` simply falls back to using it directly -- identical to
-    # this function's behavior before bordered-turn mode existed.
+    # glitches (see that module's docstring). A plain Console (e.g. every
+    # existing test's injected `console=`) has no such attribute, so
+    # `getattr(..., active_console)` falls back to using it directly.
     live_console = getattr(active_console, "unbordered", active_console)
 
-    # `run_with_thinking_indicator` (ui/thinking.py) replaces the plain
-    # `active_console.status("Thinking...")` spinner with the Section
-    # 8.3.3 / Core Feature #14 live CPU/RAM/GPU indicator, now with
-    # genuinely live token counts AND the raw JSON text itself streaming
-    # underneath it (post-Build-Order, per the user's own explicit follow-
-    # up: "I want to show the full live token by token streaming ... also
-    # other stats", found via the user's own real end-to-end test run that
-    # the first cut only updated a number once, at the very end -- see
-    # intent_parser.StreamProgress's own docstring for the root cause).
-    # `token_box` is written by parse_intent()'s own on_token callback (one
-    # dict update per streamed chunk, from intent_parser.GoogleAIStudioBackend
-    # -- see that module's docstring) and read every UI frame by the Live
-    # polling loop below -- see run_with_thinking_indicator's own
-    # `on_token_box` docstring for why a plain dict needs no lock here.
+    # `run_with_thinking_indicator` (ui/thinking.py) drives the Section
+    # 8.3.3 / Core Feature #14 live CPU/RAM/GPU indicator, with live token
+    # counts and the raw JSON text streaming underneath it. `token_box` is
+    # written by parse_intent()'s own on_token callback (one dict update
+    # per streamed chunk, from intent_parser.GoogleAIStudioBackend) and
+    # read every UI frame by the Live polling loop below -- see
+    # run_with_thinking_indicator's own `on_token_box` docstring for why a
+    # plain dict needs no lock here.
     token_box: dict[str, object] = {}
 
     def _on_token(progress) -> None:
@@ -1141,12 +1028,10 @@ def _handle_slash_command(
     A MetaCommandError (recognized command, bad usage, or genuinely
     unrecognized command) is caught and printed rather than crashing the
     REPL — the same fail-soft spirit used throughout this codebase (e.g.
-    the Danger Classifier's own LLM-failure handling). meta_commands.py's
-    own output stays plain text (it's a thin wrapper over already-built
-    modules per its own docstring, out of this pass's scope) -- only the
-    surrounding print call is routed through the shared Console so its
-    output lands in the same stream/buffer as everything else this module
-    renders (important for tests that capture one Console's buffer).
+    the Danger Classifier's own LLM-failure handling). The print call is
+    routed through the shared Console so its output lands in the same
+    stream/buffer as everything else this module renders (important for
+    tests that capture one Console's buffer).
     """
     active_console = console if console is not None else themed_console()
     try:
@@ -1181,16 +1066,11 @@ def run() -> None:
     console.print(_BANNER)
 
     while True:
-        # A blank line before every prompt (Step 11 visual-polish pass,
-        # found missing when the person compared a real session's output
-        # against other CLIs' spacing) -- without it, one command's output
-        # runs directly into the next "<folder> ❯ " line with no visual
-        # separation, which is what made a real session read as "noisy,
-        # non-aligned" by contrast. This alone, deliberately, rather than
-        # bracketing every individual print call throughout this module
-        # with blank lines -- one seam, in the one place every turn passes
-        # through, is enough to separate turns without scattering spacing
-        # concerns across every handler.
+        # A blank line before every prompt: without it, one command's
+        # output runs directly into the next "<folder> ❯ " line with no
+        # visual separation. One seam here, in the one place every turn
+        # passes through, is enough to separate turns without scattering
+        # spacing concerns across every handler.
         console.print()
         try:
             raw_input_text = session.prompt(render_prompt_ansi(cfg))
@@ -1203,34 +1083,31 @@ def run() -> None:
         if routed.kind == InputKind.EMPTY:
             continue
 
-        # Bordered-turn mode (post-Build-Order, user-requested -- see
-        # ui/theme.py's own module-level note for the full design and why
-        # a true alternate-screen full-screen app was ruled out in favor
-        # of this): every dispatched turn's static output gets a fresh
-        # `bordered_console()` built fresh per turn (not reused across
-        # turns) from the REPL's own real `console`, so each turn's own
-        # left-accent bar starts and ends cleanly around just that turn's
-        # output in the scrollback, the same visual seam the blank-line
-        # spacing above this loop already gives each turn's start.
+        # Bordered-turn mode (see ui/theme.py's own module-level note for
+        # the full design and why a true alternate-screen full-screen app
+        # was ruled out in favor of this): every dispatched turn's static
+        # output gets a fresh `bordered_console()` built per turn from the
+        # REPL's own real `console`, so each turn's own left-accent bar
+        # starts and ends cleanly around just that turn's output in the
+        # scrollback, the same visual seam the blank-line spacing above
+        # this loop already gives each turn's start.
         turn_console = bordered_console(console)
 
-        # Bug fix (found via manual end-to-end testing, post-Build-Order,
-        # live-terminal session): only the top-level `session.prompt()`
-        # read above was ever wrapped for KeyboardInterrupt -- every
-        # mid-command confirmation read a dispatched handler does itself
-        # (the destructive-command [y/n/t] prompt in _handle_raw_shell,
-        # the plan discussion loop's [Enter/e/c/Esc] and its own edit
-        # sub-prompts, the sudo [Enter/s/Esc] prompt) was not. Pressing
-        # Ctrl+C at any of THOSE prompts -- a completely natural "actually,
-        # never mind" reflex, confirmed for real against a live raw-shell
-        # destructive-command panel -- propagated all the way out of this
-        # loop as an unhandled exception, printing a full traceback and
-        # killing the whole interactive session, not just cancelling the
-        # one pending action. Catching it here, around each dispatched
-        # handler individually (not by widening the top-level prompt's own
-        # except, which has different EOF/exit semantics -- Ctrl+D there
-        # legitimately means "end the session"), cancels just that action
-        # and returns to the ordinary REPL prompt instead.
+        # Only the top-level `session.prompt()` read above is wrapped for
+        # KeyboardInterrupt automatically -- every mid-command confirmation
+        # read a dispatched handler does itself (the destructive-command
+        # [y/n/t] prompt in _handle_raw_shell, the plan discussion loop's
+        # [Enter/e/c/Esc] and its own edit sub-prompts, the sudo
+        # [Enter/s/Esc] prompt) needs its own handling. Pressing Ctrl+C at
+        # any of those prompts is a natural "actually, never mind" reflex,
+        # and without catching it here it would propagate out of this loop
+        # as an unhandled exception, killing the whole interactive session
+        # rather than just cancelling the one pending action. Catching it
+        # here, around each dispatched handler individually (not by
+        # widening the top-level prompt's own except, which has different
+        # EOF/exit semantics -- Ctrl+D there legitimately means "end the
+        # session"), cancels just that action and returns to the ordinary
+        # REPL prompt instead.
         try:
             if routed.kind == InputKind.SLASH_COMMAND:
                 if _handle_slash_command(routed.text, cfg, session_start, console=turn_console):
@@ -1244,11 +1121,6 @@ def run() -> None:
                 continue
         except KeyboardInterrupt:
             console.print()
-            # Bug fix (found via a real-terminal screenshot showing this
-            # line as plain uncolored white text, alongside every other
-            # "[omsh.*]"-wrapped cancel/status message in this module):
-            # this was the one plain `console.print("  Cancelled.")` call
-            # left over without its own omsh.warning markup.
             console.print("  [omsh.warning]Cancelled.[/omsh.warning]")
             continue
 

@@ -1,39 +1,19 @@
 """
-Audit Log & Reporting (Build Order Step 12, half of "audit_log.py + hardware.py").
+Audit Log & Reporting (Build Order Step 12).
 
 Records every action, confirmation, outcome, and interrupted/skipped state
-to an append-only JSON Lines file (Section 5.3, verbatim: "**Audit log:**
-JSON Lines (`~/.oh-my-shell/audit.log.jsonl`), append-only — প্রতি
-action/event একটা JSON object, এক লাইনে") and the Section 4.2 Component
-table row: "Audit Log & Reporting | প্রতিটা action, confirmation, outcome,
-ও interrupted-state রেকর্ড করে | Bash, log files (CSV/JSON) | Module 5".
+to an append-only JSON Lines file (`~/.oh-my-shell/audit.log.jsonl`, one
+JSON object per line — Section 5.3).
 
---- Disclosed gap (Section 16 Rule 5) ---
-The blueprint's exact per-entry JSON field schema was never captured in
-this project's transcript (same 501-699 gap documented in ui/panels.py and
-ui/streaming.py). What IS confirmed verbatim, and anchors this module's
-design:
-  - the file itself: JSON Lines, one JSON object per action/event, append-only.
-  - a `"status"` field with at least the value `"interrupted"` (Section
-    8.3.4: "Audit log-এ এটা `"status": "interrupted"` হিসেবে রেকর্ড হয় (error
-    বা success না)"), confirming status is a distinct enum-like field, not
-    folded into a generic "success: bool".
-  - skipped sudo steps get "noted" in the log (Section 8.3.6: "audit log-এ
-    '১টা step skipped' হিসেবে নোট থাকে").
-  - `/log` and `/log export` (Section 8.4) read this file back; `/explain`
-    (Section 8.4) explains "সর্বশেষ AI decision-এর reasoning" from it.
-    Neither command's exact rendering was captured, so main.py/meta_commands.py
-    (Step 14) will build their own display on top of this module's read API.
+Each entry carries: timestamp, action, source, params, risk, status,
+duration_seconds, used_sudo, error, detail. `status` is one of "done" |
+"failed" | "interrupted" | "skipped" | "cancelled" ("cancelled" covers a
+plan the user declined at the Confirmation + Discussion Loop before any
+execution happened).
 
-Field set (confirmed with the user, comprehensive per Rule 5): each entry
-carries everything executor.py/sudo_layer.py/danger_classifier.py already
-produce, so nothing needs re-deriving later --
-    timestamp, action, source, params, risk, status, duration_seconds,
-    used_sudo, error, detail
--- status values are "done" | "failed" | "interrupted" | "skipped" |
-"cancelled" (a superset of executor.StepStatus's names plus "cancelled",
-for a plan the user declined at the Confirmation + Discussion Loop before
-any execution happened at all).
+`/log` and `/log export` (Section 8.4) read this file back; `/explain`
+explains the most recent AI decision from it — both built on top of this
+module's read API in main.py/meta_commands.py.
 """
 
 from __future__ import annotations
@@ -127,22 +107,14 @@ def read_entries(base_dir: Path | None = None) -> list[AuditEntry]:
     """
     Read every entry from the audit log, oldest first.
 
-    Forward-compat note (found via manual end-to-end testing): a log line
-    may carry a field this AuditEntry doesn't declare -- e.g. the user ran
-    a newer oh-my-shell version that added a per-entry field (such as the
-    `tokens_used` telemetry this module's own SessionSummary docstring
-    already anticipates) against this same ~/.oh-my-shell/audit.log.jsonl,
-    then downgraded, or the log is shared/copied onto a machine running an
-    older version. `AuditEntry(**raw)` would previously raise TypeError on
-    any unrecognized keyword, crashing the ENTIRE read (and therefore
-    `/log`, `/log export`, `/explain`, and the session summary) over one
-    forward-compatible line. Unknown fields are now dropped before
-    construction so old code degrades gracefully -- it just can't see the
-    field it doesn't know about, rather than refusing to read anything.
+    A log line may carry a field this AuditEntry doesn't declare (e.g. an
+    older/newer oh-my-shell version wrote it) — unknown fields are dropped
+    before construction, so one forward-compatible line doesn't crash the
+    entire read.
 
     Raises:
         AuditLogError: if a line exists but isn't valid JSON (a truncated
-            write, e.g. from a crash mid-append, is the realistic cause --
+            write, e.g. from a crash mid-append, is the realistic cause —
             callers such as `/log` can catch this and report a partial log
             rather than crashing the whole command).
     """
@@ -169,41 +141,32 @@ def iter_entries(base_dir: Path | None = None) -> Iterator[AuditEntry]:
 
 
 def most_recent(base_dir: Path | None = None) -> AuditEntry | None:
-    """The single most recent entry, or None if the log is empty -- what
-    `/explain` ("সর্বশেষ AI decision-এর reasoning") reads from."""
+    """The single most recent entry, or None if the log is empty — what
+    `/explain` reads from."""
     entries = read_entries(base_dir)
     return entries[-1] if entries else None
 
 
 def entries_since(session_start: float, *, base_dir: Path | None = None) -> list[AuditEntry]:
-    """Entries recorded at or after `session_start` -- used for the session
-    summary (Section 8.3.9) and `/system`'s "Session: N requests · N tokens"
-    line's request count."""
+    """Entries recorded at or after `session_start` — used for the session
+    summary (Section 8.3.9) and `/system`'s request count."""
     return [e for e in read_entries(base_dir) if e.timestamp >= session_start]
 
 
 @dataclass(frozen=True)
 class SessionSummary:
     """
-    What Section 8.3.9's exit summary needs (verbatim mockup):
+    What Section 8.3.9's exit summary needs:
 
         Session summary
         ────────────────────────────────
         8 requests processed  ·  1,240 tokens used  ·  2 files cleaned up
         Goodbye! 👋
 
-    Scope note (Section 16 Rule 5): "tokens used" isn't something this
-    module can compute from AuditEntry alone -- no token count is recorded
-    per entry (intent_parser.py's ParseResult carries no token telemetry
-    either, the same gap noted in ui/streaming.py's docstring for the
-    "AI: N tokens" execution-summary line). `tokens_used` is therefore an
-    optional field the caller supplies from elsewhere if/when that
-    telemetry exists; it's not derived here. "files cleaned up" is also
-    not literally in AuditEntry -- it's approximated as the count of
-    successfully completed (status="done") entries whose action involved
-    file operations; since capabilities.json has no "touches files" flag,
-    this module reports the more honest, directly-supported number instead:
-    total successfully completed requests.
+    `tokens_used` isn't derivable from AuditEntry alone (no per-entry token
+    count is recorded), so it's an optional field the caller supplies from
+    elsewhere. `completed` reports total successfully completed requests
+    rather than a "files touched" count, since no field tracks that.
     """
 
     requests_processed: int
@@ -219,11 +182,8 @@ def summarize_session(session_start: float, *, base_dir: Path | None = None, tok
 
 
 def render_session_summary(summary: SessionSummary) -> str:
-    """
-    Plain-text rendering matching Section 8.3.9's verbatim mockup shape
-    (the boxed/rich version is ui/panels.py's job, same split as the rest
-    of this codebase).
-    """
+    """Plain-text rendering matching Section 8.3.9's mockup shape (the
+    boxed/rich version is ui/panels.py's job)."""
     parts = [f"{summary.requests_processed} requests processed"]
     if summary.tokens_used is not None:
         parts.append(f"{summary.tokens_used:,} tokens used")

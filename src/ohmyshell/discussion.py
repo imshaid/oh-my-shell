@@ -5,34 +5,20 @@ Section 8.3.3: shows the plan, offers [Enter] confirm / [e] edit / [c]
 chat-adjust / [Esc] cancel, nudges (not blocks) after a soft limit of
 discuss turns, and reports an inline diff-note describing what changed
 after a chat-adjust. Plain-text I/O in this step — the boxed panel/live
-token-count rendering is Step 11 (ui/panels.py).
+token-count rendering is ui/panels.py's job.
 
-Design notes (implementation decisions, logged here as routine code
-structure rather than blueprint open questions):
-
-- "Chat/adjust" ([c]) means re-running the Intent Parser with the user's
-  free-text adjustment appended as extra context, then regenerating the
-  plan from whatever validated intent comes back. This module doesn't
-  call the model backend directly — it takes a `reparse` callback
-  (expected to wrap intent_parser.parse_intent + plan_generator.generate_plan)
-  so this module stays testable without a real model and doesn't need to
-  import intent_parser itself.
-- "Direct edit" ([e]) — rewritten for the open-ended architecture (see
-  validation.py's module docstring): there is no per-action params dict to
-  edit any more, so [e] now lets the user directly edit the plan's raw
-  command TEXT itself (replacing plan.command wholesale) — still no model
-  call, still instant, matching the blueprint's "AI বাইপাস করে, তাই instant"
-  description, just operating on the command string instead of a params
-  dict.
-- The diff-note after a chat-adjust now compares the old and new command
-  strings directly (not a params dict) — still a mechanical diff, not a
-  semantic explanation of *why*, for the same reason as before: producing
-  a truly semantic diff-note would need the model to explain its own edit,
-  which isn't data this module has.
+- "Chat/adjust" ([c]) re-runs the Intent Parser with the user's free-text
+  adjustment, then regenerates the plan. This module doesn't call the model
+  backend directly — it takes a `reparse` callback (wrapping
+  intent_parser.parse_intent + plan_generator.generate_plan) so it stays
+  testable without a real model.
+- "Direct edit" ([e]) lets the user edit the plan's raw command text
+  directly — no model call, instant.
+- The diff-note after a chat-adjust is a mechanical comparison of the old
+  and new command strings, not a semantic explanation of *why* — that would
+  need the model to explain its own edit, which isn't data this module has.
 - The soft-limit nudge (Section 8.3.3: 5 turns) counts chat-adjust turns
-  only, not edit turns — edits are instant/deterministic and don't carry
-  the same "going in circles with the model" risk the nudge is warning
-  about.
+  only, not edit turns.
 """
 
 from __future__ import annotations
@@ -98,12 +84,8 @@ def render_plan_text(plan: Plan) -> str:
 
 def edit_command(plan: Plan, new_command: str) -> Plan:
     """
-    [e] direct-edit, rewritten for the open-ended architecture: replace the
-    plan's raw command text outright and rebuild the plan around it — no
-    model call (Section 8.3.3: "AI বাইপাস করে, তাই instant, কোনো model-call
-    লাগে না"), same as before, just operating on a command string instead
-    of a params dict (there is no registry/params_schema to rebuild step
-    text from any more — see plan_generator.py).
+    [e] direct-edit: replace the plan's raw command text outright and
+    rebuild the plan around it — no model call, instant.
 
     Raises:
         ValueError: if `new_command` is empty/blank — an edit must still
@@ -138,27 +120,14 @@ def run_discussion(
         initial_plan: the first Plan to show.
         get_user_choice: called with the current Plan, must return a
             (choice, plan) tuple. `choice` is one of "confirm", "edit",
-            "chat", "cancel" (case-insensitive; this function does the raw
-            keypress-to-choice mapping in the real CLI — Step 11 — so this
-            loop stays UI-framework-agnostic). `plan` is the Plan to
-            continue the loop with -- for "confirm"/"cancel"/"chat" this is
-            just the same `current_plan` it was called with, but for "edit"
-            it is the caller's updated Plan (after running its own edit
-            sub-flow, e.g. via edit_step_param) -- this is how an edit
-            actually reaches the next iteration of this loop and the final
+            "chat", "cancel" (case-insensitive; the raw keypress-to-choice
+            mapping is the real CLI's job, so this loop stays
+            UI-framework-agnostic). `plan` is the Plan to continue the loop
+            with — for "confirm"/"cancel"/"chat" this is just the same
+            `current_plan` it was called with, but for "edit" it is the
+            caller's updated Plan (after running its own edit sub-flow),
+            which is how an edit reaches the next iteration and the final
             Confirmed(plan) result.
-
-            Bug fix (found via manual end-to-end testing, post-Build-Order):
-            an earlier version of this contract had get_user_choice return
-            only the choice string, with a comment saying callers were
-            "expected to... pass the resulting Plan back in via
-            get_user_choice's next call" -- but nothing in this loop ever
-            read a plan back out of get_user_choice, so a caller's edited
-            plan never actually reached this loop's own `plan` variable,
-            and [e] Edit silently kept confirming/executing the OLD,
-            unedited plan. Returning the plan alongside the choice closes
-            that gap directly, without a caller needing a side channel or
-            a mutable Plan (Plan is and stays a frozen dataclass).
         get_adjustment_text: called with no args when the user picks
             "chat", must return their free-text adjustment.
         reparse: callback that turns adjustment text + the current plan
@@ -175,23 +144,12 @@ def run_discussion(
     chat_turns = 0
 
     while True:
-        # Bug fix (found via manual end-to-end testing, post-Build-Order,
-        # Step 11 UI-polish pass): this loop used to call
-        # `print_fn(render_plan_text(plan))` here on every turn, rendering
-        # the plan in plain text -- then `get_user_choice(plan)` was called
-        # right after, and every real caller (main.py's
-        # _repl_get_user_choice) ALSO renders the plan itself (now as a
-        # boxed rich.Panel, via ui/panels.render_plan_panel), specifically
-        # so it can show the panel immediately before reading the user's
-        # keypress. The result was the plan appearing twice per turn: once
-        # plain, once boxed. Plan-rendering is get_user_choice's job (its
-        # own docstring already says the raw-keypress-to-choice mapping,
-        # and by extension what's shown right before it, belongs to the
-        # REPL layer) -- this loop only needs the *decision*, not to also
-        # render the thing the decision is about. render_plan_text/
+        # Plan-rendering is get_user_choice's job (the REPL layer shows the
+        # boxed panel before reading the keypress) — this loop only needs
+        # the decision, not to also render the plan itself. render_plan_text/
         # print_fn are still used for every other message this loop prints
         # (diff-notes, soft-limit nudge, "couldn't apply", "unrecognized
-        # choice") -- only the per-turn plan echo was removed.
+        # choice").
         choice, plan = get_user_choice(plan)
         choice = choice.strip().lower()
 
@@ -210,23 +168,17 @@ def run_discussion(
                 continue
             print_fn(f"  {_diff_note(plan.command, new_plan.command)}")
             plan = new_plan
-            # Bug fix (found via manual end-to-end testing, post-Build-Order):
-            # this used to compare with `>=`, so the nudge re-printed on
-            # EVERY chat turn once the threshold was crossed (turn 5, 6, 7,
-            # ...), not just once. Section 8.3.3 says "৫ discuss-turn-এর পর
-            # একটা gentle reminder" -- "একটা" (a/one), singular -- matching
-            # the blueprint's own mockup, which shows the reminder appearing
-            # exactly once. `==` fires the nudge only on the exact turn the
-            # threshold is first reached.
+            # `==` (not `>=`) fires the nudge exactly once, on the turn the
+            # threshold is first reached — Section 8.3.3's mockup shows the
+            # reminder appearing once, not on every subsequent turn.
             if chat_turns == soft_limit_turns:
                 print_fn(SOFT_LIMIT_NUDGE.format(turn=chat_turns))
             continue
 
         if choice == "edit":
-            # get_user_choice already ran its own edit sub-flow (which
-            # param, what new value -- a Step 11 UI concern, Section 8.3.3's
-            # "Edit which step?" prompt) and returned the updated plan
-            # above; nothing left to do here but loop and re-show it.
+            # get_user_choice already ran its own edit sub-flow and
+            # returned the updated plan above; nothing left to do here but
+            # loop and re-show it.
             continue
 
         print_fn(f"  Unrecognized choice {choice!r}. Use confirm/edit/chat/cancel.")

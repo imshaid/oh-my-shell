@@ -22,53 +22,39 @@ progress display (Section 8.3.4's confirmed mockup):
 
     ▸ [v] View detailed log     [u] Undo this action
 
-Real per-file live progress (added post-Build-Order, per the user's
-explicit "make the whole shell feel alive, every operation, professional
-not a toy" request): executor.py's `run_plan(..., on_output_line=...)`
-(see that module's `_run_streaming` docstring) now streams a command's
+Real per-file live progress: executor.py's `run_plan(..., on_output_line=
+...)` (see that module's `_run_streaming` docstring) streams a command's
 stdout one line at a time, as it's produced, instead of only reporting a
-result after the whole command finishes. capabilities.json's
-clean_temp_files/organize_files templates were given `mv -v`, so there is
-now something genuine to stream: GNU coreutils' own "renamed 'X' -> 'Y'"
-line per file moved. `StreamingRenderer.on_output_line` (below) is the
-`on_output_line` callback main.py wires into `run_plan()`; it parses that
-exact line shape to keep a running file count and the most recent
-filename, and falls back to showing the raw line verbatim for any other
-capability's output (e.g. `list_processes`' `ps`/`grep` output) -- either
-way, always real command output, never a simulated/estimated number.
+result after the whole command finishes. `StreamingRenderer.on_output_line`
+(below) is the `on_output_line` callback main.py wires into `run_plan()`;
+it recognizes `mv -v`'s "renamed 'X' -> 'Y'" line shape to keep a running
+file count and the most recent filename, and falls back to showing the
+raw line verbatim for any other command's output -- either way, always
+real command output, never a simulated/estimated number.
 
-This needed no change to executor.py's Ctrl+C/SIGINT-handling contract
+This needs no change to executor.py's Ctrl+C/SIGINT-handling contract
 (reading a Popen's stdout is already incremental -- no worker thread is
-needed the way ui/thinking.py needed one for parse_intent(); see
+needed the way ui/thinking.py needs one for parse_intent(); see
 `_run_streaming`'s own docstring) and is fully additive: `on_output_line`
 defaults to None, and every pre-existing (non-streaming) call site keeps
-using the exact same `runner`-based blocking path as before, completely
-untouched.
+using the exact same `runner`-based blocking path as before.
 
 `_LiveRunningLine` (below) carries both a live-ticking elapsed-time
 counter AND the live label text, updated in place via `update_label()` as
 each output line arrives -- `__rich_console__` reads both fresh on every
 `Live` refresh tick, so neither needs an explicit re-render call.
 
-Richer multi-line live panel (added post-Build-Order, per the user's
-explicit follow-up: a bare "N files moved · filename" text line, while
-technically live, read as "just a count, nothing real" against the
-blueprint's own mockup -- a real animated bar, a live throughput number,
-and the actual filename on its own line, updating every command, not only
-`mv -v` ones. `_LiveRunningLine` now renders THREE lines every tick
-(spinner+label+elapsed on top, an animated indeterminate bar + live
-count/rate underneath, the latest raw output line at the bottom) instead
-of one -- still zero extra threads, same mechanism as before: `Live`'s
+`_LiveRunningLine` renders three lines every tick (spinner+label+elapsed
+on top, an animated indeterminate bar + live count/rate underneath, the
+latest raw output line at the bottom) -- still zero extra threads: `Live`'s
 timer calls `__rich_console__` on this same mutable object every tick, so
 a bar animated purely from `time.monotonic()` (no state to advance
-between ticks, same trick `Spinner` itself already uses) animates for
-free even between real `update_label()`/`note_line()` calls, which is
-exactly what makes a slow step (few output lines) still look alive
-instead of frozen. The bar is indeterminate (a moving highlighted
-segment, not a filled percentage) because none of the four registered
-capabilities' command_templates report a total up front (see this
-module's older scope note below, still true) -- an honest "in progress,
-working" animation rather than a fabricated percentage.
+between ticks, same trick `Spinner` itself uses) animates for free even
+between real `update_label()`/`note_line()` calls, keeping a slow step
+(few output lines) looking alive instead of frozen. The bar is
+indeterminate (a moving highlighted segment, not a filled percentage)
+because no command reports a total up front, so a percentage would have
+to be fabricated -- an honest "in progress, working" animation instead.
 
 The "AI: N tokens · Ns reasoning time" line: `render_execution_summary`
 takes an optional `telemetry` (the same ParseTelemetry main.py threads into
@@ -97,11 +83,10 @@ from ohmyshell.executor import ExecutionResult, StepEvent, StepStatus
 from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.ui.theme import OMSH_THEME, themed_console
 
-# Fixed accent palette (post-Build-Order, user-requested) -- see
-# ui/theme.py's own module docstring: these status glyphs are this app's
-# own chrome, not command output, so they use ui/theme.py's fixed
-# "omsh.*" style names instead of rich's terminal-theme-relative named
-# colors ("green"/"red"/"yellow"), for a consistent look across terminals.
+# These status glyphs are this app's own chrome, not command output, so
+# they use ui/theme.py's fixed "omsh.*" style names instead of rich's
+# terminal-theme-relative named colors ("green"/"red"/"yellow"), for a
+# consistent look across terminals. See ui/theme.py's own module docstring.
 _STATUS_GLYPH = {
     StepStatus.DONE: ("✓", "omsh.success"),
     StepStatus.FAILED: ("✗", "omsh.danger"),
@@ -119,15 +104,14 @@ _BAR_CYCLE_SECONDS = 1.6  # how long one full sweep across the bar takes
 
 def _render_activity_bar(elapsed: float) -> Text:
     """
-    An animated, INDETERMINATE progress bar -- a highlighted segment sweeps
+    An animated, indeterminate progress bar -- a highlighted segment sweeps
     back and forth across `_BAR_WIDTH` cells, computed purely from
     `elapsed` (no stored/advanced state, same trick `Spinner.render(t)`
-    already uses -- see `_LiveRunningLine`'s docstring), so it animates on
-    every `Live` refresh tick even between real output lines.
+    uses -- see `_LiveRunningLine`'s docstring), so it animates on every
+    `Live` refresh tick even between real output lines.
 
-    Deliberately not a filled percentage bar: none of the four registered
-    capabilities' command_templates report a total up front (this module's
-    older scope note explains why), so a percentage would have to be
+    Deliberately not a filled percentage bar: no command this executor
+    runs reports a total up front, so a percentage would have to be
     fabricated. A sweeping bar is the honest "actively working" signal
     used by real tools (apt, pip) for the same reason.
     """
@@ -153,12 +137,7 @@ class _LiveRunningLine:
     """
     Spinner + a genuinely live, ticking elapsed-time counter, an animated
     activity bar, a live throughput readout, and the most recent raw
-    output line -- all for the RUNNING step (added post-Build-Order, per
-    the user's explicit "make the whole shell feel alive, every single
-    operation, professional and rich, not a toy" request -- see this
-    module's docstring for the full story, including why an earlier
-    version of this class that only showed a bare running count wasn't
-    enough).
+    output line -- all for the RUNNING step.
 
     A plain `rich.spinner.Spinner` already animates on its own under a
     `Live` display -- Live's background refresh thread re-renders whatever
@@ -174,17 +153,15 @@ class _LiveRunningLine:
     repaint, with no extra `live.update()` call needed, and the bar itself
     keeps sweeping even when no new output has arrived yet. No background
     thread, no change to `on_event`'s call pattern (still called exactly
-    once for RUNNING, since a plan is currently always one command; see
-    executor.py's own module docstring), and critically no change to
-    run_plan()'s blocking subprocess/SIGINT-handling contract:
-    executor.py's Ctrl+C handling relies on `signal.signal()`, which only
-    works on the main thread, so anything that would need a worker thread
-    here (the pattern ui/thinking.py uses for parse_intent) would risk
-    breaking the already-fixed Ctrl+C behavior (this session's own Bug
-    #8/#9). This class needs none of that -- it is a passive renderable,
-    not an active poller; executor.py's own `_run_streaming` is what makes
-    the updates arrive incrementally, on the same main thread, not this
-    class.
+    once for RUNNING, since a plan is always one command; see executor.py's
+    own module docstring), and no change to run_plan()'s blocking
+    subprocess/SIGINT-handling contract: executor.py's Ctrl+C handling
+    relies on `signal.signal()`, which only works on the main thread, so a
+    worker thread here (the pattern ui/thinking.py uses for parse_intent)
+    would risk breaking that Ctrl+C behavior. This class needs none of
+    that -- it is a passive renderable, not an active poller; executor.py's
+    own `_run_streaming` is what makes the updates arrive incrementally,
+    on the same main thread, not this class.
     """
 
     def __init__(self, label: str) -> None:
@@ -229,10 +206,10 @@ class _LiveRunningLine:
             rate = self._count / elapsed if elapsed > 0.05 else 0.0
             # Composite style (bold + a theme-registered omsh.* name) built
             # as a real `Style` object rather than the string "bold
-            # omsh.accent" -- see ui/prompt.py's own "bold omsh.path" fix
-            # for the full root-cause story: a composite STYLE STRING
-            # mixing a plain attribute with an omsh.* theme name silently
-            # renders completely unstyled in rich.
+            # omsh.accent" -- a composite style string mixing a plain
+            # attribute with an omsh.* theme name silently renders
+            # completely unstyled in rich (see ui/prompt.py's render_prompt
+            # for the same issue).
             stats.append(f"  {self._count} {self._count_noun}", style=Style(bold=True) + OMSH_THEME.styles["omsh.accent"])
             if rate >= 0.1:
                 stats.append(f"  ·  {rate:.1f}/s", style="omsh.muted")
@@ -248,10 +225,8 @@ def render_running_line(event: StepEvent) -> _LiveRunningLine:
     return _LiveRunningLine(label)
 
 
-# GNU coreutils' `mv -v` output shape, exactly as verified on the dev
-# machine (`renamed '<src>' -> '<dst>'`) -- capabilities.json's
-# clean_temp_files/organize_files templates were given `-v` specifically
-# so this has real per-file lines to match, one per file actually moved.
+# GNU coreutils' `mv -v` output shape (`renamed '<src>' -> '<dst>'`), one
+# per file actually moved.
 _MV_VERBOSE_RE = re.compile(r"^renamed '.*' -> '(?P<dest>.*)'$")
 
 
@@ -259,8 +234,7 @@ def _running_label_for_output_line(line: str, *, files_moved_so_far: int) -> tup
     """
     Turn one real line of a running command's stdout into the next live
     label + updated file count. Recognizes `mv -v`'s line shape
-    specifically (the two capabilities this project streams progress for
-    both use it); any other capability's raw output is shown verbatim, so
+    specifically; any other command's raw output is shown verbatim, so
     nothing here silently hides real output it doesn't understand.
 
     Kept for backward compatibility with existing callers/tests that want
@@ -284,7 +258,7 @@ def _progress_for_output_line(line: str, *, files_moved_so_far: int) -> tuple[st
       just the destination filename for a recognized `mv -v` line (the
       count already says "moved", repeating the whole "renamed 'X' -> 'Y'"
       line would be noise), or the raw line verbatim for anything else,
-      so no capability's real output is ever silently hidden.
+      so real command output is never silently hidden.
     """
     match = _MV_VERBOSE_RE.match(line)
     if match is not None:
@@ -320,10 +294,9 @@ def _ai_telemetry_line(telemetry: ParseTelemetry | None) -> str | None:
     """
     "AI: N tokens total · Ns reasoning time" (Section 8.3.4's mockup),
     built from the same real ParseTelemetry the plan panel's own footer
-    already shows -- see this module's docstring for why this used to be
-    omitted. Returns None (nothing to show) when telemetry is missing or
-    carries no usable fields, same "honest partial line" rule ui/panels.py's
-    own _telemetry_footer_text already follows.
+    shows. Returns None (nothing to show) when telemetry is missing or
+    carries no usable fields, the same "honest partial line" rule
+    ui/panels.py's own _telemetry_footer_text follows.
     """
     if telemetry is None:
         return None
@@ -345,17 +318,16 @@ def _decode_ansi_block(raw: str) -> list[Text]:
     """
     Turn a captured command output block (possibly containing real ANSI
     color escapes -- see executor.py's `_PtyPopen` docstring for why those
-    now survive all the way to here) into a list of styled `Text` lines,
-    one per line of output.
+    survive all the way to here) into a list of styled `Text` lines, one
+    per line of output.
 
     `rich.Text.append(raw_string)` -- what this function replaces calling
-    directly -- treats ANSI escape *bytes* as literal text to display, not
-    as styling instructions (confirmed directly: it printed the raw
-    `\\x1b[01;34m` sequence rather than coloring anything). `AnsiDecoder`
-    is `rich`'s own tool for the opposite: parsing real ANSI SGR sequences
-    into `Text` objects with actual `Style`s attached, which is what makes
-    a colorized `ls`/`git`/etc. output actually show its colors here
-    instead of either raw escape-code garbage or plain white text.
+    directly -- treats ANSI escape bytes as literal text to display, not
+    as styling instructions. `AnsiDecoder` is `rich`'s own tool for the
+    opposite: parsing real ANSI SGR sequences into `Text` objects with
+    actual `Style`s attached, which is what makes a colorized `ls`/`git`/
+    etc. output actually show its colors here instead of either raw
+    escape-code garbage or plain white text.
 
     PTY output uses `\\r\\n` line endings (a real terminal's own
     convention); normalized to `\\n` first since `AnsiDecoder.decode`
@@ -377,17 +349,14 @@ def render_execution_summary(
     raw-shell command, which never went through the Intent Parser at all,
     or a caller that hasn't been updated to pass it).
 
-    Bug fix (found via manual end-to-end testing): a DONE step's actual
-    command output (`StepResult.stdout`) was captured by executor.py but
-    never rendered anywhere -- `on_output_line`'s live progress line only
-    covers commands that emit recognizable per-line progress (e.g. `mv -v`)
-    and disappears anyway once the transient `Live` display closes, so a
-    single-shot command like `dpkg --get-selections | wc -l` produced a
-    step description and nothing else: the actual answer the user asked
-    for was silently dropped. Printed here, once, after the step glyph
-    line, for any DONE step whose stdout is non-empty -- stderr is
-    similarly surfaced for FAILED steps, for the same reason (previously
-    only visible via a separate, easy-to-miss detail view).
+    A DONE step's actual command output (`StepResult.stdout`) is printed
+    here, once, after the step glyph line, for any DONE step whose stdout
+    is non-empty -- `on_output_line`'s live progress line only covers
+    commands that emit recognizable per-line progress (e.g. `mv -v`) and
+    disappears once the transient `Live` display closes, so a single-shot
+    command like `dpkg --get-selections | wc -l` would otherwise produce a
+    step description and nothing else. stderr is similarly surfaced for
+    FAILED steps.
 
     Return type changed from `Text` to `Group` (both are valid
     `rich.console.Console.print()` arguments, so `print_summary`'s call
@@ -402,13 +371,9 @@ def render_execution_summary(
     for step_result in result.step_results:
         glyph, color = _STATUS_GLYPH.get(step_result.status, ("?", "omsh.muted"))
         header.append(f"{glyph} ", style=color)
-        # Bug fix (found via a real-terminal screenshot showing this line
-        # as plain, uncolored white text -- the step glyph carries a
-        # semantic color, but the step description right next to it had
-        # no style at all): give the description text itself the same
-        # semantic color as its own glyph (success/danger/warning), so a
-        # DONE step's whole line reads as "this succeeded" at a glance,
-        # not just its leading checkmark.
+        # The description text carries the same semantic color as its own
+        # glyph (success/danger/warning), so a DONE step's whole line
+        # reads as "this succeeded" at a glance, not just its checkmark.
         header.append(f"Step {step_result.step_number}: {step_result.description}\n", style=color)
         if step_result.status is StepStatus.DONE and step_result.stdout.strip():
             output_blocks.extend(_decode_ansi_block(step_result.stdout.rstrip()))
@@ -420,42 +385,28 @@ def render_execution_summary(
     lines = trailer
     ai_line = _ai_telemetry_line(telemetry)
     if ai_line is not None:
-        # Color audit fix (post-Build-Order, "I want to add color in
-        # everywhere"): this line used to share the same `omsh.muted`
-        # (Nord4, a very light near-white shade) as every other secondary/
-        # metadata line -- on a real dark terminal that reads as almost
-        # indistinguishable from plain unstyled text (see ui/theme.py's own
-        # "Follow-up fix" note for the same shade's earlier legibility
-        # issue against dim/muted text generally). `omsh.active` (Nord15
-        # Aurora purple, this app's own "something the AI did" accent,
+        # `omsh.active` (this app's own "something the AI did" accent,
         # already used for the AI-active prompt icon) makes this line read
-        # as its own distinct, AI-attributed piece of chrome instead of
+        # as its own distinct, AI-attributed piece of chrome rather than
         # blending into the muted metadata around it.
         lines.append(f"\n{ai_line}", style="omsh.active")
     if result.interrupted:
         lines.append("\n[Ctrl+C] Stopped early — see above for what completed.", style="omsh.warning")
-        # Bug fix (found via manual end-to-end testing, in a real terminal
-        # session): [u] Undo used to be offered only when result.all_done,
-        # so a single-Ctrl+C graceful stop showed no undo option at all --
-        # but Section 8.3.4's own mockup shows "[u] Undo what was moved"
-        # right alongside an interrupted stop, and whatever DID complete
-        # before the interrupt (e.g. files already moved into .trash/) is
-        # exactly as undoable as a fully-finished run's files -- the audit
-        # log already records status="interrupted" with the same action_id
-        # trash.py's undo looks up regardless of how the run ended. This is
-        # distinct from "[r] Resume remaining" (also in that same mockup),
-        # which is a genuinely unimplemented, separate feature (resuming a
-        # partially-completed plan) -- not offered here, so this line only
-        # ever promises what actually works today.
+        # [u] Undo is offered here too, not only when result.all_done:
+        # Section 8.3.4's own mockup shows "[u] Undo what was moved"
+        # alongside an interrupted stop, and whatever did complete before
+        # the interrupt (e.g. files already moved into .trash/) is exactly
+        # as undoable as a fully-finished run's files -- the audit log
+        # records status="interrupted" with the same action_id trash.py's
+        # undo looks up regardless of how the run ended. "[r] Resume
+        # remaining" (also in that mockup) is a separate, unimplemented
+        # feature and is not offered here, so this line only ever
+        # promises what actually works today.
         #
-        # Color audit fix (same round as the AI-telemetry-line fix above):
-        # this is a real, clickable-feeling action hint (like /help's own
-        # command names), not passive metadata -- `omsh.accent` (this
-        # app's signature blue, already used for /help's own command
-        # names) marks the "[u]" key hint as actionable, matching how
-        # every other keyed hint in this app is colored, instead of
-        # blending into `omsh.muted`'s dim near-white the way a footnote
-        # would.
+        # `omsh.accent` (this app's signature blue, already used for
+        # /help's own command names) marks the "[u]" key hint as
+        # actionable, matching how every other keyed hint in this app is
+        # colored.
         lines.append("\n▸ [u] Undo this action", style="omsh.accent")
     elif result.aborted_for_sudo:
         lines.append("\nAborted — elevated permission was declined.", style="omsh.warning")
@@ -510,14 +461,12 @@ class StreamingRenderer:
 
     def on_output_line(self, line: str) -> None:
         """
-        `executor.run_plan(..., on_output_line=...)` callback (added post-
-        Build-Order, real per-file live progress -- see this module's own
-        docstring): called once per line of the running command's stdout,
-        as it's produced. Feeds the currently-active RUNNING line's
-        `note_line` (count + detail, rendered on their own lines below the
-        spinner -- see `_LiveRunningLine`'s docstring for why a bare label
-        overwrite wasn't enough); a no-op before RUNNING fires or after
-        the display has closed, same defensive shape `on_event` already
+        `executor.run_plan(..., on_output_line=...)` callback: called once
+        per line of the running command's stdout, as it's produced. Feeds
+        the currently-active RUNNING line's `note_line` (count + detail,
+        rendered on their own lines below the spinner -- see
+        `_LiveRunningLine`'s docstring); a no-op before RUNNING fires or
+        after the display has closed, the same defensive shape `on_event`
         uses.
         """
         if self._running_line is None:
@@ -532,20 +481,17 @@ class StreamingRenderer:
     def print_summary(self, result: ExecutionResult, *, telemetry: ParseTelemetry | None = None) -> None:
         self._console.print(render_execution_summary(result, telemetry=telemetry))
 
-    # --- Sudo password-prompt garbling bug fix (post-Build-Order) ---
     # `Live`'s own refresh loop repaints this renderer's spinner on a timer
     # for as long as the display is active -- including while executor.py
     # is blocked inside a real `sudo <command>` subprocess call waiting for
     # a password. `sudo` reads/writes that prompt directly on the
     # controlling terminal (bypassing this process's own stdout/stderr
-    # entirely), so its writes and `Live`'s own redraws were colliding on
-    # real-terminal testing: the prompt appeared garbled/overlapping and
-    # typed characters didn't reliably register, needing several Enter
-    # presses before a password attempt "took". `pause_for_sudo`/`resume`
-    # are executor.run_plan()'s `on_before_execute`/`on_after_execute`
-    # hooks (see that function's own docstring) -- main.py passes them
-    # through only for the `used_sudo=True` case, so an ordinary
-    # (non-elevated) command's spinner is completely unaffected.
+    # entirely), so its writes would collide with `Live`'s own redraws
+    # without pausing. `pause_for_sudo`/`resume_after_sudo` are
+    # executor.run_plan()'s `on_before_execute`/`on_after_execute` hooks
+    # (see that function's own docstring) -- main.py passes them through
+    # only for the `used_sudo=True` case, so an ordinary (non-elevated)
+    # command's spinner is unaffected.
     def pause_for_sudo(self, used_sudo: bool) -> None:
         if used_sudo and self._live is not None:
             self._live.stop()

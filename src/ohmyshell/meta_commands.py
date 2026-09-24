@@ -44,19 +44,15 @@ hard constraint (already enforced in main.py's _handle_raw_shell, which
 never special-cases these flags), not something this module needs to
 implement; slash commands don't run through that path at all.
 
---- Disclosed gaps (Section 16 Rule 5) ---
-No output mockup exists in the retrieved blueprint text for `/model`,
-`/capabilities`, `/config` (view form), `/history`, `/stats`, `/trash
-status`, or `/help <command>`'s per-command detail -- only their one-line
-table descriptions. Their renderings below are this module's own design,
-built to carry exactly the data the table row promises and formatted
-consistently with the blueprint's two CONFIRMED mockups (`/help`, `/system`
--- reproduced faithfully) so the overall command-reference "feel" is
-consistent. Nothing downstream depends on these exact layouts.
-No blueprint text describes unrecognized-slash-command behavior either
-(checked specifically, found nothing) -- this module reports it as an
-unrecognized command and suggests `/help`, matching ordinary CLI convention
-and main.py's own prior placeholder message from Step 6.
+No output mockup exists in the blueprint for `/model`, `/capabilities`,
+`/config` (view form), `/history`, `/stats`, `/trash status`, or
+`/help <command>`'s per-command detail -- only their one-line table
+descriptions. Their renderings below are this module's own design, built
+to carry exactly the data the table row promises and formatted
+consistently with the blueprint's two confirmed mockups (`/help`,
+`/system`) so the overall command-reference feel is consistent. An
+unrecognized slash command reports itself as such and suggests `/help`,
+matching ordinary CLI convention.
 """
 
 from __future__ import annotations
@@ -74,20 +70,16 @@ from ohmyshell import config as config_module
 from ohmyshell import hardware as hardware_module
 from ohmyshell import trash as trash_module
 
-# Fixed accent palette (post-Build-Order, user-requested full-UI color
-# audit): every user-facing string in this module now carries rich markup
-# using ui/theme.py's fixed "omsh.*" style names, the same rule the rest
-# of the app's own chrome already follows -- see ui/theme.py's own module
-# docstring for the full rationale. This module was previously plain text
-# by explicit design ("thin wrapper... no new logic" -- see this module's
-# own docstring above); embedding markup here is a deliberate scope change
-# confirmed with the user, not a violation of that "thin wrapper" intent
-# -- these strings still carry no new LOGIC, only presentation markup
-# around the exact same data. Every string returned by this module is
-# printed via `active_console.print(outcome.text, highlight=False)`
-# (main.py) -- `highlight=False` only disables rich's automatic pattern
-# detection (numbers, paths, etc.), it does not disable markup parsing,
-# so `[omsh.accent]...[/omsh.accent]` tags below render correctly.
+# Every user-facing string in this module carries rich markup using
+# ui/theme.py's fixed "omsh.*" style names, the same rule the rest of the
+# app's own chrome follows -- see ui/theme.py's own module docstring.
+# These strings still carry no new logic, only presentation markup around
+# the same data (this module remains a thin wrapper -- see its own
+# docstring above). Every string returned by this module is printed via
+# `active_console.print(outcome.text, highlight=False)` (main.py) --
+# `highlight=False` only disables rich's automatic pattern detection, it
+# does not disable markup parsing, so `[omsh.accent]...[/omsh.accent]`
+# tags below render correctly.
 HELP_TEXT = """\
   [bold][omsh.accent]✦ Oh My Shell[/omsh.accent][/bold] [omsh.muted]— Command Reference[/omsh.muted]
   [omsh.muted]────────────────────────────────────────────[/omsh.muted]
@@ -217,25 +209,15 @@ def _handle_history(session_start: float, base_dir=None) -> str:
     entries = audit_log_module.entries_since(session_start, base_dir=base_dir)
     if not entries:
         return "  [omsh.muted]No requests yet this session.[/omsh.muted]"
-    # Bug fix (found during a wider real-terminal color audit): this header
-    # line had no markup at all, unlike every other line this module
-    # prints -- rendered as plain uncolored text alongside colored entries
-    # right below it.
     lines = ["  [omsh.accent]This session's requests:[/omsh.accent]"]
     for i, entry in enumerate(entries, start=1):
         status_style = _status_style(entry.status)
-        # `_escape_markup` on `entry.action` (post-Build-Order, found
-        # during the same color-audit pass that added this markup):
         # `entry.action` is a real, previously-run shell command/AI
         # request string -- it can contain literal "[" / "]" characters
-        # (e.g. a command with a bracket-glob argument), which rich's
-        # markup parser would otherwise misinterpret as the start of a
-        # (nonexistent) style tag. Escaping only the untrusted, freeform
-        # value -- never the omsh.* tags this module writes itself -- is
-        # the same rule Text-based command displays elsewhere in this app
-        # already follow implicitly (Text.append() never markup-parses
-        # its own text argument; a markup STRING like this one has no
-        # such protection built in, so it has to be applied explicitly).
+        # (e.g. a bracket-glob argument), which rich's markup parser would
+        # otherwise misinterpret as the start of a style tag. Escaping
+        # only the untrusted, freeform value, never the omsh.* tags this
+        # module writes itself.
         lines.append(f"  {i}. {_escape_markup(entry.action)} [{status_style}]({entry.status})[/{status_style}]")
     return "\n".join(lines)
 
@@ -265,9 +247,7 @@ def _handle_trash(args: list[str], cfg: dict, base_dir=None) -> str:
 
     if subcommand == "keep":
         # "Reset the retention timer" -- re-stamps every entry's trashed_at
-        # to now via trash.keep_all() (implemented alongside this wiring;
-        # see that function's own docstring for why re-stamping trashed_at
-        # is the whole operation and no new on-disk shape was needed).
+        # to now via trash.keep_all() (see that function's own docstring).
         count = trash_module.keep_all(base_dir=base_dir)
         if count == 0:
             return "  [omsh.muted].trash/ is empty -- nothing to keep.[/omsh.muted]"
@@ -282,10 +262,6 @@ def _handle_log(args: list[str], base_dir=None) -> str:
     try:
         entries = audit_log_module.read_entries(base_dir=base_dir)
     except audit_log_module.AuditLogError as exc:
-        # Bug fix (found during a wider real-terminal color audit): this
-        # was the one error message in the module with no [omsh.*] markup
-        # at all -- every other error/status line here uses omsh.danger or
-        # omsh.warning.
         return f"  [omsh.danger]Could not read the audit log: {exc}[/omsh.danger]"
 
     if not entries:
@@ -298,8 +274,6 @@ def _handle_log(args: list[str], base_dir=None) -> str:
 
         return "\n".join(json.dumps(asdict(e)) for e in entries)
 
-    # Bug fix (same color-audit pass): this header line had no markup at
-    # all, unlike every entry line right below it.
     lines = ["  [omsh.accent]Recent audit log entries:[/omsh.accent]"]
     for entry in entries[-10:]:
         status_style = _status_style(entry.status)
@@ -313,10 +287,10 @@ def _handle_log(args: list[str], base_dir=None) -> str:
 
 def _handle_capabilities() -> str:
     """
-    Rewritten for the open-ended architecture (see validation.py's module
-    docstring): there is no fixed capability registry to list any more —
-    the AI can generate any real shell command for any request. This now
-    explains that plainly instead of enumerating a static action list.
+    There is no fixed capability registry under the open-ended
+    architecture (see validation.py's module docstring) -- the AI can
+    generate any real shell command for any request. This explains that
+    plainly instead of enumerating a static action list.
     """
     return (
         "  [omsh.muted]Oh My Shell doesn't limit itself to a fixed list of actions.\n"
@@ -348,15 +322,12 @@ def _handle_stats(session_start: float, tokens_used: int | None = None, base_dir
 
 def _render_system_line_colored(snapshot: hardware_module.HardwareSnapshot) -> str:
     """
-    Bug fix (found during a wider real-terminal color audit): /system's
-    CPU/RAM/GPU line used to come straight from
-    `hardware.render_system_line()` -- a plain string, rendered with no
-    color at all, the one line in /system's whole output that wasn't.
-    Rebuilt here (rather than adding rich markup inside hardware.py itself,
-    which stays a plain data module on purpose -- see its own module
-    docstring) with the same usage-based low/medium/high coloring
-    ui/thinking.py's live indicator uses for the identical CPU/RAM/GPU
-    percentages, via this module's own `_usage_style`.
+    Colored rendering of /system's CPU/RAM/GPU line, built here (rather
+    than adding rich markup inside hardware.py itself, which stays a plain
+    data module on purpose -- see its own module docstring) with the same
+    usage-based low/medium/high coloring ui/thinking.py's live indicator
+    uses for the identical CPU/RAM/GPU percentages, via this module's own
+    `_usage_style`.
     """
     cpu = snapshot.cpu
     parts = [

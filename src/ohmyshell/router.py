@@ -6,10 +6,7 @@ natural language (Section 4.1/4.2). This module only classifies — it does
 not execute or interpret anything itself; main.py dispatches based on the
 Kind this module returns.
 
-Classification heuristic (implementation decision — the blueprint specifies
-the three categories and says "regex/pattern matching" but not the exact
-rule, since that's an ordinary implementation detail, not something needing
-external confirmation):
+Classification heuristic:
 
 1. Empty input -> EMPTY (main.py just reprints the prompt).
 2. Starts with "/" -> SLASH_COMMAND.

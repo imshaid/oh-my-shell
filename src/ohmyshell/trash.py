@@ -21,19 +21,15 @@ Core behavior (Section 8.3.7, verbatim-backed):
   action; the interactive confirm is `[Enter] Confirm undo   [Esc] Cancel`.
 - `/trash status`, `/trash keep`, `/trash clear` manage trash by hand.
 
-Documented gap + assumption (Section 16 Rule 5): the blueprint states that
-expired entries "auto-delete" and that a "startup warning" is shown, but
-never specifies the *trigger* for the actual deletion -- no background job,
-daemon, or cron is mentioned anywhere in the document. The chosen design
-(confirmed with the user) is: no background process. `check_and_expire()`
-is called once at shell startup (main.py's job, Step 6/13 territory) and:
-  1. permanently deletes any entry whose retention period has *already*
+Expiry has no background process: `check_and_expire()` is called once at
+shell startup (main.py's job) and:
+  1. permanently deletes any entry whose retention period has already
      fully elapsed,
   2. returns a warning for any entry that has not yet expired but will
      within a short warning window, so main.py can print it once at
-     startup, matching "expire হওয়ার আগে শেল-startup-এ warning দেখানো হয়".
-This keeps the whole retention mechanism deterministic and testable without
-threads, timers, or a daemon -- consistent with the rest of the codebase.
+     startup.
+This keeps the retention mechanism deterministic and testable without
+threads, timers, or a daemon.
 """
 
 from __future__ import annotations
@@ -52,8 +48,6 @@ TRASH_DIR_NAME = ".trash"
 METADATA_FILENAME = "metadata.json"
 
 # How many days before actual expiry to start warning at shell startup.
-# Not specified numerically anywhere in the blueprint (only that a warning
-# appears "before" expiry) -- documented default, easy to tune later.
 EXPIRY_WARNING_WINDOW_DAYS = 1
 
 SECONDS_PER_DAY = 86400
@@ -237,25 +231,17 @@ def keep_all(base_dir: Path | None = None, *, now: float | None = None) -> int:
     retention timer by re-stamping `trashed_at` to now, so nothing in
     `.trash/` looks any closer to expiry than the moment this was called.
 
-    Documented follow-up, now implemented (see meta_commands.py's prior
-    "isn't wired up yet" note): this reuses trash.py's own existing
-    metadata read/write path (`_entries`/`_write_entries`) rather than
-    adding any new on-disk shape -- each TrashEntry is a frozen dataclass,
-    so this rebuilds the list with a new `trashed_at` per entry (dataclasses
-    have no in-place field assignment) and writes it back in one pass,
-    matching every other bulk-metadata operation in this module (e.g.
-    clear_trash's own read-then-act-on-every-entry shape).
+    Rebuilds the entry list with a new `trashed_at` per entry (TrashEntry
+    is a frozen dataclass, so fields can't be reassigned in place) and
+    writes it back in one pass, matching clear_trash's own
+    read-then-act-on-every-entry shape.
 
-    `trashed_name` (which embeds the original trash timestamp, per
-    move_to_trash's own naming scheme) and `trash_id` are left unchanged --
-    only the metadata's own `trashed_at` field, which is what
-    check_and_expire() actually reads, needs to move for retention to
-    reset; renaming the file on disk to match would be extra churn with no
-    behavioral difference.
+    `trashed_name` (which embeds the original trash timestamp) and
+    `trash_id` are left unchanged -- only `trashed_at`, which is what
+    check_and_expire() reads, needs to move for retention to reset.
 
     Returns the number of entries whose timer was reset (0 if trash is
-    already empty -- a no-op, not an error, matching clear_trash's own
-    "no-op on empty trash" behavior).
+    already empty -- a no-op, not an error).
     """
     current_time = now if now is not None else time.time()
     entries = _entries(base_dir)
@@ -295,9 +281,8 @@ def check_and_expire(
 
     Permanently deletes any trash entry whose retention period has fully
     elapsed, and separately reports entries that will expire within
-    `warning_window_days` but haven't yet, so the caller (main.py) can print
-    a one-time startup warning -- matching Section 8.3.7's "expire হওয়ার আগে
-    শেল-startup-এ warning দেখানো হয়".
+    `warning_window_days` but haven't yet, so the caller (main.py) can
+    print a one-time startup warning (Section 8.3.7).
     """
     current_time = now if now is not None else time.time()
     retention_seconds = retention_days * SECONDS_PER_DAY

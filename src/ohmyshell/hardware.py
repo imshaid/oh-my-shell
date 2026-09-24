@@ -15,42 +15,22 @@ ui/streaming.py (Step 11) concern once that module is wired into main.py's
 natural-language path -- this module only provides the read_* functions;
 it does not decide when they're called or how the result is displayed.
 
---- Disclosed gap (Section 16 Rule 5) ---
-The hardware-tiering table (which tier -> which specs -> which recommended
-local models, needed by the wizard in Step 13) was never captured in this
-project's transcript -- it falls in the same 501-699 gap documented
-elsewhere (the user's own guess that it was "Section 9" was also checked
-and is incorrect; the real Section 9 is "Team Structure", unrelated). This
-module does NOT implement tiering or model recommendation -- it only
-reports raw hardware facts (CPU cores/usage, RAM total/used, GPU presence/
-kind/VRAM if detectable). Step 13's wizard will need the real tiering table
-from the blueprint before it can turn these facts into a tier/model choice;
-implementing that classification now would mean inventing thresholds the
-blueprint doesn't state, which Section 16 Rule 5 says to avoid guessing on
-without documenting it as an assumption -- here there isn't even enough
-signal to make a defensible default, so it's left undone rather than faked.
+This module reports raw hardware facts only (CPU cores/usage, RAM
+total/used, GPU presence/kind/VRAM if detectable) -- it does not implement
+hardware-tiering or model recommendation; that is the wizard's job.
 
-GPU detection approach (undocumented in the retrieved blueprint, therefore
-my own design, per Rule 5): a discrete NVIDIA GPU is detected by shelling
-out to `nvidia-smi` (the standard, dependency-free way to query NVIDIA GPU
-name/VRAM without pulling in a GPU vendor SDK); when `nvidia-smi` isn't on
-PATH or errors, this is treated as "no discrete GPU detected" -- exactly
-the "integrated GPU-তে চুপচাপ hide" case, so `read_gpu()` returns None
-rather than raising, and callers (the /system renderer, the live indicator)
-simply omit the GPU line when it's None. AMD/Intel discrete GPU detection
-is out of scope here (no tool/library was specified for it either) -- the
-same "don't guess a mechanism the blueprint never named" reasoning applies.
+GPU detection: a discrete NVIDIA GPU is detected by shelling out to
+`nvidia-smi`, the standard, dependency-free way to query GPU name/VRAM
+without a vendor SDK. When `nvidia-smi` isn't on PATH or errors, this is
+treated as "no discrete GPU detected" -- the integrated-GPU-or-none case --
+so `read_gpu()` returns None rather than raising, and callers (the
+/system renderer, the live indicator) simply omit the GPU line. AMD/Intel
+discrete GPU detection is out of scope.
 
-RAM model/part name (post-Build-Order, user-asked-then-declined): a
-"RAM (<model>)" segment to match CPU/GPU was considered, but the only
-Linux mechanism for it (`dmidecode -t memory`, reading the SMBIOS DMI
-table) requires root privileges and fails with a permission error for a
-normal user -- there is no unprivileged equivalent. Rather than only
-sometimes showing a RAM model (root sessions) and never showing it
-otherwise (the common case), it is left out entirely -- see
-ui/thinking.py's own docstring for how this is reflected in the rendered
-line (CPU's and GPU's model names moved to line-end so RAM's permanent
-absence of one reads as a data-availability gap, not a rendering bug).
+RAM has no model/part-name field: the only Linux mechanism for it
+(`dmidecode -t memory`) requires root and fails with a permission error
+for a normal user, with no unprivileged equivalent, so it is left out
+entirely rather than shown only some of the time.
 """
 
 from __future__ import annotations
@@ -96,29 +76,24 @@ def _read_cpu_temperature() -> float | None:
     `psutil.sensors_temperatures()` is Linux-only and depends on the
     kernel exposing `/sys/class/hwmon` sensors -- inside a container, a VM,
     or on hardware without exposed sensors, it legitimately returns `{}`
-    (not an error). This mirrors read_gpu()'s own "integrated GPU-তে
-    চুপচাপ hide" pattern (module docstring's GPU section): no sensor data
-    means this returns None, and every caller (the live indicator, /system)
-    simply omits the temperature rather than showing a fake or zero value.
-    Picks the first "coretemp"/"k10temp"/"cpu_thermal"-style entry's first
-    reading when present -- exact sensor/label naming varies by CPU vendor
-    and this project has no access to test hardware for every vendor, so a
-    "first available CPU-like sensor" heuristic is used rather than an
-    exhaustive vendor table.
+    (not an error). No sensor data means this returns None, and every
+    caller (the live indicator, /system) omits the temperature rather than
+    showing a fake or zero value. Picks the first "coretemp"/"k10temp"/
+    "cpu_thermal"-style entry's first reading when present; exact
+    sensor/label naming varies by CPU vendor, so a "first available
+    CPU-like sensor" heuristic is used rather than an exhaustive table.
     """
     try:
         all_temps = psutil.sensors_temperatures()
     except (AttributeError, OSError):
-        # AttributeError: platform without sensors_temperatures at all
-        # (e.g. Windows/macOS) -- psutil documents this as possible.
+        # Platform without sensors_temperatures at all (e.g. Windows/macOS).
         return None
     for label in ("coretemp", "k10temp", "cpu_thermal", "cpu-thermal"):
         entries = all_temps.get(label)
         if entries:
             return entries[0].current
-    # Fall back to whatever the first reported sensor group is, rather
-    # than reporting nothing just because this machine's driver used an
-    # unlisted label -- still better than a hardcoded vendor-only list.
+    # Fall back to the first reported sensor group rather than reporting
+    # nothing just because this machine's driver used an unlisted label.
     for entries in all_temps.values():
         if entries:
             return entries[0].current
@@ -132,12 +107,11 @@ def _read_cpu_model_name(*, cpuinfo_path: Path = CPUINFO_PATH) -> str | None:
     rather than repeated per-refresh data, since unlike usage/temperature
     this never changes during a session.
 
-    `/proc/cpuinfo`'s "model name" field is Linux-specific (this project
-    targets Linux -- see hardware.py's own module docstring), read directly
+    `/proc/cpuinfo`'s "model name" field is Linux-specific, read directly
     rather than through psutil, which has no cross-platform CPU-model API
     of its own. Missing file, missing field, or any read error all fall
-    back to None -- same "silently omit, never fake" pattern as every other
-    optional hardware field in this module (temperature, GPU, fan).
+    back to None, matching every other optional hardware field in this
+    module (temperature, GPU, fan).
     """
     try:
         text = cpuinfo_path.read_text(encoding="utf-8")
@@ -156,16 +130,12 @@ def _read_fan_rpm() -> int | None:
     Best-effort primary fan speed (RPM), for the live indicator's
     "... · 2100 RPM" segment.
 
-    `psutil.sensors_fans()` is Linux-only (same platform scope as
-    `_read_cpu_temperature`) and, like the temperature sensors, legitimately
-    returns `{}` on hardware/VMs/containers with no exposed fan sensor --
-    not an error, so this returns None and callers omit the segment rather
-    than showing "0 RPM" or a placeholder. Takes the first reported fan's
-    first reading -- laptops in practice usually expose exactly one
-    CPU-adjacent fan sensor group; a machine with several (e.g. a desktop
-    with separate case fans) only shows the first here, which is enough for
-    "is the fan spinning and roughly how fast," not a full fan-by-fan
-    breakdown the live indicator's single line has no room for anyway.
+    `psutil.sensors_fans()` is Linux-only and, like the temperature
+    sensors, legitimately returns `{}` on hardware/VMs/containers with no
+    exposed fan sensor -- not an error, so this returns None and callers
+    omit the segment rather than showing "0 RPM". Takes the first reported
+    fan's first reading; a machine with several fans only shows the first,
+    which is enough for "is the fan spinning and roughly how fast."
     """
     try:
         all_fans = psutil.sensors_fans()
@@ -219,16 +189,13 @@ def read_gpu(*, runner=subprocess.run) -> GpuInfo | None:
 
     `runner` is injectable for testing without a real `nvidia-smi` binary.
 
-    The query now asks for a 4th field (`temperature.gpu`) alongside the
-    original name/memory.total/memory.used -- nvidia-smi reports it in the
-    same call, so this is one more comma-separated value on the same line,
-    not a second subprocess call. A malformed/short response (still only 3
-    fields, e.g. an older nvidia-smi or a driver that doesn't report
-    temperature) degrades to a GpuInfo with `temperature_celsius=None`
-    rather than being rejected outright -- unlike the original all-or-
-    nothing 3-field check, since VRAM name/total/used are the fields this
-    module has always depended on and temperature is the newer, genuinely
-    optional addition (same "silently omit, never fake" rule as CPU temp).
+    The query asks for a 4th field (`temperature.gpu`) alongside name/
+    memory.total/memory.used, reported in the same call as one more
+    comma-separated value. A malformed/short response (only 3 fields, e.g.
+    an older nvidia-smi or a driver that doesn't report temperature)
+    degrades to a GpuInfo with `temperature_celsius=None` rather than
+    being rejected outright, since name/total/used are the fields this
+    module has always depended on and temperature is optional.
     """
     if not _nvidia_smi_available():
         return None
@@ -268,7 +235,7 @@ def read_gpu(*, runner=subprocess.run) -> GpuInfo | None:
         try:
             temperature_celsius = float(temperature_str)
         except ValueError:
-            temperature_celsius = None  # malformed temp field -- omit, don't reject the whole reading
+            temperature_celsius = None  # malformed temp field -- omit, don't reject the reading
 
     return GpuInfo(
         name=name,

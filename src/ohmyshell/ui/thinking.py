@@ -5,9 +5,8 @@ follow-up, Section 6 Core Feature #14 + Section 8.3.3's confirmed mockup).
 Section 6, Core Feature #14 (verbatim): "**Live Hardware Load Indicator**
 — শুধু AI-thinking-window-এ (CPU/RAM সবসময়, GPU tiered-detection সাপেক্ষে,
 integrated GPU-তে চুপচাপ hide)". Section 8.3.3's confirmed mockup is the
-base for the CPU/RAM/GPU line shape; the layout below is the user-confirmed
-expansion of it (fan RPM, CPU model, GPU temperature, tokens/sec -- see
-this project's own working notes, not a blueprint addition):
+base for the CPU/RAM/GPU line shape, extended here with fan RPM, CPU model,
+GPU temperature, and tokens/sec:
 
     ⚟ Thinking... 0.8s · 12 in / 34 out · 43 tok/s · gemini-3.5-flash-lite
     CPU ▓▓▓▓▓▓▓░░░ 82% · 58°C · 2100 RPM · 13th Gen i7-13650HX
@@ -15,21 +14,15 @@ this project's own working notes, not a blueprint addition):
     GPU ▓▓▓▓░░░░░░ 39% VRAM · 61°C · RTX 4060
     {"action": "clean_temp_files", "risk": "medium", "para
 
-One metric-group per hardware line, confirmed by the user over the plain
-2-line original (see AskUserQuestion history in this project's own working
-notes): "option 1, but should be aligned properly" -- so the bar column
-starts at the same character position on every line regardless of how long
-that line's "CPU (<model>)"/"GPU (<name>)" label is. Network and disk I/O
-were explicitly asked about and explicitly declined by the user
-("বাদ দেয়া হোক") -- mostly-idle numbers here would just be visual noise --
-so neither appears here.
+One metric-group per hardware line, with the bar column starting at the
+same character position on every line regardless of how long that line's
+label is. Network and disk I/O are intentionally excluded -- mostly-idle
+numbers there would just be visual noise.
 
-"Token count ও সময় ... live in-place update হয়" (Section 8.3.3), and the raw
-generated text streaming live underneath it (added post-Build-Order, per
-the user's own explicit follow-up after first seeing the token-count-only
-version: "I want to show the full live token by token streaming like this
-conversation, also other stats" -- i.e. not just a growing number, the
-actual text the model is producing, plus live in/out counts).
+Token count and elapsed time update live in place (Section 8.3.3), and the
+raw generated text streams live underneath it -- not just a growing
+number, but the actual text the model is producing, plus live in/out
+counts.
 
 Only the final streamed chunk from the backend carries real token counts;
 intent_parser.StreamProgress instead tracks a genuinely growing
@@ -58,12 +51,12 @@ parse_intent() is a single blocking call from this module's own point of
 view (it returns once, at the very end) -- the only way to show a live-
 updating indicator alongside it is to run that call on its own thread
 while the main thread drives a `rich.live.Live` refresh loop, polling
-`Thread.is_alive()` -- the same shape `ui/streaming.py`'s StreamingRenderer
-already uses for a different reason (there, run_plan() calls back into
-on_event() itself, so no second thread is needed; here, nothing calls back
-into THIS thread, so this module supplies the thread; intent_parser's own
-`on_token` callback runs ON the worker thread, writing into the shared
-`on_token_box` dict that this module's main-thread loop reads).
+`Thread.is_alive()`. `ui/streaming.py`'s StreamingRenderer uses a
+different shape (there, run_plan() calls back into on_event() itself, so
+no second thread is needed); here, nothing calls back into this thread,
+so this module supplies the thread -- intent_parser's own `on_token`
+callback runs on the worker thread, writing into the shared
+`on_token_box` dict that this module's main-thread loop reads.
 `run_with_thinking_indicator()` is the whole public surface: it runs any
 zero-arg callable (in practice, a `lambda: parse_intent(...)` closure from
 main.py) on a worker thread, shows the indicator while it runs, and
@@ -85,11 +78,9 @@ multi-second durations this indicator is actually shown for.
 
 --- GPU: "tiered-detection সাপেক্ষে, integrated GPU-তে চুপচাপ hide" ---
 Handled the same way hardware.py's own read_gpu()/render_system_line()
-already handle it: when hardware.read_gpu() returns None (no discrete
-NVIDIA GPU detected -- see hardware.py's own docstring for why only
-NVIDIA/nvidia-smi is implemented), the whole GPU line is simply omitted,
-silently, exactly like a None temperature/fan/model reading omits just
-its own segment rather than showing a placeholder.
+handle it: when hardware.read_gpu() returns None (no discrete NVIDIA GPU
+detected), the whole GPU line is omitted silently, the same as a None
+temperature/fan/model reading omits just its own segment.
 """
 
 from __future__ import annotations
@@ -127,15 +118,13 @@ def _bar(percent: float, *, width: int = _BAR_WIDTH) -> str:
     return "▓" * filled + "░" * (width - filled)
 
 
-# Usage-based dynamic color (user-requested, replacing every hardware line's
-# earlier flat `omsh.muted`): low/medium/high usage maps onto the same
-# three semantic shades this app already uses everywhere else for exactly
-# this low/medium/high distinction (ui/panels.py's risk-level text,
-# ui/streaming.py's step-status glyphs) -- reusing `OMSH_THEME`'s own
-# `omsh.risk.*` names here too, rather than inventing a fourth set of
-# thresholds/colors, keeps "what green/yellow/red mean" consistent across
-# the whole app. Thresholds (< 50% low, < 80% medium, else high) match
-# common system-monitor convention (htop/fastfetch's own bar coloring).
+# Usage-based dynamic color: low/medium/high usage maps onto the same three
+# semantic shades this app already uses elsewhere for exactly this
+# distinction (ui/panels.py's risk-level text, ui/streaming.py's
+# step-status glyphs) -- reusing `OMSH_THEME`'s own `omsh.risk.*` names
+# keeps "what green/yellow/red mean" consistent across the whole app.
+# Thresholds (< 50% low, < 80% medium, else high) match common
+# system-monitor convention (htop/fastfetch's own bar coloring).
 def _usage_style(percent: float) -> str:
     if percent < 50:
         return "omsh.risk.low"
@@ -150,34 +139,26 @@ _ROW_LABEL_WIDTH = len("CPU")  # "CPU"/"RAM"/"GPU" are always this length
 def render_hardware_lines(snapshot: hardware_module.HardwareSnapshot) -> list[Text]:
     """
     The three (or two, GPU-absent) per-metric lines, their bar columns
-    aligned to a common start position -- the user's explicit "should be
-    aligned properly" requirement. Labels are always the bare "CPU"/"RAM"/
-    "GPU" (never "CPU (<model>)"), so alignment no longer depends on model
-    name length at all; a model/part name, when known, is appended at the
-    END of its own line instead (the user's explicit correction: RAM has
-    no discoverable model name without root, via `dmidecode`, so putting
-    CPU's and GPU's model names right after their labels made RAM's
-    missing one look like an inconsistency rather than a genuine
-    unavailable-data gap -- moving all model names to line-end, after the
-    other real-time readings, keeps the three rows visually symmetric and
-    makes RAM's simply being the one row that never grows a trailing name
-    obviously a data-availability difference, not a formatting one).
+    aligned to a common start position. Labels are always the bare
+    "CPU"/"RAM"/"GPU" (never "CPU (<model>)"), so alignment doesn't depend
+    on model name length; a model/part name, when known, is appended at
+    the end of its own line instead. RAM has no discoverable model name
+    without root (via `dmidecode`), so putting CPU's and GPU's model names
+    right after their labels would make RAM's missing one look like an
+    inconsistency rather than a genuine unavailable-data gap -- moving all
+    model names to line-end keeps the three rows visually symmetric.
 
     Each line silently omits any segment its own reading doesn't have
     (CPU temperature, fan RPM, CPU model, GPU temperature) rather than
     showing a placeholder -- the same rule this module and hardware.py
-    have followed for every optional field from the start.
+    follow for every optional field.
 
-    Bug fix (user-requested, found alongside a wider real-terminal color
-    audit): every line used to be one flat `omsh.muted` color end to end,
-    including the bar and percentage themselves -- exactly the numbers a
-    person glancing at this indicator most wants a fast, at-a-glance
-    reading of "is this fine or not." The label stays `omsh.muted` (a
-    constant, not something that needs to draw the eye), but the bar glyph
-    string and its percentage now carry `_usage_style()`'s low/medium/high
-    color -- everything else on the line (temperature, RPM, model/part
-    name) stays `omsh.muted`, the same "quiet detail, not the headline
-    number" role it already had.
+    The label stays `omsh.muted` (a constant, not something that needs to
+    draw the eye), but the bar glyph string and its percentage carry
+    `_usage_style()`'s low/medium/high color, since that's the number a
+    person glancing at this indicator most wants a fast reading of.
+    Everything else on the line (temperature, RPM, model/part name) stays
+    `omsh.muted`, a quiet-detail role.
     """
     lines: list[Text] = []
 
@@ -272,13 +253,11 @@ def _streamed_text_line(text: str | None) -> Text | None:
     if not text:
         return None
     display_text = text if len(text) <= _STREAM_TEXT_MAX_CHARS else "…" + text[-(_STREAM_TEXT_MAX_CHARS - 1) :]
-    # Bug fix (post-Build-Order, found via real-terminal testing -- see
-    # ui/prompt.py's own "bold omsh.path" fix for the full root-cause
-    # story): a composite style STRING mixing a plain attribute ("dim")
-    # with a ui/theme.py "omsh.*" theme name silently renders completely
-    # unstyled in rich, rather than raising or falling back to the color
-    # alone. Combining a real `Style` object with the theme-resolved style
-    # directly sidesteps rich's string parser for the composite case.
+    # A composite style string mixing a plain attribute ("dim") with a
+    # ui/theme.py "omsh.*" theme name silently renders unstyled in rich
+    # (see ui/prompt.py's render_prompt for the same issue). Combining a
+    # real `Style` object with the theme-resolved style directly sidesteps
+    # rich's string parser for the composite case.
     style = Style(dim=True) + OMSH_THEME.styles["omsh.accent"]
     return Text(display_text, style=style)
 
@@ -295,14 +274,11 @@ def render_thinking_display(
     """
     The full stats + hardware + streamed-text group this module shows.
 
-    Layout fix (found via the user's own real end-to-end run, screenshot
-    attached): the raw JSON stream was originally placed directly under the
-    stats line, ABOVE the CPU/RAM/GPU hardware rows -- the user explicitly
-    asked for it the other way around, streamed text BELOW the hardware
-    stats, so the fixed-position system stats stay visually anchored at the
-    top of the indicator and the growing/scrolling JSON content sits at the
-    bottom where its variable height doesn't push the hardware rows around
-    frame to frame.
+    The streamed JSON text is placed below the CPU/RAM/GPU hardware rows,
+    not above them, so the fixed-position system stats stay visually
+    anchored at the top of the indicator and the growing/scrolling JSON
+    content sits at the bottom where its variable height doesn't push the
+    hardware rows around frame to frame.
     """
     renderables: list[Text] = [
         _thinking_line(

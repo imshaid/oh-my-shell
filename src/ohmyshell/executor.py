@@ -1,7 +1,5 @@
 """
-Streaming Executor (Build Order Step 10, half of "executor.py + trash.py";
-rewritten for the open-ended architecture -- see validation.py's module
-docstring for the full rationale).
+Streaming Executor (Build Order Step 10, half of "executor.py + trash.py").
 
 Runs a Plan (plan_generator.py), blocking, emitting a structured event
 stream -- Section 8.3.4's "Execution — Live Streaming ও Interrupt Handling"
@@ -15,49 +13,34 @@ Step 11 (ui/streaming.py) turns these events into the blueprint's
 (same split used by plan_generator.py/discussion.py/sudo_layer.py: plain
 data + a plain-text default renderer here, `rich` panels later).
 
---- Architecture change ---
-Under the original 4-action registry, a Plan carried an `action`/`params`
-pair and the executable command was rendered from capabilities.json's
-`command_template` at run time (see the removed `render_command()` and its
-shell-injection-safe `shlex.quote()` param substitution — no longer needed
-here, since there are no template params to substitute any more).
-
 Under the open-ended architecture, the Intent Parser's own model call
-already produced the final, complete, directly-runnable command text
+already produces the final, complete, directly-runnable command text
 (validation.py's ValidatedIntent.command); plan_generator.py carries it
-through unchanged onto Plan.command. So run_plan() now executes
-`plan.command` directly — no template, no registry lookup, no per-param
-quoting step. Shell-injection safety no longer applies the same way either:
-the whole command is model-generated free text, not a trusted template with
-untrusted param values spliced in, so there is no "trusted syntax vs.
-untrusted value" boundary left to enforce with shlex.quote() — the model's
-raw command IS the syntax. The one thing standing between a bad command and
-real execution is confirmation (discussion.py's plan panel) plus
-danger_classifier.py's independent risk check (both upstream of this
-module, unchanged in spirit from the raw-shell path that already worked
-this way before this rewrite).
+through unchanged onto Plan.command. run_plan() executes `plan.command`
+directly — no template, no registry lookup, no per-param quoting step.
+The whole command is model-generated free text, not a trusted template
+with untrusted param values spliced in, so there is no "trusted syntax
+vs. untrusted value" boundary to enforce with shlex.quote(). The one
+thing standing between a bad command and real execution is confirmation
+(discussion.py's plan panel) plus danger_classifier.py's independent risk
+check (both upstream of this module).
 
-Scope note: a plan is still always exactly one executable command per run
-(same as before — nothing in the open-ended architecture introduces
-multi-command plans), so run_plan() still reports one StepEvent/StepResult
-(step 1 of 1).
+Scope note: a plan is always exactly one executable command per run, so
+run_plan() reports one StepEvent/StepResult (step 1 of 1).
 
---- Design decisions (Section 16 Rule 5 -- confirmed with the user) ---
+--- Design decisions ---
 
-1. Sudo-escalation trigger: detection is reactive, same as before -- a step
-   runs normally first; if it fails with a shell "Permission denied" /
-   "Operation not permitted" signature in stderr, the executor treats that
-   as a permission-escalation case and calls sudo_layer.decide_step()
-   before deciding whether to retry the same command prefixed with `sudo`.
+1. Sudo-escalation trigger: detection is reactive -- a step runs normally
+   first; if it fails with a shell "Permission denied" / "Operation not
+   permitted" signature in stderr, the executor treats that as a
+   permission-escalation case and calls sudo_layer.decide_step() before
+   deciding whether to retry the same command prefixed with `sudo`.
 
 2. Timeouts/exit codes/error handling (the blueprint is silent on all
-   three): a non-zero exit for any reason OTHER than the permission-denied
-   case above is reported as "failed" (matching the event-format's status
-   enum); since a plan is currently always one command, "stopping the rest
-   of the plan" on failure is automatic. No process timeout is enforced
-   (nothing in the blueprint calls for one, and an artificial timeout sized
-   to the user's own data would be an arbitrary guess); Ctrl+C is the way
-   to stop a stuck step.
+   three): a non-zero exit for any reason other than the permission-denied
+   case above is reported as "failed"; since a plan is always one command,
+   "stopping the rest of the plan" on failure is automatic. No process
+   timeout is enforced; Ctrl+C is the way to stop a stuck step.
 
 Audit-log tie-in: run_plan() returns a complete ExecutionResult (step
 outcomes, interrupted flag, sudo usage) so whatever calls it has everything
@@ -220,59 +203,35 @@ class _PtyLineReader:
 
 class _PtyPopen:
     """
-    Bug fix (found via manual end-to-end testing, real-terminal session):
-    the plain-pipe `subprocess.Popen(..., stdout=PIPE)` path this executor
-    always used made every AI-generated/raw command's output arrive with
-    NO color, even for commands (`ls`, `grep`, `dpkg`, `git`, ...) whose
-    default behavior is to colorize automatically -- coreutils and most
-    modern CLI tools call `isatty()` on their stdout and silently disable
-    color the moment it's a pipe rather than a real terminal, which a
-    plain `Popen(stdout=PIPE)` always is. Compare against this same
-    project's OWN raw-shell path (Section 8.3.5's pass-through), which
-    never had this problem because it never redirects the child's
-    stdout/stderr at all -- they inherit this process's real terminal fds
-    directly.
+    Gives each child TWO real pseudo-terminals (one for stdout, one for
+    stderr -- kept separate so `_looks_like_permission_denied`'s
+    stderr-only check still works) instead of pipes. A plain
+    `Popen(stdout=PIPE)` makes `isatty()` false on the child's stdout, so
+    coreutils and most modern CLI tools (`ls`, `grep`, `dpkg`, `git`, ...)
+    silently disable their own auto-color. A pty's slave end behaves like
+    a real terminal from the child's point of view -- `isatty()` is true
+    on it -- so `--color=auto` activates with no special-casing per
+    command, exactly as it would in a real terminal.
 
-    The fix: give each child TWO real pseudo-terminals (one for stdout,
-    one for stderr -- kept separate so `_looks_like_permission_denied`'s
-    stderr-only check still works) instead of pipes. A pty's slave end
-    behaves like a real terminal from the child's point of view --
-    `isatty()` is true on it -- so `ls`'s (etc.) own `--color=auto`
-    default activates with no special-casing per command, exactly as it
-    would typing the same command directly into a terminal. Verified
-    directly (both in this fix's own development and by a plain-pipe vs.
-    pty comparison): `ls --color=auto` emits zero ANSI codes over a pipe,
-    real ANSI color codes over a pty.
+    This class keeps that pty plumbing entirely inside one object with
+    the exact same shape `_run_streaming` already consumes (`stdout` as a
+    line iterator, `stderr.read()`, `wait()`, `kill()`, `returncode`) --
+    see tests/test_executor.py's `_FakePopen`, which this mirrors on
+    purpose, so `_run_streaming` itself needed zero changes. Only the
+    default `popen_factory` (this class, via `_default_popen_factory`)
+    uses real ptys; every existing test injects its own `popen_factory`
+    and is unaffected.
 
-    This class exists to keep that pty plumbing entirely inside one
-    object with the exact same shape `_run_streaming` already consumes
-    (`stdout` as a line iterator, `stderr.read()`, `wait()`, `kill()`,
-    `returncode`) -- see tests/test_executor.py's `_FakePopen`, which this
-    mirrors on purpose, so `_run_streaming` itself needed zero changes.
-    Only the *default* `popen_factory` (this class, via
-    `_default_popen_factory`) uses real ptys; every existing test injects
-    its own `popen_factory` and is completely unaffected.
-
-    --- Second bug fix: wrong shell binary (found via a real screenshot --
-    `la` through an AI-generated plan came out with zero color/no custom
-    `eza` output at all, while the exact same `ls -la` run as a raw shell
-    command showed full color) ---
-    `subprocess.Popen(command, shell=True, ...)` with no `executable=`
-    kwarg always runs the command through `/bin/sh` (dash, on Ubuntu/most
-    distros) -- NOT the person's own real login shell, regardless of what
-    `$SHELL` is set to. That's a completely different bug from the pty-vs-
-    pipe one above: even with a real pty giving `isatty()` a true answer,
-    `/bin/sh` never sources the person's fish `config.fish`, so their own
-    aliases (`alias la=...`/`alias ls="eza ..."`) and `LS_COLORS`/similar
-    exports are simply never in scope for an AI-generated plan's command --
-    `main.py`'s OWN raw-shell path (`_raw_shell_popen_args`) already had
-    the right fix for the identical problem (prefer `$SHELL` when it points
-    at a real, existing executable); this constructor now does the same,
-    via `subprocess.Popen`'s `executable=` kwarg, which is precisely what
-    it exists for: pick a specific interpreter to run a `shell=True`
-    command string with, while `shell=True` itself is kept (pipes/
-    redirects/chaining an AI-generated command might use still need a real
-    shell to interpret the whole string, exactly as before).
+    The constructor also runs the command through the person's own real
+    login shell rather than the `/bin/sh` (dash) `subprocess.Popen(...,
+    shell=True)` uses by default with no `executable=` kwarg: `/bin/sh`
+    never sources the person's own shell config, so their aliases and
+    `LS_COLORS` would otherwise never be in scope for an AI-generated
+    plan's command. `main.py`'s raw-shell path (`_raw_shell_popen_args`)
+    has the same fix (prefer `$SHELL` when it points at a real, existing
+    executable); this constructor does the same via `subprocess.Popen`'s
+    `executable=` kwarg, keeping `shell=True` itself so pipes/redirects/
+    chaining an AI-generated command might use still work.
     """
 
     def __init__(self, command: str, *, shell: bool, text: bool, bufsize: int) -> None:
@@ -280,15 +239,14 @@ class _PtyPopen:
         err_master, err_slave = pty.openpty()
         shell_path = os.environ.get("SHELL")
         executable = shell_path if shell_path and shutil.which(shell_path) else None
-        # Same fish-greeting-noise env var main.py's OWN raw-shell path sets
+        # Same fish-greeting-noise env var main.py's raw-shell path sets
         # (`main._FISH_GUARD_ENV`, value "OMSH_RAW_EXEC") -- not imported
         # directly (main.py imports FROM executor.py, so the reverse import
-        # would be circular), just the same literal string. Now that this
+        # would be circular), just the same literal string. Since this
         # constructor runs AI-generated plan commands through the person's
-        # real fish (see this class's own docstring, "Second bug fix"
-        # above), config.fish's fastfetch/neofetch call would otherwise
-        # reprint before every single AI-executed command too, exactly the
-        # noise `ensure_fish_guard_installed()` already wraps that call to
+        # real fish, config.fish's fastfetch/neofetch call would otherwise
+        # reprint before every AI-executed command too, exactly the noise
+        # `ensure_fish_guard_installed()` already wraps that call to
         # prevent for raw shell commands -- this makes that same wrapped
         # guard fire here as well, so an AI-executed `ls`/`la`/etc. gets the
         # person's real aliases/LS_COLORS without the banner coming back.
@@ -367,15 +325,11 @@ def _run_streaming(
     popen_factory: Callable[..., Any],
 ) -> subprocess.CompletedProcess:
     """
-    Real per-line live progress (added post-Build-Order, per the user's
-    explicit "make the whole shell feel alive, every operation" request).
-
-    Runs `command` via `popen_factory` (default `subprocess.Popen`) instead
-    of the plain `runner` callable, reading its stdout ONE LINE AT A TIME
-    as the child process produces it (e.g. `mv -v`'s "renamed 'X' -> 'Y'"
-    per file, added to capabilities.json's clean_temp_files/organize_files
-    templates specifically so there's something genuine to stream) and
-    calling `on_output_line` for each -- this is what lets the UI layer
+    Real per-line live progress: runs `command` via `popen_factory`
+    (default `subprocess.Popen`) instead of the plain `runner` callable,
+    reading its stdout one line at a time as the child process produces
+    it (e.g. `mv -v`'s "renamed 'X' -> 'Y'" per file) and calling
+    `on_output_line` for each -- this is what lets the UI layer
     (ui/streaming.py's StreamingRenderer) show a real, growing file count
     instead of a spinner that never changes for the whole command's
     duration.
@@ -455,14 +409,13 @@ class _StepRunner:
         self.description = plan.steps[0] if plan.steps else plan.command
         self.on_before_execute = on_before_execute
         self.on_after_execute = on_after_execute
-        # `on_output_line`/`popen_factory` (added post-Build-Order): purely
-        # additive -- when `on_output_line` is None (every call site and
-        # test written before this feature, and still every call site that
-        # doesn't opt in), `_execute` below calls `self.runner` exactly as
-        # it always has. Only when a caller (main.py, for the real live
-        # terminal UI) supplies `on_output_line` does execution switch to
+        # `on_output_line`/`popen_factory` are purely additive -- when
+        # `on_output_line` is None (every call site that doesn't opt in),
+        # `_execute` below calls `self.runner` exactly as it always has.
+        # Only when a caller (main.py, for the real live terminal UI)
+        # supplies `on_output_line` does execution switch to
         # `_run_streaming`/Popen. This keeps the existing `runner` contract
-        # (and every test built on it) completely untouched.
+        # (and every test built on it) untouched.
         self.on_output_line = on_output_line
         self.popen_factory = popen_factory
 
@@ -485,21 +438,17 @@ class _StepRunner:
         # terminal (a `rich.Live` spinner, specifically) while `used_sudo`
         # is True.
         #
-        # --- Sudo password-prompt garbling bug fix (post-Build-Order,
-        # found via real-terminal testing) ---
         # A `sudo <command>` child process reads its password prompt from
         # (and writes it to) the controlling terminal directly -- not
         # through this process's own stdout/stderr, which `capture_output=
-        # True` pipes away regardless. `ui.streaming.StreamingRenderer`'s
-        # `rich.Live` display was still actively repainting the same
-        # terminal region at its own 8Hz refresh rate for the entire
-        # duration of that blocking call (nothing here ever told it to
-        # stop), so its redraws and sudo's own prompt/keystroke-echo writes
-        # collided -- observed as a garbled, overlapping prompt line and
-        # password entry silently not registering, needing several Enter
-        # presses before it "took". `used_sudo` is passed through so the
-        # hook only pauses rendering for the actual sudo-prefixed call,
-        # not the normal (non-elevated) command.
+        # True` pipes away regardless. Without pausing, `ui.streaming.
+        # StreamingRenderer`'s `rich.Live` display would keep repainting
+        # the same terminal region on its own refresh timer for the whole
+        # duration of that blocking call, colliding with sudo's own
+        # prompt/keystroke-echo writes -- a garbled, overlapping prompt
+        # line and password entry not registering. `used_sudo` is passed
+        # through so the hook only pauses rendering for the actual
+        # sudo-prefixed call, not the normal (non-elevated) command.
         if self.on_before_execute is not None:
             self.on_before_execute(used_sudo)
         try:
@@ -611,13 +560,11 @@ def run_plan(
     spinner) -- main.py uses these hooks to pause/resume that display
     around exactly the sudo-prefixed call, and only that one.
 
-    `on_output_line` (added post-Build-Order, per the user's explicit
-    "make the whole shell feel alive, every operation" request): optional,
-    called once per line of the command's stdout AS IT ARRIVES (not after
-    the command finishes). When given, execution switches internally from
-    `runner` to Popen-based real-time reading (see `_run_streaming`'s own
-    docstring for why this needed no threading and doesn't touch Ctrl+C
-    handling); when omitted (every pre-existing call site and test), the
+    `on_output_line`: optional, called once per line of the command's
+    stdout as it arrives (not after the command finishes). When given,
+    execution switches internally from `runner` to Popen-based real-time
+    reading (see `_run_streaming`'s own docstring for why this needs no
+    threading and doesn't touch Ctrl+C handling); when omitted, the
     original `runner`-based blocking call happens exactly as before --
     this parameter is purely additive. `popen_factory` is the Popen
     equivalent of `runner`, injectable for tests of the streaming path

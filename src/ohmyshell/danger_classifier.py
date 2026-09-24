@@ -17,51 +17,43 @@ destructive verdict, regardless of what flags are in the command text; this
 module itself has no special-case for `--yes`/`-y` because it has no
 concept of "confirmation" to bypass in the first place — it only classifies.
 
-Scope note (implementation decision): the regex rule set below is not from
-the blueprint (which specifies the two-tier approach but not the specific
-patterns) — these are the well-known classically-destructive Linux command
-patterns (recursive force-delete, disk-level writes, filesystem creation
-over an existing device, fork bombs, permission changes on system-critical
-paths). This list is deliberately conservative and will under-classify
-some destructive commands as SAFE (routed to the LLM fallback, or missed
-entirely if the LLM also doesn't flag it) rather than trying to enumerate
-every possible dangerous invocation — false negatives here are mitigated
-by the trash/undo system elsewhere (a mistakenly-unflagged `rm` still goes
-through a real shell and cannot be undone by this module regardless, since
-raw commands bypass the plan/trash pipeline entirely per Section 8.3.5;
-this classifier's job is only to add a confirmation step in front of
-commands recognizable as dangerous, not to guarantee safety for all of
-them).
+The regex rule set below covers the well-known classically-destructive
+Linux command patterns (recursive force-delete, disk-level writes,
+filesystem creation over an existing device, fork bombs, permission
+changes on system-critical paths). This list is deliberately conservative
+and will under-classify some destructive commands as SAFE (routed to the
+LLM fallback, or missed entirely if the LLM also doesn't flag it) rather
+than trying to enumerate every possible dangerous invocation — false
+negatives here are mitigated by the trash/undo system elsewhere (a
+mistakenly-unflagged `rm` still goes through a real shell and cannot be
+undone by this module, since raw commands bypass the plan/trash pipeline
+entirely per Section 8.3.5; this classifier's job is only to add a
+confirmation step in front of commands recognizable as dangerous, not to
+guarantee safety for all of them).
 
---- Independent risk-override layer (added for the open-ended architecture,
-Section 7.4's updated note; see validation.py's module docstring for the
-full rationale) ---
+--- Independent risk-override layer ---
 
 Under the open-ended architecture, a command's `risk` starts as the
 Intent Parser model's own self-assessment (validation.py's
-ValidatedIntent.risk) rather than a static per-action registry lookup —
-there is no registry mapping a free-form, model-generated command to a
-risk level any more. This session's own empirical testing (an 84-prompt
-battery against Gemini 3.1 Flash Lite and Gemini 3.5 Flash Lite, both
-candidate providers) found BOTH models reproducibly under-risked two
+ValidatedIntent.risk) rather than a static per-action registry lookup.
+Empirical testing (an 84-prompt battery against Gemini 3.1 Flash Lite and
+Gemini 3.5 Flash Lite) found both models reproducibly under-risked two
 specific classes of command: opening a network port / disabling a
 firewall, and creating a passwordless or otherwise under-secured user
-account. This reproduces, on different models, the exact failure pattern
-the blueprint's original static-registry design was built to avoid
-("Kill-process risk-consistency সব মডেলেই কমবেশি অস্থির").
+account.
 
 `override_risk()` below is a small, independent, regex-based check —
-deliberately narrow (it only targets the two specific blind spots actually
-observed in testing, not a general risk re-assessment) — that force-
-escalates risk to at least "high" for a command matching one of these
-patterns, regardless of what the model itself said. It is independent of
-both the LLM-based classify() fallback above and of the model that
-produced the command in the first place, so a model that is wrong about
-its own command's risk cannot suppress this check by simply saying "low"
-more convincingly. Callers (intent_parser.py's consumers, i.e. main.py) are
-expected to call this on every AI-generated command's (command, risk) pair
-before showing the confirmation plan, exactly as they already run
-classify() on every raw-shell command.
+deliberately narrow, targeting only the two specific blind spots observed
+in testing rather than a general risk re-assessment — that force-escalates
+risk to at least "high" for a command matching one of these patterns,
+regardless of what the model itself said. It is independent of both the
+LLM-based classify() fallback above and of the model that produced the
+command in the first place, so a model that is wrong about its own
+command's risk cannot suppress this check by simply saying "low" more
+convincingly. Callers (main.py) are expected to call this on every
+AI-generated command's (command, risk) pair before showing the
+confirmation plan, exactly as they already run classify() on every
+raw-shell command.
 """
 
 from __future__ import annotations
@@ -225,8 +217,8 @@ class GoogleAIStudioDangerBackend:
 # --- Independent risk-override patterns (see module docstring) ---------------
 #
 # Each tuple: (compiled pattern, reason). Deliberately narrow -- these exist
-# to catch the SPECIFIC blind spots this session's own testing reproduced
-# on two different Gemini models, not to be a general-purpose risk model.
+# to catch the specific blind spots reproduced across two different Gemini
+# models, not to be a general-purpose risk model.
 _UNDER_RISKED_PATTERNS: list[tuple[re.Pattern, str]] = [
     (
         # ufw/firewall-cmd/iptables allow rules, or opening a port with nc/socat

@@ -1,38 +1,20 @@
 """
 Sudo/Permission Escalation Layer (Build Order Step 9).
 
-Implements the "simple explicit approve-flow" described in Build Order Step 9
-("Module 3-এর pty-automation stretch goal-এর আগে") -- the pty-based automation
-mentioned there is explicitly a stretch goal and is NOT implemented here.
+Owns only the *decision*: given one plan step that needs elevated
+permission, ask the user Grant / Skip / Abort and return that decision as
+data. It does not itself invoke `sudo`, run any command, or write to the
+audit log — those are the Executor's and Audit Log's jobs.
 
-Scope decision (Section 16 Rule 5 -- documented since the Executor, Step 10,
-does not exist yet): this module owns only the *decision* -- given one plan
-step that needs elevated permission, ask the user Grant / Skip / Abort and
-return that decision as data. It does not itself invoke `sudo`, run any
-command, or write to the audit log. Those are the Executor's (Step 10) and
-Audit Log's (Step 12) jobs respectively; this module exposes a small, stable
-interface (`decide_step`, `SudoDecision`) that those modules will call into
-once they exist, so no code written here needs to change when they land.
+This layer only ever activates for steps from an AI-generated plan that are
+marked as needing elevated permission. It is never invoked when the user
+types `sudo` directly in a raw shell command — that goes straight to the OS
+password prompt with no extra confirmation (main.py's raw-shell path never
+calls into this module; only a Plan Generator step can reach here).
 
-Trigger rule (Section 8.3.6, line ~736): this layer only ever activates for
-steps that come from an AI-generated plan and are marked as needing elevated
-permission. It is explicitly NOT invoked when the user types `sudo` directly
-in a raw shell command -- that goes straight to the OS password prompt with
-no extra Oh My Shell confirmation, because the user already made an informed
-decision themselves (this is enforced by construction: main.py's raw-shell
-path in _handle_raw_shell never calls into this module at all; only a
-plan step -- something the Plan Generator produced -- can reach here).
-
-Abort behavior (documented assumption, Section 16 Rule 5): the blueprint's
-sudo-escalation box spells out Skip's behavior explicitly ("বাকি সম্পন্ন কাজ
-রক্ষা পায় ... audit log-এ 'skipped' নোট থাকে") but never states, beyond the
-"[Esc] Abort" menu label itself, what Abort does. The reasonable, standard
-reading of "Abort" next to "Skip this step" is: stop processing the
-*remaining* steps of the plan immediately, while whatever steps already ran
-successfully before this one stay done (the same "don't throw away completed
-work" principle the blueprint states explicitly for Skip). This module
-encodes that reading as the `ABORT` decision; the Executor (Step 10) is
-expected to honor it by not proceeding to any further step in the plan.
+On ABORT, the Executor stops processing the remaining plan steps while
+whatever already ran successfully stays done — the same "don't throw away
+completed work" principle as SKIP.
 """
 
 from __future__ import annotations
@@ -53,10 +35,7 @@ class SudoDecision(Enum):
 @dataclass(frozen=True)
 class ElevatedStep:
     """
-    One plan step that needs elevated permission.
-
-    `step_number`/`total_steps` and `description`/`reason` map directly onto
-    the blueprint's mockup box (Section 8.3.6):
+    One plan step that needs elevated permission (Section 8.3.6):
 
         ⚠ Next step requires elevated permission
         ┌─────────────────────────────────────────────────────┐
@@ -74,23 +53,16 @@ class ElevatedStep:
 
 class SudoPrompt(Protocol):
     """
-    Abstraction over however the UI actually asks the question.
-
-    Step 9 only needs a plain-text REPL prompt; Step 11 replaces the
-    implementation with a `rich`-rendered panel matching the blueprint's
-    mockup exactly, without this module (or its tests) needing to change --
-    only the concrete `SudoPrompt` implementation passed in changes.
+    Abstraction over however the UI actually asks the question — a plain
+    REPL prompt (InputPrompt below) or a rich-rendered panel (ui/panels.py)
+    can both implement this without this module needing to change.
     """
 
     def ask(self, step: ElevatedStep) -> SudoDecision: ...
 
 
 def render_prompt_text(step: ElevatedStep) -> str:
-    """
-    Plain-text rendering of the elevated-permission prompt (Step 9's own
-    UI -- rich panels are Step 11's job, same split as plan_generator.py /
-    discussion.py already use via render_plan_text).
-    """
+    """Plain-text rendering of the elevated-permission prompt."""
     return (
         f"⚠ Next step requires elevated permission\n"
         f"  Step {step.step_number}/{step.total_steps}: {step.description}\n"
@@ -101,12 +73,11 @@ def render_prompt_text(step: ElevatedStep) -> str:
 
 class InputPrompt:
     """
-    Default `SudoPrompt` implementation for Step 9: a blocking REPL prompt
-    using plain `input()`.
+    Default `SudoPrompt` implementation: a blocking REPL prompt using plain
+    `input()`.
 
-    Key mapping (documented default, since a real terminal Esc-key read
-    needs raw/cbreak mode that plain `input()` cannot do -- that belongs to
-    Step 11's rich/questionary-based UI layer, not here):
+    Key mapping (a real terminal Esc-key read needs raw/cbreak mode that
+    plain `input()` cannot do, so this uses typed shortcuts instead):
       - empty line (bare Enter)  -> GRANT
       - "s" / "S"                -> SKIP
       - "esc", "q", "Q", "abort" -> ABORT
@@ -114,11 +85,9 @@ class InputPrompt:
     """
 
     def __init__(self, *, input_fn: "callable[[str], str] | None" = None, print_fn: "callable[[str], None]" = print):
-        # `input_fn` defaults to None (not the `input` builtin directly) so
-        # that tests can monkeypatch this module's `input` name and have it
-        # take effect -- a default-argument value binds at function
-        # definition time, so `= input` here would freeze the reference to
-        # the ORIGINAL builtin, and be invisible to monkeypatch.
+        # Default to None rather than binding `= input` directly, so tests
+        # can monkeypatch this module's `input` name and have it take
+        # effect (a default-argument value binds at definition time).
         self._input_fn = input_fn
         self._print_fn = print_fn
 
@@ -140,18 +109,15 @@ class InputPrompt:
 def decide_step(step: ElevatedStep, *, prompt: SudoPrompt | None = None) -> SudoDecision:
     """
     Ask the user what to do about one elevated-permission plan step and
-    return their decision.
-
-    This function does not execute anything and does not write to the audit
-    log -- see the module docstring for why. The Executor is expected to
-    call this once per plan step that the registry/plan marks as needing
-    elevated permission, and to:
-      - on GRANT: run the step's command with sudo (normal OS password
+    return their decision. Does not execute anything or write to the audit
+    log itself — the Executor calls this once per step that needs elevated
+    permission and:
+      - on GRANT: runs the step's command with sudo (normal OS password
         prompt follows; Oh My Shell does not intercept or store it),
-      - on SKIP: leave the step un-run, keep going with the remaining
-        steps, and record "1 step skipped" in the audit log,
-      - on ABORT: stop the whole remaining plan, leaving already-completed
-        steps as-is, and record the abort in the audit log.
+      - on SKIP: leaves the step un-run, continues with remaining steps,
+        and records "1 step skipped" in the audit log,
+      - on ABORT: stops the remaining plan, leaving already-completed steps
+        as-is, and records the abort in the audit log.
     """
     active_prompt: SudoPrompt = prompt if prompt is not None else InputPrompt()
     return active_prompt.ask(step)

@@ -6,9 +6,7 @@ Path: ~/.oh-my-shell/config.json  (Section 5.5)
 Responsibilities:
 - Know the default config shape (used on first run / missing keys).
 - Load config.json from disk, creating it with defaults if it doesn't exist
-  yet (the wizard, Build Order Step 13, is what normally does the *first*
-  creation with hardware-aware model choices — this module's default here
-  is the static fallback shape, not a hardware-tiered pick).
+  yet (the wizard, Build Order Step 13, normally does the first creation).
 - Save config back to disk.
 - Dot-notation get/set for `/config set <k> <v>` (Section 8.4), e.g.
   `trash.retention_days` -> config["trash"]["retention_days"].
@@ -27,10 +25,7 @@ from typing import Any
 CONFIG_DIR = Path.home() / ".oh-my-shell"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
-# Exact default shape from Section 5.5. This is a *shape* reference —
-# the wizard (Step 13) may write a different `model.active` / `model.available`
-# pair depending on detected hardware tier (Section 9's tiering), but every
-# other default here is the literal blueprint value.
+# Default config shape (Section 5.5).
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
         "active": "gemini-3.5-flash-lite",

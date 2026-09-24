@@ -2,20 +2,20 @@
 Capability Registry (Build Order Step 3).
 
 Loads capabilities/capabilities.json and validates it against a fixed
-meta-schema at load time (Section 5.2 line "registry.py — capabilities.json
-loader + jsonschema check"; Section 5.4 reference schema).
+meta-schema at load time (Section 5.2/5.4).
 
-This is deliberately separate from the *per-call* constrained-decoding
-step (Section 7.4) — that validates one model response against one
-capability's params_schema at request time. This module instead validates
-the registry file itself, once, at startup: every entry must be structurally
+Not currently wired into the app — the Intent Parser now generates
+open-ended commands directly rather than mapping to a fixed capability set
+(see intent_parser.py). Kept for the earlier fixed-action architecture it
+was built for.
+
+This is deliberately separate from the per-call constrained-decoding step —
+that would validate one model response against one capability's
+params_schema at request time. This module instead validates the registry
+file itself, once, at load time: every entry must be structurally
 well-formed (required keys present, risk one of the known levels, its own
 params_schema a syntactically valid JSON Schema, etc.) before anything else
-in the app is allowed to trust it.
-
-Central design point carried over from the blueprint: `risk` is a static,
-hardcoded field on each registry entry. The harness always looks up risk
-here — never from model output (Section 7.4, line 502 in the blueprint).
+is allowed to trust it.
 """
 
 from __future__ import annotations

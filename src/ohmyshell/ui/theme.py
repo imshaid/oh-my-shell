@@ -1,99 +1,41 @@
 """
-Fixed UI accent palette (post-Build-Order, user-requested).
+Fixed UI accent palette.
 
---- Design decision this module exists to record (Section 16 Rule 5) ---
-Every earlier round of this app's own `rich` output (ui/panels.py,
-ui/prompt.py, ui/streaming.py) used `rich`'s NAMED colors directly as
-inline style strings ("cyan", "yellow", "green", "bold blue", ...),
-scattered across three files. Those names are deliberately
-terminal-theme-relative: `rich`/ANSI don't send an actual RGB value for
-"cyan", they send SGR code 36, and it's the person's own terminal
-emulator that decides what pixel color code 36 actually paints, per
-their own light/dark/Nord/Dracula/whatever theme. That's exactly right
-for *command output* (an `ls`/`grep`/etc.'s own colors, via LS_COLORS or
-the tool's own `--color` flag) -- this app has zero business overriding
-what the person's system already colors for them, and nothing about that
-changes here.
-
-It is a DIFFERENT, deliberate choice for oh-my-shell's OWN chrome (the
-plan panel's border, the prompt icon, the banner, risk labels, status
-glyphs): the person asked for this app to have a consistent, recognizable
-"brand" look -- comparable to how Claude Code's own CLI always shows the
-same accent color box/prompt regardless of which terminal or theme it's
-running in -- rather than blending into whatever 16-color palette the
-person's terminal theme happens to remap "cyan" or "yellow" to (which, on
-some real themes, can render close to unreadable against certain
-backgrounds, or just inconsistently across different people's machines
-screenshotted side by side).
-
-So: every fixed color below is a specific truecolor hex value (not a
-named ANSI color), applied ONLY to oh-my-shell's own UI chrome. Command
-output rendering (`ui/streaming.py`'s `_decode_ansi_block`, which turns a
-running command's own captured ANSI escapes into styled `Text`) is
-completely untouched by this module -- those colors still come from
-`LS_COLORS`/the tool's own choices, on principle, per the user's own
-earlier explicit direction that command-output color must stay
-system-theme-respecting.
+This app's own chrome (the plan panel's border, the prompt icon, the
+banner, risk labels, status glyphs) uses a consistent, recognizable
+"brand" look rather than blending into whatever 16-color palette the
+terminal's theme happens to remap "cyan" or "yellow" to. Every fixed
+color below is a specific truecolor hex value (not a named ANSI color),
+applied only to oh-my-shell's own UI chrome -- raw command output
+(`ui/streaming.py`'s `_decode_ansi_block`, turning a running command's
+own captured ANSI escapes into styled `Text`) is untouched by this
+module and continues to come from `LS_COLORS`/the tool's own choices,
+staying system-theme-respecting.
 
 Requires a terminal that supports truecolor (24-bit ANSI, `COLORTERM=
 truecolor` or `24bit`) to render the exact hex shades; `rich.console.
 Console` degrades a truecolor style to the nearest 256-color/16-color
 approximation automatically on a terminal that doesn't advertise
-truecolor support (this is `rich`'s own existing behavior, not something
-this module has to implement), so this is safe to use unconditionally --
-worst case on an old/limited terminal, the accent color is a close
-approximation instead of the exact hex, never a crash or missing color.
+truecolor support, so this is safe to use unconditionally.
 
---- The palette ---
-User-requested, THIRD major revision of this palette: the original
-indigo/violet "brand" accent (chosen to stay distinct from any real
-terminal theme) turned out to read as visually "off" against a real
-Nord-themed terminal (the person's own daily setup), and a separate
-attempt to paint a fixed full-window background behind it (so the
-accent palette would have a guaranteed-consistent backdrop) was itself
-abandoned after several rounds of real-terminal testing showed no
-reliable, scrollback-safe way to keep a painted background in sync with
-a continuously scrolling terminal (see git history / prior session
-notes for that full investigation). The person's explicit direction
-after that: give up the fixed-background approach entirely, and instead
-choose colors that work WITH their actual terminal theme (Nord) rather
-than fighting it with a competing fixed backdrop.
+The palette is mapped onto the Nord color palette
+(https://www.nordtheme.com/docs/colors-and-palettes) -- Nord's own named
+hex values for the semantic roles (errors/warnings/success/accent) this
+app needs. Nord's "Aurora" accent colors are tuned to read well against
+Nord's own "Polar Night" dark backgrounds, and stay reasonably legible on
+other dark themes too since they're moderate/muted rather than neon.
 
-So this palette is now mapped directly onto the Nord color palette
-(https://www.nordtheme.com/docs/colors-and-palettes) -- the same named
-hex values Nord itself defines for exactly the semantic roles
-(errors/warnings/success/accent) this app already needed, rather than
-an invented brand hue. Nord's own "Aurora" accent colors are
-deliberately tuned by the Nord project to already read well against
-Nord's own "Polar Night" dark backgrounds -- since the person's real
-terminal IS Nord-themed, using Nord's own colors means this app's
-chrome will look native to their setup instead of clashing with it,
-and stays reasonably legible on any other dark theme too since Nord's
-Aurora colors are moderate/muted rather than neon.
+No fixed background is set by this module -- oh-my-shell's own chrome
+renders with these foreground colors directly against whatever
+background the terminal already has, the same principle applied to raw
+command output above.
 
-No fixed background is set by this module at all anymore -- oh-my-shell's
-own chrome renders with these foreground colors directly against
-whatever background the person's own terminal already has, the same
-principle this file's own command-output rule (below) already applied
-to raw command output; the app's chrome and raw command output are now
-both consistently "respect the person's own terminal", just for
-different reasons (raw output because it was always meant to be
-system-theme-respecting; the app's own chrome because fighting a real
-terminal theme with a competing painted background was tried and
-explicitly abandoned).
-
---- Follow-up fix: dim/muted text contrast (same session) ---
-The first pass of this Nord remap used Nord3 (`#4C566A`) for every
-dim/secondary role (panel footers, key-hint lines, hardware stats,
-`/help` separators). A real screenshot from the person's own dark-navy
-Ptyxis window showed that text as almost unreadable -- too little
-contrast against a DARK background specifically. Root cause: Nord3 is
-the shade Nord's own docs/mockups use for dim text sitting on Nord's
-LIGHT "Snow Storm" surfaces, not on a dark background -- it was picked
-for the wrong side of Nord's own light/dark split. Fixed by using Nord4
-(`#D8DEE9`, "Snow Storm") for MUTED/ACCENT_DIM instead: still visibly
-dimmer than the saturated Aurora/Frost accents used elsewhere in this
-palette, but light enough to actually read against a dark terminal.
+MUTED/ACCENT_DIM uses Nord4 (`#D8DEE9`, "Snow Storm") rather than Nord3
+(`#4C566A`): Nord3 is the shade Nord's own docs/mockups use for dim text
+against Nord's light "Snow Storm" surfaces, not a dark background, where
+it reads as too low-contrast. Nord4 stays visibly dimmer than the
+saturated Aurora/Frost accents elsewhere in this palette while remaining
+legible on a dark terminal.
 """
 
 from __future__ import annotations
@@ -103,31 +45,20 @@ from rich.theme import Theme
 # Brand accent -- oh-my-shell's own signature color, used for its normal
 # (non-alert) chrome: the default prompt icon, plan-panel borders,
 # neutral confirmation panels, the startup banner accent.
-# Nord10 ("Frost", the deeper of Nord's two primary blues) -- Nord's own
-# tertiary-accent blue, distinct enough from nord8/nord9 (used elsewhere
-# in this palette) to read as this app's own signature color rather than
-# blending into ordinary Nord-themed syntax highlighting.
+# Nord10 ("Frost", the deeper of Nord's two primary blues) -- distinct
+# enough from nord8/nord9 (used elsewhere in this palette) to read as
+# this app's own signature color.
 ACCENT = "#5E81AC"
-# Nord3 (`#4C566A`) was tried first here since Nord's own docs call it the
-# "comments/subtle UI" shade -- but Nord picks that shade to sit against
-# Nord's LIGHT "Snow Storm" panels/gutters (its own editor mockups use it
-# on nord4/nord5/nord6 backgrounds), not against a dark terminal's own
-# near-black background. Confirmed against a real screenshot (the user's
-# own Ptyxis window, a dark navy background close to nord0): Nord3 text
-# there reads as almost invisible -- too little contrast against a DARK
-# background specifically, even though it's a perfectly readable "muted"
-# tone against a light one. Nord4 (`#D8DEE9`, "Snow Storm") is used
-# instead for every dim/secondary role below -- still visibly dimmer than
-# the saturated Aurora/Frost accent colors, but light enough to actually
-# read against a dark terminal background.
-ACCENT_DIM = "#D8DEE9"   # Nord4 -- dim/secondary accent (see note above)
+# Nord4 (`#D8DEE9`, "Snow Storm") -- dim/secondary accent; see module
+# docstring for why Nord3 isn't used here (too low-contrast on dark
+# backgrounds).
+ACCENT_DIM = "#D8DEE9"
 
 # AI-active state (prompt icon while a natural-language request is being
 # parsed/planned) -- a second, distinct hue so it reads as "something is
 # actively happening" separately from the resting accent color above.
 # Nord15 ("Aurora" purple) -- Nord's own color for "numbers and uncommon
-# functionality," repurposed here for the same "something unusual/active
-# is happening" role.
+# functionality," repurposed here for the same role.
 ACTIVE = "#B48EAD"
 
 # Semantic status colors -- Nord's own Aurora accent colors, used for
@@ -135,7 +66,7 @@ ACTIVE = "#B48EAD"
 SUCCESS = "#A3BE8C"      # Nord14 -- Nord's own success/string green
 WARNING = "#EBCB8B"      # Nord13 -- Nord's own warning/escape-character yellow
 DANGER = "#BF616A"       # Nord11 -- Nord's own error/deletion red
-MUTED = "#D8DEE9"        # Nord4 -- dim/secondary text (footers, hints, timestamps); see ACCENT_DIM's note above for why Nord3 was replaced
+MUTED = "#D8DEE9"        # Nord4 -- dim/secondary text (footers, hints, timestamps)
 
 # Folder name in the prompt -- kept distinct from the accent color so the
 # two pieces of the prompt (location vs. the app's own icon) read as
@@ -186,11 +117,8 @@ def themed_console(*args, **kwargs):
     a drop-in replacement.
 
     No forced background is applied here (see this module's own top
-    docstring, "THIRD major revision" -- the fixed-full-window-background
-    approach was tried and explicitly abandoned after it proved
-    impossible to keep reliably in sync with a scrolling terminal). This
-    app's chrome renders with `OMSH_THEME`'s foreground colors directly
-    against whatever background the person's own terminal already has.
+    docstring). This app's chrome renders with `OMSH_THEME`'s foreground
+    colors directly against whatever background the terminal already has.
     """
     from rich.console import Console
 
@@ -198,40 +126,26 @@ def themed_console(*args, **kwargs):
     return Console(*args, **kwargs)
 
 
-# --- Per-turn left-border ("bordered turn") mode (post-Build-Order, user-
-# requested: "I want when user run the oh my shell then automatically it
-# transform a full screen mode like claude code cli, and also should be
-# the history user can scrolled") ---
+# --- Per-turn left-border ("bordered turn") mode ---
 #
 # A true single alternate-screen-buffer full-screen app (what vim/htop do)
-# was explicitly ruled out by the user themselves once the trade-off was
-# explained: it would break their other explicit requirement, scrollable
-# history (alternate-screen mode has its own separate buffer that a
-# terminal's normal scrollback/mouse-wheel can't reach at all). What was
-# confirmed instead: each REPL turn (one prompt + everything that turn
-# produces) gets its own persistent left-accent bar down the terminal's
-# scrollback -- printed once per turn, never redrawn -- giving the
-# "this app has a consistent boxed identity" look without sacrificing
-# ordinary scrollback.
+# would break scrollable history, since alternate-screen mode has its own
+# separate buffer a terminal's normal scrollback/mouse-wheel can't reach.
+# Instead, each REPL turn (one prompt + everything that turn produces)
+# gets its own persistent left-accent bar down the terminal's scrollback,
+# printed once per turn, never redrawn.
 #
 # Scope, deliberately narrower than "wrap literally everything": this
 # bar wraps only ordinary (non-`rich.live.Live`) output -- the plan/
 # destructive/sudo panels, the execution summary text, banners, plain
-# status lines. It does NOT wrap `StreamingRenderer`'s or
+# status lines. It does not wrap `StreamingRenderer`'s or
 # `run_with_thinking_indicator`'s `Live`-driven spinner/progress
-# rendering. Verified directly (a working prototype was built and tested
-# against a real `Live` display): `Live`'s own in-place redraw sequences
-# use `\r` (carriage return) + ERASE_IN_LINE cursor-control codes mid-
-# block, not just line-by-line `\n`-terminated writes -- a line-prefixing
-# stream wrapper like this one cannot always tell "start of a new visual
-# line" from "mid-redraw cursor repositioning" from raw bytes alone, and
-# the result was a real, reproducible glitch (the bar character appearing
-# at the wrong column, sometimes twice, during a step's spinner). Rather
-# than risk introducing that glitch into the most failure-sensitive
-# rendering code in the app (StreamingRenderer/thinking-indicator, both
-# already carefully tuned around real terminal edge cases -- sudo-prompt
-# collisions, Ctrl+C timing, etc.), this stays scoped to static output
-# only, which is the safe, fully-verified case.
+# rendering, because `Live`'s own in-place redraw sequences use `\r`
+# (carriage return) + ERASE_IN_LINE cursor-control codes mid-block, not
+# just line-by-line `\n`-terminated writes -- a line-prefixing stream
+# wrapper like this one cannot reliably tell "start of a new visual line"
+# from "mid-redraw cursor repositioning" from raw bytes alone. This stays
+# scoped to static output only, the safe, verified case.
 class _BarWriter:
     """
     A file-like wrapper that prepends a styled left-accent bar to every
@@ -244,11 +158,10 @@ class _BarWriter:
     Treats a bare `\\r` (carriage return, no following `\\n`) as a line
     start too, not just `\\n` -- needed for `rich`'s own cursor-control
     sequences elsewhere in the app that use `\\r` to return to column 0
-    without literally starting a new terminal line; this wrapper is only
-    ever used around static (non-Live) output in practice (see this
-    module's own note above), but treating `\\r` correctly here as well
-    costs nothing and keeps this class correct as a general-purpose
-    primitive, not just "correct for the cases currently used".
+    without starting a new terminal line. This wrapper is only ever used
+    around static (non-Live) output in practice, but handling `\\r`
+    correctly here keeps this class correct as a general-purpose
+    primitive.
     """
 
     def __init__(self, real_file, *, bar: str) -> None:
@@ -296,11 +209,9 @@ def bordered_console(real_console, *, bar_style: str = "omsh.accent_dim") -> "Co
     shade so the border reads as a quiet margin marker, not a second loud
     accent competing with the panels it's wrapping.
 
-    No forced background here (see this module's own top docstring,
-    "THIRD major revision" -- the fixed-background approach was tried and
-    explicitly abandoned). This Console's panels render with `OMSH_THEME`'s
-    foreground colors directly against the person's own terminal
-    background, same as `themed_console()`.
+    No forced background here (see this module's own top docstring). This
+    Console's panels render with `OMSH_THEME`'s foreground colors directly
+    against the terminal's own background, same as `themed_console()`.
     """
     from rich.console import Console
     from rich.style import Style
@@ -337,11 +248,11 @@ def bordered_console(real_console, *, bar_style: str = "omsh.accent_dim") -> "Co
     # built from, stashed as a plain attribute so a caller holding only
     # the bordered Console (e.g. deep inside `_handle_natural_language`,
     # which is handed one `console=` parameter for the whole turn) can
-    # still reach the real, un-prefixed Console for anything that must
-    # NOT get the bar treatment -- `StreamingRenderer`/
+    # still reach the real, un-prefixed Console for anything that must not
+    # get the bar treatment -- `StreamingRenderer`/
     # `run_with_thinking_indicator`'s `Live`-driven rendering (see this
-    # module's own scope note above for why). A plain `Console()` (not
-    # built via this function) simply has no such attribute; callers use
+    # module's own scope note above). A plain `Console()` (not built via
+    # this function) has no such attribute; callers use
     # `getattr(console, "unbordered", console)` to fall back to the
     # console itself in that case.
     console.unbordered = real_console
