@@ -1233,6 +1233,81 @@ class TestEnsureFishGuardInstalled:
 _real_ensure_fish_guard_installed = main_module.ensure_fish_guard_installed
 
 
+class _StopAfterWizard(Exception):
+    """Sentinel raised from a patched `config_module.load` so `run()` tests
+    below can observe exactly what the wizard-retry block above it printed
+    without also having to fake out the entire REPL loop that follows."""
+
+
+class TestRunWizardErrorHandling:
+    """Covers the fresh-machine bug found via manual Docker testing: a
+    transient error from the live Gemini verification call (a 503 during
+    an API demand spike, in the real case that surfaced this) was raised
+    by wizard.run_wizard() as ApiKeyVerificationError and, uncaught by
+    run(), crashed the whole app with a raw traceback on a brand new
+    user's very first launch. wizard.py itself must keep raising --
+    test_wizard.py's own test_raises_when_key_verification_fails locks
+    that in -- so this is the retry/clean-message handling added at the
+    one call site in run() that invokes it.
+    """
+
+    def _run_with_wizard_mocked(self, monkeypatch, *, run_wizard_side_effect):
+        monkeypatch.setattr(main_module.wizard_module, "should_run_wizard", lambda: True)
+        run_wizard_mock = MagicMock(side_effect=run_wizard_side_effect)
+        monkeypatch.setattr(main_module.wizard_module, "run_wizard", run_wizard_mock)
+
+        buffer, console = _buffer_console()
+        monkeypatch.setattr(main_module, "themed_console", lambda: console)
+        monkeypatch.setattr(main_module.config_module, "load", MagicMock(side_effect=_StopAfterWizard))
+
+        return buffer, run_wizard_mock
+
+    def test_successful_verification_does_not_retry(self, monkeypatch):
+        buffer, run_wizard_mock = self._run_with_wizard_mocked(
+            monkeypatch, run_wizard_side_effect=[None]
+        )
+
+        with pytest.raises(_StopAfterWizard):
+            main_module.run()
+
+        assert run_wizard_mock.call_count == 1
+        assert "Couldn't verify" not in buffer.getvalue()
+
+    def test_transient_failure_then_success_retries_and_continues(self, monkeypatch):
+        buffer, run_wizard_mock = self._run_with_wizard_mocked(
+            monkeypatch,
+            run_wizard_side_effect=[
+                main_module.wizard_module.ApiKeyVerificationError("503 UNAVAILABLE. high demand"),
+                None,
+            ],
+        )
+
+        with pytest.raises(_StopAfterWizard):
+            main_module.run()
+
+        assert run_wizard_mock.call_count == 2
+        output = buffer.getvalue()
+        assert "Couldn't verify that API key" in output
+        assert "503 UNAVAILABLE" in output
+        assert "try again" in output.lower()
+
+    def test_exhausting_all_attempts_gives_up_cleanly_without_crashing(self, monkeypatch):
+        buffer, run_wizard_mock = self._run_with_wizard_mocked(
+            monkeypatch,
+            run_wizard_side_effect=main_module.wizard_module.ApiKeyVerificationError("invalid key"),
+        )
+
+        # Should return quietly (no unhandled exception reaching the caller,
+        # and in particular never reaching config_module.load -- if it did,
+        # our _StopAfterWizard sentinel would fire instead).
+        main_module.run()
+
+        assert run_wizard_mock.call_count == 3
+        output = buffer.getvalue()
+        assert output.count("Couldn't verify that API key") == 3
+        assert "Giving up after 3 attempts" in output
+
+
 # --- Removed / superseded tests --------------------------------------------------
 #
 # test_run_exits_process_if_registry_fails_to_load, and every `registry`

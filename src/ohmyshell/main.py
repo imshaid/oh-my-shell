@@ -1092,8 +1092,34 @@ def run() -> None:
 
     # First run: collect and verify the Google AI Studio API key before
     # config.load() would otherwise silently create a default config.json.
+    #
+    # verify_api_key() (called inside run_wizard) wraps *any* exception from
+    # the live Gemini call -- an invalid key, no network, or a transient
+    # server error like a 503 -- into ApiKeyVerificationError and lets it
+    # propagate uncaught (see wizard.py + test_raises_when_key_verification_fails,
+    # which locks that contract in at the wizard.py level). Found via a real
+    # fresh-machine test: a transient "503 UNAVAILABLE" from Gemini during
+    # key verification was crashing the whole app with a raw traceback on
+    # a brand new user's very first launch. The wizard module itself must
+    # keep raising -- the retry/clean-message handling belongs here, at the
+    # one place that actually knows this is a first-run, interactive flow.
     if wizard_module.should_run_wizard():
-        wizard_module.run_wizard(print_fn=console.print)
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                wizard_module.run_wizard(print_fn=console.print)
+                break
+            except wizard_module.ApiKeyVerificationError as exc:
+                console.print(f"  [omsh.danger]✗ Couldn't verify that API key: {exc}[/omsh.danger]")
+                if attempt < max_attempts:
+                    console.print("  [omsh.warning]This can happen with an invalid key or a temporary issue on Google's end. Let's try again.[/omsh.warning]")
+                else:
+                    console.print(
+                        "  [omsh.danger]Giving up after "
+                        f"{max_attempts} attempts. Re-run `oh-my-shell` to try again "
+                        "when ready.[/omsh.danger]"
+                    )
+                    return
 
     # Fish-greeting-noise fix (see `ensure_fish_guard_installed`'s own
     # docstring for the full story) -- idempotent, so this runs on every
