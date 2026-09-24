@@ -64,6 +64,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -333,6 +334,7 @@ class GoogleAIStudioBackend:
         for model_name in self.models:
             try:
                 model = genai.GenerativeModel(model_name, system_instruction=system_prompt)
+                call_start = time.monotonic()
                 if on_token is not None:
                     text = self._generate_streaming(
                         model, model_name=model_name, user_message=user_message, on_token=on_token
@@ -345,7 +347,9 @@ class GoogleAIStudioBackend:
                             "temperature": 0,
                         },
                     )
-                    self.last_telemetry = _telemetry_from_response(response, model_name=model_name)
+                    self.last_telemetry = _telemetry_from_response(
+                        response, model_name=model_name, duration_seconds=time.monotonic() - call_start
+                    )
                     text = response.text
             except Exception as exc:  # google.generativeai raises its own exception types
                 last_exc = exc
@@ -367,6 +371,7 @@ class GoogleAIStudioBackend:
         user_message: str,
         on_token: Callable[[StreamProgress], None],
     ) -> str:
+        call_start = time.monotonic()
         chunks = model.generate_content(
             user_message,
             generation_config={
@@ -396,7 +401,9 @@ class GoogleAIStudioBackend:
             )
             last_chunk = chunk
 
-        self.last_telemetry = _telemetry_from_response(last_chunk, model_name=model_name)
+        self.last_telemetry = _telemetry_from_response(
+            last_chunk, model_name=model_name, duration_seconds=time.monotonic() - call_start
+        )
         return "".join(text_parts)
 
 
@@ -405,7 +412,9 @@ def _looks_like_quota_error(exc: Exception) -> bool:
     return any(marker in text for marker in _QUOTA_ERROR_MARKERS)
 
 
-def _telemetry_from_response(response, *, model_name: str) -> ParseTelemetry:
+def _telemetry_from_response(
+    response, *, model_name: str, duration_seconds: float | None = None
+) -> ParseTelemetry:
     """
     Build a real ParseTelemetry from a google.generativeai response/chunk's
     `usage_metadata` (prompt_token_count / candidates_token_count), when
@@ -415,16 +424,27 @@ def _telemetry_from_response(response, *, model_name: str) -> ParseTelemetry:
     on this SDK don't carry it -- only the final one does) -- either way
     this falls back to just the model name rather than raising, matching
     ParseTelemetry's own "leave missing fields as None" convention.
+
+    `duration_seconds` (bug fix -- found via manual end-to-end testing: the
+    execution summary's "AI: N tokens total" line was missing its "Ns
+    reasoning time" half for every Google AI Studio call, unlike
+    OllamaBackend, which gets a real duration straight from Ollama's own
+    response. google.generativeai's response/usage_metadata carries no
+    timing field at all, so `generate()`/`_generate_streaming()` measure
+    wall-clock time around the call themselves (`time.monotonic()`) and
+    pass it through here -- always present when the caller measured it,
+    regardless of whether `usage_metadata` itself is populated.
     """
     if response is None:
-        return ParseTelemetry(model=model_name)
+        return ParseTelemetry(model=model_name, duration_seconds=duration_seconds)
     usage = getattr(response, "usage_metadata", None)
     if usage is None:
-        return ParseTelemetry(model=model_name)
+        return ParseTelemetry(model=model_name, duration_seconds=duration_seconds)
     return ParseTelemetry(
         tokens_in=getattr(usage, "prompt_token_count", None),
         tokens_out=getattr(usage, "candidates_token_count", None),
         model=model_name,
+        duration_seconds=duration_seconds,
     )
 
 

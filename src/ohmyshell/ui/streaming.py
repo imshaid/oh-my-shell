@@ -338,12 +338,28 @@ def render_execution_summary(result: ExecutionResult, *, telemetry: ParseTelemet
     docstring and `_ai_telemetry_line`. Omitted entirely when not given (a
     raw-shell command, which never went through the Intent Parser at all,
     or a caller that hasn't been updated to pass it).
+
+    Bug fix (found via manual end-to-end testing): a DONE step's actual
+    command output (`StepResult.stdout`) was captured by executor.py but
+    never rendered anywhere -- `on_output_line`'s live progress line only
+    covers commands that emit recognizable per-line progress (e.g. `mv -v`)
+    and disappears anyway once the transient `Live` display closes, so a
+    single-shot command like `dpkg --get-selections | wc -l` produced a
+    step description and nothing else: the actual answer the user asked
+    for was silently dropped. Printed here, once, after the step glyph
+    line, for any DONE step whose stdout is non-empty -- stderr is
+    similarly surfaced for FAILED steps, for the same reason (previously
+    only visible via a separate, easy-to-miss detail view).
     """
     lines = Text()
     for step_result in result.step_results:
         glyph, color = _STATUS_GLYPH.get(step_result.status, ("?", "white"))
         lines.append(f"{glyph} ", style=color)
         lines.append(f"Step {step_result.step_number}: {step_result.description}\n")
+        if step_result.status is StepStatus.DONE and step_result.stdout.strip():
+            lines.append(f"{step_result.stdout.rstrip()}\n")
+        elif step_result.status is StepStatus.FAILED and step_result.stderr.strip():
+            lines.append(f"{step_result.stderr.rstrip()}\n", style="red")
     ai_line = _ai_telemetry_line(telemetry)
     if ai_line is not None:
         lines.append(f"\n{ai_line}", style="dim")
