@@ -104,6 +104,7 @@ from ohmyshell import audit_log as audit_log_module
 from ohmyshell import config as config_module
 from ohmyshell import meta_commands
 from ohmyshell import trash as trash_module
+from ohmyshell import update_check as update_check_module
 from ohmyshell import wizard as wizard_module
 from ohmyshell.danger_classifier import Destructive, DangerClassifierError, classify, override_risk
 from ohmyshell.discussion import Cancelled, Confirmed, edit_command, run_discussion
@@ -1034,6 +1035,24 @@ def _handle_slash_command(
     tests that capture one Console's buffer).
     """
     active_console = console if console is not None else themed_console()
+
+    # /update shells out to git/pip (update_check.run_self_update), which is
+    # outside the thin-wrapper scope meta_commands.py's own module docstring
+    # describes for every other command, so it's intercepted here rather
+    # than added to that dispatch table.
+    command = text.strip().lstrip("/").split()[0].lower() if text.strip() else ""
+    if command == "update":
+        # __file__ -> src/ohmyshell/main.py, so three parents up is the
+        # repo root. Relies on install.sh's own `pip install -e` (editable
+        # install), which keeps __file__ pointing at the real checkout
+        # instead of a copied site-packages tree.
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        active_console.print("  [omsh.muted]Checking for updates...[/omsh.muted]")
+        succeeded, message = update_check_module.run_self_update(repo_root)
+        style = "omsh.success" if succeeded else "omsh.danger"
+        active_console.print(f"  [{style}]{message}[/{style}]")
+        return False
+
     try:
         outcome = meta_commands.dispatch(text, cfg=cfg, session_start=session_start)
     except meta_commands.MetaCommandError as exc:
@@ -1063,8 +1082,16 @@ def run() -> None:
     session_start = time.time()
     session = ReplSession()
 
+    # Started as early as possible so the GitHub Releases lookup has the
+    # most time to finish before pending_update() is read a few lines down
+    # -- it's still a best-effort check either way (see update_check.py's
+    # own module docstring: any failure or a not-yet-finished check just
+    # means the notice is skipped for this session, never a delay here).
+    update_check_module.check_for_update_async()
+
     console.print(_BANNER)
 
+    first_loop = True
     while True:
         # A blank line before every prompt: without it, one command's
         # output runs directly into the next "<folder> ❯ " line with no
@@ -1072,6 +1099,24 @@ def run() -> None:
         # passes through, is enough to separate turns without scattering
         # spacing concerns across every handler.
         console.print()
+
+        # Checked right before the very first prompt rather than
+        # immediately after check_for_update_async() up above -- the
+        # wizard/fish-guard/config-load steps between that call and here
+        # give the background GitHub Releases lookup a real chance to
+        # finish first. Still best-effort: a not-yet-finished check by
+        # this point just means the notice is skipped for this session
+        # (see update_check.py's own module docstring).
+        if first_loop:
+            first_loop = False
+            latest_version = update_check_module.pending_update()
+            if latest_version is not None:
+                console.print(
+                    f"  [omsh.muted]Update available: {latest_version} — run [/omsh.muted]"
+                    f"[omsh.accent]/update[/omsh.accent][omsh.muted] to install it.[/omsh.muted]"
+                )
+                console.print()
+
         try:
             raw_input_text = session.prompt(render_prompt_ansi(cfg))
         except (EOFError, KeyboardInterrupt):

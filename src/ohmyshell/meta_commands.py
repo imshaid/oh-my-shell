@@ -1,8 +1,15 @@
 """
 Meta-Command Handler (Build Order Step 14, final step) — full slash-command
 dispatch (`/help`, `/model`, `/history`, `/undo`, `/trash`, `/log`,
-`/capabilities`, `/explain`, `/stats`, `/system`, `/config`, `/clear`,
-`/exit`).
+`/capabilities`, `/explain`, `/stats`, `/system`, `/config`, `/update`,
+`/clear`, `/exit`).
+
+`/update` is the one exception to this module's own thin-wrapper rule
+below: it shells out to git/pip (update_check.run_self_update) rather than
+formatting another module's existing return value, so main.py intercepts
+and handles it directly before reaching dispatch() here. It's still listed
+in HELP_TEXT/_PER_COMMAND_HELP so `/help` stays a complete command
+reference.
 
 Section 10.1's own line (verbatim): "Meta-command handler + slash-commands
 (`/help`, `/model`, ইত্যাদি) — বিদ্যমান core logic-এর উপর thin wrapper" --
@@ -98,6 +105,7 @@ HELP_TEXT = """\
     [omsh.accent]/stats[/omsh.accent]          Session token usage & average latency
     [omsh.accent]/system[/omsh.accent]         Full hardware & shell status
     [omsh.accent]/config[/omsh.accent]         View or change settings
+    [omsh.accent]/update[/omsh.accent]         Check for and install the latest version
     [omsh.accent]/clear[/omsh.accent]          Clear the screen
     [omsh.accent]/exit[/omsh.accent]           Quit
 
@@ -117,6 +125,7 @@ _PER_COMMAND_HELP: dict[str, str] = {
     "config": "  [omsh.accent]/config[/omsh.accent]                View all current settings.\n"
     "  [omsh.accent]/config set <k> <v>[/omsh.accent]   Change one setting (dot-notation, e.g. trash.retention_days).",
     "system": "  [omsh.accent]/system[/omsh.accent]   Show OS, CPU, RAM, GPU, active model, and session stats.",
+    "update": "  [omsh.accent]/update[/omsh.accent]   Pull the latest version from git and reinstall (like install.sh's own update step).",
 }
 
 
