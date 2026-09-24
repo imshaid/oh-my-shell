@@ -8,7 +8,11 @@
 # wizard.py (the Python module) handles first-run API key setup once the
 # app itself can run; this script handles getting the app TO a runnable
 # state in the first place:
-#   1. clone the repo (or use an existing local checkout via OMSH_REPO_DIR)
+#   1. download the latest GitHub Release's source tarball and verify its
+#      SHA256 checksum against checksums.txt (also a release asset, built
+#      by .github/workflows/release.yml — see that file's own comment for
+#      why the checksum isn't hardcoded here) before extracting anything
+#      (or use an existing local checkout via OMSH_REPO_DIR)
 #   2. check for a usable Python (>=3.11, per pyproject.toml's requires-python)
 #   3. create a venv and install the package (editable install)
 #   4. symlink the entrypoint into /usr/local/bin and register it in
@@ -91,6 +95,8 @@ banner() {
 banner
 
 REPO_URL="https://github.com/imshaid/oh-my-shell.git"
+REPO_SLUG="imshaid/oh-my-shell"
+API_BASE="https://api.github.com/repos/$REPO_SLUG"
 
 # --- Environment --------------------------------------------------------------
 section "Environment"
@@ -112,26 +118,89 @@ else
     if ! command -v git >/dev/null 2>&1; then
         fail "git not found. Install git first."
     fi
-    ok "git found"
+    if ! command -v curl >/dev/null 2>&1; then
+        fail "curl not found. Install curl first."
+    fi
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        fail "sha256sum not found (usually part of coreutils)."
+    fi
+    ok "git, curl, sha256sum found"
 fi
 
 # --- Fetching ------------------------------------------------------------------
 section "Fetching"
 
 # OMSH_REPO_DIR lets a developer point this script at an existing local
-# checkout instead of cloning fresh (used for local testing of this script
-# itself; a curl-pipe run always takes the clone path).
+# checkout instead of downloading fresh (used for local testing of this
+# script itself; a curl-pipe run always takes the download-and-verify path
+# below).
 if [ -n "${OMSH_REPO_DIR:-}" ]; then
     REPO_ROOT="$(cd "$OMSH_REPO_DIR" && pwd)"
     ok "Using existing checkout at $REPO_ROOT"
 else
     INSTALL_DIR="${OMSH_INSTALL_DIR:-$HOME/.local/share/oh-my-shell}"
+
     if [ -d "$INSTALL_DIR/.git" ]; then
+        # Already installed via this script before -- a plain `git pull` is
+        # both simpler and faster than re-downloading and re-verifying a
+        # fresh tarball on every reinstall. Checksum verification's job is
+        # to protect the FIRST download; once there's a real git checkout,
+        # git's own integrity checks (and /update's `git pull --ff-only`)
+        # take over.
         run_step "Updating existing checkout" "git -C '$INSTALL_DIR' pull --ff-only"
+        REPO_ROOT="$INSTALL_DIR"
     else
-        run_step "Cloning imshaid/oh-my-shell" "git clone --depth 1 '$REPO_URL' '$INSTALL_DIR'"
+        WORK_DIR="$(mktemp -d)"
+        trap 'rm -rf "$WORK_DIR"' EXIT
+
+        TAG="$(curl -fsSL "$API_BASE/releases/latest" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+        if [ -z "$TAG" ]; then
+            fail "Could not determine the latest release tag from GitHub."
+        fi
+        ok "Latest release: $TAG"
+
+        TARBALL_URL="https://github.com/$REPO_SLUG/archive/refs/tags/$TAG.tar.gz"
+        CHECKSUMS_URL="https://github.com/$REPO_SLUG/releases/download/$TAG/checksums.txt"
+
+        run_step "Downloading source ($TAG)" \
+            "curl -fsSL -o '$WORK_DIR/source.tar.gz' '$TARBALL_URL'"
+        run_step "Downloading checksums.txt" \
+            "curl -fsSL -o '$WORK_DIR/checksums.txt' '$CHECKSUMS_URL'"
+
+        # checksums.txt (built by .github/workflows/release.yml) has the
+        # form "<sha256>  source.tar.gz" -- match it against our download
+        # by hash alone, since our local filename doesn't need to match.
+        EXPECTED_SHA="$(awk '{print $1; exit}' "$WORK_DIR/checksums.txt")"
+        ACTUAL_SHA="$(sha256sum "$WORK_DIR/source.tar.gz" | awk '{print $1}')"
+        if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            fail "Checksum mismatch -- download may be corrupted or tampered with. Expected $EXPECTED_SHA, got $ACTUAL_SHA."
+        fi
+        ok "Checksum verified"
+
+        run_step "Extracting" "mkdir -p '$WORK_DIR/extracted' && tar -xzf '$WORK_DIR/source.tar.gz' -C '$WORK_DIR/extracted' --strip-components=1"
+
+        rm -rf "$INSTALL_DIR"
+        mkdir -p "$(dirname "$INSTALL_DIR")"
+        mv "$WORK_DIR/extracted" "$INSTALL_DIR"
+
+        # A plain tarball has no .git directory, which would break /update's
+        # `git pull --ff-only` on every future run. Turning it into a real
+        # clone (fetch the tag, point local `main` at it, then fetch+track
+        # origin/main so a plain `git pull` knows what to fast-forward
+        # against -- a shallow `fetch --depth 1 origin <tag>` alone does NOT
+        # set that tracking info, which was confirmed by testing: without
+        # this last step, /update's `git pull --ff-only` fails with "There
+        # is no tracking information for the current branch") gives it real
+        # git history to fast-forward from next time, at the cost of one
+        # more network round trip during install -- a fair trade since
+        # install only happens once.
+        run_step "Setting up git for future updates" \
+            "git -C '$INSTALL_DIR' init -q && git -C '$INSTALL_DIR' remote add origin '$REPO_URL' && git -C '$INSTALL_DIR' fetch --depth 1 origin '$TAG' -q && git -C '$INSTALL_DIR' checkout -q FETCH_HEAD -- . && git -C '$INSTALL_DIR' branch -q -f main FETCH_HEAD && git -C '$INSTALL_DIR' symbolic-ref HEAD refs/heads/main && git -C '$INSTALL_DIR' remote set-branches origin main && git -C '$INSTALL_DIR' fetch origin main -q && git -C '$INSTALL_DIR' branch -q --set-upstream-to=origin/main main"
+
+        rm -rf "$WORK_DIR"
+        trap - EXIT
+        REPO_ROOT="$INSTALL_DIR"
     fi
-    REPO_ROOT="$INSTALL_DIR"
 fi
 cd "$REPO_ROOT"
 

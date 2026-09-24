@@ -1,0 +1,41 @@
+name: Release checksums
+
+# Runs whenever a GitHub Release is published (see Section 8.1's own
+# checksum-verification requirement). Computes the SHA256 of that release's
+# auto-generated source tarball and uploads it as a `checksums.txt` release
+# asset -- site/install.sh downloads and checks against this at install
+# time, so the checksum a user's install verifies against always matches
+# the release they're actually installing. Nothing here is hand-maintained
+# in install.sh itself, which is the whole point: a hardcoded checksum
+# would silently go stale the moment a new release shipped without it
+# being updated to match.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  checksum:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download this release's source tarball
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          curl -fsSL -o source.tar.gz \
+            "https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+
+      - name: Compute checksum
+        run: |
+          sha256sum source.tar.gz | awk '{print $1"  source.tar.gz"}' > checksums.txt
+          cat checksums.txt
+
+      - name: Upload checksums.txt to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "${TAG}" checksums.txt --repo "${{ github.repository }}" --clobber
