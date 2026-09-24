@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Oh My Shell</title>
+    <meta
+      name="description"
+      content="An AI-powered, natural-language Linux shell. Type a request in plain English, review a plan, confirm, and watch it execute."
+    />
+    <style>
+      :root {
+        --bg: #2e3440;
+        --bg-panel: #3b4252;
+        --bg-terminal: #242933;
+        --border: #4c566a;
+        --text: #e5e9f0;
+        --muted: #d8dee9;
+        --dim: #7b88a1;
+        --accent: #5e81ac;
+        --path: #88c0d0;
+        --success: #a3be8c;
+        --warning: #ebcb8b;
+        --danger: #bf616a;
+        --active: #b48ead;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          "SFMono-Regular", "JetBrains Mono", "Fira Code", Consolas, Menlo,
+          monospace;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        width: 100vw;
+        padding: 4vh 5vw;
+        gap: clamp(1.4rem, 3.2vh, 2.6rem);
+        background:
+          radial-gradient(
+            ellipse 80% 60% at 50% 0%,
+            rgba(94, 129, 172, 0.1),
+            transparent
+          ),
+          var(--bg);
+      }
+
+      .brand {
+        display: flex;
+        align-items: baseline;
+        gap: 0.5rem;
+        font-size: clamp(1.8rem, 4.2vw, 3.2rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .brand .glyph {
+        color: var(--accent);
+      }
+      .brand .rest {
+        color: var(--text);
+      }
+
+      .tagline {
+        max-width: 46rem;
+        text-align: center;
+        color: var(--muted);
+        font-size: clamp(0.85rem, 1.3vw, 1.05rem);
+        line-height: 1.6;
+        margin: 0;
+      }
+      .tagline .hl {
+        color: var(--path);
+      }
+
+      .install-box {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        background: var(--bg-terminal);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
+        max-width: min(92vw, 42rem);
+        width: 100%;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+      }
+      .install-box .prompt-glyph {
+        color: var(--success);
+        flex-shrink: 0;
+      }
+      .install-box code {
+        flex: 1;
+        min-width: 0;
+        color: var(--text);
+        font-size: clamp(0.62rem, 1.7vw, 0.92rem);
+      }
+
+      @media (min-width: 561px) {
+        .install-box code {
+          overflow-x: auto;
+          white-space: nowrap;
+        }
+      }
+      @media (max-width: 560px) {
+        .install-box {
+          flex-wrap: wrap;
+          align-items: flex-start;
+        }
+        .install-box code {
+          white-space: normal;
+          word-break: break-all;
+          line-height: 1.5;
+        }
+        .install-box .prompt-glyph {
+          margin-top: 0.15rem;
+        }
+        .install-box .copy-btn {
+          margin-left: auto;
+        }
+      }
+      .install-box code .cmd {
+        color: var(--path);
+      }
+      .install-box code .pipe {
+        color: var(--dim);
+      }
+      .install-box code .url {
+        color: var(--warning);
+      }
+      .copy-btn {
+        flex-shrink: 0;
+        background: var(--bg-panel);
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-family: inherit;
+        font-size: 0.72rem;
+        padding: 0.4rem 0.65rem;
+        border-radius: 6px;
+        cursor: pointer;
+        transition:
+          border-color 0.15s,
+          color 0.15s;
+      }
+      .copy-btn:hover {
+        border-color: var(--accent);
+        color: var(--text);
+      }
+      .copy-btn.copied {
+        border-color: var(--success);
+        color: var(--success);
+      }
+
+      .features {
+        display: flex;
+        gap: clamp(0.8rem, 2.2vw, 2rem);
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 90vw;
+      }
+      .feature {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: clamp(0.66rem, 1.05vw, 0.82rem);
+        color: var(--dim);
+      }
+      .feature .dot {
+        color: var(--success);
+        flex-shrink: 0;
+      }
+      .feature b {
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      .footer {
+        display: flex;
+        align-items: center;
+        gap: 1.2rem;
+        font-size: clamp(0.62rem, 1vw, 0.78rem);
+        color: var(--dim);
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 90vw;
+      }
+      .footer a {
+        color: var(--dim);
+        text-decoration: none;
+        border-bottom: 1px solid transparent;
+        transition:
+          color 0.15s,
+          border-color 0.15s;
+        white-space: nowrap;
+      }
+      .footer a:hover {
+        color: var(--path);
+        border-color: var(--path);
+      }
+      .footer .sep {
+        color: var(--border);
+      }
+      .footer .req {
+        color: var(--dim);
+        white-space: nowrap;
+      }
+
+      @media (max-height: 480px) {
+        .features {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="brand">
+      <span class="glyph">✦</span><span class="rest">Oh My Shell</span>
+    </div>
+
+    <p class="tagline">
+      An AI-powered, <span class="hl">natural-language</span> Linux shell. Type
+      a request in plain English, review a step-by-step plan, confirm, and watch
+      it execute.
+    </p>
+
+    <div class="install-box">
+      <span class="prompt-glyph">❯</span>
+      <code id="install-cmd"
+        ><span class="cmd">curl</span> -fsSL
+        <span class="url">https://oh-my-shell.pages.dev/install.sh</span>
+        <span class="pipe">|</span> <span class="cmd">bash</span></code
+      >
+      <button class="copy-btn" id="copy-btn" type="button">Copy</button>
+    </div>
+
+    <div class="features">
+      <div class="feature">
+        <span class="dot">●</span><span><b>Plan → confirm → execute</b></span>
+      </div>
+      <div class="feature">
+        <span class="dot">●</span><span><b>Danger-aware</b></span>
+      </div>
+      <div class="feature">
+        <span class="dot">●</span><span><b>Checksum-verified install</b></span>
+      </div>
+      <div class="feature">
+        <span class="dot">●</span><span><b>Auto-updating</b></span>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span class="req">Ubuntu / Debian · Python 3.11+</span>
+      <span class="sep">·</span>
+      <a
+        href="https://github.com/imshaid/oh-my-shell"
+        target="_blank"
+        rel="noopener"
+        >GitHub</a
+      >
+      <span class="sep">·</span>
+      <a
+        href="https://github.com/imshaid/oh-my-shell/releases"
+        target="_blank"
+        rel="noopener"
+        >Releases</a
+      >
+      <span class="sep">·</span>
+      <span class="req">MIT License</span>
+    </div>
+
+    <script>
+      const btn = document.getElementById("copy-btn");
+      const raw = "curl -fsSL https://oh-my-shell.pages.dev/install.sh | bash";
+      btn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(raw);
+        } catch (e) {
+          const ta = document.createElement("textarea");
+          ta.value = raw;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        btn.textContent = "Copied!";
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.textContent = "Copy";
+          btn.classList.remove("copied");
+        }, 1600);
+      });
+    </script>
+  </body>
+</html>
