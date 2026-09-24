@@ -19,7 +19,7 @@ truth) for full architecture, model-selection benchmarks, and specs.
 
 - Ubuntu 22.04+ / Debian-family Linux
 - Python 3.11+
-- [Ollama](https://ollama.com) (installed automatically by the first-run wizard)
+- A Google AI Studio API key (free at https://aistudio.google.com/apikey — the first-run wizard asks for it)
 
 ## Development setup
 

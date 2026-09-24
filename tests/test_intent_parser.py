@@ -1,17 +1,15 @@
 """
-Tests for intent_parser.py (Build Order Step 5), rewritten for the
-open-ended architecture (see intent_parser.py's own module docstring).
+Tests for intent_parser.py (Build Order Step 5), open-ended architecture.
 
 Uses a fake IntentBackend for all the parse_intent() flow tests, so these
-run fast/deterministic without needing a real Ollama install, model, or
-network call -- only the `test_ollama_backend_*` tests mock `ollama.chat`
-directly (unchanged in spirit from before), and the GoogleAIStudioBackend
+run fast/deterministic without any network call. The GoogleAIStudioBackend
 rollover tests inject a fake `genai`-like client via monkeypatching
 `GoogleAIStudioBackend._client`, never making a real network call.
 """
 
+
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -174,96 +172,6 @@ def test_malformed_json_from_backend_treated_as_validation_failure():
     assert backend.call_count == 2
 
 
-# --- OllamaBackend: think:false / schema-format contract -----------------------
-
-
-def _fake_stream_chunk(*, content="", done=False, **fields):
-    chunk = MagicMock()
-    chunk.message = MagicMock()
-    chunk.message.content = content
-    chunk.eval_count = fields.get("eval_count")
-    chunk.prompt_eval_count = fields.get("prompt_eval_count")
-    chunk.total_duration = fields.get("total_duration")
-    chunk.model = fields.get("model")
-    chunk.done = done
-    return chunk
-
-
-def test_ollama_backend_passes_think_false_schema_format_and_stream():
-    final_content = json.dumps({"command": "ls", "risk": "low", "explanation": "List files."})
-    chunks = [
-        _fake_stream_chunk(content=final_content[:5]),
-        _fake_stream_chunk(content=final_content[5:]),
-        _fake_stream_chunk(
-            content="",
-            done=True,
-            eval_count=12,
-            prompt_eval_count=40,
-            total_duration=500_000_000,
-            model="qwen3:8b",
-        ),
-    ]
-
-    schema = intent_parser.build_schema()
-
-    with patch("ohmyshell.intent_parser.ollama.chat", return_value=iter(chunks)) as mock_chat:
-        backend = intent_parser.OllamaBackend(model="qwen3:8b")
-        result = backend.generate(system_prompt="sys", user_message="hello", schema=schema)
-
-    assert result == final_content
-    _, kwargs = mock_chat.call_args
-    assert kwargs["think"] is False
-    assert kwargs["format"] == schema  # actual schema dict, never the string "json"
-    assert kwargs["model"] == "qwen3:8b"
-    assert kwargs["stream"] is True
-    assert backend.last_telemetry.tokens_out == 12
-    assert backend.last_telemetry.tokens_in == 40
-    assert backend.last_telemetry.duration_seconds == 0.5
-
-
-def test_ollama_backend_calls_on_token_for_every_chunk():
-    final_content = json.dumps({"command": "ls", "risk": "low", "explanation": ""})
-    chunks = [
-        _fake_stream_chunk(content=final_content[:5]),
-        _fake_stream_chunk(content=final_content[5:10]),
-        _fake_stream_chunk(content=final_content[10:]),
-        _fake_stream_chunk(content="", done=True, eval_count=12, prompt_eval_count=40, total_duration=500_000_000),
-    ]
-    schema = intent_parser.build_schema()
-    seen: list[intent_parser.StreamProgress] = []
-
-    with patch("ohmyshell.intent_parser.ollama.chat", return_value=iter(chunks)):
-        backend = intent_parser.OllamaBackend(model="qwen3:8b")
-        backend.generate(system_prompt="sys", user_message="hello", schema=schema, on_token=seen.append)
-
-    assert len(seen) == 4
-    assert [p.tokens_out for p in seen] == [1, 2, 3, 3]
-    assert seen[0].text_delta == final_content[:5]
-    assert seen[1].text_delta == final_content[5:10]
-    assert seen[0].text_so_far == final_content[:5]
-    assert seen[1].text_so_far == final_content[:10]
-    assert seen[2].text_so_far == final_content
-
-
-def test_ollama_backend_raises_intent_parse_error_on_client_exception():
-    with patch("ohmyshell.intent_parser.ollama.chat", side_effect=RuntimeError("connection refused")):
-        backend = intent_parser.OllamaBackend(model="qwen3:8b")
-        with pytest.raises(intent_parser.IntentParseError):
-            backend.generate(system_prompt="sys", user_message="hi", schema={})
-
-
-def test_parse_intent_forwards_on_token_when_backend_supports_it():
-    final_content = json.dumps({"command": "ls", "risk": "low", "explanation": ""})
-    chunks = [_fake_stream_chunk(content=final_content, done=True, eval_count=5)]
-    seen: list[intent_parser.StreamProgress] = []
-
-    with patch("ohmyshell.intent_parser.ollama.chat", return_value=iter(chunks)):
-        backend = intent_parser.OllamaBackend(model="qwen3:8b")
-        intent_parser.parse_intent("anything", backend=backend, on_token=seen.append)
-
-    assert len(seen) == 1
-
-
 def test_parse_intent_ignores_on_token_when_backend_does_not_support_it():
     """
     A backend with the older 3-kwarg generate() signature (every
@@ -302,10 +210,10 @@ class TestLooksLikeQuotaError:
 # --- GoogleAIStudioBackend: rollover behavior -----------------------------------
 #
 # Tested by monkeypatching GoogleAIStudioBackend._client to return a fake
-# "genai" object exposing just what generate() actually calls
-# (GenerativeModel(...).generate_content(...)) -- no real network call, no
-# real google.generativeai import side effects beyond what _client() itself
-# already does elsewhere in the app.
+# "client" object exposing just what generate() actually calls
+# (client.models.generate_content(...) / generate_content_stream(...)) -- no
+# real network call, no real google.genai import side effects beyond what
+# _client() itself already does elsewhere in the app.
 
 
 class _FakeResponse:
@@ -325,30 +233,28 @@ class _FakeStreamChunk:
         self.usage_metadata = usage_metadata
 
 
-class _FakeGenerativeModel:
-    def __init__(self, model_name, *, system_instruction=None, behavior):
-        self.model_name = model_name
-        self.behavior = behavior
-
-    def generate_content(self, user_message, *, generation_config, stream=False):
-        outcome = self.behavior(self.model_name)
-        if isinstance(outcome, Exception):
-            raise outcome
-        if stream:
-            return iter(outcome) if not isinstance(outcome, str) else iter(
-                [_FakeStreamChunk(text=outcome, usage_metadata=_FakeUsageMetadata(prompt_token_count=1, candidates_token_count=1))]
-            )
-        return _FakeResponse(outcome)
-
-
-class _FakeGenAI:
-    """Stands in for the `genai` module GoogleAIStudioBackend._client() returns."""
-
+class _FakeModels:
     def __init__(self, behavior):
         self._behavior = behavior
 
-    def GenerativeModel(self, model_name, system_instruction=None):
-        return _FakeGenerativeModel(model_name, system_instruction=system_instruction, behavior=self._behavior)
+    def generate_content(self, *, model, contents, config=None):
+        outcome = self._behavior(model)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return _FakeResponse(outcome)
+
+    def generate_content_stream(self, *, model, contents, config=None):
+        outcome = self._behavior(model)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return iter(outcome)
+
+
+class _FakeGenAI:
+    """Stands in for the `client` object GoogleAIStudioBackend._client() returns."""
+
+    def __init__(self, behavior):
+        self.models = _FakeModels(behavior)
 
 
 class TestGoogleAIStudioBackendRollover:
@@ -418,14 +324,9 @@ class TestGoogleAIStudioBackendRollover:
 
 class TestGoogleAIStudioBackendStreaming:
     """
-    Regression coverage: GoogleAIStudioBackend's first cut made only a
-    single blocking, non-streaming call and left `on_token`/live token
-    counts entirely unimplemented (unlike OllamaBackend) -- this was never
-    surfaced to the project owner as a deliberate trade-off, and was fixed
-    after a real end-to-end session showed no live streaming/telemetry for
-    this provider. These tests cover the fix: `on_token` switches
-    generate() onto the `stream=True` path, and real token counts are
-    recovered from the (only-on-the-final-chunk) `usage_metadata`.
+    `on_token` switches generate() onto the `stream=True` path, and real
+    token counts are recovered from the (only-on-the-final-chunk)
+    `usage_metadata`.
     """
 
     def test_on_token_switches_to_streaming_and_reports_deltas(self):
@@ -532,13 +433,8 @@ class TestGoogleAIStudioBackendStreaming:
 # --- parse_intent: provider selection -------------------------------------------
 
 
-def test_parse_intent_defaults_to_google_ai_studio_provider_when_no_backend_given(monkeypatch):
-    """
-    Confirms _backend_for()'s selection logic without a real network call:
-    monkeypatch GoogleAIStudioBackend.generate itself so parse_intent()'s
-    default construction path (model_provider="google_ai_studio") is what's
-    actually exercised.
-    """
+def test_parse_intent_defaults_to_google_ai_studio_backend_when_no_backend_given(monkeypatch):
+    """Confirms _backend_for() builds a GoogleAIStudioBackend by default."""
 
     def fake_generate(self, *, system_prompt, user_message, schema):
         return json.dumps({"command": "ls", "risk": "low", "explanation": ""})
@@ -548,38 +444,3 @@ def test_parse_intent_defaults_to_google_ai_studio_provider_when_no_backend_give
     result = intent_parser.parse_intent("anything")
 
     assert result.action == "ls"
-
-
-def test_parse_intent_uses_ollama_backend_when_provider_is_ollama():
-    final_content = json.dumps({"command": "ls", "risk": "low", "explanation": ""})
-    chunks = [_fake_stream_chunk(content=final_content, done=True, eval_count=5)]
-
-    with patch("ohmyshell.intent_parser.ollama.chat", return_value=iter(chunks)):
-        result = intent_parser.parse_intent("anything", model_provider="ollama", model="qwen3:8b")
-
-    assert result.action == "ls"
-
-
-# --- Removed tests (no longer applicable) ---------------------------------------
-#
-# test_build_schema_includes_all_registry_actions_plus_unmapped,
-# test_build_schema_requires_action_risk_params (old required set included
-# "params"), test_system_prompt_lists_every_registered_action_description,
-# test_system_prompt_includes_knowledge_file_content_when_present,
-# test_system_prompt_tolerates_missing_knowledge_file,
-# test_system_prompt_includes_each_capabilitys_few_shot_examples,
-# test_system_prompt_tolerates_capability_with_no_few_shot_examples,
-# test_format_capability_line_* (three tests), test_model_says_unmapped_on_
-# first_try_no_retry, test_retry_attempt_says_unmapped_falls_back_to_
-# unmapped, test_unknown_action_falls_back_to_unmapped_after_retry --
-# _build_system_prompt/_format_capability_line/build_schema(registry) and
-# the whole knowledge_path mechanism were all removed (there is no registry
-# to describe capabilities from any more -- SYSTEM_PROMPT is now one fixed
-# constant, see intent_parser.py's own module docstring). The old
-# "unmapped" MODEL OUTPUT tests no longer apply either -- the model always
-# tries to produce a real command now; "unmapped" only occurs when both
-# harness-validation attempts fail (covered above).
-# test_google_ai_studio_fallback_is_not_yet_implemented tested the old
-# _call_google_ai_studio() NotImplementedError stub, which is gone now that
-# GoogleAIStudioBackend is a real, implemented backend (see
-# TestGoogleAIStudioBackendRollover above for its replacement coverage).

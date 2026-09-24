@@ -22,7 +22,7 @@ Design notes (Section 16 Rule 5 -- this glue is this file's own decision):
   to each other here so they're easy to keep in sync with meta_commands.py's
   command set by eye.
 - Only top-level command names are matched (e.g. "/model"), not their
-  subcommands ("/model switch qwen3:8b") -- matching how Claude Code's own
+  subcommands ("/model switch gemini-3.1-flash-lite") -- matching how Claude Code's own
   "/" palette works (it lists the command, not every argument), and because
   meta_commands.py's subcommand shapes vary too much (some take a fixed
   enum like /trash's status|keep|clear, others take a free-form model name

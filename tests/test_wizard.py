@@ -18,109 +18,120 @@ def _snapshot(*, ram_gb: float, has_gpu: bool = False, core_count: int = 8) -> h
     )
 
 
-class TestChooseModel:
-    def test_low_ram_chooses_smallest_model(self):
-        assert wizard.choose_model(_snapshot(ram_gb=4.0)) == "phi4-mini"
+class TestVerifyApiKey:
+    def test_returns_true_when_verify_fn_succeeds(self):
+        assert wizard.verify_api_key("some-key", verify_fn=lambda key: True) is True
 
-    def test_mid_ram_no_gpu_chooses_mid_cpu_model(self):
-        assert wizard.choose_model(_snapshot(ram_gb=12.0, has_gpu=False)) == "qwen3.5:4b"
+    def test_raises_when_verify_fn_raises(self):
+        def _fail(key):
+            raise wizard.ApiKeyVerificationError("bad key")
 
-    def test_mid_ram_with_gpu_chooses_gpu_model(self):
-        assert wizard.choose_model(_snapshot(ram_gb=12.0, has_gpu=True)) == "lfm2.5-8b-a1b"
+        with pytest.raises(wizard.ApiKeyVerificationError):
+            wizard.verify_api_key("bad-key", verify_fn=_fail)
 
-    def test_high_ram_chooses_largest_model(self):
-        assert wizard.choose_model(_snapshot(ram_gb=32.0)) == "qwen3:8b"
 
-    def test_high_ram_with_gpu_still_chooses_largest_model(self):
-        # documented default: GPU is only a tie-breaker in the middle band
-        assert wizard.choose_model(_snapshot(ram_gb=32.0, has_gpu=True)) == "qwen3:8b"
+class TestSaveApiKey:
+    def test_writes_key_to_env_file(self, tmp_path):
+        env_path = tmp_path / ".oh-my-shell" / ".env"
+        wizard.save_api_key("my-real-key", env_path=env_path)
 
-    def test_boundary_at_8gb_is_mid_tier_not_low(self):
-        assert wizard.choose_model(_snapshot(ram_gb=8.0)) == "qwen3.5:4b"
+        assert env_path.exists()
+        assert env_path.read_text(encoding="utf-8") == "GOOGLE_AI_STUDIO_API_KEY=my-real-key\n"
 
-    def test_boundary_at_16gb_is_high_tier_not_mid(self):
-        assert wizard.choose_model(_snapshot(ram_gb=16.0)) == "qwen3:8b"
-
-    def test_chosen_model_is_always_in_config_available_list(self):
-        available = config_module.DEFAULT_CONFIG["model"]["available"]
-        for ram in (2.0, 8.0, 12.0, 16.0, 64.0):
-            for has_gpu in (True, False):
-                assert wizard.choose_model(_snapshot(ram_gb=ram, has_gpu=has_gpu)) in available
+    def test_creates_parent_directory_if_missing(self, tmp_path):
+        env_path = tmp_path / "nested" / ".oh-my-shell" / ".env"
+        wizard.save_api_key("key", env_path=env_path)
+        assert env_path.exists()
 
 
 class TestRenderWelcomeText:
     def test_includes_cpu_and_ram(self):
         result = wizard.WizardResult(
             snapshot=_snapshot(ram_gb=16.0, core_count=12),
-            chosen_model="qwen3:8b",
+            api_key_saved=True,
             config=config_module.default_config(),
         )
         text = wizard.render_welcome_text(result)
         assert "12 CPU cores" in text
         assert "16.0GB RAM" in text
 
-    def test_includes_chosen_model(self):
+    def test_includes_model_name(self):
         result = wizard.WizardResult(
-            snapshot=_snapshot(ram_gb=16.0), chosen_model="qwen3:8b", config=config_module.default_config(),
+            snapshot=_snapshot(ram_gb=16.0), api_key_saved=True, config=config_module.default_config(),
         )
         text = wizard.render_welcome_text(result)
-        assert "qwen3:8b" in text
+        assert wizard.DEFAULT_MODEL in text
 
     def test_includes_gpu_name_when_present(self):
         result = wizard.WizardResult(
-            snapshot=_snapshot(ram_gb=16.0, has_gpu=True), chosen_model="qwen3:8b", config=config_module.default_config(),
+            snapshot=_snapshot(ram_gb=16.0, has_gpu=True), api_key_saved=True, config=config_module.default_config(),
         )
         text = wizard.render_welcome_text(result)
         assert "NVIDIA Test GPU" in text
 
     def test_omits_gpu_line_when_absent(self):
         result = wizard.WizardResult(
-            snapshot=_snapshot(ram_gb=16.0, has_gpu=False), chosen_model="qwen3:8b", config=config_module.default_config(),
+            snapshot=_snapshot(ram_gb=16.0, has_gpu=False), api_key_saved=True, config=config_module.default_config(),
         )
         text = wizard.render_welcome_text(result)
         assert "GPU:" not in text
 
     def test_mentions_how_to_change_model_later(self):
         result = wizard.WizardResult(
-            snapshot=_snapshot(ram_gb=16.0), chosen_model="qwen3:8b", config=config_module.default_config(),
+            snapshot=_snapshot(ram_gb=16.0), api_key_saved=True, config=config_module.default_config(),
         )
         text = wizard.render_welcome_text(result)
-        assert "/model" in text
+        assert "model.active" in text
 
 
 class TestRunWizard:
-    def test_writes_chosen_model_to_config_file(self, tmp_path, monkeypatch):
+    def _run(self, tmp_path, monkeypatch, **overrides):
         monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
         monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
+        kwargs = dict(
+            read_hardware=lambda: _snapshot(ram_gb=32.0),
+            read_api_key=lambda: "test-api-key",
+            verify_fn=lambda key: True,
+            print_fn=lambda _: None,
+            env_path=tmp_path / ".env",
+        )
+        kwargs.update(overrides)
+        return wizard.run_wizard(**kwargs)
 
-        result = wizard.run_wizard(read_hardware=lambda: _snapshot(ram_gb=32.0), print_fn=lambda _: None)
+    def test_writes_default_config_file(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch)
 
-        assert result.chosen_model == "qwen3:8b"
         loaded = config_module.load()
-        assert config_module.get(loaded, "model.active") == "qwen3:8b"
+        assert config_module.get(loaded, "model.active") == wizard.DEFAULT_MODEL
 
-    def test_save_config_false_does_not_write_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
-        monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
+    def test_saves_api_key_to_env_file(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch)
 
-        wizard.run_wizard(read_hardware=lambda: _snapshot(ram_gb=32.0), print_fn=lambda _: None, save_config=False)
+        env_path = tmp_path / ".env"
+        assert env_path.exists()
+        assert "test-api-key" in env_path.read_text(encoding="utf-8")
+
+    def test_raises_when_key_verification_fails(self, tmp_path, monkeypatch):
+        def _fail(key):
+            raise wizard.ApiKeyVerificationError("invalid key")
+
+        with pytest.raises(wizard.ApiKeyVerificationError):
+            self._run(tmp_path, monkeypatch, verify_fn=_fail)
+
+    def test_save_config_false_does_not_write_files(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch, save_config=False)
 
         assert not (tmp_path / "config.json").exists()
+        assert not (tmp_path / ".env").exists()
 
     def test_prints_welcome_text(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
-        monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
-
         printed = []
-        wizard.run_wizard(read_hardware=lambda: _snapshot(ram_gb=32.0), print_fn=printed.append)
+        self._run(tmp_path, monkeypatch, print_fn=printed.append)
         assert len(printed) == 1
         assert "Welcome to Oh My Shell" in printed[0]
 
     def test_returned_config_has_other_defaults_intact(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
-        monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
-
-        result = wizard.run_wizard(read_hardware=lambda: _snapshot(ram_gb=4.0), print_fn=lambda _: None)
+        result = self._run(tmp_path, monkeypatch)
         assert result.config["trash"]["retention_days"] == 8
 
 

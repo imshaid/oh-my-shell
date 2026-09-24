@@ -93,12 +93,10 @@ class TestThinkingLineLiveTokens:
     caller has them (on_token_box), and must show nothing extra when it
     doesn't -- never a fake/zeroed figure.
 
-    Bug-fix note: earlier coverage asserted a single "N tokens" shape fed
-    straight from `chunk.eval_count` -- wrong, because ollama only
-    populates eval_count on the final streamed chunk (see
-    intent_parser.StreamProgress's own docstring), so that number never
-    actually changed until the very end. The live shape is now "in / out"
-    counts, both driven by OllamaBackend's own client-side running tally.
+    Only the final streamed chunk carries real token counts (see
+    intent_parser.StreamProgress's own docstring), so the live shape is
+    "in / out" counts, both driven by the backend's own client-side
+    running tally.
     """
 
     def test_no_telemetry_no_live_tokens_shows_only_elapsed(self):
@@ -133,7 +131,7 @@ class TestThinkingLineLiveTokens:
         already encode the same counts) are shown instead of the live
         ones -- avoids showing the same count twice in two different shapes.
         """
-        telemetry = ParseTelemetry(tokens_in=94, tokens_out=62, duration_seconds=0.8, model="qwen3:8b")
+        telemetry = ParseTelemetry(tokens_in=94, tokens_out=62, duration_seconds=0.8, model="gemini-3.5-flash-lite")
         text = _render_to_text(
             _thinking_line(
                 elapsed_seconds=0.8, telemetry=telemetry, live_tokens_out=62, live_tokens_in=94
@@ -141,7 +139,7 @@ class TestThinkingLineLiveTokens:
         )
         assert "94 in / 62 out" in text
         assert "tok/s" in text
-        assert "qwen3:8b" in text
+        assert "gemini-3.5-flash-lite" in text
 
 
 class TestStreamedTextLine:
@@ -235,7 +233,7 @@ class TestRenderThinkingDisplay:
         JSON on this transient, about-to-disappear indicator would be
         redundant clutter.
         """
-        telemetry = ParseTelemetry(tokens_out=5, duration_seconds=0.1, model="qwen3:8b")
+        telemetry = ParseTelemetry(tokens_out=5, duration_seconds=0.1, model="gemini-3.5-flash-lite")
         text = _render_to_text(
             render_thinking_display(
                 elapsed_seconds=1.0,

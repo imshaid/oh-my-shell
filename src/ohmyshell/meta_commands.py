@@ -141,7 +141,7 @@ class CommandOutcome:
 
 
 def _parse(text: str) -> tuple[str, list[str]]:
-    """Split "/model switch qwen3:8b" into ("model", ["switch", "qwen3:8b"])."""
+    """Split "/model switch gemini-3.1-flash-lite" into ("model", ["switch", "gemini-3.1-flash-lite"])."""
     tokens = shlex.split(text) if text.strip() else []
     if not tokens:
         return "", []
@@ -381,8 +381,6 @@ def _render_system_line_colored(snapshot: hardware_module.HardwareSnapshot) -> s
 def _handle_system(cfg: dict, session_start: float, *, runner=subprocess.run, base_dir=None) -> str:
     snapshot = hardware_module.read_snapshot(runner=runner)
     active_model = config_module.get(cfg, "model.active")
-    provider = cfg.get("model", {}).get("provider", "google_ai_studio")
-    provider_label = "Google AI Studio (Gemini)" if provider == "google_ai_studio" else "local (Ollama)"
     uptime_seconds = max(0.0, time.time() - session_start)
     uptime_minutes = int(uptime_seconds // 60)
     session_count = len(audit_log_module.entries_since(session_start, base_dir=base_dir))
@@ -394,7 +392,7 @@ def _handle_system(cfg: dict, session_start: float, *, runner=subprocess.run, ba
         "",
         "  [bold][omsh.accent]Oh My Shell[/omsh.accent][/bold]",
         "  [omsh.muted]────────────────────────────────[/omsh.muted]",
-        f"  Active model: [omsh.accent]{active_model}[/omsh.accent]  ·  Provider: [omsh.accent]{provider_label}[/omsh.accent]  ·  uptime [omsh.muted]{uptime_minutes}m[/omsh.muted]",
+        f"  Active model: [omsh.accent]{active_model}[/omsh.accent]  ·  uptime [omsh.muted]{uptime_minutes}m[/omsh.muted]",
         f"  Session: [omsh.accent]{session_count}[/omsh.accent] requests",
     ]
     return "\n".join(lines)

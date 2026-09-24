@@ -19,12 +19,10 @@ def isolated_config(tmp_path, monkeypatch):
 
 def test_default_config_matches_blueprint_shape():
     defaults = config_module.default_config()
-    assert defaults["model"]["active"] == "qwen3:8b"
+    assert defaults["model"]["active"] == "gemini-3.5-flash-lite"
     assert defaults["model"]["available"] == [
-        "qwen3:8b",
-        "qwen3.5:4b",
-        "phi4-mini",
-        "lfm2.5-8b-a1b",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
     ]
     assert defaults["safety"]["safe_mode"] is False
     assert defaults["safety"]["danger_classifier_sensitivity"] == "normal"
@@ -72,7 +70,7 @@ def test_load_fills_in_missing_keys_from_older_config(isolated_config):
     # Simulate an older config.json missing a newer top-level section entirely,
     # and missing one nested key inside an existing section.
     partial = {
-        "model": {"active": "qwen3:8b", "available": ["qwen3:8b"]},
+        "model": {"active": "gemini-3.5-flash-lite", "available": ["gemini-3.5-flash-lite"]},
         "safety": {"safe_mode": True},  # missing danger_classifier_sensitivity
         # trash, ui, log, discussion sections entirely absent
     }
@@ -118,7 +116,7 @@ def test_save_writes_readable_json(isolated_config):
 def test_get_reads_nested_dot_key():
     cfg = config_module.default_config()
     assert config_module.get(cfg, "trash.retention_days") == 8
-    assert config_module.get(cfg, "model.active") == "qwen3:8b"
+    assert config_module.get(cfg, "model.active") == "gemini-3.5-flash-lite"
 
 
 def test_get_raises_keyerror_for_missing_path():

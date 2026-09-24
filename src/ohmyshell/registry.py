@@ -5,7 +5,7 @@ Loads capabilities/capabilities.json and validates it against a fixed
 meta-schema at load time (Section 5.2 line "registry.py — capabilities.json
 loader + jsonschema check"; Section 5.4 reference schema).
 
-This is deliberately separate from the *per-call* Ollama constrained-decoding
+This is deliberately separate from the *per-call* constrained-decoding
 step (Section 7.4) — that validates one model response against one
 capability's params_schema at request time. This module instead validates
 the registry file itself, once, at startup: every entry must be structurally

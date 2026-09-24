@@ -70,18 +70,13 @@ capabilities' command_templates report a total up front (see this
 module's older scope note below, still true) -- an honest "in progress,
 working" animation rather than a fabricated percentage.
 
-The "AI: N tokens · Ns reasoning time" line (added post-Build-Order, found
-via manual end-to-end testing): intent_parser.OllamaBackend already reads
-real prompt_eval_count/eval_count/total_duration off every ollama.chat()
-response into ParseTelemetry -- that data existed all along, it just never
-reached this renderer. `render_execution_summary` now takes an optional
-`telemetry` (the same ParseTelemetry main.py already threads into the plan
-panel's own footer) and, when given, prints this line using the plan's
-total token count (tokens_in + tokens_out, matching "N tokens total" in the
-mockup, as distinct from the plan panel's separate in/out breakdown) and
-duration_seconds as reasoning time. Left out (not a fake "0 tokens" line)
-when telemetry is None or empty -- a raw-shell command, for instance, never
-went through the Intent Parser at all and has nothing genuine to show here.
+The "AI: N tokens · Ns reasoning time" line: `render_execution_summary`
+takes an optional `telemetry` (the same ParseTelemetry main.py threads into
+the plan panel's own footer) and, when given, prints this line using the
+plan's total token count (tokens_in + tokens_out) and duration_seconds as
+reasoning time. Left out when telemetry is None or empty -- a raw-shell
+command never went through the Intent Parser and has nothing genuine to
+show here.
 """
 
 from __future__ import annotations

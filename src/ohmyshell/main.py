@@ -228,10 +228,10 @@ def _handle_raw_shell(
     which is what makes it unable to bypass this confirmation.
 
     Fail-safe policy (this function's own choice, not the classifier's):
-    if the LLM fallback itself fails (Ollama unreachable, etc.), the
-    command is treated as unclassifiable and NOT run automatically — the
-    user is told why and asked to re-run manually, rather than silently
-    executing something that couldn't be checked.
+    if the LLM fallback itself fails, the command is treated as
+    unclassifiable and NOT run automatically — the user is told why and
+    asked to re-run manually, rather than silently executing something
+    that couldn't be checked.
 
     Every outcome (run / cancelled / trashed) is recorded to the audit log
     (source="raw_shell") so /history, /log, and /stats see raw-shell
@@ -854,8 +854,7 @@ def _handle_natural_language(
     No Capability Registry is involved any more — the Intent Parser now
     produces one real, directly-runnable command itself instead of
     action/params for a fixed set of registered capabilities (see
-    intent_parser.py's own docstring for the full rationale and the
-    explicit local-model rollback path the project owner asked to keep).
+    intent_parser.py's own docstring).
 
     Wiring decisions (Section 16 Rule 5 -- this glue is not itself spelled
     out anywhere in the retrieved blueprint text, only each module's own
@@ -938,13 +937,6 @@ def _handle_natural_language(
     # console)` simply falls back to using it directly -- identical to
     # this function's behavior before bordered-turn mode existed.
     live_console = getattr(active_console, "unbordered", active_console)
-    model = config_module.get(cfg, "model.active")
-    # "google_ai_studio" (Gemini 3.5/3.1 Flash Lite) by default per this
-    # session's own empirical comparison; "ollama" is the explicit
-    # rollback path the project owner asked to keep available -- flip
-    # `/config set model.provider ollama` to switch back with no code
-    # change. See intent_parser.py's own docstring for the full rationale.
-    model_provider = cfg.get("model", {}).get("provider", "google_ai_studio")
 
     # `run_with_thinking_indicator` (ui/thinking.py) replaces the plain
     # `active_console.status("Thinking...")` spinner with the Section
@@ -956,8 +948,8 @@ def _handle_natural_language(
     # the first cut only updated a number once, at the very end -- see
     # intent_parser.StreamProgress's own docstring for the root cause).
     # `token_box` is written by parse_intent()'s own on_token callback (one
-    # dict update per streamed chunk, from intent_parser.OllamaBackend --
-    # see that module's docstring) and read every UI frame by the Live
+    # dict update per streamed chunk, from intent_parser.GoogleAIStudioBackend
+    # -- see that module's docstring) and read every UI frame by the Live
     # polling loop below -- see run_with_thinking_indicator's own
     # `on_token_box` docstring for why a plain dict needs no lock here.
     token_box: dict[str, object] = {}
@@ -970,7 +962,7 @@ def _handle_natural_language(
 
     try:
         result = run_with_thinking_indicator(
-            lambda: parse_intent(text, model_provider=model_provider, model=model, on_token=_on_token),
+            lambda: parse_intent(text, on_token=_on_token),
             console=live_console,
             on_token_box=token_box,
         )
@@ -1014,9 +1006,7 @@ def _handle_natural_language(
 
         try:
             adjusted = run_with_thinking_indicator(
-                lambda: parse_intent(
-                    adjustment_text, model_provider=model_provider, model=model, on_token=_on_reparse_token
-                ),
+                lambda: parse_intent(adjustment_text, on_token=_on_reparse_token),
                 console=live_console,
                 on_token_box=reparse_token_box,
             )
@@ -1174,19 +1164,8 @@ def run() -> None:
     """Entrypoint (see pyproject.toml's [project.scripts] and bin/oh-my-shell)."""
     console = themed_console()
 
-    # Bug fix (found via manual end-to-end testing, post-Build-Order):
-    # wizard.py (Build Order Step 13) was fully written and tested but
-    # never actually called from here -- this entrypoint went straight to
-    # config_module.load(), whose own docstring says it silently creates a
-    # static-default config.json "on first run" with no wizard involved.
-    # wizard.py's own should_run_wizard() docstring already documents the
-    # expectation this violated: "main.py ... is expected to call this
-    # before config.load() and run_wizard() first if it's True, since
-    # config.load() itself would otherwise silently create a default
-    # config file without ever asking the user anything." The result: the
-    # hardware-aware first-run model recommendation (Section 10.1) never
-    # actually reached a real user -- every fresh install silently got the
-    # static qwen3:8b default regardless of the machine's hardware.
+    # First run: collect and verify the Google AI Studio API key before
+    # config.load() would otherwise silently create a default config.json.
     if wizard_module.should_run_wizard():
         wizard_module.run_wizard(print_fn=console.print)
 

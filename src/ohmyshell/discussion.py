@@ -13,10 +13,10 @@ structure rather than blueprint open questions):
 - "Chat/adjust" ([c]) means re-running the Intent Parser with the user's
   free-text adjustment appended as extra context, then regenerating the
   plan from whatever validated intent comes back. This module doesn't
-  call Ollama directly — it takes a `reparse` callback (expected to wrap
-  intent_parser.parse_intent + plan_generator.generate_plan) so this
-  module stays testable without a real model and doesn't need to import
-  intent_parser itself.
+  call the model backend directly — it takes a `reparse` callback
+  (expected to wrap intent_parser.parse_intent + plan_generator.generate_plan)
+  so this module stays testable without a real model and doesn't need to
+  import intent_parser itself.
 - "Direct edit" ([e]) — rewritten for the open-ended architecture (see
   validation.py's module docstring): there is no per-action params dict to
   edit any more, so [e] now lets the user directly edit the plan's raw

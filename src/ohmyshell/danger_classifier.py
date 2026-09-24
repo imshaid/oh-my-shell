@@ -67,11 +67,10 @@ classify() on every raw-shell command.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Protocol
-
-import ollama
 
 # --- Regex rules: patterns confidently classified without any model call ------
 
@@ -163,54 +162,62 @@ class DangerLLMBackend(Protocol):
         ...
 
 
-class OllamaDangerBackend:
-    """
-    LLM fallback backend (Section 8.3.5's second tier). Same think:false /
-    schema-constrained-decoding contract as intent_parser.py's OllamaBackend
-    (Section 7.3/7.4a) — this is a separate, much smaller schema since the
-    only question here is "destructive or not, and why", not action/params
-    selection.
-    """
+_DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
-    _SCHEMA = {
-        "type": "object",
-        "properties": {
-            "destructive": {"type": "boolean"},
-            "explanation": {"type": "string"},
-            "trash_alternative_possible": {"type": "boolean"},
-        },
-        "required": ["destructive", "explanation", "trash_alternative_possible"],
-    }
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "destructive": {"type": "boolean"},
+        "explanation": {"type": "string"},
+        "trash_alternative_possible": {"type": "boolean"},
+    },
+    "required": ["destructive", "explanation", "trash_alternative_possible"],
+}
 
-    _SYSTEM_PROMPT = (
-        "You are a safety classifier for a Linux shell. Given one raw shell "
-        "command, decide whether running it could cause irreversible data "
-        "loss, system damage, or security compromise. Be conservative: if "
-        "genuinely unsure, prefer destructive=true. trash_alternative_possible "
-        "should be true only if the destructive effect is specifically file "
-        "deletion that could instead be a move to a trash/recycle location."
-    )
+_SYSTEM_PROMPT = (
+    "You are a safety classifier for a Linux shell. Given one raw shell "
+    "command, decide whether running it could cause irreversible data "
+    "loss, system damage, or security compromise. Be conservative: if "
+    "genuinely unsure, prefer destructive=true. trash_alternative_possible "
+    "should be true only if the destructive effect is specifically file "
+    "deletion that could instead be a move to a trash/recycle location."
+)
 
-    def __init__(self, model: str):
+
+class GoogleAIStudioDangerBackend:
+    """LLM fallback backend for the danger classifier's second tier."""
+
+    def __init__(self, model: str = _DEFAULT_MODEL, api_key: str | None = None):
         self.model = model
+        self._api_key = api_key or os.environ.get("GOOGLE_AI_STUDIO_API_KEY")
 
     def classify(self, command: str) -> dict:
-        try:
-            response = ollama.chat(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self._SYSTEM_PROMPT},
-                    {"role": "user", "content": command},
-                ],
-                format=self._SCHEMA,
-                think=False,
-                options={"temperature": 0},
+        from google import genai
+        from google.genai import types
+
+        if not self._api_key:
+            raise DangerClassifierError(
+                "GOOGLE_AI_STUDIO_API_KEY is not set — cannot call the danger classifier's LLM fallback."
             )
-        except Exception as exc:
-            raise DangerClassifierError(f"Ollama call failed: {exc}") from exc
 
         try:
-            return json.loads(response.message.content)
+            client = genai.Client(api_key=self._api_key)
+            response = client.models.generate_content(
+                model=self.model,
+                contents=command,
+                config=types.GenerateContentConfig(
+                    system_instruction=_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=_SCHEMA,
+                    temperature=0,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                ),
+            )
+        except Exception as exc:
+            raise DangerClassifierError(f"Google AI Studio call failed: {exc}") from exc
+
+        try:
+            return json.loads(response.text)
         except json.JSONDecodeError as exc:
             raise DangerClassifierError(f"Model response was not valid JSON: {exc}") from exc
 
@@ -307,7 +314,7 @@ def classify(
     command: str,
     *,
     llm_backend: DangerLLMBackend | None = None,
-    model: str = "qwen3:8b",
+    model: str = _DEFAULT_MODEL,
 ) -> ClassificationResult:
     """
     Classify a raw shell command as safe or potentially destructive.
@@ -320,22 +327,22 @@ def classify(
         command: the raw shell command text (already identified as
             RAW_SHELL by router.py — this function doesn't re-check that).
         llm_backend: override for testing/provider-swapping; defaults to a
-            fresh OllamaDangerBackend(model=model).
-        model: Ollama model name, used only if `llm_backend` is not given.
+            fresh GoogleAIStudioDangerBackend(model=model).
+        model: Google AI Studio model name, used only if `llm_backend` is
+            not given.
 
     Raises:
         DangerClassifierError: if the LLM fallback is needed and the
-            backend itself fails (e.g. Ollama unreachable). Callers (Step 6's
-            main.py) are expected to fail safe on this — treat an
-            unclassifiable command as destructive rather than silently
-            running it — but that policy choice belongs to the caller, not
-            this function.
+            backend itself fails. Callers (Step 6's main.py) are expected to
+            fail safe on this — treat an unclassifiable command as
+            destructive rather than silently running it — but that policy
+            choice belongs to the caller, not this function.
     """
     regex_result = _regex_verdict(command)
     if regex_result is not None:
         return ClassificationResult(verdict=regex_result, source="regex")
 
-    backend = llm_backend or OllamaDangerBackend(model=model)
+    backend = llm_backend or GoogleAIStudioDangerBackend(model=model)
     raw = backend.classify(command)
 
     if raw.get("destructive"):

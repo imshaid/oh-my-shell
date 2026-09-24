@@ -3,7 +3,7 @@ Tests for danger_classifier.py (Build Order Step 8).
 
 Regex-rule tests need no mocking at all (that's the whole point of tier 1).
 LLM-fallback tests use a fake backend, matching intent_parser.py's testing
-approach — no real Ollama call needed to verify the classification logic.
+approach — no real network call needed to verify the classification logic.
 """
 
 from unittest.mock import MagicMock, patch
@@ -16,7 +16,7 @@ from ohmyshell.danger_classifier import (
     Safe,
     classify,
     DangerClassifierError,
-    OllamaDangerBackend,
+    GoogleAIStudioDangerBackend,
 )
 
 
@@ -163,47 +163,50 @@ def test_llm_backend_missing_explanation_gets_a_default():
     assert len(result.verdict.explanation) > 0
 
 
-# --- OllamaDangerBackend: think:false / schema-format contract -----------------
+# --- GoogleAIStudioDangerBackend: JSON schema / response contract --------------
 
 
-def test_ollama_danger_backend_passes_think_false_and_schema_format():
-    fake_message = MagicMock()
-    fake_message.content = (
+def test_google_ai_studio_danger_backend_passes_schema_and_parses_response():
+    fake_response = MagicMock()
+    fake_response.text = (
         '{"destructive": false, "explanation": "", "trash_alternative_possible": false}'
     )
-    fake_response = MagicMock()
-    fake_response.message = fake_message
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = fake_response
 
-    with patch(
-        "ohmyshell.danger_classifier.ollama.chat", return_value=fake_response
-    ) as mock_chat:
-        backend = OllamaDangerBackend(model="qwen3:8b")
+    with patch("google.genai.Client", return_value=fake_client) as mock_client_cls:
+        backend = GoogleAIStudioDangerBackend(model="gemini-3.5-flash-lite", api_key="test-key")
         result = backend.classify("some command")
 
     assert result == {"destructive": False, "explanation": "", "trash_alternative_possible": False}
-    _, kwargs = mock_chat.call_args
-    assert kwargs["think"] is False
-    assert kwargs["format"] == OllamaDangerBackend._SCHEMA
-    assert kwargs["model"] == "qwen3:8b"
+    mock_client_cls.assert_called_once_with(api_key="test-key")
+    _, call_kwargs = fake_client.models.generate_content.call_args
+    assert call_kwargs["model"] == "gemini-3.5-flash-lite"
+    assert call_kwargs["config"].response_mime_type == "application/json"
 
 
-def test_ollama_danger_backend_raises_on_client_error():
-    with patch(
-        "ohmyshell.danger_classifier.ollama.chat", side_effect=RuntimeError("connection refused")
-    ):
-        backend = OllamaDangerBackend(model="qwen3:8b")
+def test_google_ai_studio_danger_backend_raises_when_api_key_missing(monkeypatch):
+    monkeypatch.delenv("GOOGLE_AI_STUDIO_API_KEY", raising=False)
+    backend = GoogleAIStudioDangerBackend(model="gemini-3.5-flash-lite")
+    with pytest.raises(DangerClassifierError):
+        backend.classify("some command")
+
+
+def test_google_ai_studio_danger_backend_raises_on_client_error():
+    with patch("google.genai.Client", side_effect=RuntimeError("connection refused")):
+        backend = GoogleAIStudioDangerBackend(model="gemini-3.5-flash-lite", api_key="test-key")
         with pytest.raises(DangerClassifierError):
             backend.classify("some command")
 
 
-def test_ollama_danger_backend_raises_on_malformed_json():
-    fake_message = MagicMock()
-    fake_message.content = "not json"
+def test_google_ai_studio_danger_backend_raises_on_malformed_json():
     fake_response = MagicMock()
-    fake_response.message = fake_message
+    fake_response.text = "not json"
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = fake_response
 
-    with patch("ohmyshell.danger_classifier.ollama.chat", return_value=fake_response):
-        backend = OllamaDangerBackend(model="qwen3:8b")
+    with patch("google.genai.Client", return_value=fake_client):
+        backend = GoogleAIStudioDangerBackend(model="gemini-3.5-flash-lite", api_key="test-key")
         with pytest.raises(DangerClassifierError):
             backend.classify("some command")
 

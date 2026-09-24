@@ -1,101 +1,85 @@
 """
 First-run setup wizard (Build Order Step 13, half of "wizard.py + install.sh").
 
-Section 10.1's own line: "wizard.py + install.sh — first-run experience" --
-this module is what runs the first time Oh My Shell starts with no
-config.json yet, picking a sensible starting model for the user's hardware
-before dropping them into the normal REPL (main.py, Step 6).
-
---- Disclosed gap (Section 16 Rule 5) ---
-The blueprint's hardware-tier -> recommended-model table was never captured
-in this project's transcript (the same 501-699 document gap already
-documented in audit_log.py/hardware.py/ui/panels.py/ui/streaming.py -- the
-user independently checked and confirmed this gap before this step began).
-Rather than block indefinitely on text that isn't available, the user
-confirmed proceeding with a documented default tier table (Section 16 Rule
-5), to be swapped for the real blueprint table once it's available -- nothing
-downstream depends on the exact thresholds, only on `choose_model()`'s
-signature (HardwareSnapshot -> one of config.py's four known model names).
-
-Documented default tier table (this module's own choice, not from the
-blueprint): built from config.py's own DEFAULT_CONFIG["model"]["available"]
-list (["qwen3:8b", "qwen3.5:4b", "phi4-mini", "lfm2.5-8b-a1b"]) -- so the
-wizard never recommends a model config.py doesn't already know about --
-ordered from lightest to heaviest hardware requirement and chosen by a
-simple RAM (and, where available, discrete-GPU) threshold:
-
-    RAM < 8 GB                          -> phi4-mini      (smallest, CPU-only)
-    RAM 8-16 GB, no discrete GPU         -> qwen3.5:4b     (mid-size, CPU-only)
-    RAM 8-16 GB, discrete GPU present    -> lfm2.5-8b-a1b  (mid-size, GPU-accelerated)
-    RAM >= 16 GB                         -> qwen3:8b       (largest, this project's
-                                                             own documented default
-                                                             active model in config.py)
-
-The presence of a discrete GPU (hardware.read_gpu() returning non-None) is
-used only as a tie-breaker in the middle band, not to jump straight to the
-biggest model -- VRAM capacity isn't validated against the model's actual
-size requirement anywhere (no such table exists to validate against), so
-this stays conservative rather than potentially recommending something too
-large for the detected GPU's memory.
+Runs the first time Oh My Shell starts with no config.json yet: detects
+hardware (shown to the user, informational only — no model tier to pick any
+more, since Google AI Studio is the only provider), collects and verifies a
+Google AI Studio API key, saves it to .env, writes a default config.json,
+and prints a short welcome summary before main.py drops into the normal
+REPL.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from ohmyshell import config as config_module
 from ohmyshell import hardware as hardware_module
 
-# Tier thresholds, in GB of total system RAM (see module docstring for the
-# full documented-default table and its rationale).
-_LOW_RAM_THRESHOLD_GB = 8.0
-_MID_RAM_THRESHOLD_GB = 16.0
+ENV_PATH = Path.home() / ".oh-my-shell" / ".env"
+
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 
-def choose_model(snapshot: hardware_module.HardwareSnapshot) -> str:
+class ApiKeyVerificationError(Exception):
+    """Raised when a given API key fails a live verification call."""
+
+
+def verify_api_key(api_key: str, *, verify_fn: Callable[[str], bool] | None = None) -> bool:
     """
-    Pick one of config.py's four known models for this hardware snapshot,
-    per the documented default tier table (module docstring).
+    Verify an API key with a real (minimal) call to Google AI Studio.
+
+    `verify_fn` overrides the real network call for testing; defaults to a
+    small live request against Gemini.
     """
-    available = config_module.DEFAULT_CONFIG["model"]["available"]
-    ram_gb = snapshot.ram.total_gb
-    has_gpu = snapshot.gpu is not None
+    if verify_fn is not None:
+        return verify_fn(api_key)
 
-    if ram_gb < _LOW_RAM_THRESHOLD_GB:
-        choice = "phi4-mini"
-    elif ram_gb < _MID_RAM_THRESHOLD_GB:
-        choice = "lfm2.5-8b-a1b" if has_gpu else "qwen3.5:4b"
-    else:
-        choice = "qwen3:8b"
+    from google import genai
+    from google.genai import types
 
-    # Defensive: never recommend a model config.py doesn't list as available.
-    return choice if choice in available else available[0]
+    try:
+        client = genai.Client(api_key=api_key)
+        client.models.generate_content(
+            model=DEFAULT_MODEL,
+            contents="ping",
+            config=types.GenerateContentConfig(
+                max_output_tokens=1,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            ),
+        )
+    except Exception as exc:
+        raise ApiKeyVerificationError(str(exc)) from exc
+    return True
+
+
+def save_api_key(api_key: str, *, env_path: Path | None = None) -> None:
+    """Write GOOGLE_AI_STUDIO_API_KEY to .env (creating its parent dir if needed)."""
+    path = env_path if env_path is not None else ENV_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"GOOGLE_AI_STUDIO_API_KEY={api_key}\n", encoding="utf-8")
 
 
 @dataclass(frozen=True)
 class WizardResult:
     snapshot: hardware_module.HardwareSnapshot
-    chosen_model: str
+    api_key_saved: bool
     config: dict
 
 
 def render_welcome_text(result: WizardResult) -> str:
-    """
-    Plain-text first-run summary (the `rich` version is ui/panels.py's
-    territory, same split used throughout this codebase; Step 11 predates
-    this step but nothing there currently renders a wizard-specific panel,
-    so this stays plain text until that's added).
-    """
+    """Plain-text first-run summary (the `rich` version is ui/panels.py's territory)."""
     snap = result.snapshot
     lines = [
         "Welcome to Oh My Shell — first-run setup",
         "",
         f"Detected: {snap.cpu.core_count} CPU cores, {snap.ram.total_gb}GB RAM"
         + (f", GPU: {snap.gpu.name}" if snap.gpu is not None else ""),
-        f"Recommended model: {result.chosen_model}",
+        f"Model: {DEFAULT_MODEL}",
         "",
-        "You can change this any time with `/model` or `/config set model.active <name>`.",
+        "You can change the active model any time with `/config set model.active <name>`.",
     ]
     return "\n".join(lines)
 
@@ -103,28 +87,36 @@ def render_welcome_text(result: WizardResult) -> str:
 def run_wizard(
     *,
     read_hardware: Callable[[], hardware_module.HardwareSnapshot] = hardware_module.read_snapshot,
+    read_api_key: Callable[[], str] = lambda: input("Paste your Google AI Studio API key: "),
+    verify_fn: Callable[[str], bool] | None = None,
     print_fn: Callable[[str], None] = print,
     save_config: bool = True,
+    env_path: Path | None = None,
 ) -> WizardResult:
     """
-    Run the first-run wizard: detect hardware, choose a starting model,
-    write it into a fresh config.json (via config.py, the single source of
-    truth for that file -- this function never writes config.json directly),
+    Run the first-run wizard: detect hardware (informational), collect and
+    verify a Google AI Studio API key, save it to .env, write a fresh
+    config.json (via config.py, the single source of truth for that file),
     and print a short welcome summary.
 
     `save_config=False` lets a caller preview the wizard's choice without
     touching disk (e.g. a test, or a future `/wizard --dry-run` meta-command).
     """
     snapshot = read_hardware()
-    chosen_model = choose_model(snapshot)
+
+    api_key = read_api_key()
+    verify_api_key(api_key, verify_fn=verify_fn)
+
+    api_key_saved = False
+    if save_config:
+        save_api_key(api_key, env_path=env_path)
+        api_key_saved = True
 
     cfg = config_module.default_config()
-    config_module.set_value(cfg, "model.active", chosen_model)
-
     if save_config:
         config_module.save(cfg)
 
-    result = WizardResult(snapshot=snapshot, chosen_model=chosen_model, config=cfg)
+    result = WizardResult(snapshot=snapshot, api_key_saved=api_key_saved, config=cfg)
     print_fn(render_welcome_text(result))
     return result
 

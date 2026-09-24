@@ -319,11 +319,11 @@ def test_handle_raw_shell_classifier_error_does_not_run_command(default_cfg, tmp
 
     buffer, console = _buffer_console()
     fake_popen = _FakeRawPopen(returncode=0)
-    with patch("ohmyshell.main.classify", side_effect=DangerClassifierError("Ollama unreachable")):
+    with patch("ohmyshell.main.classify", side_effect=DangerClassifierError("backend unreachable")):
         with patch("ohmyshell.main.subprocess.Popen", fake_popen):
             main_module._handle_raw_shell("some ambiguous command", default_cfg, console=console, base_dir=tmp_path)
     assert fake_popen.command is None  # never invoked
-    assert "Ollama unreachable" in buffer.getvalue()
+    assert "backend unreachable" in buffer.getvalue()
 
 
 def test_handle_raw_shell_destructive_verdict_offers_trash_option_when_possible(default_cfg, tmp_path):
@@ -561,11 +561,11 @@ def test_handle_natural_language_reports_unmapped(default_cfg, tmp_path):
 
 def test_handle_natural_language_reports_backend_failure(default_cfg, tmp_path):
     buffer, console = _buffer_console()
-    with patch("ohmyshell.main.parse_intent", side_effect=IntentParseError("Ollama unreachable")):
+    with patch("ohmyshell.main.parse_intent", side_effect=IntentParseError("backend unreachable")):
         main_module._handle_natural_language(
             "clean up temp files", default_cfg, console=console, base_dir=tmp_path
         )
-    assert "Ollama unreachable" in buffer.getvalue()
+    assert "backend unreachable" in buffer.getvalue()
 
 
 def test_handle_natural_language_cancel_never_executes_anything(default_cfg, tmp_path):

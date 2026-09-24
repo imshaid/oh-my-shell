@@ -13,8 +13,7 @@ authors = [
 # pydantic-ai is deliberately excluded — it is a full agent framework and
 # conflicts with the static/deterministic architecture (Section 2.3).
 dependencies = [
-    "ollama>=0.6.2",
-    "google-generativeai",
+    "google-genai",
     "pydantic>=2.13,<3.0",
     "rich",
     "questionary",
@@ -27,12 +26,6 @@ dependencies = [
 dev = [
     "pytest",
 ]
-
-# Google AI Studio (Gemini) is now the default/recommended provider for
-# open-ended command generation (Section 7.4/7.8's updated note) — this
-# project's own empirical testing found it materially more reliable than
-# consumer-hardware-tier local models for this task. Ollama stays a fully
-# supported, explicitly-kept rollback path (see intent_parser.py).
 
 [project.scripts]
 oh-my-shell = "ohmyshell.main:run"

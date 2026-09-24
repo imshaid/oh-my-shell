@@ -129,7 +129,7 @@ def _risk_text(risk: str) -> Text:
 def _telemetry_footer_text(telemetry: ParseTelemetry, *, attempts: int | None = None) -> Text | None:
     """
     Section 8.3.3's plan-panel footer, verbatim mockup:
-    "↯ 94 tokens in · 62 tokens out · 0.8s · qwen3:8b" -- shown below a
+    "↯ 94 tokens in · 62 tokens out · 0.8s · gemini-3.5-flash-lite" -- shown below a
     horizontal rule inside the same panel box. Extended (per the user's own
     "share your thoughts freely" invitation and confirmed selections) with
     tokens/sec and a retry count when relevant -- tokens_in doubling as the
@@ -189,7 +189,7 @@ def render_plan_panel(
 
         │  Risk: Medium  ·  Est. 340 files  ·  ~1.2 GB             │
         ├───────────────────────────────────────────────────────┤
-        │  ↯ 94 tokens in · 62 tokens out · 0.8s · 77 tok/s · qwen3:8b │
+        │  ↯ 94 tokens in · 62 tokens out · 0.8s · 77 tok/s · gemini-3.5-flash-lite │
 
     `attempts` (intent_parser.ParseResult.attempts, optional) adds a
     "· N retries" segment to that same line, but only when it is 2 or

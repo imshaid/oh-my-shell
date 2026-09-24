@@ -9,7 +9,7 @@ base for the CPU/RAM/GPU line shape; the layout below is the user-confirmed
 expansion of it (fan RPM, CPU model, GPU temperature, tokens/sec -- see
 this project's own working notes, not a blueprint addition):
 
-    ⚟ Thinking... 0.8s · 12 in / 34 out · 43 tok/s · qwen3:8b
+    ⚟ Thinking... 0.8s · 12 in / 34 out · 43 tok/s · gemini-3.5-flash-lite
     CPU ▓▓▓▓▓▓▓░░░ 82% · 58°C · 2100 RPM · 13th Gen i7-13650HX
     RAM ▓▓▓▓▓▓▓▓░░ 39% · 6.1/15.6GB
     GPU ▓▓▓▓░░░░░░ 39% VRAM · 61°C · RTX 4060
@@ -21,8 +21,8 @@ notes): "option 1, but should be aligned properly" -- so the bar column
 starts at the same character position on every line regardless of how long
 that line's "CPU (<model>)"/"GPU (<name>)" label is. Network and disk I/O
 were explicitly asked about and explicitly declined by the user
-("বাদ দেয়া হোক") -- mostly-idle numbers for a local Ollama call would just
-be visual noise -- so neither appears here.
+("বাদ দেয়া হোক") -- mostly-idle numbers here would just be visual noise --
+so neither appears here.
 
 "Token count ও সময় ... live in-place update হয়" (Section 8.3.3), and the raw
 generated text streaming live underneath it (added post-Build-Order, per
@@ -31,19 +31,12 @@ version: "I want to show the full live token by token streaming like this
 conversation, also other stats" -- i.e. not just a growing number, the
 actual text the model is producing, plus live in/out counts).
 
-Bug fix baked into this version (found via the user's own real end-to-end
-run): the first cut of "live" streaming read `chunk.eval_count` straight
-off each streamed chunk as if it were a running total. It isn't -- ollama's
-real client types mark prompt_eval_count/eval_count/total_duration as
-Optional, and in practice only the FINAL (done=True) streamed chunk carries
-them; every earlier chunk has them unset. That made the old "live" count
-change exactly once, right at the very end -- which is why the user's own
-test run showed nothing until the already-finished plan panel appeared.
-intent_parser.StreamProgress (see that module) now carries a genuinely
-growing `tokens_out` (a running chunk count kept by OllamaBackend.generate
-itself, not read off the server's own field) and the full `text_so_far`
-accumulated raw JSON text -- this module just renders whatever the latest
-StreamProgress says, every UI frame, via `on_token_box`.
+Only the final streamed chunk from the backend carries real token counts;
+intent_parser.StreamProgress instead tracks a genuinely growing
+`tokens_out` (a running chunk count kept by the backend's own generate()
+method) and the full `text_so_far` accumulated raw JSON text -- this
+module just renders whatever the latest StreamProgress says, every UI
+frame, via `on_token_box`.
 
 `run_with_thinking_indicator` accepts an optional `on_token_box` (a plain
 dict the caller's own on_token closure writes into every chunk, e.g.

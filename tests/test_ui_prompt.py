@@ -43,9 +43,9 @@ class TestRenderPrompt:
         assert f"({default_model})" not in text.plain
 
     def test_includes_model_tag_for_non_default_model(self, tmp_path):
-        cfg = _cfg(**{"model.active": "phi4-mini"})
+        cfg = _cfg(**{"model.active": "gemini-3.1-flash-lite"})
         text = render_prompt(cfg, cwd=tmp_path)
-        assert "(phi4-mini)" in text.plain
+        assert "(gemini-3.1-flash-lite)" in text.plain
 
     def test_root_directory_falls_back_to_slash(self, tmp_path):
         # Path("/").name == "" — render_prompt should fall back to "/" like

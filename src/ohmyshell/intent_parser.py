@@ -1,62 +1,22 @@
 """
-Intent Parser (Build Order Step 5; rewritten for the open-ended
-architecture — see validation.py's module docstring for the full
-rationale and Oh-My-Shell-Blueprint-FINAL.md Section 7.4/7.8's updated
-notes).
+Intent Parser (Build Order Step 5).
 
---- Architecture change (explicitly authorized by the project owner) ------
-The original design mapped a natural-language request to one of a small,
-fixed set of registry actions (Section 7.4). The project owner explicitly
-decided this was too narrow for a natural-language shell and authorized
-moving to OPEN-ENDED command generation: the model is now free to write any
-real, directly-runnable POSIX shell command for the user's request, not
-just fill in params for one of four pre-registered actions. There is no
-registry involved in parsing any more — `build_schema()` no longer takes
-one, and the schema's shape is fixed:
+Open-ended command generation: the model writes any real, directly-runnable
+POSIX shell command for the user's request rather than filling in params
+for a fixed set of registry actions. The schema is fixed:
     {"command": str, "risk": "low"|"medium"|"high", "explanation": str}
 
-Provider change (explicitly authorized, WITH an explicit rollback
-requirement from the project owner: "not remove the local model mechanism
-at this moment, if gemini somehow not fit with the shell and perform worst
-than the local models then can easily rolled back"): this session's own
-empirical testing (see the 84-prompt battery run against qwen3:8b,
-qwen3.5:4b, Gemini 3.1 Flash Lite, Gemini 3.5 Flash Lite) found local
-models on this hardware tier inadequate for open-ended command generation
-(placeholder paths, operator-precedence bugs, missing sudo guards, and
-outright dangerous over-scoping), while Gemini 3.5 Flash Lite (primary) and
-3.1 Flash Lite (fallback) performed reliably. Both backends stay
-implemented side by side behind the SAME `IntentBackend` Protocol:
-
-    - OllamaBackend       — local, unchanged in spirit from before, still
-                             fully functional (NOT removed) so switching
-                             back is a one-line config change
-                             (`model.provider: "ollama"`), not a code
-                             change or a revert of this commit.
-    - GoogleAIStudioBackend — new; Gemini 3.5 Flash Lite primary, 3.1 Flash
-                               Lite fallback on quota/rate-limit errors
-                               (Section 7.8's "opt-in fallback" is now the
-                               *recommended* provider, not merely a stub —
-                               `_call_google_ai_studio`'s old
-                               NotImplementedError stub is gone).
-
-`parse_intent()` picks the active backend from config (`model.provider`),
-same call site, same retry policy as before — one call, harness-validate;
-on failure, one retry with the validation error appended; if that also
-fails (or the model returns something that still can't be validated),
-return the "unmapped" ParseResult. This function still never raises for a
-bad/ambiguous request — only IntentParseError propagates, for backend
-failures.
+`parse_intent()` calls the Google AI Studio backend, harness-validates the
+result; on failure, one retry with the validation error appended; if that
+also fails, returns the "unmapped" ParseResult. This function never raises
+for a bad/ambiguous request — only IntentParseError propagates, for
+backend failures.
 
 Independent risk override (see danger_classifier.py): the model's own
-`risk` field is never blindly trusted — this session's own testing found
-BOTH tested Gemini models under-risking port-opening and passwordless
-user-creation (the exact kind of risk-inconsistency the blueprint's
-original static-registry design was built to avoid). intent_parser.py
-itself does not run that check (it only validates SHAPE); main.py is
-expected to additionally call danger_classifier.classify() on the produced
-command before showing it to the user, same as the raw-shell path already
-does, and take the more severe of the model's risk and the classifier's
-verdict.
+`risk` field is never blindly trusted — intent_parser.py itself only
+validates shape; main.py additionally calls danger_classifier.classify()
+on the produced command before showing it to the user, and takes the more
+severe of the model's risk and the classifier's verdict.
 """
 
 from __future__ import annotations
@@ -67,8 +27,6 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
-
-import ollama
 
 from ohmyshell.validation import ValidatedIntent, validate_intent
 
@@ -175,101 +133,18 @@ class StreamProgress:
 
 
 class IntentBackend(Protocol):
-    """
-    Provider-abstraction seam (Section 7.8). Both OllamaBackend and
-    GoogleAIStudioBackend implement this identical interface, so
-    parse_intent() and every caller stay provider-agnostic.
-    """
+    """Provider-abstraction seam. GoogleAIStudioBackend implements this."""
 
     def generate(self, *, system_prompt: str, user_message: str, schema: dict[str, Any]) -> str:
         """Return the raw JSON string produced by the model."""
         ...
 
 
-class OllamaBackend:
-    """
-    Local backend (Section 7.6). Kept fully functional, unchanged in spirit
-    from before the open-ended rewrite, specifically so the project can
-    switch back to it (via config's `model.provider: "ollama"`) with no
-    code change if the cloud provider ever underperforms local models —
-    see this module's own docstring for why that rollback path matters.
-    """
-
-    def __init__(self, model: str):
-        self.model = model
-        self.last_telemetry: ParseTelemetry | None = None
-
-    def generate(
-        self,
-        *,
-        system_prompt: str,
-        user_message: str,
-        schema: dict[str, Any],
-        on_token: Callable[[StreamProgress], None] | None = None,
-    ) -> str:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ]
-        try:
-            chunks = ollama.chat(
-                model=self.model,
-                messages=messages,
-                format=schema,
-                think=False,
-                options={"temperature": 0},
-                stream=True,
-            )
-
-            content_parts: list[str] = []
-            final_chunk = None
-            chunk_count = 0
-            for chunk in chunks:
-                delta = chunk.message.content or ""
-                if delta:
-                    content_parts.append(delta)
-                    chunk_count += 1
-                if on_token is not None:
-                    on_token(
-                        StreamProgress(
-                            text_delta=delta,
-                            text_so_far="".join(content_parts),
-                            tokens_out=chunk_count,
-                            tokens_in=chunk.prompt_eval_count,
-                        )
-                    )
-                final_chunk = chunk
-        except Exception as exc:
-            raise IntentParseError(f"Ollama call failed: {exc}") from exc
-
-        if final_chunk is None:
-            raise IntentParseError("Ollama call failed: empty stream (no chunks received)")
-
-        self.last_telemetry = ParseTelemetry(
-            tokens_in=final_chunk.prompt_eval_count,
-            tokens_out=final_chunk.eval_count,
-            duration_seconds=(
-                final_chunk.total_duration / 1_000_000_000
-                if final_chunk.total_duration is not None
-                else None
-            ),
-            model=final_chunk.model or self.model,
-        )
-
-        return "".join(content_parts)
-
-
-# Rollover order for the Google AI Studio provider (Section 7.8, confirmed
-# with the user): 3.5 Flash Lite primary (fewer under-risk flags, faster in
-# this session's 84-prompt comparison), 3.1 Flash Lite as fallback when the
-# primary hits a quota/rate-limit error. Gemma 4 models were evaluated and
-# explicitly dropped (see this session's own diagnostic: Gemma 4 does not
-# honor `response_mime_type: "application/json"` structured-output
-# enforcement via this API path the way Gemini does, and returned long
-# verbose free text instead of JSON even on a bare, unconstrained call).
+# Rollover order: 3.5 Flash Lite primary, 3.1 Flash Lite fallback when the
+# primary hits a quota/rate-limit error.
 GOOGLE_AI_STUDIO_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
 
-# Substrings that mark a google.generativeai exception as a quota/rate-limit
+# Substrings that mark a google.genai exception as a quota/rate-limit
 # condition worth falling over to the next model for, rather than a genuine
 # failure worth surfacing immediately as IntentParseError. Conservative on
 # purpose: an ordinary bug in the request should NOT silently retry against
@@ -279,9 +154,7 @@ _QUOTA_ERROR_MARKERS = ("quota", "rate limit", "resourceexhausted", "429")
 
 class GoogleAIStudioBackend:
     """
-    Cloud backend (Section 7.8) — Google AI Studio / Gemini, now the
-    RECOMMENDED provider for open-ended command generation per this
-    session's own empirical comparison (see this module's docstring).
+    Cloud backend — Google AI Studio / Gemini.
 
     Tries `models` in order (default: GOOGLE_AI_STUDIO_MODELS, i.e. 3.5
     Flash Lite then 3.1 Flash Lite), moving to the next only when a call
@@ -289,13 +162,12 @@ class GoogleAIStudioBackend:
     (a real bug, an auth problem) raises IntentParseError immediately rather
     than silently masking it behind a rollover.
 
-    The JSON schema is enforced via `generation_config={"response_mime_type":
-    "application/json"}`, which this session verified works reliably for
-    Gemini (unlike Gemma 4 — see GOOGLE_AI_STUDIO_MODELS' own comment).
+    The JSON schema is enforced via `config.response_mime_type =
+    "application/json"`.
 
-    Supports live streaming (`on_token`, same shape as OllamaBackend's) —
-    see `generate()`'s own docstring for how token counts are recovered
-    from google.generativeai's per-chunk `usage_metadata`.
+    Supports live streaming (`on_token`) — see `generate()`'s own docstring
+    for how token counts are recovered from google.genai's per-chunk
+    `usage_metadata`.
     """
 
     def __init__(self, models: tuple[str, ...] = GOOGLE_AI_STUDIO_MODELS, api_key: str | None = None):
@@ -304,14 +176,13 @@ class GoogleAIStudioBackend:
         self.last_telemetry: ParseTelemetry | None = None
 
     def _client(self):
-        import google.generativeai as genai
+        from google import genai
 
         if not self._api_key:
             raise IntentParseError(
                 "GOOGLE_AI_STUDIO_API_KEY is not set — cannot call the Google AI Studio backend."
             )
-        genai.configure(api_key=self._api_key)
-        return genai
+        return genai.Client(api_key=self._api_key)
 
     def generate(
         self,
@@ -323,49 +194,45 @@ class GoogleAIStudioBackend:
     ) -> str:
         """
         Generate one response, streamed chunk-by-chunk when `on_token` is
-        given (added after this backend's initial cut, which only made one
-        blocking, non-streaming call — see this method's own history: the
-        first version left `on_token`/live token counts/telemetry entirely
-        unimplemented for this backend, unlike OllamaBackend, and that gap
-        was never surfaced to the project owner as a deliberate trade-off.
-        This closes it, matching OllamaBackend's live-progress experience.
+        given.
 
-        `stream=True` on google.generativeai's own `generate_content` yields
-        a sequence of partial-response chunks; each chunk's `.text` is the
-        DELTA for that chunk (not the accumulated text so far — confirmed
-        against this package's own streaming behavior), so the running
-        `text_so_far` is built up here exactly like OllamaBackend already
-        does. `usage_metadata` (prompt_token_count/candidates_token_count)
-        is only populated on the FINAL chunk of a stream (this SDK's own
-        behavior, same as the older Ollama chunk-count precedent this
-        module already works around) -- `last_telemetry` is filled from
-        whichever chunk last carried it, so a real call always ends up with
-        real numbers once the stream finishes, not just a bare model name.
+        Each streamed chunk's `.text` is the delta for that chunk, so the
+        running `text_so_far` is built up here incrementally.
+        `usage_metadata` (prompt_token_count/candidates_token_count) is only
+        populated on the final chunk of a stream, so `last_telemetry` is
+        filled from whichever chunk last carried it.
         """
-        genai = self._client()
+        from google.genai import types
+
+        client = self._client()
         last_exc: Exception | None = None
 
         for model_name in self.models:
+            config = types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+                temperature=0,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            )
             try:
-                model = genai.GenerativeModel(model_name, system_instruction=system_prompt)
                 call_start = time.monotonic()
                 if on_token is not None:
                     text = self._generate_streaming(
-                        model, model_name=model_name, user_message=user_message, on_token=on_token
+                        client,
+                        model_name=model_name,
+                        user_message=user_message,
+                        config=config,
+                        on_token=on_token,
                     )
                 else:
-                    response = model.generate_content(
-                        user_message,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "temperature": 0,
-                        },
+                    response = client.models.generate_content(
+                        model=model_name, contents=user_message, config=config
                     )
                     self.last_telemetry = _telemetry_from_response(
                         response, model_name=model_name, duration_seconds=time.monotonic() - call_start
                     )
                     text = response.text
-            except Exception as exc:  # google.generativeai raises its own exception types
+            except Exception as exc:  # google.genai raises its own exception types
                 last_exc = exc
                 if _looks_like_quota_error(exc):
                     continue  # try the next model in the rollover order
@@ -379,21 +246,15 @@ class GoogleAIStudioBackend:
 
     def _generate_streaming(
         self,
-        model,
+        client,
         *,
         model_name: str,
         user_message: str,
+        config,
         on_token: Callable[[StreamProgress], None],
     ) -> str:
         call_start = time.monotonic()
-        chunks = model.generate_content(
-            user_message,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0,
-            },
-            stream=True,
-        )
+        chunks = client.models.generate_content_stream(model=model_name, contents=user_message, config=config)
 
         text_parts: list[str] = []
         chunk_count = 0
@@ -430,7 +291,7 @@ def _telemetry_from_response(
     response, *, model_name: str, duration_seconds: float | None = None
 ) -> ParseTelemetry:
     """
-    Build a real ParseTelemetry from a google.generativeai response/chunk's
+    Build a real ParseTelemetry from a google.genai response/chunk's
     `usage_metadata` (prompt_token_count / candidates_token_count), when
     present. `response` may be None (a streaming call that produced no
     chunks at all -- defensive, shouldn't happen in practice) or a chunk/
@@ -439,15 +300,10 @@ def _telemetry_from_response(
     this falls back to just the model name rather than raising, matching
     ParseTelemetry's own "leave missing fields as None" convention.
 
-    `duration_seconds` (bug fix -- found via manual end-to-end testing: the
-    execution summary's "AI: N tokens total" line was missing its "Ns
-    reasoning time" half for every Google AI Studio call, unlike
-    OllamaBackend, which gets a real duration straight from Ollama's own
-    response. google.generativeai's response/usage_metadata carries no
-    timing field at all, so `generate()`/`_generate_streaming()` measure
+    `duration_seconds`: google.genai's response/usage_metadata carries no
+    timing field, so `generate()`/`_generate_streaming()` measure
     wall-clock time around the call themselves (`time.monotonic()`) and
-    pass it through here -- always present when the caller measured it,
-    regardless of whether `usage_metadata` itself is populated.
+    pass it through here.
     """
     if response is None:
         return ParseTelemetry(model=model_name, duration_seconds=duration_seconds)
@@ -462,16 +318,9 @@ def _telemetry_from_response(
     )
 
 
-def _backend_for(model_provider: str, *, model: str | None) -> IntentBackend:
-    """
-    Build the active backend from config's `model.provider` value
-    ("ollama" | "google_ai_studio"). This is the one-line rollback switch
-    the project owner asked to keep: flipping this config value (no code
-    change) moves generation back to the local model.
-    """
-    if model_provider == "google_ai_studio":
-        return GoogleAIStudioBackend()
-    return OllamaBackend(model=model or "qwen3:8b")
+def _backend_for() -> IntentBackend:
+    """Build the active backend. Google AI Studio is the only provider."""
+    return GoogleAIStudioBackend()
 
 
 def build_schema() -> dict[str, Any]:
@@ -480,7 +329,7 @@ def build_schema() -> dict[str, Any]:
 
 
 def _backend_accepts_on_token(backend: IntentBackend) -> bool:
-    """Duck-typing check for whether `backend.generate` declares `on_token` (both OllamaBackend and GoogleAIStudioBackend do)."""
+    """Duck-typing check for whether `backend.generate` declares `on_token`."""
     try:
         params = inspect.signature(backend.generate).parameters
     except (TypeError, ValueError):
@@ -519,38 +368,27 @@ def parse_intent(
     user_message: str,
     *,
     backend: IntentBackend | None = None,
-    model_provider: str = "google_ai_studio",
-    model: str | None = None,
     on_token: Callable[[StreamProgress], None] | None = None,
 ) -> ParseResult:
     """
     Parse one natural-language request into a validated command.
 
-    Retry policy (unchanged from before the open-ended rewrite): one call,
-    harness-validate; on failure, one retry with the validation error
-    appended as extra guidance; if that also fails, return an "unmapped"
-    ParseResult. This function never raises for a bad/ambiguous user
-    request — only IntentParseError propagates, and only for backend
-    failures (e.g. Ollama unreachable, Google AI Studio quota exhausted on
-    every configured model), which the router/REPL layer is expected to
-    catch and surface as a system-level error.
+    One call, harness-validate; on failure, one retry with the validation
+    error appended as extra guidance; if that also fails, return an
+    "unmapped" ParseResult. This function never raises for a bad/ambiguous
+    user request — only IntentParseError propagates, and only for backend
+    failures (e.g. Google AI Studio quota exhausted on every configured
+    model), which the router/REPL layer is expected to catch and surface as
+    a system-level error.
 
     Args:
         user_message: the raw natural-language input.
-        backend: override for testing / provider-swapping; defaults to a
-            backend chosen from `model_provider`.
-        model_provider: "google_ai_studio" (default, per this session's own
-            empirical comparison) or "ollama" (the explicit rollback path
-            the project owner asked to keep available) — used only if
-            `backend` is not given.
-        model: Ollama model name, used only when `model_provider ==
-            "ollama"` and `backend` is not given.
-        on_token: optional live-progress callback — forwarded to whichever
-            backend is active; both OllamaBackend and GoogleAIStudioBackend
-            support it (each streams chunk-by-chunk and reports real,
-            growing token counts as they arrive).
+        backend: override for testing; defaults to GoogleAIStudioBackend().
+        on_token: optional live-progress callback — forwarded to the
+            backend, which streams chunk-by-chunk and reports real, growing
+            token counts as they arrive.
     """
-    active_backend = backend or _backend_for(model_provider, model=model)
+    active_backend = backend or _backend_for()
     schema = build_schema()
 
     intent, error = _attempt(

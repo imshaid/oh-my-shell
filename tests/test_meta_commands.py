@@ -105,9 +105,9 @@ class TestModel:
     def test_model_switch_changes_active_model(self, cfg, base_dir, monkeypatch):
         monkeypatch.setattr(config_module, "CONFIG_DIR", base_dir)
         monkeypatch.setattr(config_module, "CONFIG_PATH", base_dir / "config.json")
-        outcome = _dispatch("/model switch phi4-mini", cfg, base_dir)
-        assert "Switched active model to phi4-mini" in outcome.text
-        assert cfg["model"]["active"] == "phi4-mini"
+        outcome = _dispatch("/model switch gemini-3.1-flash-lite", cfg, base_dir)
+        assert "Switched active model to gemini-3.1-flash-lite" in outcome.text
+        assert cfg["model"]["active"] == "gemini-3.1-flash-lite"
 
     def test_model_switch_unknown_model_raises(self, cfg, base_dir):
         with pytest.raises(meta_commands.MetaCommandError, match="Unknown model"):
@@ -305,16 +305,10 @@ class TestSystem:
         assert "RAM:" in outcome
         assert "Active model:" in outcome
 
-    def test_shows_google_ai_studio_provider_label_by_default(self, cfg, base_dir, monkeypatch):
+    def test_shows_active_model_name(self, cfg, base_dir, monkeypatch):
         monkeypatch.setattr("ohmyshell.hardware.shutil.which", lambda name: None)
         outcome = meta_commands._handle_system(cfg, session_start=0.0, base_dir=base_dir)
-        assert "Provider: Google AI Studio (Gemini)" in _plain(outcome)
-
-    def test_shows_local_ollama_provider_label_when_configured(self, cfg, base_dir, monkeypatch):
-        monkeypatch.setattr("ohmyshell.hardware.shutil.which", lambda name: None)
-        cfg["model"]["provider"] = "ollama"
-        outcome = meta_commands._handle_system(cfg, session_start=0.0, base_dir=base_dir)
-        assert "Provider: local (Ollama)" in _plain(outcome)
+        assert cfg["model"]["active"] in _plain(outcome)
 
     def test_via_dispatch(self, cfg, base_dir, monkeypatch):
         monkeypatch.setattr("ohmyshell.hardware.shutil.which", lambda name: None)
@@ -341,13 +335,11 @@ class TestConfig:
         _dispatch("/config set safety.safe_mode true", cfg, base_dir)
         assert cfg["safety"]["safe_mode"] is True
 
-    def test_config_set_provider_key(self, cfg, base_dir, monkeypatch):
-        """model.provider is the explicit one-line rollback switch (ollama <->
-        google_ai_studio) — confirm /config set can reach it."""
+    def test_config_set_model_active_key(self, cfg, base_dir, monkeypatch):
         monkeypatch.setattr(config_module, "CONFIG_DIR", base_dir)
         monkeypatch.setattr(config_module, "CONFIG_PATH", base_dir / "config.json")
-        _dispatch("/config set model.provider ollama", cfg, base_dir)
-        assert cfg["model"]["provider"] == "ollama"
+        _dispatch("/config set model.active gemini-3.1-flash-lite", cfg, base_dir)
+        assert cfg["model"]["active"] == "gemini-3.1-flash-lite"
 
     def test_config_set_unknown_key_raises(self, cfg, base_dir):
         with pytest.raises(meta_commands.MetaCommandError, match="Unknown config key"):
