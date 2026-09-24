@@ -15,58 +15,90 @@
 #      /etc/shells so it can be set as a login shell via chsh (Section 8.1)
 #   5. tell the user how to run it, and that the in-app wizard (wizard.py)
 #      will handle API key setup on first launch.
+#
+# The UI below (color palette, section headers, spinners) mirrors the Nord
+# accent family the app itself uses (see ui/theme.py's "omsh.*" styles), so
+# the installer and the app share one visual identity. It degrades to plain
+# text automatically when stdout isn't a terminal (piped to a log file, CI).
 
 set -euo pipefail
 
-# --- Colors (fall back to no color if not a terminal) -----------------------
+# --- Colors (Nord-inspired, matches ui/theme.py's omsh.* accent family) -----
 if [ -t 1 ]; then
     BOLD=$'\033[1m'
-    GREEN=$'\033[32m'
-    YELLOW=$'\033[33m'
-    RED=$'\033[31m'
     RESET=$'\033[0m'
+    ACCENT=$'\033[38;5;110m'   # omsh.accent  (nord blue)
+    SUCCESS=$'\033[38;5;114m'  # omsh.success (nord green)
+    WARNING=$'\033[38;5;222m'  # omsh.warning (nord yellow)
+    DANGER=$'\033[38;5;168m'   # omsh.danger  (nord red)
+    MUTED=$'\033[38;5;245m'    # omsh.muted   (gray)
+    TTY=1
 else
-    BOLD=""; GREEN=""; YELLOW=""; RED=""; RESET=""
+    BOLD=""; RESET=""; ACCENT=""; SUCCESS=""; WARNING=""; DANGER=""; MUTED=""
+    TTY=0
 fi
 
-info()  { printf '%s\n' "${BOLD}==>${RESET} $1"; }
-ok()    { printf '%s\n' "${GREEN}✓${RESET} $1"; }
-warn()  { printf '%s\n' "${YELLOW}⚠${RESET} $1"; }
-fail()  { printf '%s\n' "${RED}✗${RESET} $1"; exit 1; }
+section() { printf '\n%s\n' "  ${BOLD}${ACCENT}$1${RESET}"; }
+ok()      { printf '  %s%s%s %s\n' "$SUCCESS" "✓" "$RESET" "$1"; }
+warn()    { printf '  %s%s%s %s\n' "$WARNING" "⚠" "$RESET" "$1"; }
+fail()    { printf '  %s%s%s %s\n' "$DANGER" "✗" "$RESET" "$1"; exit 1; }
+
+# Runs "$2" (a shell command string) in the background with a spinner next
+# to label "$1", then prints a final ✓/✗ line in its place. Falls back to a
+# plain "label... done" line when stdout isn't a terminal. The command's own
+# stdout/stderr are captured and only shown on failure, so a normal install
+# stays a clean, uncluttered ✓ list.
+run_step() {
+    local label="$1" cmd="$2" logfile
+    logfile="$(mktemp)"
+
+    if [ "$TTY" != "1" ]; then
+        printf '  ...%s\n' "$label"
+        if bash -c "$cmd" >"$logfile" 2>&1; then
+            ok "$label"
+        else
+            fail "$label (see below)"$'\n'"$(cat "$logfile")"
+        fi
+        rm -f "$logfile"
+        return
+    fi
+
+    bash -c "$cmd" >"$logfile" 2>&1 &
+    local pid=$!
+    local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        local frame="${frames:i%10:1}"
+        printf '\r\033[K  %s%s%s %s' "$ACCENT" "$frame" "$RESET" "$label"
+        i=$((i + 1))
+        sleep 0.08
+    done
+    printf '\r\033[K'
+
+    if wait "$pid"; then
+        ok "$label"
+    else
+        fail "$label — output:"$'\n'"$(cat "$logfile")"
+    fi
+    rm -f "$logfile"
+}
+
+banner() {
+    printf '\n%s\n' "  ${BOLD}${ACCENT}✦ Oh My Shell${RESET}  ${MUTED}— installer${RESET}"
+    printf '%s\n' "  ${MUTED}────────────────────────────────────────${RESET}"
+}
+
+banner
 
 REPO_URL="https://github.com/imshaid/oh-my-shell.git"
 
-# --- 0. Get the repo onto disk ------------------------------------------------
-# OMSH_REPO_DIR lets a developer point this script at an existing local
-# checkout instead of cloning fresh (used for local testing of this script
-# itself; a curl-pipe run always takes the clone path).
-if [ -n "${OMSH_REPO_DIR:-}" ]; then
-    REPO_ROOT="$(cd "$OMSH_REPO_DIR" && pwd)"
-    info "Using existing checkout at $REPO_ROOT"
-else
-    if ! command -v git >/dev/null 2>&1; then
-        fail "git not found. Install git first."
-    fi
-    INSTALL_DIR="${OMSH_INSTALL_DIR:-$HOME/.local/share/oh-my-shell}"
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        info "Updating existing checkout at $INSTALL_DIR"
-        git -C "$INSTALL_DIR" pull --ff-only
-    else
-        info "Cloning Oh My Shell into $INSTALL_DIR"
-        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-    fi
-    REPO_ROOT="$INSTALL_DIR"
-fi
-cd "$REPO_ROOT"
+# --- Environment --------------------------------------------------------------
+section "Environment"
 
-info "Installing Oh My Shell from $REPO_ROOT"
-
-# --- 1. Python version check --------------------------------------------------
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     fail "python3 not found. Install Python 3.11 or newer first."
 fi
-
 PY_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 PY_OK="$("$PYTHON_BIN" -c 'import sys; print(1 if sys.version_info >= (3, 11) else 0)')"
 if [ "$PY_OK" != "1" ]; then
@@ -74,14 +106,43 @@ if [ "$PY_OK" != "1" ]; then
 fi
 ok "Python $PY_VERSION found"
 
-# --- 2. Virtual environment + editable install -------------------------------
+if [ -n "${OMSH_REPO_DIR:-}" ]; then
+    ok "git not required (using existing checkout)"
+else
+    if ! command -v git >/dev/null 2>&1; then
+        fail "git not found. Install git first."
+    fi
+    ok "git found"
+fi
+
+# --- Fetching ------------------------------------------------------------------
+section "Fetching"
+
+# OMSH_REPO_DIR lets a developer point this script at an existing local
+# checkout instead of cloning fresh (used for local testing of this script
+# itself; a curl-pipe run always takes the clone path).
+if [ -n "${OMSH_REPO_DIR:-}" ]; then
+    REPO_ROOT="$(cd "$OMSH_REPO_DIR" && pwd)"
+    ok "Using existing checkout at $REPO_ROOT"
+else
+    INSTALL_DIR="${OMSH_INSTALL_DIR:-$HOME/.local/share/oh-my-shell}"
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        run_step "Updating existing checkout" "git -C '$INSTALL_DIR' pull --ff-only"
+    else
+        run_step "Cloning imshaid/oh-my-shell" "git clone --depth 1 '$REPO_URL' '$INSTALL_DIR'"
+    fi
+    REPO_ROOT="$INSTALL_DIR"
+fi
+cd "$REPO_ROOT"
+
+# --- Installing ------------------------------------------------------------------
+section "Installing"
+
 VENV_DIR="$REPO_ROOT/.venv"
 if [ -d "$VENV_DIR" ]; then
-    ok "Virtual environment already exists at $VENV_DIR"
+    ok "Virtual environment already exists"
 else
-    info "Creating virtual environment at $VENV_DIR"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
-    ok "Virtual environment created"
+    run_step "Creating virtual environment" "'$PYTHON_BIN' -m venv '$VENV_DIR'"
 fi
 
 # shellcheck disable=SC1091
@@ -91,14 +152,12 @@ else
     fail "Could not find $VENV_DIR/bin/activate — venv creation may have failed."
 fi
 
-info "Installing Oh My Shell (editable) and its dependencies"
-pip install --upgrade pip >/dev/null
-pip install -e "$REPO_ROOT" >/dev/null
-ok "Oh My Shell installed"
-
+run_step "Installing dependencies" "pip install --upgrade pip && pip install -e '$REPO_ROOT'"
 chmod +x "$REPO_ROOT/bin/oh-my-shell"
 
-# --- 3. Symlink into /usr/local/bin + register in /etc/shells ----------------
+# --- Linking ------------------------------------------------------------------
+section "Linking"
+
 # Symlinked to the venv's own `oh-my-shell` entry point (pip-installed via
 # pyproject.toml's [project.scripts]) rather than bin/oh-my-shell, so the
 # system-wide command runs with the correct interpreter and dependencies
@@ -115,15 +174,15 @@ SHELL_ENTRY="$BIN_TARGET"
 
 if command -v sudo >/dev/null 2>&1; then
     if sudo ln -sf "$VENV_DIR/bin/oh-my-shell" "$BIN_TARGET" 2>/dev/null; then
-        ok "Linked $BIN_TARGET -> $VENV_DIR/bin/oh-my-shell"
+        ok "Linked $BIN_TARGET"
         if ! grep -qxF "$SHELL_ENTRY" /etc/shells 2>/dev/null; then
             if echo "$SHELL_ENTRY" | sudo tee -a /etc/shells >/dev/null; then
-                ok "Registered $SHELL_ENTRY in /etc/shells"
+                ok "Registered in /etc/shells"
             else
                 warn "Could not register $SHELL_ENTRY in /etc/shells — skip chsh, or add it manually."
             fi
         else
-            ok "$SHELL_ENTRY already registered in /etc/shells"
+            ok "Already registered in /etc/shells"
         fi
     else
         warn "Could not create $BIN_TARGET (sudo declined or unavailable) — skipping system-wide symlink."
@@ -132,20 +191,21 @@ else
     warn "sudo not found — skipping /usr/local/bin symlink and /etc/shells registration."
 fi
 
-# --- 4. Done ------------------------------------------------------------------
+# --- Done ------------------------------------------------------------------
 echo
-ok "Setup complete."
-echo
-echo "  To start Oh My Shell:"
-echo "    source $VENV_DIR/bin/activate   (or .venv/bin/activate.fish for fish shell)"
-echo "    oh-my-shell"
+printf '  %s%s✓ Setup complete%s\n' "$BOLD" "$SUCCESS" "$RESET"
 echo
 if [ -e "$BIN_TARGET" ]; then
-    echo "  Or, since it's on your PATH now:"
-    echo "    oh-my-shell"
-    echo
-    echo "  To set it as your login shell: chsh -s $BIN_TARGET"
-    echo
+    printf '  %sRun%s  %soh-my-shell%s  %sto start.%s\n' "$MUTED" "$RESET" "$BOLD" "$RESET" "$MUTED" "$RESET"
+    printf '  %sTo set it as your login shell:%s chsh -s %s\n' "$MUTED" "$RESET" "$BIN_TARGET"
+else
+    printf '  %sTo start:%s\n' "$MUTED" "$RESET"
+    printf '    source %s/bin/activate   (or .venv/bin/activate.fish for fish shell)\n' "$VENV_DIR"
+    printf '    oh-my-shell\n'
 fi
-echo "  First launch will run a quick setup wizard asking for your Google AI"
-echo "  Studio API key — get one free at https://aistudio.google.com/apikey"
+section "Get your free API key"
+printf '  %s1.%s Open %shttps://aistudio.google.com/apikey%s\n' "$MUTED" "$RESET" "$BOLD" "$RESET"
+printf '  %s2.%s Sign in with a Google account\n' "$MUTED" "$RESET"
+printf '  %s3.%s Click %s\"Create API key\"%s (no card required, free tier)\n' "$MUTED" "$RESET" "$BOLD" "$RESET"
+printf '  %s4.%s Copy the key — Oh My Shell asks for it on first launch\n' "$MUTED" "$RESET"
+echo
