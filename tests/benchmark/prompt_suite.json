@@ -1,4 +1,0 @@
-{
-  "_note": "Placeholder. The real 40-prompt benchmark suite (Section 7.1) used for model selection was run by hand against Ollama during the architecture-planning phase; the actual prompt list and expected-intent labels have not yet been transcribed into this repo. To be filled in before Module 5's re-verification pass (Section 7.5).",
-  "prompts": []
-}
