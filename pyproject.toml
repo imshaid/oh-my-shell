@@ -20,6 +20,7 @@ dependencies = [
     "prompt_toolkit",
     "psutil",
     "jsonschema",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]

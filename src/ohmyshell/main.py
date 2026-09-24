@@ -100,6 +100,8 @@ from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
+from dotenv import load_dotenv
+
 from ohmyshell import audit_log as audit_log_module
 from ohmyshell import config as config_module
 from ohmyshell import meta_commands
@@ -1088,6 +1090,22 @@ def run() -> None:
         print(f"oh-my-shell {update_check_module.current_version()}")
         return
 
+    # wizard.save_api_key() writes GOOGLE_AI_STUDIO_API_KEY into
+    # ~/.oh-my-shell/.env, but nothing was ever loading that file back into
+    # this process's os.environ -- danger_classifier.py/intent_parser.py
+    # both read the key via a plain os.environ.get(), which only ever sees
+    # real shell-exported variables. Found via a real fresh-machine test:
+    # the wizard verified the key fine (a live Gemini call doesn't need
+    # os.environ, just the value in hand) and reported success, but every
+    # natural-language command afterwards failed with "GOOGLE_AI_STUDIO_API_KEY
+    # is not set" -- a working key that the app itself could never see again
+    # after the process that collected it exited. load_dotenv() here (before
+    # the wizard block, so it also picks up a key an *existing* .env already
+    # has on every normal startup, not just right after the wizard writes a
+    # fresh one) fixes both the first-run and every-run cases in one place.
+    # override=False: an already-exported real env var should still win.
+    load_dotenv(dotenv_path=wizard_module.ENV_PATH, override=False)
+
     console = themed_console()
 
     # First run: collect and verify the Google AI Studio API key before
@@ -1120,6 +1138,17 @@ def run() -> None:
                         "when ready.[/omsh.danger]"
                     )
                     return
+
+        # The wizard just wrote a brand-new .env (the should_run_wizard()
+        # branch above only runs on a genuine first run) -- load it now so
+        # this same process's os.environ has the key immediately, without
+        # requiring a restart. The startup load above ran before the file
+        # existed, so it couldn't have picked this up; override=False still
+        # applies (a real exported env var would already have satisfied it
+        # and skipped the wizard's key prompt via should_run_wizard()... but
+        # should_run_wizard() actually keys off config.json, not the env var,
+        # so this stays defensive rather than redundant).
+        load_dotenv(dotenv_path=wizard_module.ENV_PATH, override=False)
 
     # Fish-greeting-noise fix (see `ensure_fish_guard_installed`'s own
     # docstring for the full story) -- idempotent, so this runs on every

@@ -1308,6 +1308,73 @@ class TestRunWizardErrorHandling:
         assert "Giving up after 3 attempts" in output
 
 
+class TestRunLoadsDotenv:
+    """Covers a second real bug found in the same fresh-machine Docker test
+    as TestRunWizardErrorHandling above: wizard.save_api_key() writes
+    GOOGLE_AI_STUDIO_API_KEY into ~/.oh-my-shell/.env, but nothing ever
+    loaded that file back into os.environ -- danger_classifier.py and
+    intent_parser.py both read the key via a plain os.environ.get(), which
+    never sees a value that only lives in a .env file. The wizard reported
+    a successfully verified key, then every natural-language command in
+    the very same session immediately failed with "GOOGLE_AI_STUDIO_API_KEY
+    is not set". Fixed with load_dotenv(wizard_module.ENV_PATH) in run(),
+    both before should_run_wizard() (so an existing .env from a previous
+    run is picked up on every normal startup) and again right after a
+    fresh wizard run writes one for the first time (so the very first
+    session can use it without restarting).
+    """
+
+    def _run_until_stop(self, monkeypatch, *, env_path, wizard_runs=False):
+        monkeypatch.setattr(main_module.wizard_module, "should_run_wizard", lambda: wizard_runs)
+        if wizard_runs:
+            monkeypatch.setattr(
+                main_module.wizard_module,
+                "run_wizard",
+                MagicMock(side_effect=lambda **_: env_path.write_text(
+                    "GOOGLE_AI_STUDIO_API_KEY=key-from-wizard\n"
+                )),
+            )
+        monkeypatch.setattr(main_module.wizard_module, "ENV_PATH", env_path)
+
+        buffer, console = _buffer_console()
+        monkeypatch.setattr(main_module, "themed_console", lambda: console)
+        monkeypatch.setattr(main_module.config_module, "load", MagicMock(side_effect=_StopAfterWizard))
+
+        with pytest.raises(_StopAfterWizard):
+            main_module.run()
+
+    def test_existing_env_file_is_loaded_into_os_environ(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GOOGLE_AI_STUDIO_API_KEY", raising=False)
+        env_path = tmp_path / ".env"
+        env_path.write_text("GOOGLE_AI_STUDIO_API_KEY=key-from-dotenv\n")
+
+        self._run_until_stop(monkeypatch, env_path=env_path, wizard_runs=False)
+
+        assert os.environ.get("GOOGLE_AI_STUDIO_API_KEY") == "key-from-dotenv"
+
+    def test_freshly_wizard_written_env_is_usable_same_session(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GOOGLE_AI_STUDIO_API_KEY", raising=False)
+        env_path = tmp_path / ".env"
+        assert not env_path.exists()
+
+        self._run_until_stop(monkeypatch, env_path=env_path, wizard_runs=True)
+
+        # This is the exact bug: the wizard writes the file, but without a
+        # second load_dotenv() call after it, this assertion used to fail --
+        # the key existed on disk but never made it into os.environ for the
+        # rest of this same process.
+        assert os.environ.get("GOOGLE_AI_STUDIO_API_KEY") == "key-from-wizard"
+
+    def test_real_exported_env_var_takes_priority_over_dotenv_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GOOGLE_AI_STUDIO_API_KEY", "key-from-real-shell-env")
+        env_path = tmp_path / ".env"
+        env_path.write_text("GOOGLE_AI_STUDIO_API_KEY=key-from-dotenv\n")
+
+        self._run_until_stop(monkeypatch, env_path=env_path, wizard_runs=False)
+
+        assert os.environ.get("GOOGLE_AI_STUDIO_API_KEY") == "key-from-real-shell-env"
+
+
 # --- Removed / superseded tests --------------------------------------------------
 #
 # test_run_exits_process_if_registry_fails_to_load, and every `registry`
