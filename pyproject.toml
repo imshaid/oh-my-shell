@@ -1,6 +1,6 @@
 [project]
 name = "oh-my-shell"
-version = "0.3.2"
+version = "0.3.3"
 description = "An AI-powered, natural-language Linux shell with a plan-confirm-execute safety workflow."
 readme = "README.md"
 requires-python = ">=3.11"
