@@ -26,6 +26,7 @@ the checksum note on install.sh once that step lands.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -151,6 +152,69 @@ def pending_update() -> str | None:
     return _latest_version
 
 
+# Substring git actually prints (confirmed by reproducing it locally) when
+# `pull --ff-only` refuses because local and remote history have diverged --
+# e.g. after a maintainer force-pushed a rewritten history (a rebase, a
+# `git filter-repo` run to strip an accidentally-committed file, etc.).
+# `--ff-only` correctly refuses rather than silently merging/rebasing a
+# user's local checkout, but that leaves the user stuck: their only two
+# options at a plain shell would be `git merge`/`git rebase` (which they
+# were never expected to know, or want to know, as an end user of an
+# installed CLI tool) or a manual reinstall. Detected specifically by this
+# substring (rather than treating every non-zero exit as "diverged") so a
+# real network failure, auth issue, or other git error still reports as a
+# normal failure instead of silently triggering a destructive re-clone.
+_DIVERGED_HISTORY_MARKER = "Not possible to fast-forward"
+
+
+def _reclone(repo_root: Path) -> tuple[bool, str]:
+    """
+    Recovers from a diverged-history `pull --ff-only` failure by discarding
+    the local checkout entirely and re-cloning it fresh from origin's
+    current default branch, then pointing local `main` at it the same way
+    install.sh's own first-time setup does (see that script's "Setting up
+    git for future updates" step) -- so a *second* diverged-history update
+    later doesn't hit this same wall again.
+
+    Safe to do unconditionally: repo_root is purely a source checkout
+    (~/.local/share/oh-my-shell by install.sh's own convention) and holds
+    no user data of its own -- config.json and .env both live under the
+    separate ~/.oh-my-shell/ directory (see config.py's CONFIG_DIR and
+    wizard.py's ENV_PATH), which this never touches.
+    """
+    remote = subprocess.run(
+        ["git", "-C", str(repo_root), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+    )
+    if remote.returncode != 0 or not remote.stdout.strip():
+        return False, (
+            "git pull failed because local and remote history have diverged, "
+            "and the origin remote couldn't be read to recover automatically:\n"
+            f"{remote.stderr.strip() or remote.stdout.strip()}"
+        )
+    origin_url = remote.stdout.strip()
+
+    parent = repo_root.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fresh_dir = repo_root.with_name(repo_root.name + ".new")
+    if fresh_dir.exists():
+        shutil.rmtree(fresh_dir)
+
+    clone = subprocess.run(
+        ["git", "clone", "-q", origin_url, str(fresh_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if clone.returncode != 0:
+        shutil.rmtree(fresh_dir, ignore_errors=True)
+        return False, f"Recovery clone failed:\n{clone.stderr.strip() or clone.stdout.strip()}"
+
+    shutil.rmtree(repo_root)
+    fresh_dir.rename(repo_root)
+    return True, ""
+
+
 def run_self_update(repo_root: Path) -> tuple[bool, str]:
     """
     `git pull --ff-only` + `pip install -e .` in the current interpreter's
@@ -158,6 +222,11 @@ def run_self_update(repo_root: Path) -> tuple[bool, str]:
     (succeeded, message) -- the message is shown as-is by /update's
     handler, success or failure, so it includes the relevant git/pip
     output on failure rather than a generic "update failed".
+
+    A `pull --ff-only` failure specifically caused by diverged history
+    (see _DIVERGED_HISTORY_MARKER) is recovered from automatically via
+    _reclone() rather than surfaced as an error -- see that function's
+    docstring for why this is safe to do without asking the user first.
     """
     git_dir = repo_root / ".git"
     if not git_dir.is_dir():
@@ -168,8 +237,16 @@ def run_self_update(repo_root: Path) -> tuple[bool, str]:
         capture_output=True,
         text=True,
     )
+    reclone_happened = False
     if pull.returncode != 0:
-        return False, f"git pull failed:\n{pull.stderr.strip() or pull.stdout.strip()}"
+        pull_output = pull.stderr.strip() or pull.stdout.strip()
+        if _DIVERGED_HISTORY_MARKER not in pull_output:
+            return False, f"git pull failed:\n{pull_output}"
+
+        reclone_ok, reclone_error = _reclone(repo_root)
+        if not reclone_ok:
+            return False, reclone_error
+        reclone_happened = True
 
     install = subprocess.run(
         [sys.executable, "-m", "pip", "install", "-e", str(repo_root)],
@@ -179,6 +256,8 @@ def run_self_update(repo_root: Path) -> tuple[bool, str]:
     if install.returncode != 0:
         return False, f"pip install failed:\n{install.stderr.strip() or install.stdout.strip()}"
 
+    if reclone_happened:
+        return True, "Updated (recovered from a rewritten upstream history). Restart Oh My Shell to use the new version."
     if "Already up to date" in pull.stdout:
         return True, "Already on the latest version."
     return True, "Updated. Restart Oh My Shell to use the new version."

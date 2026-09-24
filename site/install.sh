@@ -140,16 +140,39 @@ if [ -n "${OMSH_REPO_DIR:-}" ]; then
 else
     INSTALL_DIR="${OMSH_INSTALL_DIR:-$HOME/.local/share/oh-my-shell}"
 
+    # Already-installed-before recovery: if `git pull --ff-only` fails
+    # specifically because local and remote history have diverged (e.g. a
+    # maintainer force-pushed a rewritten history -- a rebase, or a
+    # `git filter-repo` run to strip an accidentally-committed file), a
+    # plain re-run of this installer used to leave the user stuck with a
+    # raw git error and no obvious next step. Detected by the same
+    # "Not possible to fast-forward" substring /update's own
+    # _reclone()/run_self_update() (update_check.py) key off of, so both
+    # recovery paths treat the same failure the same way. Falling through
+    # to `rm -rf "$INSTALL_DIR"` here is safe -- it only discards the repo
+    # checkout, never ~/.oh-my-shell/ (config.json + .env), so this is a
+    # clean fresh install of the current release, not a data loss.
     if [ -d "$INSTALL_DIR/.git" ]; then
-        # Already installed via this script before -- a plain `git pull` is
-        # both simpler and faster than re-downloading and re-verifying a
-        # fresh tarball on every reinstall. Checksum verification's job is
-        # to protect the FIRST download; once there's a real git checkout,
-        # git's own integrity checks (and /update's `git pull --ff-only`)
-        # take over.
-        run_step "Updating existing checkout" "git -C '$INSTALL_DIR' pull --ff-only"
-        REPO_ROOT="$INSTALL_DIR"
-    else
+        PULL_LOG="$(mktemp)"
+        if git -C "$INSTALL_DIR" pull --ff-only >"$PULL_LOG" 2>&1; then
+            ok "Updating existing checkout"
+            rm -f "$PULL_LOG"
+            REPO_ROOT="$INSTALL_DIR"
+        elif grep -q "Not possible to fast-forward" "$PULL_LOG"; then
+            warn "Existing checkout's history has diverged from the latest release — reinstalling fresh."
+            rm -f "$PULL_LOG"
+            rm -rf "$INSTALL_DIR"
+        else
+            fail "Updating existing checkout (see below)"$'\n'"$(cat "$PULL_LOG")"
+        fi
+    fi
+
+    # Reaching here with INSTALL_DIR/.git still absent means either this is
+    # a genuine first install, or the diverged-history recovery above just
+    # rm -rf'd a broken checkout -- both cases want the same fresh-download
+    # path below. REPO_ROOT is already set and this block skipped entirely
+    # when the ff-only pull above succeeded normally.
+    if [ ! -d "$INSTALL_DIR/.git" ]; then
         WORK_DIR="$(mktemp -d)"
         trap 'rm -rf "$WORK_DIR"' EXIT
 
