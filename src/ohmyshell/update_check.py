@@ -58,7 +58,15 @@ class UpdateCheckResult:
     latest_version: str
 
 
-def _current_version() -> str:
+def current_version() -> str:
+    """
+    This install's own version, read from the installed package's metadata
+    (pyproject.toml's `[project].version` at whatever commit `pip install
+    -e .` last ran against) rather than parsed from a file on disk -- so it
+    always matches what's actually running, editable install or not.
+    Public (no leading underscore): also used directly by main.py's `run()`
+    for `oh-my-shell --version`, not just internally by check_for_update().
+    """
     try:
         return metadata.version("oh-my-shell")
     except metadata.PackageNotFoundError:
@@ -98,7 +106,7 @@ def check_for_update() -> UpdateCheckResult | None:
     if not tag:
         return None
 
-    current = _current_version()
+    current = current_version()
     if not _is_newer(tag, current):
         return None
     return UpdateCheckResult(current_version=current, latest_version=tag)

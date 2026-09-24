@@ -1077,6 +1077,17 @@ def _handle_slash_command(
 
 def run() -> None:
     """Entrypoint (see pyproject.toml's [project.scripts] and bin/oh-my-shell)."""
+    # `--version`/`-v` short-circuits before anything else (wizard, config
+    # load, the REPL itself) -- found missing via manual testing: without
+    # this, `oh-my-shell --version` was silently swallowed as a natural-
+    # language command by the REPL instead of doing what every other CLI
+    # (git, node, python3) does with this flag. Printed with a bare
+    # print() rather than through themed_console(), since this needs to
+    # work (and exit fast) even if config/theme setup would itself fail.
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
+        print(f"oh-my-shell {update_check_module.current_version()}")
+        return
+
     console = themed_console()
 
     # First run: collect and verify the Google AI Studio API key before
