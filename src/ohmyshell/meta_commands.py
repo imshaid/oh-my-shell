@@ -8,8 +8,8 @@ Section 10.1's own line (verbatim): "Meta-command handler + slash-commands
 (`/help`, `/model`, ইত্যাদি) — বিদ্যমান core logic-এর উপর thin wrapper" --
 a thin wrapper over already-built modules. This module intentionally adds
 no new logic of its own: every command below is a dispatch into config.py,
-registry.py, audit_log.py, trash.py, or hardware.py, formatting their
-existing return values into the blueprint's confirmed output shapes.
+audit_log.py, trash.py, or hardware.py, formatting their existing return
+values into the blueprint's confirmed output shapes.
 
 Full Section 8.4 command table (verbatim, confirmed present in this
 project's transcript -- resolves the earlier-suspected 501-699 gap for
