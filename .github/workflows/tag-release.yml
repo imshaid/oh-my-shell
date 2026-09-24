@@ -1,0 +1,101 @@
+name: Tag → version bump → release
+
+# Triggered by a plain tag push (`git tag vX.Y.Z && git push --tags` or
+# `git push origin vX.Y.Z`), NOT by creating a Release in the GitHub UI --
+# this workflow's whole job is to turn that one tag push into a real
+# Release, so publishing manually first would be backwards. The tag is
+# now the one thing a person types; everything downstream (version bump,
+# commit, changelog, the Release object, and its checksums.txt) follows
+# from it, all in this one workflow.
+#
+# The checksum step below is duplicated from release.yml rather than
+# relying on this workflow's own `gh release create` to trigger
+# release.yml's `release: published` event -- confirmed via GitHub's own
+# docs (Actions > Security > GITHUB_TOKEN) that events performed with the
+# default GITHUB_TOKEN do NOT start other workflow runs (this is
+# intentional, to prevent accidental recursive triggers), so that trigger
+# would silently never have fired. release.yml is kept as its own file
+# regardless, since a Release published by hand through the GitHub UI
+# (a real person clicking "Publish release", not GITHUB_TOKEN) still
+# fires `release: published` normally and should still get a
+# checksums.txt -- this workflow only covers the tag-push path.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  bump-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need main's real history (not just the tag's commit) so the
+          # version-bump commit below can be pushed onto it.
+          fetch-depth: 0
+          ref: main
+
+      - name: Derive version from the pushed tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"      # e.g. v0.3.0
+          VERSION="${TAG#v}"                   # e.g. 0.3.0
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Bump pyproject.toml's version to match the tag
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" pyproject.toml
+          grep '^version = ' pyproject.toml
+
+      - name: Commit the version bump to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- pyproject.toml; then
+            echo "pyproject.toml already at this version -- nothing to commit."
+          else
+            git add pyproject.toml
+            git commit -m "Bump version to ${{ steps.version.outputs.version }} (${{ steps.version.outputs.tag }})"
+            git push origin HEAD:main
+          fi
+
+      - name: Move the tag onto the version-bump commit
+        run: |
+          # The tag was pushed pointing at the pre-bump commit; retarget it
+          # at the commit we just made (if any) so the Release, and this
+          # tag's own source tarball, actually contain the bumped
+          # pyproject.toml rather than the stale version string.
+          git tag -f "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}" --force
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes
+
+      - name: Download this release's source tarball
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL -o source.tar.gz \
+            "https://github.com/${{ github.repository }}/archive/refs/tags/${{ steps.version.outputs.tag }}.tar.gz"
+
+      - name: Compute checksum
+        run: |
+          sha256sum source.tar.gz | awk '{print $1"  source.tar.gz"}' > checksums.txt
+          cat checksums.txt
+
+      - name: Upload checksums.txt to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ steps.version.outputs.tag }}" checksums.txt \
+            --repo "${{ github.repository }}" --clobber
