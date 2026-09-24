@@ -154,10 +154,15 @@ class TestCommandsMatchMetaCommandsDispatchTable:
         # why), so those stay a literal list here, but the EXIT_COMMANDS
         # portion is now read directly off the real source instead of
         # retyped, so it can't drift out of sync with it again.
+        # "update" is dispatchable too, just not through
+        # meta_commands.dispatch() itself -- main.py intercepts it before
+        # reaching that table, since it shells out to git/pip rather than
+        # formatting another module's return value (see meta_commands.py's
+        # own module docstring for why it's the one listed exception).
         expected_non_exit = {
             "help", "model", "history", "undo", "trash", "log",
             "capabilities", "explain", "stats", "system", "config",
-            "clear",
+            "clear", "update",
         }
         expected = expected_non_exit | meta_commands.EXIT_COMMANDS
         palette_names = {name for name, _ in COMMANDS}

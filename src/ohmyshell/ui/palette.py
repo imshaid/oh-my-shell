@@ -73,6 +73,7 @@ COMMANDS: list[tuple[str, str]] = sorted(
         ("system", "Full hardware & shell status"),
         ("trash", "View or manage .trash/"),
         ("undo", "Revert the last destructive action"),
+        ("update", "Check for and install the latest version"),
     ]
 )
 
