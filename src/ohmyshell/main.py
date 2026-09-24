@@ -125,6 +125,16 @@ from ohmyshell.ui.thinking import run_with_thinking_indicator
 
 EXIT_COMMANDS = {"/exit", "/quit"}
 
+# How long the first REPL loop iteration waits for the background GitHub
+# Releases check (update_check_module.check_for_update_async) to finish
+# before giving up on showing the "update available" notice this session.
+# Bounded on purpose -- a slow or offline network must never delay the
+# first prompt by more than this -- but long enough to actually catch a
+# normal GitHub API response, which was measured (on a real machine) to
+# take noticeably longer than the near-zero head start the wizard/config
+# steps between thread-start and this join used to provide on their own.
+UPDATE_CHECK_JOIN_TIMEOUT_SECONDS = 2.5
+
 # One consistent banner shown once at startup — gives the app a signature
 # look on launch rather than dropping straight into a bare prompt, kept
 # intentionally small/quiet so it doesn't compete with /help's own
@@ -1087,7 +1097,7 @@ def run() -> None:
     # -- it's still a best-effort check either way (see update_check.py's
     # own module docstring: any failure or a not-yet-finished check just
     # means the notice is skipped for this session, never a delay here).
-    update_check_module.check_for_update_async()
+    update_check_thread = update_check_module.check_for_update_async()
 
     console.print(_BANNER)
 
@@ -1103,12 +1113,17 @@ def run() -> None:
         # Checked right before the very first prompt rather than
         # immediately after check_for_update_async() up above -- the
         # wizard/fish-guard/config-load steps between that call and here
-        # give the background GitHub Releases lookup a real chance to
-        # finish first. Still best-effort: a not-yet-finished check by
-        # this point just means the notice is skipped for this session
-        # (see update_check.py's own module docstring).
+        # give the background GitHub Releases lookup a head start, but
+        # that head start alone was measured (on a real machine) to be
+        # only a few milliseconds -- nowhere near enough for a ~1-2s
+        # network call. So the check here waits up to
+        # UPDATE_CHECK_JOIN_TIMEOUT_SECONDS for the thread to finish
+        # before reading its result: bounded, so a slow/offline network
+        # still can't hang the prompt, but long enough that a normal
+        # GitHub API response is actually caught most of the time.
         if first_loop:
             first_loop = False
+            update_check_thread.join(timeout=UPDATE_CHECK_JOIN_TIMEOUT_SECONDS)
             latest_version = update_check_module.pending_update()
             if latest_version is not None:
                 console.print(

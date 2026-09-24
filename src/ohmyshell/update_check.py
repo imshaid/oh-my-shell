@@ -35,7 +35,13 @@ from importlib import metadata
 from pathlib import Path
 
 RELEASES_API_URL = "https://api.github.com/repos/imshaid/oh-my-shell/releases/latest"
-REQUEST_TIMEOUT_SECONDS = 2.0
+# 2.0s was found (via manual testing on a real machine) to be too tight —
+# the GitHub API call itself can legitimately take longer than that even
+# on an ordinary connection, so a 2s cutoff was silently discarding a
+# real, working response often enough to make the whole feature look
+# broken. 5s still keeps this well clear of "delays the prompt" territory
+# (this only ever runs on the background thread from check_for_update_async).
+REQUEST_TIMEOUT_SECONDS = 5.0
 
 # Set by check_for_update_async's background thread; read once by main.py
 # right after startup. No lock needed -- a single str-or-None write from
@@ -98,8 +104,15 @@ def check_for_update() -> UpdateCheckResult | None:
     return UpdateCheckResult(current_version=current, latest_version=tag)
 
 
-def check_for_update_async() -> None:
-    """Starts the lookup on a daemon thread; never blocks the caller."""
+def check_for_update_async() -> threading.Thread:
+    """
+    Starts the lookup on a daemon thread; never blocks the caller. Returns
+    the Thread so main.py can give it a short, bounded chance to finish
+    (via Thread.join(timeout=...)) right before the first prompt is drawn,
+    without ever risking an unbounded wait -- see pending_update()'s
+    docstring for why a bare fire-and-forget start left the notice almost
+    never appearing in practice.
+    """
 
     def _worker() -> None:
         global _latest_version
@@ -107,13 +120,26 @@ def check_for_update_async() -> None:
         if result is not None:
             _latest_version = result.latest_version
 
-    threading.Thread(target=_worker, daemon=True).start()
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    return thread
 
 
 def pending_update() -> str | None:
-    """The latest version string if check_for_update_async found a newer
+    """
+    The latest version string if check_for_update_async found a newer
     release before this was called, else None. Consumed once by main.py
-    right after the banner -- callers don't need to clear it themselves."""
+    right after the banner -- callers don't need to clear it themselves.
+
+    Found via manual testing on a real machine: the gap between starting
+    the background thread and main.py reading this (banner print + a
+    couple of startup steps) is only ever a few milliseconds, while the
+    GitHub API call itself routinely takes 1-2+ seconds -- so this almost
+    always returned None even when the check would have succeeded a
+    moment later. main.py now joins the thread (with a short timeout)
+    immediately before calling this, so the check gets a real, bounded
+    window to finish first.
+    """
     return _latest_version
 
 
