@@ -94,13 +94,17 @@ pipeline inspects command/request text for these flags at all.
 from __future__ import annotations
 
 import dataclasses
+import os
 import shlex
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 from rich.console import Console
+from rich.style import Style
 from rich.text import Text
 
 from ohmyshell import audit_log as audit_log_module
@@ -122,6 +126,7 @@ from ohmyshell.ui.panels import (
 from ohmyshell.ui.prompt import render_prompt_ansi
 from ohmyshell.ui.session import ReplSession
 from ohmyshell.ui.streaming import StreamingRenderer
+from ohmyshell.ui.theme import OMSH_THEME, bordered_console, themed_console
 from ohmyshell.ui.thinking import run_with_thinking_indicator
 
 EXIT_COMMANDS = {"/exit", "/quit"}
@@ -130,10 +135,26 @@ EXIT_COMMANDS = {"/exit", "/quit"}
 # look on launch rather than dropping straight into a bare prompt (no
 # blueprint mockup covers this exactly; kept intentionally small/quiet so
 # it doesn't compete with /help's own reference text).
-_BANNER = Text.from_markup(
-    "[bold cyan]✦ Oh My Shell[/bold cyan] [dim]— natural-language Linux shell[/dim]\n"
-    "[dim]Type naturally, or /help for commands.[/dim]"
-)
+#
+# Fixed accent palette (post-Build-Order, user-requested): "bold cyan" ->
+# "bold omsh.accent" -- this banner is oh-my-shell's own signature look,
+# so it uses ui/theme.py's fixed hex accent rather than a terminal-theme-
+# relative named color. See ui/theme.py's own module docstring.
+#
+# Bug fix (post-Build-Order, found via real-terminal testing -- see
+# ui/prompt.py's "bold omsh.path" fix for the full root-cause story): a
+# composite markup tag mixing a plain attribute with a ui/theme.py
+# "omsh.*" theme name -- "[bold omsh.accent]...[/bold omsh.accent]" --
+# rendered the whole banner headline completely unstyled (no color, no
+# bold) rather than raising or falling back to the color alone. Built by
+# hand with a real `Style` object instead of `Text.from_markup()` for the
+# composite span, sidestepping rich's markup/style-string parser (which
+# cannot resolve a theme-registered name combined with another attribute
+# in one string) for exactly this case.
+_BANNER = Text()
+_BANNER.append("✦ Oh My Shell", style=Style(bold=True) + OMSH_THEME.styles["omsh.accent"])
+_BANNER.append(" — natural-language Linux shell\n", style="dim")
+_BANNER.append("Type naturally, or /help for commands.", style="dim")
 
 
 def _extract_trash_target(text: str) -> str | None:
@@ -180,7 +201,15 @@ def _extract_trash_target(text: str) -> str | None:
 
 
 def _handle_raw_shell(
-    text: str, cfg: dict, *, confirm: callable = input, console: Console | None = None, base_dir=None
+    text: str,
+    cfg: dict,
+    *,
+    confirm: callable = input,
+    console: Console | None = None,
+    base_dir=None,
+    nl_read: callable = input,
+    nl_choice_read: callable | None = None,
+    nl_sudo_input_fn: callable | None = None,
 ) -> None:
     """
     Classify, then execute raw shell input directly (Section 8.3.5).
@@ -210,13 +239,47 @@ def _handle_raw_shell(
     blueprint text specifically calling this out, but Section 4.2's Audit
     Log row ("প্রতিটা action ... রেকর্ড করে") does not scope itself to
     AI-originated actions only, so this module logs both paths uniformly.
+
+    --- AI-fallback-on-misroute (post-Build-Order, user-requested) ---
+    router.py's own docstring already admits its heuristic has margin
+    cases: a natural-language phrase whose first word happens to be a
+    real PATH executable (e.g. "open firefox", "open setting" -- `open`
+    is a real xdg-open/gio wrapper on most systems) gets classified
+    RAW_SHELL and lands here instead of going to the AI. Confirmed via
+    real-terminal testing that exit code alone can't reliably catch this:
+    a genuinely-missing command gives the classic shell 127, but a
+    misrouted phrase whose first word IS a real, existing command (like
+    `open`) fails with that command's OWN ordinary argument-parsing error
+    instead ("gio: ... No such file or directory", "xdg-open: unexpected
+    option ...") -- typically exit code 1 or 2, indistinguishable by
+    number alone from an ordinary command failure. So detection here is
+    stderr-*text*-based (`_looks_like_command_not_understood`, a sibling
+    of executor.py's own `_looks_like_permission_denied`), checked
+    whenever the exit code is simply non-zero at all -- see
+    `_run_shell_command`'s own docstring for how that text is captured
+    (a teed stderr pipe) without disturbing stdout/stdin, which is what
+    keeps interactive full-screen programs (vim/top) working exactly as
+    before despite this capture.
+
+    Deliberately NOT silent/automatic: the user explicitly asked for a
+    confirmation step here, not auto-reinterpretation -- a real typo
+    against an existing command (e.g. "gerp foo" -> "command not found")
+    matches the same signatures a genuine misroute would, and only the
+    user actually knows which one it was.
+
+    On "yes", falls through to the exact same `_handle_natural_language`
+    pipeline a NATURAL_LANGUAGE-routed input would have used, with the
+    *original* text (not re-routed) -- this function's own audit-log
+    entry above is skipped in that case, since `_handle_natural_language`
+    logs its own outcome (source="natural_language"), and logging both
+    would double-count one user action across two different sources.
     """
-    active_console = console if console is not None else Console()
+    active_console = console if console is not None else themed_console()
     try:
         result = classify(text, model=config_module.get(cfg, "model.active"))
     except DangerClassifierError as exc:
         active_console.print(
-            f"  [yellow]⚠[/yellow] Could not classify this command ({exc}) — not running it automatically."
+            f"  [omsh.warning]⚠[/omsh.warning] Could not classify this command ({exc}) — not running it automatically."
         )
         active_console.print(f"  [dim]Re-run manually if you're sure: {text}[/dim]")
         return
@@ -243,7 +306,7 @@ def _handle_raw_shell(
                     error=str(exc), detail=f"target={target}", base_dir=base_dir,
                 )
                 return
-            active_console.print(f"  [green]✓[/green] Moved {target!r} to .trash/ instead of running the original command.")
+            active_console.print(f"  [omsh.success]✓[/omsh.success] Moved {target!r} to .trash/ instead of running the original command.")
             audit_log_module.record_action(
                 action=text, source="raw_shell", status="done",
                 detail=f"moved {target!r} to trash instead of running command", base_dir=base_dir,
@@ -255,21 +318,237 @@ def _handle_raw_shell(
             audit_log_module.record_action(action=text, source="raw_shell", status="cancelled", base_dir=base_dir)
             return
 
-    _run_shell_command(text)
+    exit_code, stderr_text = _run_shell_command(text)
+
+    if exit_code is not None and exit_code != 0 and _looks_like_command_not_understood(stderr_text):
+        retry_choice = confirm("  Did you mean that as natural language? [y/N] > ").strip().lower()
+        if retry_choice == "y":
+            audit_log_module.record_action(
+                action=text, source="raw_shell", status="cancelled",
+                detail="command not understood — reinterpreted as natural language", base_dir=base_dir,
+            )
+            _handle_natural_language(
+                text, cfg,
+                read=nl_read, choice_read=nl_choice_read, sudo_input_fn=nl_sudo_input_fn,
+                console=active_console, base_dir=base_dir,
+            )
+            return
+
     audit_log_module.record_action(action=text, source="raw_shell", status="done", base_dir=base_dir)
 
 
-def _run_shell_command(text: str) -> None:
+_COMMAND_NOT_UNDERSTOOD_SIGNATURES = (
+    "command not found",
+    "not found",  # covers fish's "Unknown command", bash's "<cmd>: command not found"
+    "unexpected argument",
+    "unexpected option",
+    "unrecognized option",
+    "unrecognized argument",
+    "invalid option",
+    "no such file or directory",
+)
+
+
+def _looks_like_command_not_understood(stderr: str) -> bool:
     """
-    Actually execute a raw shell command. Uses shell=True so pipes/redirects/
-    chaining the router already detected actually work; interactive
-    full-screen programs (vim/top) are a pty hand-off concern for a later
-    step — this is plain blocking subprocess execution.
+    Sibling to executor.py's own `_looks_like_permission_denied` (same
+    pattern: lowercase substring match against known shell/tool error
+    phrasing, not a real parser) -- used by `_handle_raw_shell` to decide
+    whether to offer the AI-fallback prompt. See that function's own
+    docstring for why this exists and why it's a confirmation, not an
+    automatic reinterpretation.
     """
+    lowered = stderr.lower()
+    return any(sig in lowered for sig in _COMMAND_NOT_UNDERSTOOD_SIGNATURES)
+
+
+def _raw_shell_popen_args(text: str) -> list[str] | str:
+    """
+    Build the actual argv (or shell=True string) `_run_shell_command`
+    spawns, preferring the person's own real login shell over Python's
+    hardcoded `shell=True` default.
+
+    Bug fix (post-Build-Order, found via real-terminal testing): plain
+    `subprocess.run(text, shell=True)` always used `/bin/sh` (dash on most
+    distros), spawned non-login/non-interactive -- NOT the person's actual
+    shell (fish, in this project's own dev environment). That meant every
+    environment variable their real shell's own config sets up (most
+    visibly `LS_COLORS`, which fish populates from its own `fish_vars`/
+    `config.fish`, not from anything `/bin/sh` would ever read) was simply
+    never present for a raw command run this way -- so `ls -la
+    --color=always` had color (`--color=always` forces the FEATURE on
+    regardless of environment) but nothing to color WITH: `ls` fell back
+    to its own built-in default dircolors database, which colors a
+    handful of generic entries (directories, `..`) but not most ordinary
+    filenames the way the person's actual configured LS_COLORS does.
+
+    Detection: `$SHELL` (the standard POSIX-set "this is my login shell"
+    variable, set by the OS/login manager, not something oh-my-shell has
+    to guess or hardcode to "fish" specifically -- this works the same
+    way for a bash or zsh user too) is used when it points at a real,
+    existing executable; `["$SHELL", "-c", text]` is real argv (no shell
+    metacharacter quoting/injection risk from wrapping `text` in another
+    shell=True string) and the WHOLE point is that this exact shell binary
+    then does its own full normal startup (reading its own config/env
+    setup) before running `text` -- exactly the environment the person
+    sees when they type the same raw command directly into their own
+    terminal.
+
+    Falls back to `shell=True` (the previous, always-correct-if-less-rich
+    behavior) when `$SHELL` is unset or doesn't point at a real file --
+    keeps this project running in any environment (this sandbox included)
+    that has no shell entry set up, rather than hard-failing.
+    """
+    shell_path = os.environ.get("SHELL")
+    if shell_path and shutil.which(shell_path) is not None:
+        return [shell_path, "-c", text]
+    return text
+
+
+# --- fish "greeting noise on every raw command" fix (post-Build-Order,
+# found via real-terminal testing) ---
+#
+# `_raw_shell_popen_args` above (deliberately) makes every raw command run
+# through the person's own real login shell so their own config (LS_COLORS,
+# aliases, etc.) is present. For a fish user, that means `fish -c "text"`
+# runs fish's own `config.fish` in full before `text` -- and if THAT
+# config.fish calls something like `fastfetch`/`neofetch`/a banner script
+# with no `status is-interactive` guard around it (a very common real-world
+# fish config, not something oh-my-shell controls or can predict), that
+# banner now reprints before every single raw command, not just once at
+# real interactive shell startup.
+#
+# This is a bug in the person's own config, not in oh-my-shell -- fish
+# itself already has the right primitive (`status is-interactive`) for a
+# config to guard against exactly this. But telling every single user to
+# go hand-edit their own dotfiles is not a real fix for a tool meant to be
+# installed and just work: different users' config.fish files call
+# different unguarded things (fastfetch, neofetch, a cowsay motd,
+# anything), so there's no fixed string oh-my-shell could detect and patch
+# around at the source-analysis level, and shipping `fish --no-config`
+# instead would silently drop the very env setup (LS_COLORS etc.) the
+# shell-preference fix above exists to preserve.
+#
+# The fix that actually works for every user, unattended: install (once,
+# idempotently) a tiny early-exit guard at the very TOP of the person's own
+# config.fish, keyed off an env var oh-my-shell itself sets only when IT is
+# the one invoking fish non-interactively. Since fish sources config.fish
+# top-to-bottom and `exit` inside it stops that immediately, everything
+# below the guard (the person's own aliases, LS_COLORS exports, fastfetch
+# call, whatever) never runs for oh-my-shell's own raw-command invocations,
+# while a real interactive fish session the person opens themselves (no env
+# var set) is completely unaffected and sees its config exactly as before.
+_FISH_GUARD_ENV = "OMSH_RAW_EXEC"
+_FISH_GUARD_MARKER = "# oh-my-shell: skip rest of config.fish for non-interactive raw exec"
+_FISH_GUARD_BLOCK = (
+    f"{_FISH_GUARD_MARKER}\n"
+    f"if set -q {_FISH_GUARD_ENV}\n"
+    f"    exit\n"
+    f"end\n"
+)
+
+
+def _fish_config_path() -> Path:
+    """
+    Fish's own standard config location -- `$XDG_CONFIG_HOME/fish/config.fish`
+    if that's set (fish itself honors this), else `~/.config/fish/config.fish`.
+    """
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg_config) if xdg_config else Path.home() / ".config"
+    return base / "fish" / "config.fish"
+
+
+def ensure_fish_guard_installed() -> None:
+    """
+    Idempotently install `_FISH_GUARD_BLOCK` at the top of the person's own
+    fish config.fish, if (and only if): fish is their real shell
+    (`$SHELL`), config.fish already exists (never creates one from
+    scratch -- if the person has no fish config at all, there's nothing
+    unguarded to skip), and the guard isn't already present (checked via
+    `_FISH_GUARD_MARKER`, so re-running this on every startup is a no-op
+    after the first time). Never touches anything else in the file --
+    every line the person already had stays, byte-for-byte, just pushed
+    below the new guard block. Failures (permission error, unreadable
+    file, etc.) are swallowed -- this is a quality-of-life fix, not
+    something that should ever block the REPL from starting.
+    """
+    shell_path = os.environ.get("SHELL", "")
+    if "fish" not in Path(shell_path).name:
+        return
+
+    config_path = _fish_config_path()
     try:
-        subprocess.run(text, shell=True)
+        if not config_path.is_file():
+            return
+        existing = config_path.read_text()
+        if _FISH_GUARD_MARKER in existing:
+            return
+        config_path.write_text(_FISH_GUARD_BLOCK + "\n" + existing)
+    except OSError:
+        pass
+
+
+def _run_shell_command(text: str) -> tuple[int | None, str]:
+    """
+    Actually execute a raw shell command. Prefers the person's own real
+    login shell (see `_raw_shell_popen_args`'s own docstring for why --
+    short version: their shell's own config sets up things like
+    `LS_COLORS`, which a hardcoded `/bin/sh` never would), falling back to
+    `shell=True` (Python's own `/bin/sh`) only when no real shell can be
+    found -- either way, pipes/redirects/chaining the router already
+    detected keep working, since both paths still hand the WHOLE original
+    command string to a real shell to interpret, never split/re-parsed by
+    this function itself.
+
+    stdin/stdout stay fully inherited from the real terminal, unchanged --
+    interactive full-screen programs (vim/top) keep reading/writing the
+    real tty directly, exactly as before. Only stderr is redirected to a
+    pipe, then "teed": every chunk read from that pipe is written straight
+    back out to the real stderr live (so the user still sees error output
+    exactly as it streams, nothing is held back or delayed) while also
+    being collected into a buffer this function returns alongside the exit
+    code. This is what lets `_handle_raw_shell` inspect stderr for a
+    "command not understood" signature (see `_looks_like_command_not_understood`)
+    without capturing (and therefore risking breaking) stdout/stdin at all
+    -- the one stream that actually matters for interactive programs.
+
+    Returns (exit_code, captured_stderr). exit_code is None if the command
+    couldn't even be spawned (OSError), in which case captured_stderr is
+    always "".
+    """
+    args = _raw_shell_popen_args(text)
+    # `_FISH_GUARD_ENV=1` in the child's own env -- read by the early-exit
+    # guard `ensure_fish_guard_installed()` puts at the top of the
+    # person's config.fish (fish-only; harmless/unused for any other
+    # shell), so THIS invocation's config.fish sourcing stops immediately
+    # instead of running the person's full interactive setup (fastfetch,
+    # etc.) on every single raw command. `os.environ` itself is left
+    # untouched -- only this one child process sees the var, never
+    # oh-my-shell's own process or anything else on the person's system.
+    child_env = dict(os.environ, **{_FISH_GUARD_ENV: "1"})
+    try:
+        if isinstance(args, list):
+            proc = subprocess.Popen(args, stderr=subprocess.PIPE, env=child_env)
+        else:
+            proc = subprocess.Popen(args, shell=True, stderr=subprocess.PIPE, env=child_env)
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return None, ""
+
+    captured: list[bytes] = []
+
+    def _tee_stderr() -> None:
+        assert proc.stderr is not None
+        for chunk in iter(lambda: proc.stderr.read(4096), b""):
+            sys.stderr.buffer.write(chunk)
+            sys.stderr.buffer.flush()
+            captured.append(chunk)
+
+    tee_thread = threading.Thread(target=_tee_stderr, daemon=True)
+    tee_thread.start()
+    proc.wait()
+    tee_thread.join()
+    return proc.returncode, b"".join(captured).decode(errors="replace")
 
 
 def _repl_get_user_choice(
@@ -316,7 +595,7 @@ def _repl_get_user_choice(
     """
     from ohmyshell.ui.session import read_plan_choice_keypress
 
-    active_console = console if console is not None else Console()
+    active_console = console if console is not None else themed_console()
     active_console.print(render_plan_panel(plan, telemetry=telemetry, attempts=attempts))
     if read is None:
         raw = read_plan_choice_keypress().strip().lower()
@@ -345,7 +624,7 @@ def _repl_edit_flow(plan: Plan, *, read: callable = input, console: Console | No
     function is that caller-side piece. An empty replacement cancels the
     edit rather than leaving the plan with a blank command.
     """
-    active_console = console if console is not None else Console()
+    active_console = console if console is not None else themed_console()
     active_console.print(f"  [dim]Current command:[/dim] {plan.command}")
     new_command = read("  New command (blank to cancel): ").strip()
     if not new_command:
@@ -448,7 +727,19 @@ def _handle_natural_language(
        step's stderr/detail for a failed/interrupted outcome so /explain
        and /log have something concrete to show.
     """
-    active_console = console if console is not None else Console()
+    active_console = console if console is not None else themed_console()
+    # Bordered-turn mode (see ui/theme.py's own module-level note): when
+    # `console` is a bordered Console (built by `ui.theme.bordered_console`,
+    # normally by run()'s own REPL loop), `Live`-driven rendering below
+    # (run_with_thinking_indicator, StreamingRenderer) must use the real,
+    # un-prefixed Console it carries as `.unbordered` instead -- printing
+    # a Live display through the bar-prefixing wrapper produces visual
+    # glitches (verified directly; see that module's docstring for the
+    # full explanation). A plain Console (e.g. every existing test's
+    # injected `console=`) has no such attribute, so `getattr(...,
+    # console)` simply falls back to using it directly -- identical to
+    # this function's behavior before bordered-turn mode existed.
+    live_console = getattr(active_console, "unbordered", active_console)
     model = config_module.get(cfg, "model.active")
     # "google_ai_studio" (Gemini 3.5/3.1 Flash Lite) by default per this
     # session's own empirical comparison; "ollama" is the explicit
@@ -482,11 +773,11 @@ def _handle_natural_language(
     try:
         result = run_with_thinking_indicator(
             lambda: parse_intent(text, model_provider=model_provider, model=model, on_token=_on_token),
-            console=active_console,
+            console=live_console,
             on_token_box=token_box,
         )
     except IntentParseError as exc:
-        active_console.print(f"  [yellow]⚠[/yellow] Could not reach the model: {exc}")
+        active_console.print(f"  [omsh.warning]⚠[/omsh.warning] Could not reach the model: {exc}")
         return
 
     if result.intent is None:
@@ -528,7 +819,7 @@ def _handle_natural_language(
                 lambda: parse_intent(
                     adjustment_text, model_provider=model_provider, model=model, on_token=_on_reparse_token
                 ),
-                console=active_console,
+                console=live_console,
                 on_token_box=reparse_token_box,
             )
         except IntentParseError:
@@ -591,7 +882,7 @@ def _handle_natural_language(
     confirmed_plan = outcome.plan
 
     start = time.time()
-    with StreamingRenderer(console=active_console) as renderer:
+    with StreamingRenderer(console=live_console) as renderer:
         execution = run_plan(
             confirmed_plan,
             # `sudo_input_fn` defaults to None, which makes RichSudoPrompt
@@ -669,7 +960,7 @@ def _handle_slash_command(
     output lands in the same stream/buffer as everything else this module
     renders (important for tests that capture one Console's buffer).
     """
-    active_console = console if console is not None else Console()
+    active_console = console if console is not None else themed_console()
     try:
         outcome = meta_commands.dispatch(text, cfg=cfg, session_start=session_start)
     except meta_commands.MetaCommandError as exc:
@@ -683,7 +974,7 @@ def _handle_slash_command(
 
 def run() -> None:
     """Entrypoint (see pyproject.toml's [project.scripts] and bin/oh-my-shell)."""
-    console = Console()
+    console = themed_console()
 
     # Bug fix (found via manual end-to-end testing, post-Build-Order):
     # wizard.py (Build Order Step 13) was fully written and tested but
@@ -700,6 +991,11 @@ def run() -> None:
     # static qwen3:8b default regardless of the machine's hardware.
     if wizard_module.should_run_wizard():
         wizard_module.run_wizard(print_fn=console.print)
+
+    # Fish-greeting-noise fix (see `ensure_fish_guard_installed`'s own
+    # docstring for the full story) -- idempotent, so this runs on every
+    # startup but only actually edits the person's config.fish once, ever.
+    ensure_fish_guard_installed()
 
     cfg = config_module.load()
     session_start = time.time()
@@ -730,6 +1026,17 @@ def run() -> None:
         if routed.kind == InputKind.EMPTY:
             continue
 
+        # Bordered-turn mode (post-Build-Order, user-requested -- see
+        # ui/theme.py's own module-level note for the full design and why
+        # a true alternate-screen full-screen app was ruled out in favor
+        # of this): every dispatched turn's static output gets a fresh
+        # `bordered_console()` built fresh per turn (not reused across
+        # turns) from the REPL's own real `console`, so each turn's own
+        # left-accent bar starts and ends cleanly around just that turn's
+        # output in the scrollback, the same visual seam the blank-line
+        # spacing above this loop already gives each turn's start.
+        turn_console = bordered_console(console)
+
         # Bug fix (found via manual end-to-end testing, post-Build-Order,
         # live-terminal session): only the top-level `session.prompt()`
         # read above was ever wrapped for KeyboardInterrupt -- every
@@ -749,14 +1056,14 @@ def run() -> None:
         # and returns to the ordinary REPL prompt instead.
         try:
             if routed.kind == InputKind.SLASH_COMMAND:
-                if _handle_slash_command(routed.text, cfg, session_start, console=console):
+                if _handle_slash_command(routed.text, cfg, session_start, console=turn_console):
                     break
                 continue
             if routed.kind == InputKind.RAW_SHELL:
-                _handle_raw_shell(routed.text, cfg, confirm=session, console=console)
+                _handle_raw_shell(routed.text, cfg, confirm=session, console=turn_console, nl_read=session)
                 continue
             if routed.kind == InputKind.NATURAL_LANGUAGE:
-                _handle_natural_language(routed.text, cfg, read=session, console=console)
+                _handle_natural_language(routed.text, cfg, read=session, console=turn_console)
                 continue
         except KeyboardInterrupt:
             console.print()

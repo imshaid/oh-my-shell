@@ -11,10 +11,18 @@ now also runs `override_risk()` on the produced command before building
 the plan; `_repl_edit_flow`/`edit_command` drive a raw command-text edit,
 not a per-param edit.
 
-`input()`/`ReplSession`, `subprocess.run`, `intent_parser.parse_intent`,
+`input()`/`ReplSession`, `subprocess.Popen` (raw-shell execution switched
+from `subprocess.run` to a teed-stderr `Popen`, post-Build-Order -- see
+main.py's `_run_shell_command` docstring), `intent_parser.parse_intent`,
 and the Executor/Audit Log are all mocked or redirected to a tmp_path
 base_dir so these tests exercise only main.py's own wiring logic, not real
 shell execution, a real model call, or the user's real ~/.oh-my-shell/.
+
+`_FakeRawPopen` (below) is the fake `subprocess.Popen` these raw-shell
+tests inject in place of `ohmyshell.main.subprocess.Popen` -- it supports
+just enough of the real interface (`.stderr.read(n)` chunked reads that
+terminate with `b""`, `.wait()`, `.returncode`) for `_run_shell_command`'s
+own tee-thread to run against it exactly as it would a real subprocess.
 
 Rich-rendered output (panels, the prompt, streaming) is asserted against an
 injected `Console(file=io.StringIO(), force_terminal=False)` buffer's
@@ -25,6 +33,7 @@ test suites already use.
 from __future__ import annotations
 
 import io
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -46,10 +55,75 @@ def default_cfg():
     return config_module.default_config()
 
 
+@pytest.fixture(autouse=True)
+def _no_real_fish_config_editing(monkeypatch):
+    # `run()` now calls `ensure_fish_guard_installed()` on every startup
+    # (see main.py's own docstring for why) -- it's a real-filesystem,
+    # real-$SHELL-dependent side effect (edits the person's own
+    # config.fish) that no test in this file should ever actually trigger,
+    # regardless of what $SHELL happens to be set to on the machine
+    # running the test suite. Tests that specifically want to exercise
+    # `ensure_fish_guard_installed()` itself (see TestEnsureFishGuardInstalled)
+    # undo this patch locally.
+    monkeypatch.setattr(main_module, "ensure_fish_guard_installed", lambda: None)
+
+
 def _buffer_console() -> tuple[io.StringIO, Console]:
+    # Fixed accent palette (post-Build-Order): main.py's own chrome now
+    # uses ui/theme.py's fixed "omsh.*" style names (see ui/theme.py's
+    # module docstring), so any Console built for a test must carry
+    # OMSH_THEME the same way main.py's real Console does (via
+    # ui.theme.themed_console()), or rich raises MissingStyle trying to
+    # resolve those names against a themeless Console.
+    from ohmyshell.ui.theme import themed_console
+
     buffer = io.StringIO()
-    console = Console(file=buffer, width=100, force_terminal=False)
+    console = themed_console(file=buffer, width=100, force_terminal=False)
     return buffer, console
+
+
+class _FakeRawStderr:
+    """`.read(n)`-chunked reader matching real `Popen.stderr`'s shape --
+    returns each queued chunk once, then b"" forever (real pipe EOF)."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    def read(self, _size: int = 4096) -> bytes:
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+class _FakeRawPopen:
+    """Fake `subprocess.Popen` for `_run_shell_command`'s teed-stderr
+    execution (see this file's module docstring) -- captures the command
+    it was invoked with so tests can assert `shell=True` was used, and
+    lets each test script an exit code + stderr chunks without spawning a
+    real process."""
+
+    last_instance: "_FakeRawPopen | None" = None
+
+    def __init__(self, returncode: int = 0, stderr_text: str = "") -> None:
+        self._returncode = returncode
+        self._stderr_bytes = stderr_text.encode()
+        self.stderr = _FakeRawStderr([self._stderr_bytes] if self._stderr_bytes else [])
+        self.returncode: int | None = None
+        self.command: str | None = None
+        self.kwargs: dict | None = None
+
+    def __call__(self, command, **kwargs):
+        # Used as the `subprocess.Popen` replacement itself: each call
+        # returns `self` (pre-configured), recording the args it was
+        # actually invoked with for later assertion.
+        self.command = command
+        self.kwargs = kwargs
+        _FakeRawPopen.last_instance = self
+        return self
+
+    def wait(self) -> int:
+        self.returncode = self._returncode
+        return self._returncode
 
 
 # --- ui/prompt.render_prompt_ansi (main.py's prompt source) ------------------------
@@ -66,17 +140,111 @@ def test_render_prompt_ansi_contains_color_escapes(default_cfg, tmp_path):
     assert "\x1b[" in rendered
 
 
+# --- main.py's own startup banner (_BANNER) ------------------------------------
+
+
+def test_banner_headline_carries_a_real_color_escape():
+    """
+    Regression test (post-Build-Order, found via real-terminal testing --
+    see ui/prompt.py's "bold omsh.path" fix for the full root-cause
+    story): _BANNER's headline used to be built via
+    `Text.from_markup("[bold omsh.accent]...[/bold omsh.accent]...")` --
+    a composite markup tag mixing a plain attribute with a ui/theme.py
+    "omsh.*" theme name, which rich silently renders completely unstyled
+    (no color, no bold, no escape codes at all) instead of applying
+    either attribute. Rendered through a themed, truecolor-forced Console
+    (the same way main.py's real `run()` prints it), so a regression to a
+    composite style/markup string for this banner fails here.
+    """
+    from ohmyshell.ui.theme import themed_console
+
+    console = themed_console(force_terminal=True, color_system="truecolor", no_color=False)
+    with console.capture() as capture:
+        console.print(main_module._BANNER)
+    rendered = capture.get()
+    headline_index = rendered.index("Oh My Shell")
+    assert "\x1b[" in rendered[:headline_index]
+
+
 # --- _handle_raw_shell -------------------------------------------------------------
 
 
-def test_handle_raw_shell_calls_subprocess_run_with_shell_true(default_cfg, tmp_path):
+def test_handle_raw_shell_calls_subprocess_popen_with_shell_true_when_no_shell_env(
+    default_cfg, tmp_path, monkeypatch
+):
+    """
+    Fallback path (no usable $SHELL): still runs via `shell=True`, exactly
+    as this function always did before `_raw_shell_popen_args` existed.
+    """
+    monkeypatch.delenv("SHELL", raising=False)
     with patch("ohmyshell.main.classify") as mock_classify:
         from ohmyshell.danger_classifier import ClassificationResult, Safe
 
         mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
-        with patch("ohmyshell.main.subprocess.run") as mock_run:
+        fake_popen = _FakeRawPopen(returncode=0)
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
             main_module._handle_raw_shell("ls -la", default_cfg, base_dir=tmp_path)
-    mock_run.assert_called_once_with("ls -la", shell=True)
+    assert fake_popen.command == "ls -la"
+    assert fake_popen.kwargs["shell"] is True
+
+
+def test_handle_raw_shell_prefers_real_login_shell_over_bin_sh(default_cfg, tmp_path, monkeypatch):
+    """
+    Bug fix (post-Build-Order, found via real-terminal testing): a raw
+    command must run through the person's own real shell (from $SHELL) --
+    e.g. fish -- when one is available, not Python's hardcoded /bin/sh,
+    so that shell's own environment setup (LS_COLORS, aliases, etc.) is
+    actually present for the command. Real argv, not a second shell=True
+    string, so there's no risk of `text` being re-interpreted/quoted by
+    an extra shell layer.
+    """
+    monkeypatch.setenv("SHELL", "/bin/bash")  # a real, always-present executable
+    with patch("ohmyshell.main.classify") as mock_classify:
+        from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+        mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
+        fake_popen = _FakeRawPopen(returncode=0)
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            main_module._handle_raw_shell("ls -la", default_cfg, base_dir=tmp_path)
+    assert fake_popen.command == ["/bin/bash", "-c", "ls -la"]
+    assert "shell" not in (fake_popen.kwargs or {})
+
+
+def test_handle_raw_shell_falls_back_to_shell_true_when_shell_env_not_a_real_executable(
+    default_cfg, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SHELL", "/not/a/real/shell/binary")
+    with patch("ohmyshell.main.classify") as mock_classify:
+        from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+        mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
+        fake_popen = _FakeRawPopen(returncode=0)
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            main_module._handle_raw_shell("ls -la", default_cfg, base_dir=tmp_path)
+    assert fake_popen.command == "ls -la"
+    assert fake_popen.kwargs["shell"] is True
+
+
+def test_handle_raw_shell_passes_fish_guard_env_var_to_child(default_cfg, tmp_path, monkeypatch):
+    """
+    Fish-greeting-noise fix (post-Build-Order, found via real-terminal
+    testing): every raw-command child process must see
+    `OMSH_RAW_EXEC=1` in its own environment -- this is the signal
+    `ensure_fish_guard_installed`'s injected config.fish guard checks for
+    to skip the rest of the person's config (fastfetch etc.) for this
+    non-interactive invocation only. The real `os.environ` itself must be
+    left untouched (only the child's env dict gets the extra var).
+    """
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    with patch("ohmyshell.main.classify") as mock_classify:
+        from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+        mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
+        fake_popen = _FakeRawPopen(returncode=0)
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            main_module._handle_raw_shell("ls -la", default_cfg, base_dir=tmp_path)
+    assert fake_popen.kwargs["env"]["OMSH_RAW_EXEC"] == "1"
+    assert "OMSH_RAW_EXEC" not in os.environ
 
 
 def test_handle_raw_shell_reports_os_error_without_raising(default_cfg, tmp_path, capsys):
@@ -84,7 +252,7 @@ def test_handle_raw_shell_reports_os_error_without_raising(default_cfg, tmp_path
         from ohmyshell.danger_classifier import ClassificationResult, Safe
 
         mock_classify.return_value = ClassificationResult(verdict=Safe(), source="regex")
-        with patch("ohmyshell.main.subprocess.run", side_effect=OSError("boom")):
+        with patch("ohmyshell.main.subprocess.Popen", side_effect=OSError("boom")):
             main_module._handle_raw_shell("whatever", default_cfg, base_dir=tmp_path)  # must not raise
     captured = capsys.readouterr()
     assert "boom" in captured.err
@@ -94,23 +262,26 @@ def test_handle_raw_shell_safe_verdict_never_prompts(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
     with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
-        with patch("ohmyshell.main.subprocess.run"):
+        with patch("ohmyshell.main.subprocess.Popen", _FakeRawPopen(returncode=0)):
             confirm_fn = MagicMock()
             main_module._handle_raw_shell("ls -la", default_cfg, confirm=confirm_fn, base_dir=tmp_path)
     confirm_fn.assert_not_called()
 
 
-def test_handle_raw_shell_destructive_verdict_prompts_and_runs_on_yes(default_cfg, tmp_path):
+def test_handle_raw_shell_destructive_verdict_prompts_and_runs_on_yes(default_cfg, tmp_path, monkeypatch):
     from ohmyshell.danger_classifier import ClassificationResult, Destructive
 
+    monkeypatch.delenv("SHELL", raising=False)
     destructive = ClassificationResult(
         verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
         source="regex",
     )
+    fake_popen = _FakeRawPopen(returncode=0)
     with patch("ohmyshell.main.classify", return_value=destructive):
-        with patch("ohmyshell.main.subprocess.run") as mock_run:
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
             main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "y", base_dir=tmp_path)
-    mock_run.assert_called_once_with("rm -rf /tmp/x", shell=True)
+    assert fake_popen.command == "rm -rf /tmp/x"
+    assert fake_popen.kwargs["shell"] is True
 
 
 def test_handle_raw_shell_destructive_verdict_cancelled_on_no(default_cfg, tmp_path):
@@ -120,10 +291,11 @@ def test_handle_raw_shell_destructive_verdict_cancelled_on_no(default_cfg, tmp_p
         verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
         source="regex",
     )
+    fake_popen = _FakeRawPopen(returncode=0)
     with patch("ohmyshell.main.classify", return_value=destructive):
-        with patch("ohmyshell.main.subprocess.run") as mock_run:
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
             main_module._handle_raw_shell("rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
-    mock_run.assert_not_called()
+    assert fake_popen.command is None  # never invoked
 
 
 def test_handle_raw_shell_destructive_verdict_shows_explanation_in_panel(default_cfg, tmp_path):
@@ -135,7 +307,7 @@ def test_handle_raw_shell_destructive_verdict_shows_explanation_in_panel(default
     )
     buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", return_value=destructive):
-        with patch("ohmyshell.main.subprocess.run"):
+        with patch("ohmyshell.main.subprocess.Popen", _FakeRawPopen(returncode=0)):
             main_module._handle_raw_shell(
                 "rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", console=console, base_dir=tmp_path
             )
@@ -146,10 +318,11 @@ def test_handle_raw_shell_classifier_error_does_not_run_command(default_cfg, tmp
     from ohmyshell.danger_classifier import DangerClassifierError
 
     buffer, console = _buffer_console()
+    fake_popen = _FakeRawPopen(returncode=0)
     with patch("ohmyshell.main.classify", side_effect=DangerClassifierError("Ollama unreachable")):
-        with patch("ohmyshell.main.subprocess.run") as mock_run:
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
             main_module._handle_raw_shell("some ambiguous command", default_cfg, console=console, base_dir=tmp_path)
-    mock_run.assert_not_called()
+    assert fake_popen.command is None  # never invoked
     assert "Ollama unreachable" in buffer.getvalue()
 
 
@@ -162,7 +335,7 @@ def test_handle_raw_shell_destructive_verdict_offers_trash_option_when_possible(
     )
     buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", return_value=destructive):
-        with patch("ohmyshell.main.subprocess.run"):
+        with patch("ohmyshell.main.subprocess.Popen", _FakeRawPopen(returncode=0)):
             main_module._handle_raw_shell(
                 "rm -rf /tmp/x", default_cfg, confirm=lambda _: "n", console=console, base_dir=tmp_path
             )
@@ -178,7 +351,7 @@ def test_handle_raw_shell_destructive_verdict_omits_trash_option_when_not_possib
     )
     buffer, console = _buffer_console()
     with patch("ohmyshell.main.classify", return_value=destructive):
-        with patch("ohmyshell.main.subprocess.run"):
+        with patch("ohmyshell.main.subprocess.Popen", _FakeRawPopen(returncode=0)):
             main_module._handle_raw_shell(
                 "dd if=/dev/zero of=/dev/sda", default_cfg, confirm=lambda _: "n", console=console, base_dir=tmp_path
             )
@@ -194,10 +367,11 @@ def test_handle_raw_shell_trash_choice_moves_target_instead_of_running(default_c
         verdict=Destructive(explanation="dangerous", trash_alternative_possible=True),
         source="regex",
     )
+    fake_popen = _FakeRawPopen(returncode=0)
     with patch("ohmyshell.main.classify", return_value=destructive):
-        with patch("ohmyshell.main.subprocess.run") as mock_run:
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
             main_module._handle_raw_shell(f"rm -rf {target}", default_cfg, confirm=lambda _: "t", base_dir=tmp_path)
-    mock_run.assert_not_called()
+    assert fake_popen.command is None  # never invoked
     assert not target.exists()
 
     from ohmyshell import trash as trash_module
@@ -209,7 +383,7 @@ def test_handle_raw_shell_logs_audit_entry_on_run(default_cfg, tmp_path):
     from ohmyshell.danger_classifier import ClassificationResult, Safe
 
     with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
-        with patch("ohmyshell.main.subprocess.run"):
+        with patch("ohmyshell.main.subprocess.Popen", _FakeRawPopen(returncode=0)):
             main_module._handle_raw_shell("ls -la", default_cfg, base_dir=tmp_path)
 
     from ohmyshell import audit_log as audit_log_module
@@ -218,6 +392,125 @@ def test_handle_raw_shell_logs_audit_entry_on_run(default_cfg, tmp_path):
     assert len(entries) == 1
     assert entries[0].source == "raw_shell"
     assert entries[0].status == "done"
+
+
+def test_handle_raw_shell_command_not_found_offers_ai_fallback(default_cfg, tmp_path):
+    """
+    A shell "command not found" signature in stderr -- e.g. a genuinely
+    missing command -- must prompt for confirmation, not silently
+    reinterpret or silently do nothing.
+    """
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    fake_popen = _FakeRawPopen(returncode=127, stderr_text="sh: 1: frefox: not found\n")
+    buffer, console = _buffer_console()
+    confirm_fn = MagicMock(return_value="n")
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            with patch("ohmyshell.main._handle_natural_language") as mock_nl:
+                main_module._handle_raw_shell(
+                    "frefox", default_cfg, confirm=confirm_fn, console=console, base_dir=tmp_path
+                )
+    prompt_arg = confirm_fn.call_args[0][0]
+    assert "natural language" in prompt_arg.lower()
+    mock_nl.assert_not_called()
+
+
+def test_handle_raw_shell_misrouted_existing_command_offers_ai_fallback(default_cfg, tmp_path):
+    """
+    The real bug this feature targets: "open firefox" misrouted as
+    RAW_SHELL (router.py's own documented margin case -- `open` is a real
+    PATH executable) doesn't fail with exit 127 at all, since `open`
+    itself IS a real command -- it fails with ITS OWN ordinary
+    argument-parsing error instead (xdg-open's "unexpected argument", or
+    gio's "No such file or directory" when it treats "firefox" as a
+    filename). Detection here must be stderr-text-based, not exit-code-127
+    -only, to actually catch this real-world case.
+    """
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    fake_popen = _FakeRawPopen(
+        returncode=1, stderr_text="xdg-open: unexpected argument 'firefox'\n"
+    )
+    confirm_fn = MagicMock(return_value="n")
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            with patch("ohmyshell.main._handle_natural_language") as mock_nl:
+                main_module._handle_raw_shell(
+                    "open firefox", default_cfg, confirm=confirm_fn, base_dir=tmp_path
+                )
+    confirm_fn.assert_called_once()
+    mock_nl.assert_not_called()
+
+
+def test_handle_raw_shell_command_not_found_confirmed_falls_back_to_nl(default_cfg, tmp_path):
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    fake_popen = _FakeRawPopen(returncode=127, stderr_text="sh: 1: frefox: not found\n")
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            with patch("ohmyshell.main._handle_natural_language") as mock_nl:
+                main_module._handle_raw_shell(
+                    "frefox", default_cfg, confirm=lambda _: "y", base_dir=tmp_path
+                )
+    mock_nl.assert_called_once()
+    args, kwargs = mock_nl.call_args
+    assert args[0] == "frefox"
+
+
+def test_handle_raw_shell_command_not_found_declined_logs_done_not_reinterpreted(default_cfg, tmp_path):
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    fake_popen = _FakeRawPopen(returncode=127, stderr_text="sh: 1: gerp: not found\n")
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            main_module._handle_raw_shell(
+                "gerp foo", default_cfg, confirm=lambda _: "n", base_dir=tmp_path
+            )
+
+    from ohmyshell import audit_log as audit_log_module
+
+    entries = audit_log_module.read_entries(base_dir=tmp_path)
+    assert len(entries) == 1
+    assert entries[0].status == "done"
+    assert entries[0].source == "raw_shell"
+
+
+def test_handle_raw_shell_ordinary_nonzero_exit_never_offers_fallback(default_cfg, tmp_path):
+    """
+    A generic non-zero exit with no "command not understood" style stderr
+    -- e.g. `grep` finding nothing, or `rmdir` on a non-empty directory --
+    is a completely ordinary, correctly classified raw-shell failure and
+    must never trigger the AI-fallback prompt.
+    """
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    fake_popen = _FakeRawPopen(returncode=1, stderr_text="")
+    confirm_fn = MagicMock(return_value="n")
+    buffer, console = _buffer_console()
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            main_module._handle_raw_shell(
+                "grep foo bar.txt", default_cfg, confirm=confirm_fn, console=console, base_dir=tmp_path
+            )
+    confirm_fn.assert_not_called()
+    assert "natural language" not in buffer.getvalue().lower()
+
+
+def test_handle_raw_shell_tees_stderr_to_real_stderr(default_cfg, tmp_path, capsys):
+    """
+    The captured-for-signature-matching stderr must still reach the real
+    terminal live -- this function must not swallow error output the user
+    would otherwise see.
+    """
+    from ohmyshell.danger_classifier import ClassificationResult, Safe
+
+    fake_popen = _FakeRawPopen(returncode=2, stderr_text="ls: cannot access 'nope': No such file or directory\n")
+    with patch("ohmyshell.main.classify", return_value=ClassificationResult(verdict=Safe(), source="regex")):
+        with patch("ohmyshell.main.subprocess.Popen", fake_popen):
+            main_module._handle_raw_shell("ls nope", default_cfg, confirm=lambda _: "n", base_dir=tmp_path)
+    captured = capsys.readouterr()
+    assert "cannot access 'nope'" in captured.err
 
 
 # --- _handle_natural_language --------------------------------------------------------
@@ -649,11 +942,14 @@ def test_run_exits_on_eof():
 
 def test_run_dispatches_raw_shell_then_exits(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("SHELL", raising=False)
+    fake_popen = _FakeRawPopen(returncode=0)
     with patch("ohmyshell.main.ReplSession", return_value=_FakeSession(["ls -la", "/exit"])):
         with patch("ohmyshell.main.wizard_module.should_run_wizard", return_value=False):
-            with patch("ohmyshell.main.subprocess.run") as mock_run:
+            with patch("ohmyshell.main.subprocess.Popen", fake_popen):
                 main_module.run()
-    mock_run.assert_called_once_with("ls -la", shell=True)
+    assert fake_popen.command == "ls -la"
+    assert fake_popen.kwargs["shell"] is True
 
 
 def test_run_invokes_wizard_on_genuine_first_run(tmp_path, monkeypatch):
@@ -701,10 +997,95 @@ def test_run_survives_ctrl_c_at_a_mid_command_confirmation_prompt(tmp_path, monk
 
     with patch("ohmyshell.main.ReplSession", return_value=fake_session):
         with patch("ohmyshell.main.wizard_module.should_run_wizard", return_value=False):
-            with patch("ohmyshell.main.subprocess.run") as mock_run:
+            with patch("ohmyshell.main.subprocess.Popen") as mock_popen:
                 main_module.run()  # must return normally, not raise
 
-    mock_run.assert_not_called()
+    mock_popen.assert_not_called()
+
+
+class TestEnsureFishGuardInstalled:
+    """
+    `ensure_fish_guard_installed` -- the fish-greeting-noise fix (see
+    main.py's own module-level comment above the function for the full
+    story). These tests undo the file's own autouse no-op patch so they
+    can exercise the real function against a fake `$HOME`/config.fish.
+    """
+
+    def test_does_nothing_when_shell_is_not_fish(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SHELL", "/bin/bash")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        config_path = tmp_path / ".config" / "fish" / "config.fish"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("fastfetch\n")
+
+        _real_ensure_fish_guard_installed()
+
+        assert config_path.read_text() == "fastfetch\n"
+
+    def test_does_nothing_when_config_fish_does_not_exist(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SHELL", "/usr/bin/fish")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        # No .config/fish/config.fish at all.
+
+        _real_ensure_fish_guard_installed()  # must not raise, must not create one
+
+        assert not (tmp_path / ".config" / "fish" / "config.fish").exists()
+
+    def test_injects_guard_above_existing_unguarded_fastfetch(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SHELL", "/usr/bin/fish")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        config_path = tmp_path / ".config" / "fish" / "config.fish"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("fastfetch\n")
+
+        _real_ensure_fish_guard_installed()
+
+        new_content = config_path.read_text()
+        assert "if set -q OMSH_RAW_EXEC" in new_content
+        assert "    exit" in new_content
+        assert "fastfetch" in new_content
+        # Guard must come before the person's own existing content.
+        assert new_content.index("OMSH_RAW_EXEC") < new_content.index("fastfetch")
+
+    def test_is_idempotent_does_not_double_inject(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SHELL", "/usr/bin/fish")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        config_path = tmp_path / ".config" / "fish" / "config.fish"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("fastfetch\n")
+
+        _real_ensure_fish_guard_installed()
+        first_pass = config_path.read_text()
+        _real_ensure_fish_guard_installed()
+        second_pass = config_path.read_text()
+
+        assert first_pass == second_pass
+        assert second_pass.count("OMSH_RAW_EXEC") == 1
+
+    def test_respects_xdg_config_home(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SHELL", "/usr/bin/fish")
+        monkeypatch.setenv("HOME", str(tmp_path / "unused_home"))
+        xdg_dir = tmp_path / "xdg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_dir))
+        config_path = xdg_dir / "fish" / "config.fish"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("fastfetch\n")
+
+        _real_ensure_fish_guard_installed()
+
+        assert "OMSH_RAW_EXEC" in config_path.read_text()
+
+
+# `ensure_fish_guard_installed` is captured here, before this file's own
+# autouse fixture patches `main_module.ensure_fish_guard_installed` to a
+# no-op for every test -- `TestEnsureFishGuardInstalled` above calls this
+# real reference directly instead of going through the (locally patched)
+# module attribute.
+_real_ensure_fish_guard_installed = main_module.ensure_fish_guard_installed
 
 
 # --- Removed / superseded tests --------------------------------------------------

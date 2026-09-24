@@ -66,6 +66,9 @@ needed to log it.
 
 from __future__ import annotations
 
+import os
+import pty
+import select
 import signal
 import subprocess
 from contextlib import contextmanager
@@ -176,12 +179,149 @@ def _run_one_command(command: str, *, runner: Callable[..., Any]) -> subprocess.
     return runner(command, shell=True, capture_output=True, text=True)
 
 
+class _PtyLineReader:
+    """
+    Wraps a PTY master fd as a line iterator (`for line in this: ...`),
+    matching the shape `_run_streaming` already expects from a plain pipe's
+    `proc.stdout` (see `_FakePopen.stdout` in tests/test_executor.py, which
+    this mirrors on purpose). Internally buffers partial reads until a
+    newline shows up, same as a real file object's line iteration would.
+    """
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+        self._buffer = ""
+        self._closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        while "\n" not in self._buffer:
+            if self._closed:
+                if self._buffer:
+                    line, self._buffer = self._buffer, ""
+                    return line
+                raise StopIteration
+            try:
+                chunk = os.read(self._fd, 4096)
+            except OSError:
+                # Slave side closed (child exited) -- EIO on Linux ptys.
+                self._closed = True
+                continue
+            if not chunk:
+                self._closed = True
+                continue
+            self._buffer += chunk.decode(errors="replace")
+        line, self._buffer = self._buffer.split("\n", 1)
+        return line + "\n"
+
+
+class _PtyPopen:
+    """
+    Bug fix (found via manual end-to-end testing, real-terminal session):
+    the plain-pipe `subprocess.Popen(..., stdout=PIPE)` path this executor
+    always used made every AI-generated/raw command's output arrive with
+    NO color, even for commands (`ls`, `grep`, `dpkg`, `git`, ...) whose
+    default behavior is to colorize automatically -- coreutils and most
+    modern CLI tools call `isatty()` on their stdout and silently disable
+    color the moment it's a pipe rather than a real terminal, which a
+    plain `Popen(stdout=PIPE)` always is. Compare against this same
+    project's OWN raw-shell path (Section 8.3.5's pass-through), which
+    never had this problem because it never redirects the child's
+    stdout/stderr at all -- they inherit this process's real terminal fds
+    directly.
+
+    The fix: give each child TWO real pseudo-terminals (one for stdout,
+    one for stderr -- kept separate so `_looks_like_permission_denied`'s
+    stderr-only check still works) instead of pipes. A pty's slave end
+    behaves like a real terminal from the child's point of view --
+    `isatty()` is true on it -- so `ls`'s (etc.) own `--color=auto`
+    default activates with no special-casing per command, exactly as it
+    would typing the same command directly into a terminal. Verified
+    directly (both in this fix's own development and by a plain-pipe vs.
+    pty comparison): `ls --color=auto` emits zero ANSI codes over a pipe,
+    real ANSI color codes over a pty.
+
+    This class exists to keep that pty plumbing entirely inside one
+    object with the exact same shape `_run_streaming` already consumes
+    (`stdout` as a line iterator, `stderr.read()`, `wait()`, `kill()`,
+    `returncode`) -- see tests/test_executor.py's `_FakePopen`, which this
+    mirrors on purpose, so `_run_streaming` itself needed zero changes.
+    Only the *default* `popen_factory` (this class, via
+    `_default_popen_factory`) uses real ptys; every existing test injects
+    its own `popen_factory` and is completely unaffected.
+    """
+
+    def __init__(self, command: str, *, shell: bool, text: bool, bufsize: int) -> None:
+        out_master, out_slave = pty.openpty()
+        err_master, err_slave = pty.openpty()
+        try:
+            self._proc = subprocess.Popen(
+                command, shell=shell, stdout=out_slave, stderr=err_slave, close_fds=True
+            )
+        finally:
+            # The child has its own duplicated fds now; this process's
+            # copies of the slave ends must close so the master ends see
+            # EOF/EIO once the child exits (otherwise reads on the master
+            # would block forever waiting for a write that never comes).
+            os.close(out_slave)
+            os.close(err_slave)
+        self._out_master = out_master
+        self._err_master = err_master
+        self.stdout = _PtyLineReader(out_master)
+        self.stderr = _PtyStderrReader(err_master)
+        self.returncode: int | None = None
+
+    def wait(self) -> int:
+        self.returncode = self._proc.wait()
+        return self.returncode
+
+    def kill(self) -> None:
+        self._proc.kill()
+
+
+class _PtyStderrReader:
+    """`.read()`-once shape matching `proc.stderr.read()`'s existing use in
+    `_run_streaming` (called only after the child has exited)."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+
+    def read(self) -> str:
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = os.read(self._fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode(errors="replace")
+
+
+def _default_popen_factory(command: str, **kwargs: Any) -> _PtyPopen:
+    """
+    `run_plan()`'s real (non-test) `popen_factory` default -- see
+    `_PtyPopen`'s own docstring for why this replaced a plain
+    `subprocess.Popen(..., stdout=PIPE)` call. `kwargs` mirrors what
+    `_run_streaming` has always passed (`shell`, `stdout`, `stderr`,
+    `text`, `bufsize`) -- `stdout`/`stderr` are accepted and ignored here
+    (both always become ptys now; there is no alternative destination for
+    this factory) rather than removed from the call site, so
+    `_run_streaming` itself needed no change beyond which factory it's
+    given by default.
+    """
+    return _PtyPopen(command, shell=kwargs.get("shell", True), text=kwargs.get("text", True), bufsize=kwargs.get("bufsize", 1))
+
+
 def _run_streaming(
     command: str,
     *,
     state: InterruptState,
     on_output_line: Callable[[str], None],
-    popen_factory: Callable[..., subprocess.Popen],
+    popen_factory: Callable[..., Any],
 ) -> subprocess.CompletedProcess:
     """
     Real per-line live progress (added post-Build-Order, per the user's
@@ -261,7 +401,7 @@ class _StepRunner:
         on_before_execute: Callable[[bool], None] | None = None,
         on_after_execute: Callable[[bool], None] | None = None,
         on_output_line: Callable[[str], None] | None = None,
-        popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+        popen_factory: Callable[..., Any] = _default_popen_factory,
     ) -> None:
         self.plan = plan
         self.total = total
@@ -411,7 +551,7 @@ def run_plan(
     on_before_execute: Callable[[bool], None] | None = None,
     on_after_execute: Callable[[bool], None] | None = None,
     on_output_line: Callable[[str], None] | None = None,
-    popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+    popen_factory: Callable[..., Any] = _default_popen_factory,
 ) -> ExecutionResult:
     """
     Execute `plan` (blocking), streaming a StepEvent for its one executable

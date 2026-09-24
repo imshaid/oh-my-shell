@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 
 import pytest
-from rich.console import Console
 from rich.panel import Panel
 
 from ohmyshell.danger_classifier import ClassificationResult, Destructive, Safe
@@ -19,11 +18,21 @@ from ohmyshell.ui.panels import (
     render_sudo_panel,
     render_undo_confirm_panel,
 )
+from ohmyshell.ui.theme import themed_console
+
+# Fixed accent palette (post-Build-Order): panels.py's border/text colors
+# are now ui/theme.py's fixed "omsh.*" style names, not rich's own named
+# colors -- any Console these tests build themselves must carry
+# ui/theme.py's OMSH_THEME (via themed_console()) or rich raises
+# MissingStyle trying to resolve "omsh.accent" etc. against a themeless
+# Console. Every real caller already goes through themed_console() (see
+# panels.py's own module docstring); this file's `Console(...)` call
+# sites are updated to match so tests exercise the same styling path.
 
 
 def _render_to_text(panel) -> str:
     buffer = io.StringIO()
-    console = Console(file=buffer, width=100, force_terminal=False)
+    console = themed_console(file=buffer, width=100, force_terminal=False)
     console.print(panel)
     return buffer.getvalue()
 
@@ -145,7 +154,7 @@ class TestRenderUndoConfirmPanel:
 class TestPrintPanel:
     def test_writes_to_injected_console(self):
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         print_panel(render_undo_confirm_panel(count=1), console=console)
         assert "Undo" in buffer.getvalue()
 
@@ -174,38 +183,38 @@ class TestRichSudoPrompt:
 
     def test_bare_enter_grants(self):
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         prompt = RichSudoPrompt(input_fn=lambda _: "", console=console)
         assert prompt.ask(self._step()) is SudoDecision.GRANT
 
     def test_s_skips(self):
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         prompt = RichSudoPrompt(input_fn=lambda _: "s", console=console)
         assert prompt.ask(self._step()) is SudoDecision.SKIP
 
     def test_esc_aborts(self):
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         prompt = RichSudoPrompt(input_fn=lambda _: "esc", console=console)
         assert prompt.ask(self._step()) is SudoDecision.ABORT
 
     def test_q_aborts(self):
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         prompt = RichSudoPrompt(input_fn=lambda _: "q", console=console)
         assert prompt.ask(self._step()) is SudoDecision.ABORT
 
     def test_invalid_choice_reprompts_then_grants(self):
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         responses = iter(["garbage", ""])
         prompt = RichSudoPrompt(input_fn=lambda _: next(responses), console=console)
         assert prompt.ask(self._step()) is SudoDecision.GRANT
 
     def test_renders_sudo_panel_to_console(self):
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         prompt = RichSudoPrompt(input_fn=lambda _: "", console=console)
         prompt.ask(self._step())
         output = buffer.getvalue()
@@ -234,7 +243,7 @@ class TestRichSudoPrompt:
         monkeypatch.setattr(session_module, "read_sudo_choice_keypress", _fake_keypress)
 
         buffer = io.StringIO()
-        console = Console(file=buffer, width=100, force_terminal=False)
+        console = themed_console(file=buffer, width=100, force_terminal=False)
         prompt = RichSudoPrompt(console=console)  # no input_fn override
         assert prompt.ask(self._step()) is SudoDecision.SKIP
         assert calls == [True]

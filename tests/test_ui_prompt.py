@@ -94,3 +94,27 @@ class TestRenderPromptAnsi:
     def test_returns_a_string(self, tmp_path):
         result = render_prompt_ansi(_cfg(), cwd=tmp_path)
         assert isinstance(result, str)
+
+    def test_folder_name_itself_carries_a_color_escape(self, tmp_path):
+        """
+        Regression test (post-Build-Order, found via real-terminal
+        testing): a composite style STRING mixing a plain attribute with a
+        ui/theme.py "omsh.*" theme name ("bold omsh.path", the folder
+        name's original style) silently rendered completely unstyled --
+        no escape codes at all -- while the icon right next to it (styled
+        with a single "omsh.*" name, no composite) rendered its color
+        fine. `test_contains_ansi_escape_codes` above didn't catch this:
+        it only asserted SOME escape appeared anywhere in the string, and
+        the icon's own escape was enough to satisfy that even with the
+        folder name completely unstyled. This test anchors specifically
+        to the folder name's own immediate neighborhood in the string, so
+        a future regression of the same kind (a composite omsh.* style
+        silently losing its escape codes) fails here even if some other
+        part of the prompt still has color.
+        """
+        result = render_prompt_ansi(_cfg(), cwd=tmp_path)
+        folder_index = result.index(tmp_path.name)
+        # The real bug produced a plain string with NO escape byte
+        # anywhere before the folder name; a correctly styled folder name
+        # has its escape sequence immediately preceding it.
+        assert "\x1b[" in result[:folder_index]

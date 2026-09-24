@@ -36,15 +36,28 @@ therefore my own, consistent, adjustable decisions):
   - `rich.panel.Panel` with `box.ROUNDED` for all three panel kinds (plan,
     destructive-command warning, sudo-escalation) -- one consistent visual
     language across the app rather than a different box style per panel.
-  - Border/title color by severity: yellow for a warning-level panel
-    (destructive command, sudo escalation) and cyan for a neutral
-    plan/confirmation panel -- matching common CLI convention (yellow =
-    caution) since the blueprint specifies no explicit palette.
-  - Risk-level text color: low=green, medium=yellow, high=red -- the
-    single most standard traffic-light mapping, used only as inline text
-    styling (e.g. "[red]high[/red]"), not as a structural decision.
-These are cosmetic and trivially swappable once the real 8.3.1-8.3.3 text
-is available -- nothing downstream depends on the exact colors/box style.
+  - Border/title color by severity: `omsh.warning` for a warning-level
+    panel (destructive command, sudo escalation) and `omsh.accent` for a
+    neutral plan/confirmation panel.
+  - Risk-level text color: low=`omsh.risk.low`, medium=`omsh.risk.medium`,
+    high=`omsh.risk.high`, used only as inline text styling (e.g.
+    "[omsh.risk.high]high[/omsh.risk.high]"), not as a structural decision.
+
+--- Fixed accent palette (post-Build-Order, user-requested) ---
+Every color above used to be a `rich` NAMED color string ("cyan",
+"yellow", "green", "red") -- terminal-theme-relative by design, which is
+exactly right for *command output* (ls/grep/etc.'s own colors) but not
+what was wanted for THIS app's own chrome: the person asked for
+oh-my-shell's panels/prompts to have a consistent, recognizable "brand"
+look across any terminal/theme, the same way Claude Code's own CLI always
+renders the same accent color regardless of the terminal it's running in.
+See ui/theme.py's own module docstring for the full rationale and the
+fixed hex values themselves. Every color reference in this module is now
+one of ui/theme.py's `"omsh.*"` style names instead of a raw color
+string; `print_panel`/`RichSudoPrompt` construct their fallback `Console`
+via `ui.theme.themed_console()` (not a bare `rich.console.Console()`) so
+those style names actually resolve wherever no console is injected by a
+caller.
 """
 
 from __future__ import annotations
@@ -58,13 +71,14 @@ from ohmyshell.danger_classifier import ClassificationResult, Destructive
 from ohmyshell.intent_parser import ParseTelemetry
 from ohmyshell.plan_generator import Plan
 from ohmyshell.sudo_layer import ElevatedStep, SudoDecision
+from ohmyshell.ui.theme import themed_console
 
-_RISK_COLORS = {"low": "green", "medium": "yellow", "high": "red"}
+_RISK_STYLES = {"low": "omsh.risk.low", "medium": "omsh.risk.medium", "high": "omsh.risk.high"}
 
 
 def _risk_text(risk: str) -> Text:
-    color = _RISK_COLORS.get(risk, "white")
-    return Text(risk.capitalize(), style=color)
+    style = _RISK_STYLES.get(risk, "white")
+    return Text(risk.capitalize(), style=style)
 
 
 def _telemetry_footer_text(telemetry: ParseTelemetry, *, attempts: int | None = None) -> Text | None:
@@ -160,7 +174,7 @@ def render_plan_panel(
     return Panel(
         body,
         title=f"Plan — {plan.command}",
-        border_style="cyan",
+        border_style="omsh.accent",
         expand=False,
     )
 
@@ -194,7 +208,7 @@ def render_destructive_command_panel(result: ClassificationResult) -> Panel:
         body,
         title="⚠ Potentially destructive command detected",
         title_align="left",
-        border_style="yellow",
+        border_style="omsh.warning",
         expand=False,
     )
 
@@ -220,7 +234,7 @@ def render_sudo_panel(step: ElevatedStep) -> Panel:
         body,
         title="⚠ Next step requires elevated permission",
         title_align="left",
-        border_style="yellow",
+        border_style="omsh.warning",
         expand=False,
     )
 
@@ -237,12 +251,12 @@ def render_undo_confirm_panel(*, count: int) -> Panel:
     body.append(f"↺ Undo: Restore {count} {noun} from .trash/?\n\n")
     body.append("[Enter] Confirm undo   [Esc] Cancel", style="dim")
 
-    return Panel(body, border_style="cyan", expand=False)
+    return Panel(body, border_style="omsh.accent", expand=False)
 
 
 def print_panel(panel: RenderableType, *, console: Console | None = None) -> None:
     """Render any of the above panels to the terminal (or an injected Console)."""
-    active_console = console if console is not None else Console()
+    active_console = console if console is not None else themed_console()
     active_console.print(panel)
 
 
@@ -287,7 +301,7 @@ class RichSudoPrompt:
         console: Console | None = None,
     ) -> None:
         self._input_fn = input_fn
-        self._console = console if console is not None else Console()
+        self._console = console if console is not None else themed_console()
 
     def ask(self, step: ElevatedStep) -> SudoDecision:
         self._console.print(render_sudo_panel(step))

@@ -107,10 +107,12 @@ from typing import Callable, TypeVar
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.style import Style
 from rich.text import Text
 
 from ohmyshell import hardware as hardware_module
 from ohmyshell.intent_parser import ParseTelemetry
+from ohmyshell.ui.theme import OMSH_THEME, themed_console
 
 T = TypeVar("T")
 
@@ -244,7 +246,15 @@ def _streamed_text_line(text: str | None) -> Text | None:
     if not text:
         return None
     display_text = text if len(text) <= _STREAM_TEXT_MAX_CHARS else "…" + text[-(_STREAM_TEXT_MAX_CHARS - 1) :]
-    return Text(display_text, style="cyan dim")
+    # Bug fix (post-Build-Order, found via real-terminal testing -- see
+    # ui/prompt.py's own "bold omsh.path" fix for the full root-cause
+    # story): a composite style STRING mixing a plain attribute ("dim")
+    # with a ui/theme.py "omsh.*" theme name silently renders completely
+    # unstyled in rich, rather than raising or falling back to the color
+    # alone. Combining a real `Style` object with the theme-resolved style
+    # directly sidesteps rich's string parser for the composite case.
+    style = Style(dim=True) + OMSH_THEME.styles["omsh.accent"]
+    return Text(display_text, style=style)
 
 
 def render_thinking_display(
@@ -323,7 +333,7 @@ def run_with_thinking_indicator(
     are atomic under the GIL, and a torn read (an old value shown for up to
     one frame) is invisible at 8 refreshes/second.
     """
-    active_console = console if console is not None else Console()
+    active_console = console if console is not None else themed_console()
 
     result_box: dict[str, object] = {}
     error_box: dict[str, BaseException] = {}

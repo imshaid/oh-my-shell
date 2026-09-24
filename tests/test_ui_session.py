@@ -23,7 +23,13 @@ class FakeReader:
         self._responses = list(responses)
         self.calls: list[object] = []
 
-    def prompt(self, text: object = "") -> str:
+    def prompt(self, text: object = "", **_kwargs) -> str:
+        # **_kwargs: the real `PromptSession.prompt` accepts (and
+        # ReplSession.prompt now sometimes passes, see its own docstring's
+        # "Second bug fix" -- the per-call `color_depth=` pin) keyword
+        # arguments beyond just the prompt text; this fake accepts and
+        # ignores them the same way, so it doesn't reject a call shape the
+        # real reader handles fine.
         self.calls.append(text)
         return self._responses.pop(0)
 
@@ -87,6 +93,48 @@ class TestReplSessionAnsiWrapping:
         session.prompt("\x1b[36mfolder\x1b[0m ❯ ")
         assert len(reader.calls) == 1
         assert isinstance(reader.calls[0], ANSI)
+
+    def test_ansi_string_pins_color_depth_to_true_color_per_call(self):
+        """
+        Bug fix (post-Build-Order, found via real-terminal testing): the
+        prompt icon still rendered with no color even with
+        `PromptSession(color_depth=ColorDepth.TRUE_COLOR)` set at
+        construction, in a real terminal correctly advertising
+        `COLORTERM=truecolor`. Root cause: the constructor-level
+        `color_depth` is only a *default* -- prompt_toolkit's actual color
+        negotiation happens per-call inside `.prompt()`, so the fix passes
+        `color_depth=ColorDepth.TRUE_COLOR` explicitly on every ANSI
+        `.prompt()` call too, not just at construction (see
+        `ReplSession.prompt`'s own "Second bug fix" docstring section).
+        """
+        from prompt_toolkit.output.color_depth import ColorDepth
+
+        captured_kwargs: dict = {}
+
+        class _CapturingReader:
+            def prompt(self, text: object = "", **kwargs):
+                captured_kwargs.update(kwargs)
+                return "typed"
+
+        session = ReplSession(reader=_CapturingReader())
+        session.prompt("\x1b[36mfolder\x1b[0m ❯ ")
+        assert captured_kwargs.get("color_depth") is ColorDepth.TRUE_COLOR
+
+    def test_plain_string_prompt_does_not_pass_color_depth(self):
+        """A plain (non-ANSI) sub-prompt like "Edit which param? " has no
+        color to pin -- it must reach the reader exactly as `input()`
+        would, with no extra `color_depth` kwarg forced onto a call the
+        real PromptSession.prompt already handles fine on its own."""
+        captured_kwargs: dict = {}
+
+        class _CapturingReader:
+            def prompt(self, text: object = "", **kwargs):
+                captured_kwargs.update(kwargs)
+                return "typed"
+
+        session = ReplSession(reader=_CapturingReader())
+        session.prompt("Edit which param? ")
+        assert "color_depth" not in captured_kwargs
 
     def test_plain_string_without_ansi_passes_through_unwrapped(self):
         reader = FakeReader(["typed"])

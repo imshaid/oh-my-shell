@@ -91,6 +91,7 @@ import time
 from contextlib import contextmanager
 from typing import Iterator
 
+from rich.ansi import AnsiDecoder
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
 from rich.spinner import Spinner
@@ -98,12 +99,18 @@ from rich.text import Text
 
 from ohmyshell.executor import ExecutionResult, StepEvent, StepStatus
 from ohmyshell.intent_parser import ParseTelemetry
+from ohmyshell.ui.theme import themed_console
 
+# Fixed accent palette (post-Build-Order, user-requested) -- see
+# ui/theme.py's own module docstring: these status glyphs are this app's
+# own chrome, not command output, so they use ui/theme.py's fixed
+# "omsh.*" style names instead of rich's terminal-theme-relative named
+# colors ("green"/"red"/"yellow"), for a consistent look across terminals.
 _STATUS_GLYPH = {
-    StepStatus.DONE: ("✓", "green"),
-    StepStatus.FAILED: ("✗", "red"),
-    StepStatus.INTERRUPTED: ("⚠", "yellow"),
-    StepStatus.SKIPPED: ("⊘", "yellow"),
+    StepStatus.DONE: ("✓", "omsh.success"),
+    StepStatus.FAILED: ("✗", "omsh.danger"),
+    StepStatus.INTERRUPTED: ("⚠", "omsh.warning"),
+    StepStatus.SKIPPED: ("⊘", "omsh.warning"),
 }
 
 _MAX_RUNNING_LABEL_CHARS = 72  # keeps the spinner line to roughly one terminal row
@@ -139,7 +146,7 @@ def _render_activity_bar(elapsed: float) -> Text:
     bar.append("│", style="dim")
     for col in range(_BAR_WIDTH):
         if start <= col < start + _BAR_SEGMENT_WIDTH:
-            bar.append("█", style="cyan")
+            bar.append("█", style="omsh.accent")
         else:
             bar.append("░", style="dim")
     bar.append("│", style="dim")
@@ -329,7 +336,36 @@ def _ai_telemetry_line(telemetry: ParseTelemetry | None) -> str | None:
     return f"AI: {' · '.join(parts)}"
 
 
-def render_execution_summary(result: ExecutionResult, *, telemetry: ParseTelemetry | None = None) -> Text:
+_ansi_decoder = AnsiDecoder()
+
+
+def _decode_ansi_block(raw: str) -> list[Text]:
+    """
+    Turn a captured command output block (possibly containing real ANSI
+    color escapes -- see executor.py's `_PtyPopen` docstring for why those
+    now survive all the way to here) into a list of styled `Text` lines,
+    one per line of output.
+
+    `rich.Text.append(raw_string)` -- what this function replaces calling
+    directly -- treats ANSI escape *bytes* as literal text to display, not
+    as styling instructions (confirmed directly: it printed the raw
+    `\\x1b[01;34m` sequence rather than coloring anything). `AnsiDecoder`
+    is `rich`'s own tool for the opposite: parsing real ANSI SGR sequences
+    into `Text` objects with actual `Style`s attached, which is what makes
+    a colorized `ls`/`git`/etc. output actually show its colors here
+    instead of either raw escape-code garbage or plain white text.
+
+    PTY output uses `\\r\\n` line endings (a real terminal's own
+    convention); normalized to `\\n` first since `AnsiDecoder.decode`
+    splits on `\\n` and a stray `\\r` would otherwise leave a trailing
+    carriage-return character rendered as part of the line.
+    """
+    return list(_ansi_decoder.decode(raw.replace("\r\n", "\n").replace("\r", "\n")))
+
+
+def render_execution_summary(
+    result: ExecutionResult, *, telemetry: ParseTelemetry | None = None
+) -> Group:
     """
     Final collapsed summary after run_plan() returns, for all its steps.
 
@@ -350,21 +386,34 @@ def render_execution_summary(result: ExecutionResult, *, telemetry: ParseTelemet
     line, for any DONE step whose stdout is non-empty -- stderr is
     similarly surfaced for FAILED steps, for the same reason (previously
     only visible via a separate, easy-to-miss detail view).
+
+    Return type changed from `Text` to `Group` (both are valid
+    `rich.console.Console.print()` arguments, so `print_summary`'s call
+    site needed no change) specifically to carry the decoded-ANSI output
+    lines from `_decode_ansi_block` -- those are already-styled `Text`
+    objects, and `Text.append()` cannot embed one styled `Text` inside
+    another the way plain string interpolation could; `Group` is `rich`'s
+    own container for "print several renderables in sequence."
     """
-    lines = Text()
+    header = Text()
+    output_blocks: list[Text] = []
     for step_result in result.step_results:
         glyph, color = _STATUS_GLYPH.get(step_result.status, ("?", "white"))
-        lines.append(f"{glyph} ", style=color)
-        lines.append(f"Step {step_result.step_number}: {step_result.description}\n")
+        header.append(f"{glyph} ", style=color)
+        header.append(f"Step {step_result.step_number}: {step_result.description}\n")
         if step_result.status is StepStatus.DONE and step_result.stdout.strip():
-            lines.append(f"{step_result.stdout.rstrip()}\n")
+            output_blocks.extend(_decode_ansi_block(step_result.stdout.rstrip()))
         elif step_result.status is StepStatus.FAILED and step_result.stderr.strip():
-            lines.append(f"{step_result.stderr.rstrip()}\n", style="red")
+            for line in _decode_ansi_block(step_result.stderr.rstrip()):
+                line.stylize("omsh.danger")
+                output_blocks.append(line)
+    trailer = Text()
+    lines = trailer
     ai_line = _ai_telemetry_line(telemetry)
     if ai_line is not None:
         lines.append(f"\n{ai_line}", style="dim")
     if result.interrupted:
-        lines.append("\n[Ctrl+C] Stopped early — see above for what completed.", style="yellow")
+        lines.append("\n[Ctrl+C] Stopped early — see above for what completed.", style="omsh.warning")
         # Bug fix (found via manual end-to-end testing, in a real terminal
         # session): [u] Undo used to be offered only when result.all_done,
         # so a single-Ctrl+C graceful stop showed no undo option at all --
@@ -380,10 +429,10 @@ def render_execution_summary(result: ExecutionResult, *, telemetry: ParseTelemet
         # ever promises what actually works today.
         lines.append("\n▸ [u] Undo this action", style="dim")
     elif result.aborted_for_sudo:
-        lines.append("\nAborted — elevated permission was declined.", style="yellow")
+        lines.append("\nAborted — elevated permission was declined.", style="omsh.warning")
     elif result.all_done:
         lines.append("\n▸ [u] Undo this action", style="dim")
-    return lines
+    return Group(header, *output_blocks, trailer)
 
 
 class StreamingRenderer:
@@ -399,7 +448,7 @@ class StreamingRenderer:
     """
 
     def __init__(self, *, console: Console | None = None) -> None:
-        self._console = console if console is not None else Console()
+        self._console = console if console is not None else themed_console()
         self._live: Live | None = None
         # Tracks the currently-active RUNNING line + its file count, so
         # `on_output_line` (below) can update the SAME instance already

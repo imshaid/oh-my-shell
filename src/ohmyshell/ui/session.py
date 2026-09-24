@@ -267,9 +267,29 @@ class ReplSession:
             self._reader = reader
         else:
             from prompt_toolkit import PromptSession
+            from prompt_toolkit.output.color_depth import ColorDepth
             from prompt_toolkit.styles import Style
 
             self._reader = PromptSession(
+                # Fixed accent palette (post-Build-Order, bug fix found via
+                # real-terminal testing): the prompt icon rendered with no
+                # color at all despite `render_prompt_ansi` (ui/prompt.py)
+                # correctly embedding a real truecolor ANSI escape
+                # (`\x1b[38;2;139;127;232m`, ui/theme.py's fixed
+                # omsh.accent hex) in the string handed to `ANSI(...)`.
+                # Root cause: `PromptSession` negotiates its OWN color
+                # depth for rendering (auto-detected from the terminal,
+                # defaulting to a conservative guess in many environments)
+                # independently of whatever color codes are already baked
+                # into an `ANSI()`-wrapped string -- an auto-detected depth
+                # below true-color silently drops/flattens a 24-bit color
+                # it doesn't know how to downsample the way `rich`'s own
+                # Console does. Since ui/theme.py's whole palette is
+                # deliberately specific truecolor hex (not one of the 16
+                # standard colors -- see that module's docstring), the
+                # color negotiation has to be pinned to TRUE_COLOR
+                # explicitly rather than left to autodetection.
+                color_depth=ColorDepth.TRUE_COLOR,
                 bottom_toolbar=_bottom_toolbar_text,
                 # Cancels prompt_toolkit's own default bottom-toolbar style
                 # ("reverse", i.e. inverted fg/bg -- a filled bar), so the
@@ -317,10 +337,32 @@ class ReplSession:
         (prompt_toolkit's own contract), so main.py's existing
         `except (EOFError, KeyboardInterrupt)` handling is unchanged.
         """
-        if isinstance(formatted_text, str) and "\x1b[" in formatted_text:
+        is_ansi = isinstance(formatted_text, str) and "\x1b[" in formatted_text
+        if is_ansi:
             from prompt_toolkit.formatted_text import ANSI
 
             formatted_text = ANSI(formatted_text)
+
+        # Second bug fix, on top of the `PromptSession(color_depth=...)`
+        # one above (post-Build-Order, found via real-terminal testing:
+        # the `❯` icon STILL rendered with no color even with that
+        # constructor-level pin in place, in a real terminal that itself
+        # correctly advertises `COLORTERM=truecolor`). `color_depth` passed
+        # to the `PromptSession` constructor only sets a *default* for
+        # calls that don't specify their own -- prompt_toolkit's actual
+        # per-call color negotiation happens inside `.prompt()`/`.app.run()`
+        # itself, which is free to re-derive a depth from the live output
+        # backend rather than reliably falling back to the constructor's
+        # default in every code path/prompt_toolkit version. Passing
+        # `color_depth=` explicitly on every `.prompt()` call too (not just
+        # at construction) removes that ambiguity -- this is the actually
+        # load-bearing fix; the constructor-level one is kept alongside it
+        # since it's harmless and covers any other internal call that
+        # doesn't go through this method's own `.prompt()` call.
+        if is_ansi:
+            from prompt_toolkit.output.color_depth import ColorDepth
+
+            return self._reader.prompt(formatted_text, color_depth=ColorDepth.TRUE_COLOR)
         return self._reader.prompt(formatted_text)
 
     def __call__(self, formatted_text: object = "") -> str:

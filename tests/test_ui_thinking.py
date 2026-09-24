@@ -122,6 +122,26 @@ class TestStreamedTextLine:
         assert "…" in text
         assert "x" * 200 not in text  # the old prefix must not still be fully present
 
+    def test_carries_a_real_color_escape_when_rendered_with_the_theme(self):
+        """
+        Regression test (post-Build-Order, found via real-terminal
+        testing -- see ui/prompt.py's "bold omsh.path" fix for the full
+        root-cause story): this line's style used to be the composite
+        STRING "omsh.accent dim", which rich silently renders completely
+        unstyled (no escape codes at all) instead of applying either
+        attribute. `_render_to_text`'s own Console (force_terminal=False,
+        no theme) never emits real escapes for ANY style, so it can't
+        catch this -- this test uses a themed, truecolor-forced Console
+        instead, the same way the real REPL renders this line, so a
+        regression to a composite style string fails here.
+        """
+        from ohmyshell.ui.theme import themed_console
+
+        console = themed_console(force_terminal=True, color_system="truecolor", no_color=False)
+        with console.capture() as capture:
+            console.print(_streamed_text_line("hello"))
+        assert "\x1b[" in capture.get()
+
 
 class TestRenderThinkingDisplay:
     def test_includes_live_tokens_when_given(self):

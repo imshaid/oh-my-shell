@@ -96,6 +96,20 @@ level.
 - explanation: one short, plain-language sentence describing what the \
 command actually does.
 
+The command you write always runs through a real pseudo-terminal (not a \
+plain pipe), so any tool's own auto-color detection (checking isatty()) \
+sees a real terminal -- but GNU coreutils (ls, grep, diff, dpkg, ...) and \
+many other common tools still default their OWN --color setting to "auto" \
+or off entirely unless told otherwise. When the command is one of these \
+tools and the output would normally be colorized in an interactive \
+terminal, add that tool's own explicit "always show color" flag (e.g. \
+`ls --color=always`, `grep --color=always`, `diff --color=always`, `ip \
+--color=always`, `dpkg --color=always` when the subcommand supports it) so \
+the user actually sees the color a real terminal session would show. Do \
+this only when the tool has a real, documented flag for it -- never \
+invent one -- and never let this change the command's actual meaning or \
+add risk.
+
 Never refuse and never add commentary outside the JSON fields -- if the \
 request is dangerous, still provide the correct command and mark it \
 appropriately risky; a separate safety layer downstream (not you) decides \
