@@ -1,0 +1,13 @@
+[package]
+name = "omsh-safety"
+description = "Risk analyzer, blast radius, trash and undo journal for Oh My Shell."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omsh-syntax.workspace = true
+
+[lints]
+workspace = true

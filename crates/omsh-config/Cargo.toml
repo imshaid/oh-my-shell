@@ -1,0 +1,10 @@
+[package]
+name = "omsh-config"
+description = "Configuration schema, loading, validation and XDG paths for Oh My Shell."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

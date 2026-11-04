@@ -1,0 +1,14 @@
+[package]
+name = "omsh-exec"
+description = "Word expansion, command execution, builtins, job control, signals and environment for Oh My Shell."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omsh-config.workspace = true
+omsh-syntax.workspace = true
+
+[lints]
+workspace = true

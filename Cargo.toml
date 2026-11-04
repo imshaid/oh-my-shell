@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/imshaid/oh-my-shell"
+
+[workspace.dependencies]
+# Internal crates. Allowed dependency direction (no cycles):
+#   cli    -> editor, exec, ui, ai, safety, history, config
+#   editor -> syntax, history, ui, config
+#   exec   -> syntax, config
+#   safety -> syntax
+#   ai     -> config
+#   ui     -> config
+omsh-ai = { path = "crates/omsh-ai" }
+omsh-config = { path = "crates/omsh-config" }
+omsh-editor = { path = "crates/omsh-editor" }
+omsh-exec = { path = "crates/omsh-exec" }
+omsh-history = { path = "crates/omsh-history" }
+omsh-safety = { path = "crates/omsh-safety" }
+omsh-syntax = { path = "crates/omsh-syntax" }
+omsh-ui = { path = "crates/omsh-ui" }
+
+# External crates.
+# clap's `color` feature is left out on purpose: plain help text does not need the
+# extra crates it pulls in.
+clap = { version = "4.6", default-features = false, features = [
+    "derive",
+    "error-context",
+    "help",
+    "std",
+    "suggestions",
+    "usage",
+] }
+
+[workspace.lints.rust]
+# Only omsh-exec may use `unsafe`. It opts out of this rule in its crate root.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# Panicking shortcuts are for tests only (see clippy.toml). A documented invariant
+# in other code may opt out with `#[expect(clippy::expect_used, reason = "...")]`.
+expect_used = "deny"
+unwrap_used = "deny"
+# Every lint opt-out must say why.
+allow_attributes_without_reason = "deny"
+# Every `unsafe` block needs a `// SAFETY:` comment.
+undocumented_unsafe_blocks = "deny"

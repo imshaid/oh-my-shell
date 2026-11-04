@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so that a new Rust release cannot turn CI red on its own.
+  # Bump it on purpose, together with `rustup update` locally.
+  RUSTUP_TOOLCHAIN: "1.99.1"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --no-self-update
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --no-self-update
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Run tests
+        run: cargo test --workspace --locked

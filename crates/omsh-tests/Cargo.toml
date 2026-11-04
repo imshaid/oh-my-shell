@@ -1,0 +1,11 @@
+[package]
+name = "omsh-tests"
+description = "End-to-end tests that drive Oh My Shell in a pseudo-terminal (development only)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

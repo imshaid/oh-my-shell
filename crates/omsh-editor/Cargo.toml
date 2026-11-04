@@ -1,0 +1,16 @@
+[package]
+name = "omsh-editor"
+description = "Line editing for Oh My Shell: reedline integration, prompt, highlighter, hinter and completer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omsh-config.workspace = true
+omsh-history.workspace = true
+omsh-syntax.workspace = true
+omsh-ui.workspace = true
+
+[lints]
+workspace = true
