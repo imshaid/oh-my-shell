@@ -1,0 +1,30 @@
+# --- Private planning files (never commit) ---
+.private/
+CLAUDE.local.md
+
+# --- Secrets ---
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# --- Rust build output ---
+/target/
+**/*.rs.bk
+
+# --- Test and benchmark artifacts ---
+*.profraw
+*.profdata
+/criterion/
+**/*.snap.new
+**/*.pending-snap
+
+# --- Local Claude Code state ---
+.claude/settings.local.json
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
