@@ -1,0 +1,70 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"${x//a/b} ${x:1:2} ${x^^} ${!x} ${x[0]} ${x:x} ${#x:-y} ${} ${ x}"
+  0..9 Word "${x//a/b}"
+    0..9 Parameter "x" braced Unsupported("")
+      3..8 Literal "//a/b"
+  10..18 Word "${x:1:2}"
+    10..18 Parameter "x" braced Unsupported("")
+      13..17 Literal ":1:2"
+  19..25 Word "${x^^}"
+    19..25 Parameter "x" braced Unsupported("")
+      22..24 Literal "^^"
+  26..31 Word "${!x}"
+    26..31 Parameter "!" braced Unsupported("")
+      29..30 Literal "x"
+  32..39 Word "${x[0]}"
+    32..39 Parameter "x" braced Unsupported("")
+      35..38 Literal "[0]"
+  40..46 Word "${x:x}"
+    40..46 Parameter "x" braced Unsupported("")
+      43..45 Literal ":x"
+  47..55 Word "${#x:-y}"
+    47..55 Parameter "x" braced length Unsupported(":-")
+      53..54 Literal "y"
+  56..59 Word "${}"
+    56..59 Parameter "" braced
+  60..65 Word "${ x}"
+    60..65 Parameter "" braced Unsupported("")
+      62..64 Literal " x"
+
+"a=(1 2)"
+  0..2 Word "a=" assigns="a"
+  2..3 Op LeftParen
+  3..4 Word "1"
+  5..6 Word "2"
+  6..7 Op RightParen
+
+"[[ a ]]"
+  0..2 Word "[["
+  3..4 Word "a"
+  5..7 Word "]]"
+
+"diff <(a) >(b)"
+  0..4 Word "diff"
+  5..6 Op Less
+  6..7 Op LeftParen
+  7..8 Word "a"
+  8..9 Op RightParen
+  10..11 Op Great
+  11..12 Op LeftParen
+  12..13 Word "b"
+  13..14 Op RightParen
+
+"{a,b}"
+  0..5 Word "{a,b}"
+
+"a |& b"
+  0..1 Word "a"
+  2..3 Op Pipe
+  3..4 Op Amp
+  5..6 Word "b"
+
+"((1))"
+  0..1 Op LeftParen
+  1..2 Op LeftParen
+  2..3 Word "1"
+  3..4 Op RightParen
+  4..5 Op RightParen

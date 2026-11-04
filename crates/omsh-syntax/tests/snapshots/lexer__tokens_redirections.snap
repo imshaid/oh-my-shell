@@ -1,0 +1,134 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"a > f"
+  0..1 Word "a"
+  2..3 Op Great
+  4..5 Word "f"
+
+"a >> f"
+  0..1 Word "a"
+  2..4 Op DoubleGreat
+  5..6 Word "f"
+
+"a < f"
+  0..1 Word "a"
+  2..3 Op Less
+  4..5 Word "f"
+
+"a 2> f"
+  0..1 Word "a"
+  2..3 IoNumber "2"
+  3..4 Op Great
+  5..6 Word "f"
+
+"a 2>&1"
+  0..1 Word "a"
+  2..3 IoNumber "2"
+  3..5 Op GreatAmp
+  5..6 Word "1"
+
+"a >&2"
+  0..1 Word "a"
+  2..4 Op GreatAmp
+  4..5 Word "2"
+
+"a &> f"
+  0..1 Word "a"
+  2..4 Op AmpGreat
+  5..6 Word "f"
+
+"a &>> f"
+  0..1 Word "a"
+  2..5 Op AmpDoubleGreat
+  6..7 Word "f"
+
+"a <<< word"
+  0..1 Word "a"
+  2..5 Op HereString
+  6..10 Word "word"
+
+"a 3>f"
+  0..1 Word "a"
+  2..3 IoNumber "3"
+  3..4 Op Great
+  4..5 Word "f"
+
+"a 3<f"
+  0..1 Word "a"
+  2..3 IoNumber "3"
+  3..4 Op Less
+  4..5 Word "f"
+
+"a 3>&4"
+  0..1 Word "a"
+  2..3 IoNumber "3"
+  3..5 Op GreatAmp
+  5..6 Word "4"
+
+"a 3>&-"
+  0..1 Word "a"
+  2..3 IoNumber "3"
+  3..5 Op GreatAmp
+  5..6 Word "-"
+
+"a <& 3"
+  0..1 Word "a"
+  2..4 Op LessAmp
+  5..6 Word "3"
+
+"a <> f"
+  0..1 Word "a"
+  2..4 Op LessGreat
+  5..6 Word "f"
+
+"a >| f"
+  0..1 Word "a"
+  2..4 Op GreatPipe
+  5..6 Word "f"
+
+"2>f a"
+  0..1 IoNumber "2"
+  1..2 Op Great
+  2..3 Word "f"
+  4..5 Word "a"
+
+"a2>f"
+  0..2 Word "a2"
+  2..3 Op Great
+  3..4 Word "f"
+
+"\"2\">f"
+  0..3 Word "\"2\""
+    0..3 DoubleQuoted
+      1..2 Literal "2"
+  3..4 Op Great
+  4..5 Word "f"
+
+"a 2 >f"
+  0..1 Word "a"
+  2..3 Word "2"
+  4..5 Op Great
+  5..6 Word "f"
+
+"a 2&>f"
+  0..1 Word "a"
+  2..3 Word "2"
+  3..5 Op AmpGreat
+  5..6 Word "f"
+
+"a >\\\n> f"
+  0..1 Word "a"
+  2..6 Op DoubleGreat
+  7..8 Word "f"
+
+"a 2\\\n>f"
+  0..1 Word "a"
+  2..5 IoNumber "2\\\n"
+  5..6 Op Great
+  6..7 Word "f"
+
+"a <<"
+  0..1 Word "a"
+  2..4 Op HereDoc

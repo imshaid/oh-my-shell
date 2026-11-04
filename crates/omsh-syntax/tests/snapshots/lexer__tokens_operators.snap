@@ -1,0 +1,73 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"a | b"
+  0..1 Word "a"
+  2..3 Op Pipe
+  4..5 Word "b"
+
+"a;b"
+  0..1 Word "a"
+  1..2 Op Semi
+  2..3 Word "b"
+
+"a && b || c"
+  0..1 Word "a"
+  2..4 Op AndIf
+  5..6 Word "b"
+  7..9 Op OrIf
+  10..11 Word "c"
+
+"a &"
+  0..1 Word "a"
+  2..3 Op Amp
+
+"a&b"
+  0..1 Word "a"
+  1..2 Op Amp
+  2..3 Word "b"
+
+"! a"
+  0..1 Word "!" reserved=Bang
+  2..3 Word "a"
+
+"!a"
+  0..2 Word "!a"
+
+"(a; b)"
+  0..1 Op LeftParen
+  1..2 Word "a"
+  2..3 Op Semi
+  4..5 Word "b"
+  5..6 Op RightParen
+
+"{ a; }"
+  0..1 Word "{" reserved=LeftBrace
+  2..3 Word "a"
+  3..4 Op Semi
+  5..6 Word "}" reserved=RightBrace
+
+"{a; }"
+  0..2 Word "{a"
+  2..3 Op Semi
+  4..5 Word "}" reserved=RightBrace
+
+"a }"
+  0..1 Word "a"
+  2..3 Word "}" reserved=RightBrace
+
+"case x in a) b;; esac"
+  0..4 Word "case" reserved=Case
+  5..6 Word "x"
+  7..9 Word "in" reserved=In
+  10..11 Word "a"
+  11..12 Op RightParen
+  13..14 Word "b"
+  14..16 Op DoubleSemi
+  17..21 Word "esac" reserved=Esac
+
+"a &\\\n& b"
+  0..1 Word "a"
+  2..6 Op AndIf
+  7..8 Word "b"

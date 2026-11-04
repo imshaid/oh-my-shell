@@ -1,0 +1,33 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_highlight(lines)
+---
+"# whole line"
+  Comment "# whole line"
+
+"a # trailing $x 'unclosed"
+  Command "a"
+  Comment "# trailing $x 'unclosed"
+
+"a#b #c"
+  Command "a#b"
+  Comment "#c"
+
+"#a\n#b\nc"
+  Comment "#a"
+  Comment "#b"
+  Command "c"
+
+"a \\\n#b"
+  Command "a"
+  Comment "#b"
+
+"a\\\n#b"
+  Command "a"
+  Escape "\\\n"
+  Command "#b"
+
+"a #b\\\nc"
+  Command "a"
+  Comment "#b\\"
+  Command "c"

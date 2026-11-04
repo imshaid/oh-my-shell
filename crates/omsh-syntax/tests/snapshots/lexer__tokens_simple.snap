@@ -1,0 +1,59 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"echo hello world"
+  0..4 Word "echo"
+  5..10 Word "hello"
+  11..16 Word "world"
+
+"  echo\t  spaced  "
+  2..6 Word "echo"
+  9..15 Word "spaced"
+
+"echo é ব\u{9be}ংল\u{9be}"
+  0..4 Word "echo"
+  5..7 Word "é"
+  8..23 Word "ব\u{9be}ংল\u{9be}"
+
+"FOO=bar cmd"
+  0..7 Word "FOO=bar" assigns="FOO"
+  8..11 Word "cmd"
+
+"FOO=bar"
+  0..7 Word "FOO=bar" assigns="FOO"
+
+"A=1 B=\"x y\" cmd A=not-prefix"
+  0..3 Word "A=1" assigns="A"
+  4..11 Word "B=\"x y\"" assigns="B"
+    4..6 Literal "B="
+    6..11 DoubleQuoted
+      7..10 Literal "x y"
+  12..15 Word "cmd"
+  16..28 Word "A=not-prefix" assigns="A"
+
+"FOO= cmd"
+  0..4 Word "FOO=" assigns="FOO"
+  5..8 Word "cmd"
+
+"1A=b"
+  0..4 Word "1A=b"
+
+"F\"OO\"=b"
+  0..7 Word "F\"OO\"=b"
+    0..1 Literal "F"
+    1..5 DoubleQuoted
+      2..4 Literal "OO"
+    5..7 Literal "=b"
+
+"FOO\\=b"
+  0..6 Word "FOO\\=b"
+    0..3 Literal "FOO"
+    3..5 Escaped "\\="
+    5..6 Literal "b"
+
+"a\nb\n"
+  0..1 Word "a"
+  1..2 Newline
+  2..3 Word "b"
+  3..4 Newline

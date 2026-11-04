@@ -1,0 +1,80 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_highlight(lines)
+---
+"'single $x `y` \\'"
+  SingleQuoted "'single $x `y` \\'"
+
+"\"double\""
+  DoubleQuoted "\"double\""
+
+"\"a $x `y` \\$ \\` \\\" \\\\ \\q\""
+  DoubleQuoted "\"a "
+  Variable "$x"
+  DoubleQuoted " "
+  CommandSub "`y`"
+  DoubleQuoted " "
+  Escape "\\$"
+  DoubleQuoted " "
+  Escape "\\`"
+  DoubleQuoted " "
+  Escape "\\\""
+  DoubleQuoted " "
+  Escape "\\\\"
+  DoubleQuoted " \\q\""
+
+"\"it's\" 'say \"hi\"'"
+  DoubleQuoted "\"it's\""
+  SingleQuoted "'say \"hi\"'"
+
+"a'b'\"c\"d"
+  Command "a"
+  SingleQuoted "'b'"
+  DoubleQuoted "\"c\""
+  Command "d"
+
+"''"
+  SingleQuoted "''"
+
+"\"\""
+  DoubleQuoted "\"\""
+
+"a\\ b \\$x \\\\ \\'"
+  Command "a"
+  Escape "\\ "
+  Command "b"
+  Escape "\\$"
+  Argument "x"
+  Escape "\\\\"
+  Escape "\\'"
+
+"\\é"
+  Escape "\\é"
+
+"$'tab\\tquote\\'end'"
+  SingleQuoted "$'tab\\tquote\\'end'"
+
+"\"$'not ansi'\""
+  DoubleQuoted "\"$'not ansi'\""
+
+"$\"x\""
+  Command "$"
+  DoubleQuoted "\"x\""
+
+"a$ $ \"$\""
+  Command "a$"
+  Argument "$"
+  DoubleQuoted "\"$\""
+
+"a\\\nb"
+  Command "a"
+  Escape "\\\n"
+  Command "b"
+
+"\"a\\\nb\""
+  DoubleQuoted "\"a"
+  Escape "\\\n"
+  DoubleQuoted "b\""
+
+"'a\\\nb'"
+  SingleQuoted "'a\\\nb'"

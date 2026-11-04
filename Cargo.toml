@@ -36,6 +36,9 @@ clap = { version = "4.6", default-features = false, features = [
     "suggestions",
     "usage",
 ] }
+# Test-only. Its `colors` feature is left out: it only colors the diff shown when a
+# snapshot test fails.
+insta = { version = "1.49", default-features = false }
 
 [workspace.lints.rust]
 # Only omsh-exec may use `unsafe`. It opts out of this rule in its crate root.

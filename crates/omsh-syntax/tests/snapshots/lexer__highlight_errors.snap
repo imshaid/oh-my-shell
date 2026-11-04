@@ -1,0 +1,86 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_highlight(lines)
+---
+"a 'open"
+  Command "a"
+  SingleQuoted "'open"
+
+"a \"open $x"
+  Command "a"
+  DoubleQuoted "\"open "
+  Variable "$x"
+
+"a $'open"
+  Command "a"
+  SingleQuoted "$'open"
+
+"a `open"
+  Command "a"
+  CommandSub "`open"
+
+"a $(open"
+  Command "a"
+  CommandSub "$("
+  Command "open"
+
+"a $(open \"quote"
+  Command "a"
+  CommandSub "$("
+  Command "open"
+  CommandSub " "
+  DoubleQuoted "\"quote"
+
+"a $((1 +"
+  Command "a"
+  Arithmetic "$((1 +"
+
+"a ${open"
+  Command "a"
+  Variable "${open"
+
+"a ${open:-x"
+  Command "a"
+  Variable "${open:-x"
+
+"cat <<EOF\nbody"
+  Command "cat"
+  Redirect "<<"
+  HereDocDelimiter "EOF"
+  HereDocBody "body"
+
+"cat <<EOF"
+  Command "cat"
+  Redirect "<<"
+  HereDocDelimiter "EOF"
+
+"x=$(cat <<EOF)\nhello\nEOF\n"
+  Assignment "x="
+  CommandSub "$("
+  Command "cat"
+  CommandSub " "
+  Redirect "<<"
+  HereDocDelimiter "EOF"
+  CommandSub ")"
+  Command "hello"
+  Command "EOF"
+
+"x=$(cat <<EOF\nhello\nEOF)\n"
+  Assignment "x="
+  CommandSub "$("
+  Command "cat"
+  CommandSub " "
+  Redirect "<<"
+  HereDocDelimiter "EOF"
+  CommandSub "\n"
+  HereDocBody "hello\nEOF)\n"
+
+"a\\"
+  Command "a\\"
+
+"a\\\n"
+  Command "a"
+  Escape "\\\n"
+
+"a \\\n"
+  Command "a"

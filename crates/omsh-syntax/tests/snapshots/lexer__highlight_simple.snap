@@ -1,0 +1,55 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_highlight(lines)
+---
+"echo hello world"
+  Command "echo"
+  Argument "hello"
+  Argument "world"
+
+"  echo\t  spaced  "
+  Command "echo"
+  Argument "spaced"
+
+"echo é ব\u{9be}ংল\u{9be}"
+  Command "echo"
+  Argument "é"
+  Argument "ব\u{9be}ংল\u{9be}"
+
+"FOO=bar cmd"
+  Assignment "FOO="
+  Argument "bar"
+  Command "cmd"
+
+"FOO=bar"
+  Assignment "FOO="
+  Argument "bar"
+
+"A=1 B=\"x y\" cmd A=not-prefix"
+  Assignment "A="
+  Argument "1"
+  Assignment "B="
+  DoubleQuoted "\"x y\""
+  Command "cmd"
+  Argument "A=not-prefix"
+
+"FOO= cmd"
+  Assignment "FOO="
+  Command "cmd"
+
+"1A=b"
+  Command "1A=b"
+
+"F\"OO\"=b"
+  Command "F"
+  DoubleQuoted "\"OO\""
+  Command "=b"
+
+"FOO\\=b"
+  Command "FOO"
+  Escape "\\="
+  Command "b"
+
+"a\nb\n"
+  Command "a"
+  Command "b"

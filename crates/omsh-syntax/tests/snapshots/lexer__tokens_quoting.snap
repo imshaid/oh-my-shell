@@ -1,0 +1,108 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"'single $x `y` \\'"
+  0..17 Word "'single $x `y` \\'"
+    0..17 SingleQuoted "single $x `y` \\"
+
+"\"double\""
+  0..8 Word "\"double\""
+    0..8 DoubleQuoted
+      1..7 Literal "double"
+
+"\"a $x `y` \\$ \\` \\\" \\\\ \\q\""
+  0..25 Word "\"a $x `y` \\$ \\` \\\" \\\\ \\q\""
+    0..25 DoubleQuoted
+      1..3 Literal "a "
+      3..5 Parameter "x"
+      5..6 Literal " "
+      6..9 Backtick "y"
+      9..10 Literal " "
+      10..12 Escaped "\\$"
+      12..13 Literal " "
+      13..15 Escaped "\\`"
+      15..16 Literal " "
+      16..18 Escaped "\\\""
+      18..19 Literal " "
+      19..21 Escaped "\\\\"
+      21..24 Literal " \\q"
+
+"\"it's\" 'say \"hi\"'"
+  0..6 Word "\"it's\""
+    0..6 DoubleQuoted
+      1..5 Literal "it's"
+  7..17 Word "'say \"hi\"'"
+    7..17 SingleQuoted "say \"hi\""
+
+"a'b'\"c\"d"
+  0..8 Word "a'b'\"c\"d"
+    0..1 Literal "a"
+    1..4 SingleQuoted "b"
+    4..7 DoubleQuoted
+      5..6 Literal "c"
+    7..8 Literal "d"
+
+"''"
+  0..2 Word "''"
+    0..2 SingleQuoted ""
+
+"\"\""
+  0..2 Word "\"\""
+    0..2 DoubleQuoted
+
+"a\\ b \\$x \\\\ \\'"
+  0..4 Word "a\\ b"
+    0..1 Literal "a"
+    1..3 Escaped "\\ "
+    3..4 Literal "b"
+  5..8 Word "\\$x"
+    5..7 Escaped "\\$"
+    7..8 Literal "x"
+  9..11 Word "\\\\"
+    9..11 Escaped "\\\\"
+  12..14 Word "\\'"
+    12..14 Escaped "\\'"
+
+"\\é"
+  0..3 Word "\\é"
+    0..3 Escaped "\\é"
+
+"$'tab\\tquote\\'end'"
+  0..18 Word "$'tab\\tquote\\'end'"
+    0..18 AnsiCQuoted "tab\\tquote\\'end"
+
+"\"$'not ansi'\""
+  0..13 Word "\"$'not ansi'\""
+    0..13 DoubleQuoted
+      1..12 Literal "$'not ansi'"
+
+"$\"x\""
+  0..4 Word "$\"x\""
+    0..1 Literal "$"
+    1..4 DoubleQuoted
+      2..3 Literal "x"
+
+"a$ $ \"$\""
+  0..2 Word "a$"
+  3..4 Word "$"
+  5..8 Word "\"$\""
+    5..8 DoubleQuoted
+      6..7 Literal "$"
+
+"a\\\nb"
+  0..4 Word "a\\\nb"
+    0..1 Literal "a"
+    1..3 LineContinuation
+    3..4 Literal "b"
+
+"\"a\\\nb\""
+  0..6 Word "\"a\\\nb\""
+    0..6 DoubleQuoted
+      1..2 Literal "a"
+      2..4 LineContinuation
+      4..5 Literal "b"
+
+"'a\\\nb'"
+  0..6 Word "'a\\\nb'"
+    0..6 SingleQuoted "a\\\nb"

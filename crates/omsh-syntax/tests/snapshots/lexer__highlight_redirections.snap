@@ -1,0 +1,133 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_highlight(lines)
+---
+"a > f"
+  Command "a"
+  Redirect ">"
+  Argument "f"
+
+"a >> f"
+  Command "a"
+  Redirect ">>"
+  Argument "f"
+
+"a < f"
+  Command "a"
+  Redirect "<"
+  Argument "f"
+
+"a 2> f"
+  Command "a"
+  IoNumber "2"
+  Redirect ">"
+  Argument "f"
+
+"a 2>&1"
+  Command "a"
+  IoNumber "2"
+  Redirect ">&"
+  Argument "1"
+
+"a >&2"
+  Command "a"
+  Redirect ">&"
+  Argument "2"
+
+"a &> f"
+  Command "a"
+  Redirect "&>"
+  Argument "f"
+
+"a &>> f"
+  Command "a"
+  Redirect "&>>"
+  Argument "f"
+
+"a <<< word"
+  Command "a"
+  Redirect "<<<"
+  Argument "word"
+
+"a 3>f"
+  Command "a"
+  IoNumber "3"
+  Redirect ">"
+  Argument "f"
+
+"a 3<f"
+  Command "a"
+  IoNumber "3"
+  Redirect "<"
+  Argument "f"
+
+"a 3>&4"
+  Command "a"
+  IoNumber "3"
+  Redirect ">&"
+  Argument "4"
+
+"a 3>&-"
+  Command "a"
+  IoNumber "3"
+  Redirect ">&"
+  Argument "-"
+
+"a <& 3"
+  Command "a"
+  Redirect "<&"
+  Argument "3"
+
+"a <> f"
+  Command "a"
+  Redirect "<>"
+  Argument "f"
+
+"a >| f"
+  Command "a"
+  Redirect ">|"
+  Argument "f"
+
+"2>f a"
+  IoNumber "2"
+  Redirect ">"
+  Argument "f"
+  Command "a"
+
+"a2>f"
+  Command "a2"
+  Redirect ">"
+  Argument "f"
+
+"\"2\">f"
+  DoubleQuoted "\"2\""
+  Redirect ">"
+  Argument "f"
+
+"a 2 >f"
+  Command "a"
+  Argument "2"
+  Redirect ">"
+  Argument "f"
+
+"a 2&>f"
+  Command "a"
+  Argument "2"
+  Redirect "&>"
+  Argument "f"
+
+"a >\\\n> f"
+  Command "a"
+  Redirect ">\\\n>"
+  Argument "f"
+
+"a 2\\\n>f"
+  Command "a"
+  IoNumber "2"
+  Escape "\\\n"
+  Redirect ">"
+  Argument "f"
+
+"a <<"
+  Command "a"
+  Redirect "<<"

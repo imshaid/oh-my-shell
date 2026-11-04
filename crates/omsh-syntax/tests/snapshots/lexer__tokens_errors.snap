@@ -1,0 +1,110 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"a 'open"
+  0..1 Word "a"
+  2..7 Word "'open"
+    2..7 SingleQuoted "open"
+  ERROR UnterminatedSingleQuote at "'"
+
+"a \"open $x"
+  0..1 Word "a"
+  2..10 Word "\"open $x"
+    2..10 DoubleQuoted
+      3..8 Literal "open "
+      8..10 Parameter "x"
+  ERROR UnterminatedDoubleQuote at "\""
+
+"a $'open"
+  0..1 Word "a"
+  2..8 Word "$'open"
+    2..8 AnsiCQuoted "open"
+  ERROR UnterminatedAnsiCQuote at "$'"
+
+"a `open"
+  0..1 Word "a"
+  2..7 Word "`open"
+    2..7 Backtick "open"
+  ERROR UnterminatedBacktick at "`"
+
+"a $(open"
+  0..1 Word "a"
+  2..8 Word "$(open"
+    2..8 CommandSub "open"
+  ERROR UnterminatedCommandSub at "$("
+
+"a $(open \"quote"
+  0..1 Word "a"
+  2..15 Word "$(open \"quote"
+    2..15 CommandSub "open \"quote"
+  ERROR UnterminatedDoubleQuote at "\""
+  ERROR UnterminatedCommandSub at "$("
+
+"a $((1 +"
+  0..1 Word "a"
+  2..8 Word "$((1 +"
+    2..8 Arithmetic "1 +"
+      5..8 Literal "1 +"
+  ERROR UnterminatedArithmetic at "$(("
+
+"a ${open"
+  0..1 Word "a"
+  2..8 Word "${open"
+    2..8 Parameter "open" braced
+  ERROR UnterminatedParameter at "${"
+
+"a ${open:-x"
+  0..1 Word "a"
+  2..11 Word "${open:-x"
+    2..11 Parameter "open" braced ColonDash(":-")
+      10..11 Literal "x"
+  ERROR UnterminatedParameter at "${"
+
+"cat <<EOF\nbody"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..9 Word "EOF"
+  9..10 Newline
+  10..14 HereDocBody "body"
+    10..14 Literal "body"
+  ERROR UnterminatedHereDoc at "EOF"
+
+"cat <<EOF"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..9 Word "EOF"
+  9..9 HereDocBody ""
+  ERROR UnterminatedHereDoc at "EOF"
+
+"x=$(cat <<EOF)\nhello\nEOF\n"
+  0..14 Word "x=$(cat <<EOF)" assigns="x"
+    0..2 Literal "x="
+    2..14 CommandSub "cat <<EOF"
+  14..15 Newline
+  15..20 Word "hello"
+  20..21 Newline
+  21..24 Word "EOF"
+  24..25 Newline
+  ERROR UnterminatedHereDoc at "EOF"
+
+"x=$(cat <<EOF\nhello\nEOF)\n"
+  0..25 Word "x=$(cat <<EOF\nhello\nEOF)\n" assigns="x"
+    0..2 Literal "x="
+    2..25 CommandSub "cat <<EOF\nhello\nEOF)\n"
+  ERROR UnterminatedHereDoc at "EOF"
+  ERROR UnterminatedCommandSub at "$("
+
+"a\\"
+  0..2 Word "a\\"
+  ERROR TrailingBackslash at "\\"
+
+"a\\\n"
+  0..3 Word "a\\\n"
+    0..1 Literal "a"
+    1..3 LineContinuation
+  ERROR TrailingBackslash at "\\\n"
+
+"a \\\n"
+  0..1 Word "a"
+  ERROR TrailingBackslash at "\\\n"

@@ -1,0 +1,206 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"if a; then b; elif c; then d; else e; fi"
+  0..2 Word "if" reserved=If
+  3..4 Word "a"
+  4..5 Op Semi
+  6..10 Word "then" reserved=Then
+  11..12 Word "b"
+  12..13 Op Semi
+  14..18 Word "elif" reserved=Elif
+  19..20 Word "c"
+  20..21 Op Semi
+  22..26 Word "then" reserved=Then
+  27..28 Word "d"
+  28..29 Op Semi
+  30..34 Word "else" reserved=Else
+  35..36 Word "e"
+  36..37 Op Semi
+  38..40 Word "fi" reserved=Fi
+
+"while a; do b; done"
+  0..5 Word "while" reserved=While
+  6..7 Word "a"
+  7..8 Op Semi
+  9..11 Word "do" reserved=Do
+  12..13 Word "b"
+  13..14 Op Semi
+  15..19 Word "done" reserved=Done
+
+"until a; do b; done"
+  0..5 Word "until" reserved=Until
+  6..7 Word "a"
+  7..8 Op Semi
+  9..11 Word "do" reserved=Do
+  12..13 Word "b"
+  13..14 Op Semi
+  15..19 Word "done" reserved=Done
+
+"for i in a b; do c; done"
+  0..3 Word "for" reserved=For
+  4..5 Word "i"
+  6..8 Word "in" reserved=In
+  9..10 Word "a"
+  11..12 Word "b"
+  12..13 Op Semi
+  14..16 Word "do" reserved=Do
+  17..18 Word "c"
+  18..19 Op Semi
+  20..24 Word "done" reserved=Done
+
+"for i\ndo a; done"
+  0..3 Word "for" reserved=For
+  4..5 Word "i"
+  5..6 Newline
+  6..8 Word "do" reserved=Do
+  9..10 Word "a"
+  10..11 Op Semi
+  12..16 Word "done" reserved=Done
+
+"for i do a; done"
+  0..3 Word "for" reserved=For
+  4..5 Word "i"
+  6..8 Word "do" reserved=Do
+  9..10 Word "a"
+  10..11 Op Semi
+  12..16 Word "done" reserved=Done
+
+"for do in in; do done; done"
+  0..3 Word "for" reserved=For
+  4..6 Word "do" reserved=Do
+  7..9 Word "in" reserved=In
+  10..12 Word "in" reserved=In
+  12..13 Op Semi
+  14..16 Word "do" reserved=Do
+  17..21 Word "done" reserved=Done
+  21..22 Op Semi
+  23..27 Word "done" reserved=Done
+
+"case $x in\n  a|b) c;;\n  (d) e;;\n  *) f;\nesac"
+  0..4 Word "case" reserved=Case
+  5..7 Word "$x"
+    5..7 Parameter "x"
+  8..10 Word "in" reserved=In
+  10..11 Newline
+  13..14 Word "a"
+  14..15 Op Pipe
+  15..16 Word "b"
+  16..17 Op RightParen
+  18..19 Word "c"
+  19..21 Op DoubleSemi
+  21..22 Newline
+  24..25 Op LeftParen
+  25..26 Word "d"
+  26..27 Op RightParen
+  28..29 Word "e"
+  29..31 Op DoubleSemi
+  31..32 Newline
+  34..35 Word "*"
+  35..36 Op RightParen
+  37..38 Word "f"
+  38..39 Op Semi
+  39..40 Newline
+  40..44 Word "esac" reserved=Esac
+
+"case esac in esac) a;; esac"
+  0..4 Word "case" reserved=Case
+  5..9 Word "esac" reserved=Esac
+  10..12 Word "in" reserved=In
+  13..17 Word "esac" reserved=Esac
+  17..18 Op RightParen
+  19..20 Word "a"
+  20..22 Op DoubleSemi
+  23..27 Word "esac" reserved=Esac
+
+"name() { a; }"
+  0..4 Word "name"
+  4..5 Op LeftParen
+  5..6 Op RightParen
+  7..8 Word "{" reserved=LeftBrace
+  9..10 Word "a"
+  10..11 Op Semi
+  12..13 Word "}" reserved=RightBrace
+
+"if\\\n true; then a; fi\\\n\n"
+  0..4 Word "if\\\n" reserved=If
+    0..2 Literal "if"
+    2..4 LineContinuation
+  5..9 Word "true"
+  9..10 Op Semi
+  11..15 Word "then" reserved=Then
+  16..17 Word "a"
+  17..18 Op Semi
+  19..23 Word "fi\\\n" reserved=Fi
+    19..21 Literal "fi"
+    21..23 LineContinuation
+  23..24 Newline
+
+"i\\\nf a; then b; fi"
+  0..4 Word "i\\\nf" reserved=If
+    0..1 Literal "i"
+    1..3 LineContinuation
+    3..4 Literal "f"
+  5..6 Word "a"
+  6..7 Op Semi
+  8..12 Word "then" reserved=Then
+  13..14 Word "b"
+  14..15 Op Semi
+  16..18 Word "fi" reserved=Fi
+
+"echo if then fi done"
+  0..4 Word "echo"
+  5..7 Word "if" reserved=If
+  8..12 Word "then" reserved=Then
+  13..15 Word "fi" reserved=Fi
+  16..20 Word "done" reserved=Done
+
+"\"if\" a; \\if b"
+  0..4 Word "\"if\""
+    0..4 DoubleQuoted
+      1..3 Literal "if"
+  5..6 Word "a"
+  6..7 Op Semi
+  8..11 Word "\\if"
+    8..10 Escaped "\\i"
+    10..11 Literal "f"
+  12..13 Word "b"
+
+"FOO=1 if"
+  0..5 Word "FOO=1" assigns="FOO"
+  6..8 Word "if" reserved=If
+
+">f if"
+  0..1 Op Great
+  1..2 Word "f"
+  3..5 Word "if" reserved=If
+
+"fi >f done"
+  0..2 Word "fi" reserved=Fi
+  3..4 Op Great
+  4..5 Word "f"
+  6..10 Word "done" reserved=Done
+
+"case x in (esac) a;; esac"
+  0..4 Word "case" reserved=Case
+  5..6 Word "x"
+  7..9 Word "in" reserved=In
+  10..11 Op LeftParen
+  11..15 Word "esac" reserved=Esac
+  15..16 Op RightParen
+  17..18 Word "a"
+  18..20 Op DoubleSemi
+  21..25 Word "esac" reserved=Esac
+
+"case x in a|esac) b;; esac"
+  0..4 Word "case" reserved=Case
+  5..6 Word "x"
+  7..9 Word "in" reserved=In
+  10..11 Word "a"
+  11..12 Op Pipe
+  12..16 Word "esac" reserved=Esac
+  16..17 Op RightParen
+  18..19 Word "b"
+  19..21 Op DoubleSemi
+  22..26 Word "esac" reserved=Esac

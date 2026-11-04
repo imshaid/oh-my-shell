@@ -1,0 +1,252 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"~ ~user ~/x a~ \"~\""
+  0..1 Word "~"
+  2..7 Word "~user"
+  8..11 Word "~/x"
+  12..14 Word "a~"
+  15..18 Word "\"~\""
+    15..18 DoubleQuoted
+      16..17 Literal "~"
+
+"$VAR ${VAR} $_a1 $é"
+  0..4 Word "$VAR"
+    0..4 Parameter "VAR"
+  5..11 Word "${VAR}"
+    5..11 Parameter "VAR" braced
+  12..16 Word "$_a1"
+    12..16 Parameter "_a1"
+  17..20 Word "$é"
+
+"${VAR:-x} ${VAR:=x} ${VAR:?msg} ${VAR:+x}"
+  0..9 Word "${VAR:-x}"
+    0..9 Parameter "VAR" braced ColonDash(":-")
+      7..8 Literal "x"
+  10..19 Word "${VAR:=x}"
+    10..19 Parameter "VAR" braced ColonEquals(":=")
+      17..18 Literal "x"
+  20..31 Word "${VAR:?msg}"
+    20..31 Parameter "VAR" braced ColonQuestion(":?")
+      27..30 Literal "msg"
+  32..41 Word "${VAR:+x}"
+    32..41 Parameter "VAR" braced ColonPlus(":+")
+      39..40 Literal "x"
+
+"${VAR-x} ${VAR=x} ${VAR?msg} ${VAR+x}"
+  0..8 Word "${VAR-x}"
+    0..8 Parameter "VAR" braced Dash("-")
+      6..7 Literal "x"
+  9..17 Word "${VAR=x}"
+    9..17 Parameter "VAR" braced Equals("=")
+      15..16 Literal "x"
+  18..28 Word "${VAR?msg}"
+    18..28 Parameter "VAR" braced Question("?")
+      24..27 Literal "msg"
+  29..37 Word "${VAR+x}"
+    29..37 Parameter "VAR" braced Plus("+")
+      35..36 Literal "x"
+
+"${VAR#p} ${VAR##p} ${VAR%p} ${VAR%%p}"
+  0..8 Word "${VAR#p}"
+    0..8 Parameter "VAR" braced Hash("#")
+      6..7 Literal "p"
+  9..18 Word "${VAR##p}"
+    9..18 Parameter "VAR" braced DoubleHash("##")
+      16..17 Literal "p"
+  19..27 Word "${VAR%p}"
+    19..27 Parameter "VAR" braced Percent("%")
+      25..26 Literal "p"
+  28..37 Word "${VAR%%p}"
+    28..37 Parameter "VAR" braced DoublePercent("%%")
+      35..36 Literal "p"
+
+"${#VAR} ${#} ${##} ${#?} ${#-} ${#1} ${#@}"
+  0..7 Word "${#VAR}"
+    0..7 Parameter "VAR" braced length
+  8..12 Word "${#}"
+    8..12 Parameter "#" braced
+  13..18 Word "${##}"
+    13..18 Parameter "#" braced length
+  19..24 Word "${#?}"
+    19..24 Parameter "?" braced length
+  25..30 Word "${#-}"
+    25..30 Parameter "-" braced length
+  31..36 Word "${#1}"
+    31..36 Parameter "1" braced length
+  37..42 Word "${#@}"
+    37..42 Parameter "@" braced length
+
+"${#-x} ${#:-x} ${##x} ${#%x}"
+  0..6 Word "${#-x}"
+    0..6 Parameter "#" braced Dash("-")
+      4..5 Literal "x"
+  7..14 Word "${#:-x}"
+    7..14 Parameter "#" braced ColonDash(":-")
+      12..13 Literal "x"
+  15..21 Word "${##x}"
+    15..21 Parameter "#" braced Hash("#")
+      19..20 Literal "x"
+  22..28 Word "${#%x}"
+    22..28 Parameter "#" braced Percent("%")
+      26..27 Literal "x"
+
+"$? $$ $! $0 $# $@ $* $- $1 $9 $10 ${10}"
+  0..2 Word "$?"
+    0..2 Parameter "?"
+  3..5 Word "$$"
+    3..5 Parameter "$"
+  6..8 Word "$!"
+    6..8 Parameter "!"
+  9..11 Word "$0"
+    9..11 Parameter "0"
+  12..14 Word "$#"
+    12..14 Parameter "#"
+  15..17 Word "$@"
+    15..17 Parameter "@"
+  18..20 Word "$*"
+    18..20 Parameter "*"
+  21..23 Word "$-"
+    21..23 Parameter "-"
+  24..26 Word "$1"
+    24..26 Parameter "1"
+  27..29 Word "$9"
+    27..29 Parameter "9"
+  30..33 Word "$10"
+    30..32 Parameter "1"
+    32..33 Literal "0"
+  34..39 Word "${10}"
+    34..39 Parameter "10" braced
+
+"${VAR:-a b} ${VAR:-$OTHER} ${VAR:-${INNER:-$(cmd)}}"
+  0..11 Word "${VAR:-a b}"
+    0..11 Parameter "VAR" braced ColonDash(":-")
+      7..10 Literal "a b"
+  12..26 Word "${VAR:-$OTHER}"
+    12..26 Parameter "VAR" braced ColonDash(":-")
+      19..25 Parameter "OTHER"
+  27..51 Word "${VAR:-${INNER:-$(cmd)}}"
+    27..51 Parameter "VAR" braced ColonDash(":-")
+      34..50 Parameter "INNER" braced ColonDash(":-")
+        43..49 CommandSub "cmd"
+
+"${VAR:-'a}b'} \"${VAR:-it's}\" \"${VAR#'a'}\" \"${VAR:-a\\}b}\""
+  0..13 Word "${VAR:-'a}b'}"
+    0..13 Parameter "VAR" braced ColonDash(":-")
+      7..12 SingleQuoted "a}b"
+  14..28 Word "\"${VAR:-it's}\""
+    14..28 DoubleQuoted
+      15..27 Parameter "VAR" braced ColonDash(":-")
+        22..26 Literal "it's"
+  29..41 Word "\"${VAR#'a'}\""
+    29..41 DoubleQuoted
+      30..40 Parameter "VAR" braced Hash("#")
+        36..39 SingleQuoted "a"
+  42..56 Word "\"${VAR:-a\\}b}\""
+    42..56 DoubleQuoted
+      43..55 Parameter "VAR" braced ColonDash(":-")
+        50..51 Literal "a"
+        51..53 Escaped "\\}"
+        53..54 Literal "b"
+
+"\"${VAR:-\"a b\"}\""
+  0..15 Word "\"${VAR:-\"a b\"}\""
+    0..15 DoubleQuoted
+      1..14 Parameter "VAR" braced ColonDash(":-")
+        8..13 DoubleQuoted
+          9..12 Literal "a b"
+
+"$(cmd arg)x $(a $(b \"$(c)\")) \"$(d e)\""
+  0..11 Word "$(cmd arg)x"
+    0..10 CommandSub "cmd arg"
+    10..11 Literal "x"
+  12..28 Word "$(a $(b \"$(c)\"))"
+    12..28 CommandSub "a $(b \"$(c)\")"
+  29..37 Word "\"$(d e)\""
+    29..37 DoubleQuoted
+      30..36 CommandSub "d e"
+
+"$(echo \")\") $(echo ')') $(echo \\))"
+  0..11 Word "$(echo \")\")"
+    0..11 CommandSub "echo \")\""
+  12..23 Word "$(echo ')')"
+    12..23 CommandSub "echo ')'"
+  24..34 Word "$(echo \\))"
+    24..34 CommandSub "echo \\)"
+
+"$(a # )\n)"
+  0..9 Word "$(a # )\n)"
+    0..9 CommandSub "a # )\n"
+
+"$(case x in a) b;; esac) $(case x in (a) b;; esac)"
+  0..24 Word "$(case x in a) b;; esac)"
+    0..24 CommandSub "case x in a) b;; esac"
+  25..50 Word "$(case x in (a) b;; esac)"
+    25..50 CommandSub "case x in (a) b;; esac"
+
+"$( (case x in a) b;; esac) ) $(echo case) $(case esac in a|b) c; esac)"
+  0..28 Word "$( (case x in a) b;; esac) )"
+    0..28 CommandSub " (case x in a) b;; esac) "
+  29..41 Word "$(echo case)"
+    29..41 CommandSub "echo case"
+  42..70 Word "$(case esac in a|b) c; esac)"
+    42..70 CommandSub "case esac in a|b) c; esac"
+
+"`cmd arg` \"`a`\" `a \\` b`"
+  0..9 Word "`cmd arg`"
+    0..9 Backtick "cmd arg"
+  10..15 Word "\"`a`\""
+    10..15 DoubleQuoted
+      11..14 Backtick "a"
+  16..24 Word "`a \\` b`"
+    16..24 Backtick "a \\` b"
+
+"$((1 + 2)) $(( (1 + 2) * $x )) $(($(a) + ${b:-1})) $(())"
+  0..10 Word "$((1 + 2))"
+    0..10 Arithmetic "1 + 2"
+      3..8 Literal "1 + 2"
+  11..30 Word "$(( (1 + 2) * $x ))"
+    11..30 Arithmetic " (1 + 2) * $x "
+      14..25 Literal " (1 + 2) * "
+      25..27 Parameter "x"
+      27..28 Literal " "
+  31..50 Word "$(($(a) + ${b:-1}))"
+    31..50 Arithmetic "$(a) + ${b:-1}"
+      34..38 CommandSub "a"
+      38..41 Literal " + "
+      41..48 Parameter "b" braced ColonDash(":-")
+        46..47 Literal "1"
+  51..56 Word "$(())"
+    51..56 Arithmetic ""
+
+"$((a) ) $((a); (b)) $((echo ')'))"
+  0..7 Word "$((a) )"
+    0..7 CommandSub "(a) "
+  8..19 Word "$((a); (b))"
+    8..19 CommandSub "(a); (b)"
+  20..33 Word "$((echo ')'))"
+    20..33 Arithmetic "echo ')'"
+      23..31 Literal "echo ')'"
+
+"* ?.txt [abc] [!abc] \"*\" \\*"
+  0..1 Word "*"
+  2..7 Word "?.txt"
+  8..13 Word "[abc]"
+  14..20 Word "[!abc]"
+  21..24 Word "\"*\""
+    21..24 DoubleQuoted
+      22..23 Literal "*"
+  25..27 Word "\\*"
+    25..27 Escaped "\\*"
+
+"a$\\\nb $\\\n(c) ${\\\nd} $e\\\nf"
+  0..5 Word "a$\\\nb"
+    0..1 Literal "a"
+    1..5 Parameter "b"
+  6..12 Word "$\\\n(c)"
+    6..12 CommandSub "c"
+  13..19 Word "${\\\nd}"
+    13..19 Parameter "d" braced
+  20..25 Word "$e\\\nf"
+    20..25 Parameter "e\\\nf"

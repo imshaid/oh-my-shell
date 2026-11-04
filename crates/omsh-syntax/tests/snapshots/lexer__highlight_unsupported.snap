@@ -1,0 +1,50 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_highlight(lines)
+---
+"${x//a/b} ${x:1:2} ${x^^} ${!x} ${x[0]} ${x:x} ${#x:-y} ${} ${ x}"
+  Variable "${x//a/b}"
+  Variable "${x:1:2}"
+  Variable "${x^^}"
+  Variable "${!x}"
+  Variable "${x[0]}"
+  Variable "${x:x}"
+  Variable "${#x:-y}"
+  Variable "${}"
+  Variable "${ x}"
+
+"a=(1 2)"
+  Assignment "a="
+  Operator "("
+  Command "1"
+  Argument "2"
+  Operator ")"
+
+"[[ a ]]"
+  Command "[["
+  Argument "a"
+  Argument "]]"
+
+"diff <(a) >(b)"
+  Command "diff"
+  Redirect "<"
+  Operator "("
+  Command "a"
+  Operator ")"
+  Redirect ">"
+  Operator "("
+  Command "b"
+  Operator ")"
+
+"{a,b}"
+  Command "{a,b}"
+
+"a |& b"
+  Command "a"
+  Operator "|&"
+  Command "b"
+
+"((1))"
+  Operator "(("
+  Command "1"
+  Operator "))"

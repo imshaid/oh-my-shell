@@ -1,0 +1,147 @@
+---
+source: crates/omsh-syntax/tests/lexer.rs
+expression: render_tokens(lines)
+---
+"cat <<EOF\nhello $x $(y) `z` \\$ \\q \"q\" 'q'\nEOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..9 Word "EOF"
+  9..10 Newline
+  10..46 HereDocBody "hello $x $(y) `z` \\$ \\q \"q\" 'q'\n" end="EOF"
+    10..16 Literal "hello "
+    16..18 Parameter "x"
+    18..19 Literal " "
+    19..23 CommandSub "y"
+    23..24 Literal " "
+    24..27 Backtick "z"
+    27..28 Literal " "
+    28..30 Escaped "\\$"
+    30..42 Literal " \\q \"q\" 'q'\n"
+
+"cat <<'EOF'\nraw $x \\$\nEOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..11 Word "'EOF'"
+    6..11 SingleQuoted "EOF"
+  11..12 Newline
+  12..26 HereDocBody "raw $x \\$\n" end="EOF" quoted
+    12..22 Literal "raw $x \\$\n"
+
+"cat <<\"EOF\"\nraw $x\nEOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..11 Word "\"EOF\""
+    6..11 DoubleQuoted
+      7..10 Literal "EOF"
+  11..12 Newline
+  12..23 HereDocBody "raw $x\n" end="EOF" quoted
+    12..19 Literal "raw $x\n"
+
+"cat <<\\EOF\nraw $x\nEOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..10 Word "\\EOF"
+    6..8 Escaped "\\E"
+    8..10 Literal "OF"
+  10..11 Newline
+  11..22 HereDocBody "raw $x\n" end="EOF" quoted
+    11..18 Literal "raw $x\n"
+
+"cat <<E\"O\"F\nraw $x\nEOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..11 Word "E\"O\"F"
+    6..7 Literal "E"
+    7..10 DoubleQuoted
+      8..9 Literal "O"
+    10..11 Literal "F"
+  11..12 Newline
+  12..23 HereDocBody "raw $x\n" end="EOF" quoted
+    12..19 Literal "raw $x\n"
+
+"cat <<-EOF\n\tone\n\t\ttwo $x\n\tEOF\n"
+  0..3 Word "cat"
+  4..7 Op HereDocStripTabs
+  7..10 Word "EOF"
+  10..11 Newline
+  11..30 HereDocBody "\tone\n\t\ttwo $x\n" end="\tEOF" strip_tabs
+    12..16 Literal "one\n"
+    18..22 Literal "two "
+    22..24 Parameter "x"
+    24..25 Literal "\n"
+
+"cat <<-'EOF'\n\tone\n\tEOF\n"
+  0..3 Word "cat"
+  4..7 Op HereDocStripTabs
+  7..12 Word "'EOF'"
+    7..12 SingleQuoted "EOF"
+  12..13 Newline
+  13..23 HereDocBody "\tone\n" end="\tEOF" quoted strip_tabs
+    14..18 Literal "one\n"
+
+"cat <<A <<B | grep x # note\nfirst\nA\nsecond\nB\nnext\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..7 Word "A"
+  8..10 Op HereDoc
+  10..11 Word "B"
+  12..13 Op Pipe
+  14..18 Word "grep"
+  19..20 Word "x"
+  21..27 Comment "# note"
+  27..28 Newline
+  28..36 HereDocBody "first\n" end="A"
+    28..34 Literal "first\n"
+  36..45 HereDocBody "second\n" end="B"
+    36..43 Literal "second\n"
+  45..49 Word "next"
+  49..50 Newline
+
+"cat <<EOF\nno newline after delimiter\nEOF"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..9 Word "EOF"
+  9..10 Newline
+  10..40 HereDocBody "no newline after delimiter\n" end="EOF"
+    10..37 Literal "no newline after delimiter\n"
+
+"cat <<EOF\nx\\\nEOF\nEOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..9 Word "EOF"
+  9..10 Newline
+  10..21 HereDocBody "x\\\nEOF\n" end="EOF"
+    10..11 Literal "x"
+    11..13 LineContinuation
+    13..17 Literal "EOF\n"
+
+"cat <<EOF\nEOF \nEOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..9 Word "EOF"
+  9..10 Newline
+  10..19 HereDocBody "EOF \n" end="EOF"
+    10..15 Literal "EOF \n"
+
+"cat <<''\nbody\n\nnext"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  6..8 Word "''"
+    6..8 SingleQuoted ""
+  8..9 Newline
+  9..15 HereDocBody "body\n" end="" quoted
+    9..14 Literal "body\n"
+  15..19 Word "next"
+
+"cat << -EOF\n-EOF\n"
+  0..3 Word "cat"
+  4..6 Op HereDoc
+  7..11 Word "-EOF"
+  11..12 Newline
+  12..17 HereDocBody "" end="-EOF"
+
+"x=$(cat <<EOF\ninner )\nEOF\n)\n"
+  0..27 Word "x=$(cat <<EOF\ninner )\nEOF\n)" assigns="x"
+    0..2 Literal "x="
+    2..27 CommandSub "cat <<EOF\ninner )\nEOF\n"
+  27..28 Newline
