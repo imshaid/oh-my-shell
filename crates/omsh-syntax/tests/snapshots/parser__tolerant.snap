@@ -1,0 +1,411 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_tolerant(TOLERANT)
+---
+""
+
+"a |"
+  ERROR UnexpectedEnd { expected: Command } at "" incomplete
+  item "a |"
+    simple "a"
+      word "a"
+
+"a &&"
+  ERROR UnexpectedEnd { expected: Command } at "" incomplete
+  item "a &&"
+    simple "a"
+      word "a"
+
+"a && b |"
+  ERROR UnexpectedEnd { expected: Command } at "" incomplete
+  item "a && b |"
+    and-or "a && b |"
+      simple "a"
+        word "a"
+      &&
+      simple "b"
+        word "b"
+
+"a >"
+  ERROR UnexpectedEnd { expected: RedirectTarget } at ""
+  item "a >"
+    simple "a >"
+      word "a"
+
+"a > ; b"
+  ERROR Unexpected { expected: RedirectTarget } at ";"
+  item "a > ;"
+    simple "a >"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+
+"if a; then b"
+  ERROR UnexpectedEnd { expected: Reserved(Fi) } at "" incomplete
+  item "if a; then b"
+    if "if a; then b"
+      branch "if a; then b"
+        condition
+          item "a;"
+            simple "a"
+              word "a"
+        then
+          item "b"
+            simple "b"
+              word "b"
+
+"if a"
+  ERROR UnexpectedEnd { expected: Reserved(Then) } at "" incomplete
+  item "if a"
+    if "if a"
+      branch "if a"
+        condition
+          item "a"
+            simple "a"
+              word "a"
+        then
+
+"if"
+  ERROR UnexpectedEnd { expected: Command } at "" incomplete
+  item "if"
+    if "if"
+      branch "if"
+        condition
+        then
+
+"if a; then b; elif c"
+  ERROR UnexpectedEnd { expected: Reserved(Then) } at "" incomplete
+  item "if a; then b; elif c"
+    if "if a; then b; elif c"
+      branch "if a; then b;"
+        condition
+          item "a;"
+            simple "a"
+              word "a"
+        then
+          item "b;"
+            simple "b"
+              word "b"
+      branch "elif c"
+        condition
+          item "c"
+            simple "c"
+              word "c"
+        then
+
+"if a; then b; else c"
+  ERROR UnexpectedEnd { expected: Reserved(Fi) } at "" incomplete
+  item "if a; then b; else c"
+    if "if a; then b; else c"
+      branch "if a; then b;"
+        condition
+          item "a;"
+            simple "a"
+              word "a"
+        then
+          item "b;"
+            simple "b"
+              word "b"
+      else
+        item "c"
+          simple "c"
+            word "c"
+
+"while a; do b"
+  ERROR UnexpectedEnd { expected: Reserved(Done) } at "" incomplete
+  item "while a; do b"
+    while "while a; do b"
+      condition
+        item "a;"
+          simple "a"
+            word "a"
+      do
+        item "b"
+          simple "b"
+            word "b"
+
+"for"
+  ERROR BadForName at ""
+
+"for i"
+  ERROR UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+  item "for i"
+    for "for i" name="i" at "i"
+      no-in
+      do
+
+"for i in a b"
+  ERROR UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+  item "for i in a b"
+    for "for i in a b" name="i" at "i"
+      in
+        word "a"
+        word "b"
+      do
+
+"for i in a; do b"
+  ERROR UnexpectedEnd { expected: Reserved(Done) } at "" incomplete
+  item "for i in a; do b"
+    for "for i in a; do b" name="i" at "i"
+      in
+        word "a"
+      do
+        item "b"
+          simple "b"
+            word "b"
+
+"for 1a in x; do b; done"
+  ERROR BadForName at "1a"
+  item "for 1a in x; do b; done"
+    for "for 1a in x; do b; done" name="1a" at "1a"
+      in
+        word "x"
+      do
+        item "b;"
+          simple "b"
+            word "b"
+
+"case"
+  ERROR UnexpectedEnd { expected: CaseWord } at ""
+
+"case x"
+  ERROR UnexpectedEnd { expected: Reserved(In) } at "" incomplete
+  item "case x"
+    case "case x"
+      word "x"
+
+"case x in a"
+  ERROR UnexpectedEnd { expected: RightParen } at ""
+  item "case x in a"
+    case "case x in a"
+      word "x"
+
+"case x in a) b"
+  ERROR UnexpectedEnd { expected: Reserved(Esac) } at "" incomplete
+  item "case x in a) b"
+    case "case x in a) b"
+      word "x"
+      arm "a) b"
+        pattern "a"
+        item "b"
+          simple "b"
+            word "b"
+
+"case x in a) b;; c"
+  ERROR UnexpectedEnd { expected: RightParen } at ""
+  item "case x in a) b;; c"
+    case "case x in a) b;; c"
+      word "x"
+      arm "a) b"
+        pattern "a"
+        item "b"
+          simple "b"
+            word "b"
+
+"(a"
+  ERROR UnexpectedEnd { expected: RightParen } at "" incomplete
+  item "(a"
+    subshell "(a"
+      item "a"
+        simple "a"
+          word "a"
+
+"{ a"
+  ERROR UnexpectedEnd { expected: Reserved(RightBrace) } at "" incomplete
+  item "{ a"
+    group "{ a"
+      item "a"
+        simple "a"
+          word "a"
+
+"f()"
+  ERROR UnexpectedEnd { expected: Command } at "" incomplete
+
+"f() {"
+  ERROR UnexpectedEnd { expected: Command } at "" incomplete
+  item "f() {"
+    function "f() {" name="f" at "f"
+      group "{"
+
+"1a() { b; }"
+  ERROR BadFunctionName at "1a"
+  item "1a() { b; }"
+    function "1a() { b; }" name="1a" at "1a"
+      group "{ b; }"
+        item "b;"
+          simple "b"
+            word "b"
+
+"! "
+  ERROR UnexpectedEnd { expected: Command } at ""
+
+"a ;; b\nc"
+  ERROR Unexpected { expected: Command } at ";;"
+  item "a"
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+  item "c"
+    simple "c"
+      word "c"
+
+"a | | b; c"
+  ERROR Unexpected { expected: Command } at "|"
+  item "a |"
+    simple "a"
+      word "a"
+  item "c"
+    simple "c"
+      word "c"
+
+") a; b"
+  ERROR Unexpected { expected: Command } at ")"
+  item "a;"
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+
+"(a b) c; d"
+  ERROR Unexpected { expected: CommandEnd } at "c"
+  item "(a b)"
+    subshell "(a b)"
+      item "a b"
+        simple "a b"
+          word "a"
+          word "b"
+  item "d"
+    simple "d"
+      word "d"
+
+"a (b; c)\nd"
+  ERROR Unexpected { expected: RightParen } at "b"
+  ERROR Unexpected { expected: Command } at ")"
+  item "c"
+    simple "c"
+      word "c"
+  item "d"
+    simple "d"
+      word "d"
+
+"if a; then b; ) c; fi; d"
+  ERROR Unexpected { expected: Reserved(Fi) } at ")"
+  ERROR Unexpected { expected: Command } at "fi"
+  item "if a; then b;"
+    if "if a; then b;"
+      branch "if a; then b;"
+        condition
+          item "a;"
+            simple "a"
+              word "a"
+        then
+          item "b;"
+            simple "b"
+              word "b"
+  item "c;"
+    simple "c"
+      word "c"
+  item "d"
+    simple "d"
+      word "d"
+
+"$(a;;) b; c"
+  ERROR Unexpected { expected: Command } at ";;"
+  item "$(a;;) b;"
+    simple "$(a;;) b"
+      word "$(a;;)"
+        command-sub "$(a;;)"
+          item "a"
+            simple "a"
+              word "a"
+      word "b"
+  item "c"
+    simple "c"
+      word "c"
+
+"`a;;` b; c"
+  ERROR Unexpected { expected: Command } at ";;"
+  item "`a;;` b;"
+    simple "`a;;` b"
+      word "`a;;`"
+        command-sub "`a;;`"
+          item "a"
+            simple "a"
+              word "a"
+      word "b"
+  item "c"
+    simple "c"
+      word "c"
+
+"a <<EOF ;; b\nbody\nEOF\nc <<EOF\nsecond\nEOF\n"
+  ERROR Unexpected { expected: Command } at ";;"
+  item "a <<EOF"
+    simple "a <<EOF"
+      word "a"
+      here-doc "<<EOF" delimiter="EOF"
+        body "body\n"
+          literal "body\n"
+  item "b"
+    simple "b"
+      word "b"
+  item "c <<EOF"
+    simple "c <<EOF"
+      word "c"
+      here-doc "<<EOF" delimiter="EOF"
+        body "second\n"
+          literal "second\n"
+
+"; ; a"
+  ERROR Unexpected { expected: Command } at ";"
+  ERROR Unexpected { expected: Command } at ";"
+  item "a"
+    simple "a"
+      word "a"
+
+"fi; a"
+  ERROR Unexpected { expected: Command } at "fi"
+  item "a"
+    simple "a"
+      word "a"
+
+"fi\na"
+  ERROR Unexpected { expected: Command } at "fi"
+  item "a"
+    simple "a"
+      word "a"
+
+"fi & a"
+  ERROR Unexpected { expected: Command } at "fi"
+  item "a"
+    simple "a"
+      word "a"
+
+"a | ; b"
+  ERROR Unexpected { expected: Command } at ";"
+  item "a | ;"
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+
+"| a; b"
+  ERROR Unexpected { expected: Command } at "|"
+  item "b"
+    simple "b"
+      word "b"
+
+"`for i;\\$x`"
+  ERROR Unexpected { expected: Reserved(Do) } at "$x"
+  item "`for i;\\$x`"
+    simple "`for i;\\$x`"
+      word "`for i;\\$x`"
+        command-sub "`for i;\\$x`"
+          item "for i;"
+            for "for i;" name="i" at "i"
+              no-in
+              do

@@ -1,0 +1,90 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_failures(UNFINISHED)
+---
+"a |"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"a ||"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"a &&"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"a |\n"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"("
+  UnexpectedEnd { expected: Command } at "" incomplete
+"(a"
+  UnexpectedEnd { expected: RightParen } at "" incomplete
+"(a;"
+  UnexpectedEnd { expected: RightParen } at "" incomplete
+"((a)"
+  UnexpectedEnd { expected: RightParen } at "" incomplete
+"{"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"{ a"
+  UnexpectedEnd { expected: Reserved(RightBrace) } at "" incomplete
+"{ a }"
+  UnexpectedEnd { expected: Reserved(RightBrace) } at "" incomplete
+"{ { a; }"
+  UnexpectedEnd { expected: Reserved(RightBrace) } at "" incomplete
+"if"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"if a"
+  UnexpectedEnd { expected: Reserved(Then) } at "" incomplete
+"if a;"
+  UnexpectedEnd { expected: Reserved(Then) } at "" incomplete
+"if a; then"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"if a; then b"
+  UnexpectedEnd { expected: Reserved(Fi) } at "" incomplete
+"if a; then b; elif"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"if a; then b; else"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"if a; then b; else c"
+  UnexpectedEnd { expected: Reserved(Fi) } at "" incomplete
+"while"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"while a"
+  UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+"while a; do"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"while a; do b"
+  UnexpectedEnd { expected: Reserved(Done) } at "" incomplete
+"until a"
+  UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+"for i"
+  UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+"for i;"
+  UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+"for i in"
+  UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+"for i in a"
+  UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+"for i in a b;"
+  UnexpectedEnd { expected: Reserved(Do) } at "" incomplete
+"for i do"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"for i in a b; do"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"case x"
+  UnexpectedEnd { expected: Reserved(In) } at "" incomplete
+"case x in"
+  UnexpectedEnd { expected: CasePattern } at "" incomplete
+"case x in a)"
+  UnexpectedEnd { expected: Reserved(Esac) } at "" incomplete
+"case x in a) b"
+  UnexpectedEnd { expected: Reserved(Esac) } at "" incomplete
+"case x in a) b esac"
+  UnexpectedEnd { expected: Reserved(Esac) } at "" incomplete
+"case x in a) b;;"
+  UnexpectedEnd { expected: CasePattern } at "" incomplete
+"case x in a) b;; c) d esac"
+  UnexpectedEnd { expected: Reserved(Esac) } at "" incomplete
+"f()"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"f( )"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"f()\n"
+  UnexpectedEnd { expected: Command } at "" incomplete
+"f() {"
+  UnexpectedEnd { expected: Command } at "" incomplete

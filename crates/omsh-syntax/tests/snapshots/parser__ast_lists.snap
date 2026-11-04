@@ -1,0 +1,151 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"a; b"
+  item "a;"
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+
+"a & b"
+  item "a &" background
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+
+"a &"
+  item "a &" background
+    simple "a"
+      word "a"
+
+"a;"
+  item "a;"
+    simple "a"
+      word "a"
+
+"a && b"
+  item "a && b"
+    and-or "a && b"
+      simple "a"
+        word "a"
+      &&
+      simple "b"
+        word "b"
+
+"a || b"
+  item "a || b"
+    and-or "a || b"
+      simple "a"
+        word "a"
+      ||
+      simple "b"
+        word "b"
+
+"a && b || c"
+  item "a && b || c"
+    and-or "a && b || c"
+      simple "a"
+        word "a"
+      &&
+      simple "b"
+        word "b"
+      ||
+      simple "c"
+        word "c"
+
+"a &&\n b ||\n\n c"
+  item "a &&\n b ||\n\n c"
+    and-or "a &&\n b ||\n\n c"
+      simple "a"
+        word "a"
+      &&
+      simple "b"
+        word "b"
+      ||
+      simple "c"
+        word "c"
+
+"a\nb\n\nc\n"
+  item "a"
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+  item "c"
+    simple "c"
+      word "c"
+
+"a; b & c && d | e"
+  item "a;"
+    simple "a"
+      word "a"
+  item "b &" background
+    simple "b"
+      word "b"
+  item "c && d | e"
+    and-or "c && d | e"
+      simple "c"
+        word "c"
+      &&
+      pipeline "d | e"
+        simple "d"
+          word "d"
+        simple "e"
+          word "e"
+
+""
+
+"\n\n"
+
+"# only a comment"
+
+"a # trailing\nb"
+  item "a"
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"
+
+"a;#c"
+  item "a;"
+    simple "a"
+      word "a"
+
+"a &#c"
+  item "a &" background
+    simple "a"
+      word "a"
+
+"#a\n#b\nc"
+  item "c"
+    simple "c"
+      word "c"
+
+"a \\\n b"
+  item "a \\\n b"
+    simple "a \\\n b"
+      word "a"
+      word "b"
+
+"a |\\\n b"
+  item "a |\\\n b"
+    pipeline "a |\\\n b"
+      simple "a"
+        word "a"
+      simple "b"
+        word "b"
+
+"a;\\\n b"
+  item "a;"
+    simple "a"
+      word "a"
+  item "b"
+    simple "b"
+      word "b"

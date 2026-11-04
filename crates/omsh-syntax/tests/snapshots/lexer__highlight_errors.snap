@@ -54,17 +54,6 @@ expression: render_highlight(lines)
   Redirect "<<"
   HereDocDelimiter "EOF"
 
-"x=$(cat <<EOF)\nhello\nEOF\n"
-  Assignment "x="
-  CommandSub "$("
-  Command "cat"
-  CommandSub " "
-  Redirect "<<"
-  HereDocDelimiter "EOF"
-  CommandSub ")"
-  Command "hello"
-  Command "EOF"
-
 "x=$(cat <<EOF\nhello\nEOF)\n"
   Assignment "x="
   CommandSub "$("

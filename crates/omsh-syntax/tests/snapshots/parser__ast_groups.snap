@@ -1,0 +1,90 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"{ a; }"
+  item "{ a; }"
+    group "{ a; }"
+      item "a;"
+        simple "a"
+          word "a"
+
+"{ a; b; }"
+  item "{ a; b; }"
+    group "{ a; b; }"
+      item "a;"
+        simple "a"
+          word "a"
+      item "b;"
+        simple "b"
+          word "b"
+
+"{ a & }"
+  item "{ a & }"
+    group "{ a & }"
+      item "a &" background
+        simple "a"
+          word "a"
+
+"{\n a\n}"
+  item "{\n a\n}"
+    group "{\n a\n}"
+      item "a"
+        simple "a"
+          word "a"
+
+"{ { a; } }"
+  item "{ { a; } }"
+    group "{ { a; } }"
+      item "{ a; }"
+        group "{ a; }"
+          item "a;"
+            simple "a"
+              word "a"
+
+"{ a; } >f"
+  item "{ a; } >f"
+    group "{ a; } >f"
+      item "a;"
+        simple "a"
+          word "a"
+      redirect ">f" Output
+        target "f"
+
+"{ a; } &"
+  item "{ a; } &" background
+    group "{ a; }"
+      item "a;"
+        simple "a"
+          word "a"
+
+"{ (a) }"
+  item "{ (a) }"
+    group "{ (a) }"
+      item "(a)"
+        subshell "(a)"
+          item "a"
+            simple "a"
+              word "a"
+
+"{(a);}"
+  item "{(a);}"
+    group "{(a);}"
+      item "(a);"
+        subshell "(a)"
+          item "a"
+            simple "a"
+              word "a"
+
+"{ a; } && { b; }"
+  item "{ a; } && { b; }"
+    and-or "{ a; } && { b; }"
+      group "{ a; }"
+        item "a;"
+          simple "a"
+            word "a"
+      &&
+      group "{ b; }"
+        item "b;"
+          simple "b"
+            word "b"

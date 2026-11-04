@@ -3,7 +3,7 @@
 //! The editor calls this on every keystroke, on text that is usually unfinished. It keeps
 //! one list of spans, plus a small stack for the constructs currently open.
 
-use crate::scanner::{Close, Leaf, Open, Sink, WordClass, scan};
+use crate::scanner::{Close, Leaf, Open, Sink, WordClass, scan_range};
 use crate::span::Span;
 use crate::token::{LexError, TokenKind};
 
@@ -69,7 +69,7 @@ pub struct Highlighted {
 #[must_use]
 pub fn lex_for_highlight(src: &str) -> Highlighted {
     let mut sink = PaintSink::default();
-    scan(src, &mut sink);
+    scan_range(src, Span::new(0, src.len()), &mut sink);
     Highlighted {
         spans: sink
             .pieces

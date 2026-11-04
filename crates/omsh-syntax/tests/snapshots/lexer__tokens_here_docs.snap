@@ -145,3 +145,13 @@ expression: render_tokens(lines)
     0..2 Literal "x="
     2..27 CommandSub "cat <<EOF\ninner )\nEOF\n"
   27..28 Newline
+
+"x=$(cat <<EOF)\nhello\nEOF\n"
+  0..14 Word "x=$(cat <<EOF)" assigns="x"
+    0..2 Literal "x="
+    2..14 CommandSub "cat <<EOF"
+  14..15 Newline
+  15..20 Word "hello"
+  20..21 Newline
+  21..24 Word "EOF"
+  24..25 Newline

@@ -284,9 +284,11 @@ pub enum LexErrorKind {
     UnterminatedArithmetic,
     /// `${` with no closing brace.
     UnterminatedParameter,
-    /// A here-document whose closing delimiter never came. A shell reading from a terminal
-    /// should read another line. With `-c` or a script, `/bin/sh` ends the body at the end
-    /// of the input, so such callers may choose to treat this as no error.
+    /// A here-document whose closing delimiter never came before the input ended. A shell
+    /// reading from a terminal should read another line. With `-c` or a script, `/bin/sh`
+    /// ends the body at the end of the input, so such callers may choose to treat this as no
+    /// error. A `)` that closes the substitution around a here-document is not an error:
+    /// `/bin/sh` gives it an empty body, and no later line could reach it.
     UnterminatedHereDoc,
     /// The input ends in a backslash or a line continuation. A shell reading from a
     /// terminal should read another line. With `-c` or a script, `/bin/sh` runs the line

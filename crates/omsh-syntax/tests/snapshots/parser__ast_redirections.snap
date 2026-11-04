@@ -1,0 +1,198 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"a > f"
+  item "a > f"
+    simple "a > f"
+      word "a"
+      redirect "> f" Output
+        target "f"
+
+"a >> f"
+  item "a >> f"
+    simple "a >> f"
+      word "a"
+      redirect ">> f" Append
+        target "f"
+
+"a < f"
+  item "a < f"
+    simple "a < f"
+      word "a"
+      redirect "< f" Input
+        target "f"
+
+"a 2> f"
+  item "a 2> f"
+    simple "a 2> f"
+      word "a"
+      redirect "2> f" Output fd=2
+        target "f"
+
+"a 2>&1"
+  item "a 2>&1"
+    simple "a 2>&1"
+      word "a"
+      redirect "2>&1" DupOutput fd=2
+        target "1"
+
+"a >&2"
+  item "a >&2"
+    simple "a >&2"
+      word "a"
+      redirect ">&2" DupOutput
+        target "2"
+
+"a 3>f"
+  item "a 3>f"
+    simple "a 3>f"
+      word "a"
+      redirect "3>f" Output fd=3
+        target "f"
+
+"a 3<f"
+  item "a 3<f"
+    simple "a 3<f"
+      word "a"
+      redirect "3<f" Input fd=3
+        target "f"
+
+"a 3>&4"
+  item "a 3>&4"
+    simple "a 3>&4"
+      word "a"
+      redirect "3>&4" DupOutput fd=3
+        target "4"
+
+"a 3>&-"
+  item "a 3>&-"
+    simple "a 3>&-"
+      word "a"
+      redirect "3>&-" DupOutput fd=3
+        target "-"
+
+"a <& 3"
+  item "a <& 3"
+    simple "a <& 3"
+      word "a"
+      redirect "<& 3" DupInput
+        target "3"
+
+"a <> f"
+  item "a <> f"
+    simple "a <> f"
+      word "a"
+      redirect "<> f" ReadWrite
+        target "f"
+
+"a >| f"
+  item "a >| f"
+    simple "a >| f"
+      word "a"
+      redirect ">| f" Clobber
+        target "f"
+
+"2>f a"
+  item "2>f a"
+    simple "2>f a"
+      word "a"
+      redirect "2>f" Output fd=2
+        target "f"
+
+"a2>f"
+  item "a2>f"
+    simple "a2>f"
+      word "a2"
+      redirect ">f" Output
+        target "f"
+
+"\"2\">f"
+  item "\"2\">f"
+    simple "\"2\">f"
+      word "\"2\""
+        double "\"2\""
+          literal "2"
+      redirect ">f" Output
+        target "f"
+
+"a 2 >f"
+  item "a 2 >f"
+    simple "a 2 >f"
+      word "a"
+      word "2"
+      redirect ">f" Output
+        target "f"
+
+"a >\\\n> f"
+  item "a >\\\n> f"
+    simple "a >\\\n> f"
+      word "a"
+      redirect ">\\\n> f" Append
+        target "f"
+
+"a 2\\\n>f"
+  item "a 2\\\n>f"
+    simple "a 2\\\n>f"
+      word "a"
+      redirect "2\\\n>f" Output fd=2
+        target "f"
+
+"a > if"
+  item "a > if"
+    simple "a > if"
+      word "a"
+      redirect "> if" Output
+        target "if"
+
+"a >$x$(y)"
+  item "a >$x$(y)"
+    simple "a >$x$(y)"
+      word "a"
+      redirect ">$x$(y)" Output
+        target "$x$(y)"
+          param "$x" name="x" at "x"
+          command-sub "$(y)"
+            item "y"
+              simple "y"
+                word "y"
+
+"a >f >g <h"
+  item "a >f >g <h"
+    simple "a >f >g <h"
+      word "a"
+      redirect ">f" Output
+        target "f"
+      redirect ">g" Output
+        target "g"
+      redirect "<h" Input
+        target "h"
+
+"a 12>f"
+  item "a 12>f"
+    simple "a 12>f"
+      word "a"
+      redirect "12>f" Output fd=12
+        target "f"
+
+"a 2147483647>f"
+  item "a 2147483647>f"
+    simple "a 2147483647>f"
+      word "a"
+      redirect "2147483647>f" Output fd=2147483647
+        target "f"
+
+"a 2147483648>f"
+  item "a 2147483648>f"
+    simple "a 2147483648>f"
+      word "a"
+      word "2147483648"
+      redirect ">f" Output
+        target "f"
+
+"99999999999>f"
+  item "99999999999>f"
+    simple "99999999999>f"
+      word "99999999999"
+      redirect ">f" Output
+        target "f"

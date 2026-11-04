@@ -17,7 +17,7 @@ pub(super) struct PendingHereDoc {
 
 /// Removes quoting from a here-document delimiter. Returns the text and whether any part
 /// of it was quoted.
-pub(super) fn cook_delimiter(raw: &str) -> (String, bool) {
+pub(crate) fn cook_delimiter(raw: &str) -> (String, bool) {
     let mut out = String::with_capacity(raw.len());
     let mut quoted = false;
     let mut chars = raw.chars();
@@ -63,16 +63,22 @@ fn ends_in_continuation(line: &str) -> bool {
 }
 
 impl<S: Sink> Scanner<'_, S> {
-    /// Emits an empty body for here-documents that never reached a line ending, so that
-    /// each `<<` still has its body. `/bin/sh` also gives them an empty body when `)`
-    /// closes the substitution they are in.
-    pub(super) fn abandon_heredocs(&mut self, state: &mut ListState) {
-        for doc in std::mem::take(&mut state.pending) {
+    /// Reports here-documents that are still waiting for a line ending at the end of the
+    /// input. A shell reading from a terminal should read another line.
+    pub(super) fn report_unterminated_heredocs(&mut self, state: &ListState) {
+        for doc in &state.pending {
             self.error(
                 LexErrorKind::UnterminatedHereDoc,
                 doc.opener.start,
                 doc.opener.end,
             );
+        }
+    }
+
+    /// Emits an empty body for here-documents that never reached a line ending, so that
+    /// each `<<` still has its body.
+    pub(super) fn abandon_heredocs(&mut self, state: &mut ListState) {
+        for doc in std::mem::take(&mut state.pending) {
             self.sink.open(Open::HereDoc, self.pos);
             self.sink.close(
                 Close::HereDoc(HereDocInfo {

@@ -1,0 +1,93 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"(a)"
+  item "(a)"
+    subshell "(a)"
+      item "a"
+        simple "a"
+          word "a"
+
+"(a; b)"
+  item "(a; b)"
+    subshell "(a; b)"
+      item "a;"
+        simple "a"
+          word "a"
+      item "b"
+        simple "b"
+          word "b"
+
+"(a;)"
+  item "(a;)"
+    subshell "(a;)"
+      item "a;"
+        simple "a"
+          word "a"
+
+"(a &)"
+  item "(a &)"
+    subshell "(a &)"
+      item "a &" background
+        simple "a"
+          word "a"
+
+"(\n a\n b\n)"
+  item "(\n a\n b\n)"
+    subshell "(\n a\n b\n)"
+      item "a"
+        simple "a"
+          word "a"
+      item "b"
+        simple "b"
+          word "b"
+
+"((a))"
+  item "((a))"
+    subshell "((a))"
+      item "(a)"
+        subshell "(a)"
+          item "a"
+            simple "a"
+              word "a"
+
+"( (a) )"
+  item "( (a) )"
+    subshell "( (a) )"
+      item "(a)"
+        subshell "(a)"
+          item "a"
+            simple "a"
+              word "a"
+
+"(a) >f 2>&1"
+  item "(a) >f 2>&1"
+    subshell "(a) >f 2>&1"
+      item "a"
+        simple "a"
+          word "a"
+      redirect ">f" Output
+        target "f"
+      redirect "2>&1" DupOutput fd=2
+        target "1"
+
+"(a) &"
+  item "(a) &" background
+    subshell "(a)"
+      item "a"
+        simple "a"
+          word "a"
+
+"(a) && (b)"
+  item "(a) && (b)"
+    and-or "(a) && (b)"
+      subshell "(a)"
+        item "a"
+          simple "a"
+            word "a"
+      &&
+      subshell "(b)"
+        item "b"
+          simple "b"
+            word "b"

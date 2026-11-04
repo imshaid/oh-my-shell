@@ -1,0 +1,51 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_failures(LEX_ERRORS)
+---
+"a 'open"
+  Lex(UnterminatedSingleQuote) at "'" incomplete
+"a \"open $x"
+  Lex(UnterminatedDoubleQuote) at "\"" incomplete
+"a $'open"
+  Lex(UnterminatedAnsiCQuote) at "$'" incomplete
+"a `open"
+  Lex(UnterminatedBacktick) at "`" incomplete
+"a $(open"
+  Lex(UnterminatedCommandSub) at "$(" incomplete
+"a $((1 +"
+  Lex(UnterminatedArithmetic) at "$((" incomplete
+"a ${open"
+  Lex(UnterminatedParameter) at "${" incomplete
+"cat <<EOF\nbody"
+  Lex(UnterminatedHereDoc) at "EOF" incomplete
+"a\\"
+  Lex(TrailingBackslash) at "\\" incomplete
+"a \\\n"
+  Lex(TrailingBackslash) at "\\\n" incomplete
+"if 'open"
+  Lex(UnterminatedSingleQuote) at "'" incomplete
+  UnexpectedEnd { expected: Reserved(Then) } at "" incomplete
+"a ;; 'open"
+  Unexpected { expected: Command } at ";;"
+  Lex(UnterminatedSingleQuote) at "'" incomplete
+"cat <<EOF ;; b\nbody"
+  Lex(UnterminatedHereDoc) at "EOF" incomplete
+  Unexpected { expected: Command } at ";;"
+"$(if a"
+  Lex(UnterminatedCommandSub) at "$(" incomplete
+"$(a ;; b"
+  Lex(UnterminatedCommandSub) at "$(" incomplete
+  Unexpected { expected: Command } at ";;"
+"$(a 'b"
+  Lex(UnterminatedCommandSub) at "$(" incomplete
+  Lex(UnterminatedSingleQuote) at "'" incomplete
+"\"$(a"
+  Lex(UnterminatedDoubleQuote) at "\"" incomplete
+  Lex(UnterminatedCommandSub) at "$(" incomplete
+"`if a"
+  Lex(UnterminatedBacktick) at "`" incomplete
+"`a ;; b"
+  Lex(UnterminatedBacktick) at "`" incomplete
+  Unexpected { expected: Command } at ";;"
+"`a 'b"
+  Lex(UnterminatedBacktick) at "`" incomplete

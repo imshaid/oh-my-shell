@@ -1,0 +1,104 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"a | b"
+  item "a | b"
+    pipeline "a | b"
+      simple "a"
+        word "a"
+      simple "b"
+        word "b"
+
+"a | b | c"
+  item "a | b | c"
+    pipeline "a | b | c"
+      simple "a"
+        word "a"
+      simple "b"
+        word "b"
+      simple "c"
+        word "c"
+
+"! a"
+  item "! a"
+    pipeline "! a" negated
+      simple "a"
+        word "a"
+
+"! a | b"
+  item "! a | b"
+    pipeline "! a | b" negated
+      simple "a"
+        word "a"
+      simple "b"
+        word "b"
+
+"!a"
+  item "!a"
+    simple "!a"
+      word "!a"
+
+"a |\n\n b"
+  item "a |\n\n b"
+    pipeline "a |\n\n b"
+      simple "a"
+        word "a"
+      simple "b"
+        word "b"
+
+"a |  # comment\nb"
+  item "a |  # comment\nb"
+    pipeline "a |  # comment\nb"
+      simple "a"
+        word "a"
+      simple "b"
+        word "b"
+
+"(a) | { b; } | c"
+  item "(a) | { b; } | c"
+    pipeline "(a) | { b; } | c"
+      subshell "(a)"
+        item "a"
+          simple "a"
+            word "a"
+      group "{ b; }"
+        item "b;"
+          simple "b"
+            word "b"
+      simple "c"
+        word "c"
+
+"a && ! b | c"
+  item "a && ! b | c"
+    and-or "a && ! b | c"
+      simple "a"
+        word "a"
+      &&
+      pipeline "! b | c" negated
+        simple "b"
+          word "b"
+        simple "c"
+          word "c"
+
+"! (a)"
+  item "! (a)"
+    pipeline "! (a)" negated
+      subshell "(a)"
+        item "a"
+          simple "a"
+            word "a"
+
+"! if a; then b; fi"
+  item "! if a; then b; fi"
+    pipeline "! if a; then b; fi" negated
+      if "if a; then b; fi"
+        branch "if a; then b;"
+          condition
+            item "a;"
+              simple "a"
+                word "a"
+          then
+            item "b;"
+              simple "b"
+                word "b"

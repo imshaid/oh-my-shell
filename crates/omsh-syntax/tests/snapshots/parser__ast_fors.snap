@@ -1,0 +1,156 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"for i in a b; do c; done"
+  item "for i in a b; do c; done"
+    for "for i in a b; do c; done" name="i" at "i"
+      in
+        word "a"
+        word "b"
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i in; do c; done"
+  item "for i in; do c; done"
+    for "for i in; do c; done" name="i" at "i"
+      in
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i in\ndo c; done"
+  item "for i in\ndo c; done"
+    for "for i in\ndo c; done" name="i" at "i"
+      in
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i; do c; done"
+  item "for i; do c; done"
+    for "for i; do c; done" name="i" at "i"
+      no-in
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i do c; done"
+  item "for i do c; done"
+    for "for i do c; done" name="i" at "i"
+      no-in
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i\ndo c; done"
+  item "for i\ndo c; done"
+    for "for i\ndo c; done" name="i" at "i"
+      no-in
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i\n\nin a\n\ndo c; done"
+  item "for i\n\nin a\n\ndo c; done"
+    for "for i\n\nin a\n\ndo c; done" name="i" at "i"
+      in
+        word "a"
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i;\n\ndo c; done"
+  item "for i;\n\ndo c; done"
+    for "for i;\n\ndo c; done" name="i" at "i"
+      no-in
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i in a\ndo c; done"
+  item "for i in a\ndo c; done"
+    for "for i in a\ndo c; done" name="i" at "i"
+      in
+        word "a"
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for do in in; do a; done"
+  item "for do in in; do a; done"
+    for "for do in in; do a; done" name="do" at "do"
+      in
+        word "in"
+      do
+        item "a;"
+          simple "a"
+            word "a"
+
+"for if in then; do a; done"
+  item "for if in then; do a; done"
+    for "for if in then; do a; done" name="if" at "if"
+      in
+        word "then"
+      do
+        item "a;"
+          simple "a"
+            word "a"
+
+"for i in $x \"y z\" *; do c; done"
+  item "for i in $x \"y z\" *; do c; done"
+    for "for i in $x \"y z\" *; do c; done" name="i" at "i"
+      in
+        word "$x"
+          param "$x" name="x" at "x"
+        word "\"y z\""
+          double "\"y z\""
+            literal "y z"
+        word "*"
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i in a; do c; done >f"
+  item "for i in a; do c; done >f"
+    for "for i in a; do c; done >f" name="i" at "i"
+      in
+        word "a"
+      do
+        item "c;"
+          simple "c"
+            word "c"
+      redirect ">f" Output
+        target "f"
+
+"fo\\\nr i\\\nj in a; do c; done"
+  item "fo\\\nr i\\\nj in a; do c; done"
+    for "fo\\\nr i\\\nj in a; do c; done" name="ij" at "i\\\nj"
+      in
+        word "a"
+      do
+        item "c;"
+          simple "c"
+            word "c"
+
+"for i in a b # note\ndo # note\n c # note\ndone"
+  item "for i in a b # note\ndo # note\n c # note\ndone"
+    for "for i in a b # note\ndo # note\n c # note\ndone" name="i" at "i"
+      in
+        word "a"
+        word "b"
+      do
+        item "c"
+          simple "c"
+            word "c"

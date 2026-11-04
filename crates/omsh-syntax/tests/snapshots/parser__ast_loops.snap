@@ -1,0 +1,105 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"while a; do b; done"
+  item "while a; do b; done"
+    while "while a; do b; done"
+      condition
+        item "a;"
+          simple "a"
+            word "a"
+      do
+        item "b;"
+          simple "b"
+            word "b"
+
+"until a; do b; done"
+  item "until a; do b; done"
+    until "until a; do b; done"
+      condition
+        item "a;"
+          simple "a"
+            word "a"
+      do
+        item "b;"
+          simple "b"
+            word "b"
+
+"while a\ndo\n b\ndone"
+  item "while a\ndo\n b\ndone"
+    while "while a\ndo\n b\ndone"
+      condition
+        item "a"
+          simple "a"
+            word "a"
+      do
+        item "b"
+          simple "b"
+            word "b"
+
+"while a; b; do c; d; done"
+  item "while a; b; do c; d; done"
+    while "while a; b; do c; d; done"
+      condition
+        item "a;"
+          simple "a"
+            word "a"
+        item "b;"
+          simple "b"
+            word "b"
+      do
+        item "c;"
+          simple "c"
+            word "c"
+        item "d;"
+          simple "d"
+            word "d"
+
+"while a; do b; done <f"
+  item "while a; do b; done <f"
+    while "while a; do b; done <f"
+      condition
+        item "a;"
+          simple "a"
+            word "a"
+      do
+        item "b;"
+          simple "b"
+            word "b"
+      redirect "<f" Input
+        target "f"
+
+"while a; do b; done | c"
+  item "while a; do b; done | c"
+    pipeline "while a; do b; done | c"
+      while "while a; do b; done"
+        condition
+          item "a;"
+            simple "a"
+              word "a"
+        do
+          item "b;"
+            simple "b"
+              word "b"
+      simple "c"
+        word "c"
+
+"while a; do while b; do c; done done"
+  item "while a; do while b; do c; done done"
+    while "while a; do while b; do c; done done"
+      condition
+        item "a;"
+          simple "a"
+            word "a"
+      do
+        item "while b; do c; done"
+          while "while b; do c; done"
+            condition
+              item "b;"
+                simple "b"
+                  word "b"
+            do
+              item "c;"
+                simple "c"
+                  word "c"

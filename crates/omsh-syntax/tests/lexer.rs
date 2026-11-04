@@ -103,6 +103,7 @@ const HERE_DOCS: &[&str] = &[
     "cat <<''\nbody\n\nnext",
     "cat << -EOF\n-EOF\n",
     "x=$(cat <<EOF\ninner )\nEOF\n)\n",
+    "x=$(cat <<EOF)\nhello\nEOF\n",
 ];
 
 const EXPANSIONS: &[&str] = &[
@@ -173,7 +174,6 @@ const ERRORS: &[&str] = &[
     "a ${open:-x",
     "cat <<EOF\nbody",
     "cat <<EOF",
-    "x=$(cat <<EOF)\nhello\nEOF\n",
     "x=$(cat <<EOF\nhello\nEOF)\n",
     "a\\",
     "a\\\n",

@@ -1,0 +1,97 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"echo hello world"
+  item "echo hello world"
+    simple "echo hello world"
+      word "echo"
+      word "hello"
+      word "world"
+
+"  echo\t  spaced  "
+  item "echo\t  spaced"
+    simple "echo\t  spaced"
+      word "echo"
+      word "spaced"
+
+"echo é ব\u{9be}ংল\u{9be}"
+  item "echo é ব\u{9be}ংল\u{9be}"
+    simple "echo é ব\u{9be}ংল\u{9be}"
+      word "echo"
+      word "é"
+      word "ব\u{9be}ংল\u{9be}"
+
+">f"
+  item ">f"
+    simple ">f"
+      redirect ">f" Output
+        target "f"
+
+">f a"
+  item ">f a"
+    simple ">f a"
+      word "a"
+      redirect ">f" Output
+        target "f"
+
+"a >f b 2>&1 c"
+  item "a >f b 2>&1 c"
+    simple "a >f b 2>&1 c"
+      word "a"
+      word "b"
+      word "c"
+      redirect ">f" Output
+        target "f"
+      redirect "2>&1" DupOutput fd=2
+        target "1"
+
+"echo if then fi done"
+  item "echo if then fi done"
+    simple "echo if then fi done"
+      word "echo"
+      word "if"
+      word "then"
+      word "fi"
+      word "done"
+
+"\"if\" a"
+  item "\"if\" a"
+    simple "\"if\" a"
+      word "\"if\""
+        double "\"if\""
+          literal "if"
+      word "a"
+
+"\\if b"
+  item "\\if b"
+    simple "\\if b"
+      word "\\if"
+        escaped "i" at "\\i"
+        literal "f"
+      word "b"
+
+"echo a # trailing\n"
+  item "echo a"
+    simple "echo a"
+      word "echo"
+      word "a"
+
+"time a"
+  item "time a"
+    simple "time a"
+      word "time"
+      word "a"
+
+"[[ a ]]"
+  item "[[ a ]]"
+    simple "[[ a ]]"
+      word "[["
+      word "a"
+      word "]]"
+
+"function f"
+  item "function f"
+    simple "function f"
+      word "function"
+      word "f"

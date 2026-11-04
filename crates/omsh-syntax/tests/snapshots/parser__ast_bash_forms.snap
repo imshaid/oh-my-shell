@@ -1,0 +1,71 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_lines(lines)
+---
+"a &> f"
+  item "a &> f"
+    simple "a &> f"
+      word "a"
+      redirect "&> f" OutputAndError
+        target "f"
+
+"a &>> f"
+  item "a &>> f"
+    simple "a &>> f"
+      word "a"
+      redirect "&>> f" AppendAndError
+        target "f"
+
+"a 2&>f"
+  item "a 2&>f"
+    simple "a 2&>f"
+      word "a"
+      word "2"
+      redirect "&>f" OutputAndError
+        target "f"
+
+"a <<< word"
+  item "a <<< word"
+    simple "a <<< word"
+      word "a"
+      redirect "<<< word" HereString
+        target "word"
+
+"a <<< \"w $x\""
+  item "a <<< \"w $x\""
+    simple "a <<< \"w $x\""
+      word "a"
+      redirect "<<< \"w $x\"" HereString
+        target "\"w $x\""
+          double "\"w $x\""
+            literal "w "
+            param "$x" name="x" at "x"
+
+"a 2<<< word"
+  item "a 2<<< word"
+    simple "a 2<<< word"
+      word "a"
+      redirect "2<<< word" HereString fd=2
+        target "word"
+
+"$'tab\\tquote\\'end'"
+  item "$'tab\\tquote\\'end'"
+    simple "$'tab\\tquote\\'end'"
+      word "$'tab\\tquote\\'end'"
+        ansi-c "tab\\tquote\\'end" at "$'tab\\tquote\\'end'"
+
+"$((a); (b))"
+  item "$((a); (b))"
+    simple "$((a); (b))"
+      word "$((a); (b))"
+        command-sub "$((a); (b))"
+          item "(a);"
+            subshell "(a)"
+              item "a"
+                simple "a"
+                  word "a"
+          item "(b)"
+            subshell "(b)"
+              item "b"
+                simple "b"
+                  word "b"

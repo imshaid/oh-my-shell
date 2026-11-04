@@ -1,6 +1,6 @@
 //! Builds the token list with its tree of word parts.
 
-use crate::scanner::{Close, Leaf, Open, Sink, WordClass, scan};
+use crate::scanner::{Close, Leaf, Open, Sink, WordClass, scan_range};
 use crate::span::Span;
 use crate::token::{
     HereDoc, LexError, Lexed, Parameter, PartKind, Token, TokenKind, Word, WordPart,
@@ -12,8 +12,14 @@ use crate::token::{
 /// is about to run the line must check [`Lexed::errors`].
 #[must_use]
 pub fn lex(src: &str) -> Lexed {
+    lex_range(src, Span::new(0, src.len()))
+}
+
+/// Splits `range` of `src` into tokens, treating it as a whole input. Spans still count
+/// from the start of `src`.
+pub(crate) fn lex_range(src: &str, range: Span) -> Lexed {
     let mut sink = TreeSink::default();
-    scan(src, &mut sink);
+    scan_range(src, range, &mut sink);
     Lexed {
         tokens: sink.tokens,
         errors: sink.errors,

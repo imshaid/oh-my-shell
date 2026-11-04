@@ -15,7 +15,8 @@ mod heredoc;
 mod position;
 
 pub(crate) use events::{Close, Leaf, Open, Sink, WordClass};
-use heredoc::{PendingHereDoc, cook_delimiter};
+use heredoc::PendingHereDoc;
+pub(crate) use heredoc::cook_delimiter;
 use position::{ListState, assignment_name_len};
 
 use crate::span::{Span, strip_line_continuations};
@@ -25,13 +26,16 @@ use crate::token::{LexError, LexErrorKind, Op, TokenKind};
 /// out of stack would kill the shell, so hostile or accidental input has to stop here.
 const MAX_NESTING: u32 = 64;
 
-/// Scans all of `src` and reports it to `sink`.
-pub(crate) fn scan<S: Sink>(src: &str, sink: &mut S) {
+/// Scans `range` of `src` as if it were the whole input and reports it to `sink`. Spans
+/// count from the start of `src`, so the parser can lex the body of a `$(...)` by itself
+/// and still point at the right place.
+pub(crate) fn scan_range<S: Sink>(src: &str, range: Span, sink: &mut S) {
     let mut scanner = Scanner {
         src,
         bytes: src.as_bytes(),
-        pos: 0,
-        limit: src.len(),
+        pos: range.start,
+        limit: range.end,
+        end: range.end,
         depth: 0,
         aborted: false,
         sink,
@@ -139,8 +143,10 @@ struct Scanner<'a, S> {
     src: &'a str,
     bytes: &'a [u8],
     pos: usize,
-    /// Scanning stops here. Lower than the input's end only inside a here-document body.
+    /// Scanning stops here. Lower than `end` only inside a here-document body.
     limit: usize,
+    /// Where the input being scanned ends.
+    end: usize,
     depth: u32,
     /// The nesting limit was hit. Scanning has jumped to the end of the input, and the
     /// constructs still open close quietly as the recursion unwinds.
@@ -199,7 +205,7 @@ impl<S: Sink> Scanner<'_, S> {
         if self.depth >= MAX_NESTING {
             self.error(LexErrorKind::NestingTooDeep, start, start + 1);
             self.aborted = true;
-            self.pos = self.src.len();
+            self.pos = self.end;
             return false;
         }
         self.depth += 1;
@@ -214,7 +220,7 @@ impl<S: Sink> Scanner<'_, S> {
 
     /// Reports a continuation that ends the input, which means more lines are needed.
     fn check_trailing_continuation(&mut self, start: usize) {
-        if start + 2 >= self.src.len() {
+        if start + 2 >= self.end {
             self.error(LexErrorKind::TrailingBackslash, start, start + 2);
         }
     }
@@ -239,6 +245,7 @@ impl<S: Sink> Scanner<'_, S> {
         loop {
             self.skip_blanks();
             let Some(b) = self.peek() else {
+                self.report_unterminated_heredocs(&state);
                 self.abandon_heredocs(&mut state);
                 return false;
             };
@@ -257,6 +264,8 @@ impl<S: Sink> Scanner<'_, S> {
                 b')' => {
                     let unclaimed = state.close_paren();
                     if unclaimed && in_command_sub {
+                        // Not an error. `/bin/sh` runs these with an empty body, and no line
+                        // typed later could reach them.
                         self.abandon_heredocs(&mut state);
                         return true;
                     }

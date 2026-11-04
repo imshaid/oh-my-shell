@@ -1,17 +1,23 @@
 //! Lexer, parser, AST, source spans and diagnostics for the shell language.
 //!
-//! Only the lexer exists so far. [`lex()`] turns source text into tokens for the parser, and
-//! [`lex_for_highlight`] is the cheaper path for coloring text as it is typed. Both work
-//! on unfinished input and report problems in a list instead of failing.
+//! [`parse`] turns a line into the tree in [`ast`], for running it, and fails if anything is
+//! wrong. [`parse_tolerant`] does the same as far as it can, for features that work on
+//! half-typed input. [`lex`] and [`lex_for_highlight`] are the steps below that: tokens for
+//! the parser, and the cheaper path for coloring text as it is typed.
 
+pub mod ast;
 mod highlight;
 mod lex;
+mod parser;
 mod scanner;
 mod span;
 mod token;
 
 pub use highlight::{HighlightKind, HighlightSpan, Highlighted, lex_for_highlight};
 pub use lex::lex;
+pub use parser::{
+    Expected, ParseError, ParseErrorKind, ParseFailure, Parsed, parse, parse_tolerant,
+};
 pub use span::{Span, strip_line_continuations};
 pub use token::{
     HereDoc, LexError, LexErrorKind, Lexed, Op, ParamOp, Parameter, PartKind, ReservedWord, Token,
