@@ -7,6 +7,10 @@ use std::fmt::Write as _;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+mod common;
+
+use proptest::prelude::*;
+
 use omsh_syntax::{
     HighlightKind, LexErrorKind, Lexed, Op, ParamOp, PartKind, Span, Token, TokenKind, Word,
     WordPart, lex, lex_for_highlight,
@@ -843,5 +847,20 @@ fn here_doc_text_matches_sh() {
         // The `next` line in the last case is a separate command for /bin/sh, which fails
         // without printing to stdout.
         assert_eq!(ours, sh(line), "{line:?}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(common::CASES))]
+
+    /// Whatever is typed, the spans stay inside the text and on character boundaries, no text
+    /// is lost between tokens, and the two lexing paths agree on the problems.
+    #[test]
+    fn invariants_hold_for_generated_text(
+        src in common::shell_text(
+            ALL_GROUPS.iter().flat_map(|(_, lines)| lines.iter().copied()).collect()
+        )
+    ) {
+        assert_invariants(&src);
     }
 }

@@ -36,9 +36,15 @@ clap = { version = "4.6", default-features = false, features = [
     "suggestions",
     "usage",
 ] }
+# Span-based error reports (S04). No `derive` and no `fancy`: the traits are implemented by
+# hand, which keeps `syn` out of the binary, and the fancy renderer is for S05 to turn on.
+miette = { version = "7.6", default-features = false }
 # Test-only. Its `colors` feature is left out: it only colors the diff shown when a
 # snapshot test fails.
 insta = { version = "1.49", default-features = false }
+# Test-only. Without its default features it drops the fork/timeout machinery
+# (`rusty-fork`, `tempfile`) and `bit-set`.
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 # Only omsh-exec may use `unsafe`. It opts out of this rule in its crate root.

@@ -6,6 +6,7 @@
 //! the parser, and the cheaper path for coloring text as it is typed.
 
 pub mod ast;
+mod diagnostic;
 mod highlight;
 mod lex;
 mod parser;
@@ -13,10 +14,11 @@ mod scanner;
 mod span;
 mod token;
 
+pub use diagnostic::SyntaxDiagnostic;
 pub use highlight::{HighlightKind, HighlightSpan, Highlighted, lex_for_highlight};
 pub use lex::lex;
 pub use parser::{
-    Expected, ParseError, ParseErrorKind, ParseFailure, Parsed, parse, parse_tolerant,
+    Expected, ParseError, ParseErrorKind, ParseFailure, Parsed, Unsupported, parse, parse_tolerant,
 };
 pub use span::{Span, strip_line_continuations};
 pub use token::{

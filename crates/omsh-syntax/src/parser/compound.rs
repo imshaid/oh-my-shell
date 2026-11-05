@@ -58,9 +58,14 @@ impl Parser<'_> {
     }
 
     fn parse_subshell(&mut self) -> CommandKind {
+        let open = self.peek().map(|token| token.span);
         self.advance();
         let list = self.parse_body();
-        self.expect_right_paren();
+        if self.expect_right_paren()
+            && let Some(open) = open
+        {
+            self.check_arithmetic_command(open, &list);
+        }
         CommandKind::Subshell(list)
     }
 
@@ -161,7 +166,9 @@ impl Parser<'_> {
         let mut words = Vec::new();
         while let Some((word, span)) = self.peek_word() {
             self.advance();
-            words.push(self.word(word, span));
+            let word = self.word(word, span);
+            self.check_braces(&word);
+            words.push(word);
         }
         match self.peek() {
             Some(Token {

@@ -47,7 +47,9 @@ impl Parser<'_> {
                 None => {
                     let next = self.tokens.get(self.pos + 1).map(|next| &next.kind);
                     let before_paren = matches!(next, Some(TokenKind::Op(Op::LeftParen)));
-                    if before_paren && word.assignment_name.is_none() {
+                    // `a+=(1)` is an array, not a function named `a+=`.
+                    let array = strip_line_continuations(token.span.text(self.src)).ends_with('=');
+                    if before_paren && word.assignment_name.is_none() && !array {
                         self.parse_function()
                     } else {
                         Some(self.parse_simple())
@@ -79,7 +81,14 @@ impl Parser<'_> {
                         Some(name) if words.is_empty() => {
                             assignments.push(self.assignment(word, name, token.span));
                         }
-                        _ => words.push(self.word(word, token.span)),
+                        _ => {
+                            if words.is_empty() {
+                                self.check_command_name(token.span);
+                            }
+                            let word = self.word(word, token.span);
+                            self.check_braces(&word);
+                            words.push(word);
+                        }
                     }
                 }
                 TokenKind::IoNumber if fd_number(token.span.text(self.src)).is_none() => {

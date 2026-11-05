@@ -1,0 +1,630 @@
+---
+source: crates/omsh-syntax/tests/diagnostics.rs
+expression: out
+---
+=== ";"
+omsh::syntax::unexpected
+
+  × unexpected `;`
+   ╭────
+ 1 │ ;
+   · ┬
+   · ╰── expected a command here
+   ╰────
+
+=== "{ a; } b"
+omsh::syntax::unexpected
+
+  × unexpected `b`
+   ╭────
+ 1 │ { a; } b
+   ·        ┬
+   ·        ╰── expected `;`, `&` or a line ending here
+   ╰────
+
+=== "a > ; b"
+omsh::syntax::unexpected
+
+  × unexpected `;`
+   ╭────
+ 1 │ a > ; b
+   ·     ┬
+   ·     ╰── expected a file name after the redirection here
+   ╰────
+
+=== "a << ; b"
+omsh::syntax::unexpected
+
+  × unexpected `;`
+   ╭────
+ 1 │ a << ; b
+   ·      ┬
+   ·      ╰── expected a delimiter word after `<<` here
+   ╰────
+
+=== "case ; esac"
+omsh::syntax::unexpected
+
+  × unexpected `;`
+   ╭────
+ 1 │ case ; esac
+   ·      ┬
+   ·      ╰── expected a word after `case` here
+   ╰────
+
+=== "case x in ; esac"
+omsh::syntax::unexpected
+
+  × unexpected `;`
+   ╭────
+ 1 │ case x in ; esac
+   ·           ┬
+   ·           ╰── expected a `case` pattern here
+   ╰────
+
+=== "case x in a b) c;; esac"
+omsh::syntax::unexpected
+
+  × unexpected `b`
+   ╭────
+ 1 │ case x in a b) c;; esac
+   ·             ┬
+   ·             ╰── expected `)` here
+   ╰────
+
+=== "if a; b; fi"
+omsh::syntax::unexpected
+
+  × unexpected `fi`
+   ╭────
+ 1 │ if a; b; fi
+   ·          ─┬
+   ·           ╰── expected `then` here
+   ╰────
+
+=== "if a; then b; done"
+omsh::syntax::unexpected
+
+  × unexpected `done`
+   ╭────
+ 1 │ if a; then b; done
+   ·               ──┬─
+   ·                 ╰── expected `fi` here
+   ╰────
+
+=== "while a; b; done"
+omsh::syntax::unexpected
+
+  × unexpected `done`
+   ╭────
+ 1 │ while a; b; done
+   ·             ──┬─
+   ·               ╰── expected `do` here
+   ╰────
+
+=== "while a; do b; fi"
+omsh::syntax::unexpected
+
+  × unexpected `fi`
+   ╭────
+ 1 │ while a; do b; fi
+   ·                ─┬
+   ·                 ╰── expected `done` here
+   ╰────
+
+=== "case x y"
+omsh::syntax::unexpected
+
+  × unexpected `y`
+   ╭────
+ 1 │ case x y
+   ·        ┬
+   ·        ╰── expected `in` here
+   ╰────
+
+=== "case x in a) b; fi"
+omsh::syntax::unexpected
+
+  × unexpected `fi`
+   ╭────
+ 1 │ case x in a) b; fi
+   ·                 ─┬
+   ·                  ╰── expected `esac` here
+   ╰────
+
+=== "{ a; fi"
+omsh::syntax::unexpected
+
+  × unexpected `fi`
+   ╭────
+ 1 │ { a; fi
+   ·      ─┬
+   ·       ╰── expected `}` here
+   ╰────
+
+=== "a\nfi"
+omsh::syntax::unexpected
+
+  × unexpected `fi`
+   ╭─[2:1]
+ 1 │ a
+ 2 │ fi
+   · ─┬
+   ·  ╰── expected a command here
+   ╰────
+
+=== "a |"
+omsh::syntax::unexpected_end
+
+  × the input ends too early
+   ╭────
+ 1 │ a |
+   ·   ┬
+   ·   ╰── expected a command
+   ╰────
+
+=== "a &&"
+omsh::syntax::unexpected_end
+
+  × the input ends too early
+   ╭────
+ 1 │ a &&
+   ·    ┬
+   ·    ╰── expected a command
+   ╰────
+
+=== "{ a;"
+omsh::syntax::unexpected_end
+
+  × the input ends too early
+   ╭────
+ 1 │ { a;
+   ·    ┬
+   ·    ╰── expected `}`
+   ╰────
+
+=== "if a; then b"
+omsh::syntax::unexpected_end
+
+  × the input ends too early
+   ╭────
+ 1 │ if a; then b
+   ·            ┬
+   ·            ╰── expected `fi`
+   ╰────
+
+=== "(a"
+omsh::syntax::unexpected_end
+
+  × the input ends too early
+   ╭────
+ 1 │ (a
+   ·  ┬
+   ·  ╰── expected `)`
+   ╰────
+
+=== "for i in a; do b"
+omsh::syntax::unexpected_end
+
+  × the input ends too early
+   ╭────
+ 1 │ for i in a; do b
+   ·                ┬
+   ·                ╰── expected `done`
+   ╰────
+
+=== "export() { a; }"
+omsh::syntax::bad_name
+
+  × `export` is a special builtin and cannot be a function name
+   ╭────
+ 1 │ export() { a; }
+   · ───┬──
+   ·    ╰── this name is not allowed
+   ╰────
+  help: a name has letters, digits and `_`, and does not start with a digit
+
+=== "a-b() { c; }"
+omsh::syntax::bad_name
+
+  × `a-b` is not a valid function name
+   ╭────
+ 1 │ a-b() { c; }
+   · ─┬─
+   ·  ╰── this name is not allowed
+   ╰────
+  help: a name has letters, digits and `_`, and does not start with a digit
+
+=== "for 1a in x; do b; done"
+omsh::syntax::bad_name
+
+  × `1a` is not a valid variable name
+   ╭────
+ 1 │ for 1a in x; do b; done
+   ·     ─┬
+   ·      ╰── expected a name such as `i`
+   ╰────
+  help: write `for name in words; do ...; done`
+
+=== "for"
+omsh::syntax::bad_name
+
+  × the `for` loop needs a variable name
+   ╭────
+ 1 │ for
+   ·   ┬
+   ·   ╰── expected a name such as `i`
+   ╰────
+  help: write `for name in words; do ...; done`
+
+=== "for \"i\" in a; do b; done"
+omsh::syntax::bad_name
+
+  × `"i"` is not a valid variable name
+   ╭────
+ 1 │ for "i" in a; do b; done
+   ·     ─┬─
+   ·      ╰── expected a name such as `i`
+   ╰────
+  help: write `for name in words; do ...; done`
+
+=== "echo 'open"
+omsh::syntax::unterminated
+
+  × the single quote is never closed
+   ╭────
+ 1 │ echo 'open
+   ·      ┬
+   ·      ╰── this quote has no partner
+   ╰────
+
+=== "echo $'open"
+omsh::syntax::unterminated
+
+  × the `$'` quote is never closed
+   ╭────
+ 1 │ echo $'open
+   ·      ─┬
+   ·       ╰── this quote has no partner
+   ╰────
+
+=== "echo \"open $x"
+omsh::syntax::unterminated
+
+  × the double quote is never closed
+   ╭────
+ 1 │ echo "open $x
+   ·      ┬
+   ·      ╰── this quote has no partner
+   ╰────
+
+=== "echo `open"
+omsh::syntax::unterminated
+
+  × the backtick is never closed
+   ╭────
+ 1 │ echo `open
+   ·      ┬
+   ·      ╰── this backtick has no partner
+   ╰────
+
+=== "echo $(open"
+omsh::syntax::unterminated
+
+  × the `$(` is never closed
+   ╭────
+ 1 │ echo $(open
+   ·      ─┬
+   ·       ╰── expected a `)` for this
+   ╰────
+
+=== "echo $((1 +"
+omsh::syntax::unterminated
+
+  × the `$((` is never closed
+   ╭────
+ 1 │ echo $((1 +
+   ·      ─┬─
+   ·       ╰── expected a `))` for this
+   ╰────
+
+=== "echo ${open"
+omsh::syntax::unterminated
+
+  × the `${` is never closed
+   ╭────
+ 1 │ echo ${open
+   ·      ─┬
+   ·       ╰── expected a `}` for this
+   ╰────
+
+=== "cat <<EOF\nbody"
+omsh::syntax::unterminated
+
+  × the here-document is never closed
+   ╭─[1:7]
+ 1 │ cat <<EOF
+   ·       ─┬─
+   ·        ╰── its delimiter line never came
+ 2 │ body
+   ╰────
+
+=== "echo a\\"
+omsh::syntax::trailing_backslash
+
+  × the input ends in a backslash
+   ╭────
+ 1 │ echo a\
+   ·       ┬
+   ·       ╰── nothing follows this backslash
+   ╰────
+  help: remove the backslash, or write the rest of the line after it
+
+=== "echo ${}"
+omsh::syntax::bad_substitution
+
+  × bad substitution
+   ╭────
+ 1 │ echo ${}
+   ·      ─┬─
+   ·       ╰── `${}` is not a valid expansion
+   ╰────
+  help: write `${name}`, `${#name}`, or `${name:-word}` with `-`, `=`, `?`,
+        `+`, `#` or `%`
+
+=== "echo ${#x:-y}"
+omsh::syntax::bad_substitution
+
+  × bad substitution
+   ╭────
+ 1 │ echo ${#x:-y}
+   ·      ────┬───
+   ·          ╰── `${#x:-y}` is not a valid expansion
+   ╰────
+  help: write `${name}`, `${#name}`, or `${name:-word}` with `-`, `=`, `?`,
+        `+`, `#` or `%`
+
+=== "[[ -f x ]]"
+omsh::syntax::unsupported
+
+  × the `[[ ... ]]` test is not supported in Oh My Shell
+   ╭────
+ 1 │ [[ -f x ]]
+   · ─┬
+   ·  ╰── not supported
+   ╰────
+  help: use `[ ... ]` or `test`, and `case` for patterns
+
+=== "diff <(a) <(b)"
+omsh::syntax::unsupported
+
+  × process substitution is not supported in Oh My Shell
+   ╭────
+ 1 │ diff <(a) <(b)
+   ·      ─┬
+   ·       ╰── not supported
+   ╰────
+  help: write the output to a temporary file, or use a pipe
+
+=== "echo {a,b}"
+omsh::syntax::unsupported
+
+  × brace expansion is not supported in Oh My Shell
+   ╭────
+ 1 │ echo {a,b}
+   ·      ──┬──
+   ·        ╰── not supported
+   ╰────
+  help: write the words out, or use a `for` loop; quote the braces to keep
+        them as text
+
+=== "a=(1 2)"
+omsh::syntax::unsupported
+
+  × array syntax is not supported in Oh My Shell
+   ╭────
+ 1 │ a=(1 2)
+   · ─┬─
+   ·  ╰── not supported
+   ╰────
+  help: use separate variables, or the positional parameters with `set --`
+
+=== "select i in a; do b; done"
+omsh::syntax::unsupported
+
+  × the `select` loop is not supported in Oh My Shell
+   ╭────
+ 1 │ select i in a; do b; done
+   · ───┬──
+   ·    ╰── not supported
+   ╰────
+  help: use a `while` loop with `read`
+
+=== "coproc a"
+omsh::syntax::unsupported
+
+  × the `coproc` keyword is not supported in Oh My Shell
+   ╭────
+ 1 │ coproc a
+   · ───┬──
+   ·    ╰── not supported
+   ╰────
+  help: use a pipe, or a named pipe made with `mkfifo`
+
+=== "shopt -s extglob"
+omsh::syntax::unsupported
+
+  × the `shopt` command is not supported in Oh My Shell
+   ╭────
+ 1 │ shopt -s extglob
+   · ──┬──
+   ·   ╰── not supported
+   ╰────
+  help: Oh My Shell has no shell options to switch; remove the command
+
+=== "echo ${x//a/b}"
+omsh::syntax::unsupported
+
+  × the `${var/pattern/text}` replacement is not supported in Oh My Shell
+   ╭────
+ 1 │ echo ${x//a/b}
+   ·      ────┬────
+   ·          ╰── not supported
+   ╰────
+  help: use `sed`, or `${var#prefix}` and `${var%suffix}`
+
+=== "echo ${x:1:2}"
+omsh::syntax::unsupported
+
+  × the `${var:offset:length}` substring form is not supported in Oh My Shell
+   ╭────
+ 1 │ echo ${x:1:2}
+   ·      ────┬───
+   ·          ╰── not supported
+   ╰────
+  help: use `cut` or `expr substr`
+
+=== "echo ${x^^}"
+omsh::syntax::unsupported
+
+  × the `${var^}` and `${var,}` case change is not supported in Oh My Shell
+   ╭────
+ 1 │ echo ${x^^}
+   ·      ───┬──
+   ·         ╰── not supported
+   ╰────
+  help: use `tr` to change the case of text
+
+=== "echo ${!x}"
+omsh::syntax::unsupported
+
+  × the `${!var}` indirect expansion is not supported in Oh My Shell
+   ╭────
+ 1 │ echo ${!x}
+   ·      ──┬──
+   ·        ╰── not supported
+   ╰────
+  help: use `eval` to read a variable named by another variable
+
+=== "echo ${x@Q}"
+omsh::syntax::unsupported
+
+  × the `${var@op}` transformation is not supported in Oh My Shell
+   ╭────
+ 1 │ echo ${x@Q}
+   ·      ───┬──
+   ·         ╰── not supported
+   ╰────
+  help: use the plain `${var}`
+
+=== "((i++))"
+omsh::syntax::unsupported
+
+  × the `(( ... ))` arithmetic command is not supported in Oh My Shell
+   ╭────
+ 1 │ ((i++))
+   · ───┬───
+   ·    ╰── not supported
+   ╰────
+  help: use `: $((...))` to run an expression, or `[ $((...)) -ne 0 ]` to test
+        it
+
+=== "function f { a; }"
+omsh::syntax::unsupported
+
+  × the `function` keyword is not supported in Oh My Shell
+   ╭────
+ 1 │ function f { a; }
+   · ────┬───
+   ·     ╰── not supported
+   ╰────
+  help: write `name() { ...; }` instead
+
+=== "a |& b"
+omsh::syntax::unsupported
+
+  × the `|&` pipe is not supported in Oh My Shell
+   ╭────
+ 1 │ a |& b
+   ·   ─┬
+   ·    ╰── not supported
+   ╰────
+  help: write `2>&1 |` instead
+
+=== "case x in a) b;& c) d;; esac"
+omsh::syntax::unsupported
+
+  × the `;&` and `;;&` ending of a `case` branch is not supported in Oh My
+  │ Shell
+   ╭────
+ 1 │ case x in a) b;& c) d;; esac
+   ·               ─┬
+   ·                ╰── not supported
+   ╰────
+  help: end each branch with `;;`
+
+=== "a+=b"
+omsh::syntax::unsupported
+
+  × the `name+=value` assignment is not supported in Oh My Shell
+   ╭────
+ 1 │ a+=b
+   · ──┬─
+   ·   ╰── not supported
+   ╰────
+  help: write `name="${name}value"` instead
+
+=== "echo $(<file)"
+omsh::syntax::unsupported
+
+  × the `$(<file)` shortcut is not supported in Oh My Shell
+   ╭────
+ 1 │ echo $(<file)
+   ·      ────┬───
+   ·          ╰── not supported
+   ╰────
+  help: use `$(cat file)` instead
+
+=== "echo {a,b} ${x//a/b} 'open"
+omsh::syntax::unsupported
+
+  × brace expansion is not supported in Oh My Shell
+   ╭────
+ 1 │ echo {a,b} ${x//a/b} 'open
+   ·      ──┬──
+   ·        ╰── not supported
+   ╰────
+  help: write the words out, or use a `for` loop; quote the braces to keep
+        them as text
+
+Error: omsh::syntax::unterminated
+
+  × the single quote is never closed
+   ╭────
+ 1 │ echo {a,b} ${x//a/b} 'open
+   ·                      ┬
+   ·                      ╰── this quote has no partner
+   ╰────
+
+=== "echo ব\u{9be}ংল\u{9be} {a,b}"
+omsh::syntax::unsupported
+
+  × brace expansion is not supported in Oh My Shell
+   ╭────
+ 1 │ echo বাংলা {a,b}
+   ·          ──┬──
+   ·            ╰── not supported
+   ╰────
+  help: write the words out, or use a `for` loop; quote the braces to keep
+        them as text
+
+=== "echo é ${x//a/b} ✓"
+omsh::syntax::unsupported
+
+  × the `${var/pattern/text}` replacement is not supported in Oh My Shell
+   ╭────
+ 1 │ echo é ${x//a/b} ✓
+   ·        ────┬────
+   ·            ╰── not supported
+   ╰────
+  help: use `sed`, or `${var#prefix}` and `${var%suffix}`

@@ -1,0 +1,58 @@
+---
+source: crates/omsh-syntax/tests/diagnostics.rs
+expression: out
+---
+DoubleBracket
+  what: the `[[ ... ]]` test
+  help: use `[ ... ]` or `test`, and `case` for patterns
+ProcessSubstitution
+  what: process substitution
+  help: write the output to a temporary file, or use a pipe
+BraceExpansion
+  what: brace expansion
+  help: write the words out, or use a `for` loop; quote the braces to keep them as text
+Array
+  what: array syntax
+  help: use separate variables, or the positional parameters with `set --`
+Select
+  what: the `select` loop
+  help: use a `while` loop with `read`
+Coprocess
+  what: the `coproc` keyword
+  help: use a pipe, or a named pipe made with `mkfifo`
+Shopt
+  what: the `shopt` command
+  help: Oh My Shell has no shell options to switch; remove the command
+PatternSubstitution
+  what: the `${var/pattern/text}` replacement
+  help: use `sed`, or `${var#prefix}` and `${var%suffix}`
+Substring
+  what: the `${var:offset:length}` substring form
+  help: use `cut` or `expr substr`
+CaseModification
+  what: the `${var^}` and `${var,}` case change
+  help: use `tr` to change the case of text
+Indirection
+  what: the `${!var}` indirect expansion
+  help: use `eval` to read a variable named by another variable
+Transformation
+  what: the `${var@op}` transformation
+  help: use the plain `${var}`
+ArithmeticCommand
+  what: the `(( ... ))` arithmetic command
+  help: use `: $((...))` to run an expression, or `[ $((...)) -ne 0 ]` to test it
+FunctionKeyword
+  what: the `function` keyword
+  help: write `name() { ...; }` instead
+PipeStderr
+  what: the `|&` pipe
+  help: write `2>&1 |` instead
+CaseFallthrough
+  what: the `;&` and `;;&` ending of a `case` branch
+  help: end each branch with `;;`
+AppendAssignment
+  what: the `name+=value` assignment
+  help: write `name="${name}value"` instead
+FileContents
+  what: the `$(<file)` shortcut
+  help: use `$(cat file)` instead

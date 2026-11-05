@@ -1,0 +1,13 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1c0ab8ae9cdbb83effd4d16f8c56211afc9059802c8df1999cc864d12ad033ea # shrinks to src = "$'$'"
+cc 45e79cecb270bcdc1317c6ca6f1b7ea2aa58b205460ed340a5d6eebeb26ba808 # shrinks to src = "<<<c"
+cc fc5adf7e4c5fc5c631e7888b6d2a1eb42c4c880d1616f037532e66ccf38b0e75 # shrinks to src = "A=1 >f B=2; echo \"$`a`A $B\"; cat f"
+cc 3ef0d55b8c052e0e26d55518290faa4ee146a39d68061ff843e06b4821763fb5 # shrinks to src = "cat <<'EOF'\nraw $x `y` \\$ \\\\\nEOF\n"
+cc ad5684bb3997851273425ceb58d6afcd6ba39ba0c092d376148f318949fa22c3 # shrinks to src = "cat <<EOF\n` <<EOF\n`echo \\\"a\\`\nEOF\n"
+cc 30809d5680bfa031dbe78792fe4aeb0dc0729e1228c37eeac6f6911f389ffc40 # shrinks to src = "echo `echo<< 'EOF\na\\\nb'`"
+cc 857693a7107bee3b9cab7b32d49b1be2761a0348328f5a2906d244890fdf9f93 # shrinks to src = "echo a`<<EOF\necho a\\\\`"

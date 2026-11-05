@@ -2,19 +2,24 @@
 //! exercised, invariants on every prefix of every line, strict and tolerant modes, and
 //! comparisons with `/bin/sh -n`.
 
+mod common;
+
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::process::{Command as Process, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use miette::{GraphicalReportHandler, GraphicalTheme};
+use proptest::prelude::*;
+
 use omsh_syntax::ast::{
     AndOr, AndOrOp, CaseCommand, Command, CommandKind, ForCommand, FunctionDef, IfCommand, List,
     LoopCommand, PartKind, Pipeline, Redirect, RedirectKind, SimpleCommand, Word, WordPart,
 };
 use omsh_syntax::{
-    Expected, LexErrorKind, ParseError, ParseErrorKind, ReservedWord, Span, lex, parse,
-    parse_tolerant,
+    Expected, LexErrorKind, ParseError, ParseErrorKind, ReservedWord, Span, Unsupported, lex,
+    parse, parse_tolerant,
 };
 
 const SIMPLE: &[&str] = &[
@@ -29,8 +34,6 @@ const SIMPLE: &[&str] = &[
     "\\if b",
     "echo a # trailing\n",
     "time a",
-    "[[ a ]]",
-    "function f",
 ];
 
 const ASSIGNMENTS: &[&str] = &[
@@ -160,7 +163,9 @@ const SUBSHELLS: &[&str] = &[
     "(a;)",
     "(a &)",
     "(\n a\n b\n)",
-    "((a))",
+    "( (a))",
+    "((a) )",
+    "((a) | b)",
     "( (a) )",
     "(a) >f 2>&1",
     "(a) &",
@@ -303,7 +308,6 @@ const EXPANSIONS: &[&str] = &[
     "$\\\nx ${\\\ny} $z\\\nw",
     "$((1 + 2)) $(( $x * (2 + $(y)) )) $(())",
     "\"$((1 + \"$x\"))\"",
-    "${x//a/b} ${x:1:2} ${#x:-y} ${}",
 ];
 
 const SUBSTITUTIONS: &[&str] = &[
@@ -359,6 +363,83 @@ const BACKTICKS: &[&str] = &[
     "`cat <<E`",
     "`cat <<E\nbody`",
     "`a\\\\`",
+];
+
+/// Bash-only syntax from §6.2, which strict mode refuses with a message of its own. Every line
+/// here is accepted by `bash -n`, so the feature really is bash's. Lines that `/bin/sh` rejects
+/// anyway are in `HARD_ERRORS` too.
+const UNSUPPORTED: &[&str] = &[
+    "[[ a ]]",
+    "[[ -f x && y ]]",
+    "function f { a; }",
+    "function f() { a; }",
+    "select i in a b; do c; done",
+    "coproc a",
+    "shopt -s extglob",
+    "((i++))",
+    "(( i = 1 ))",
+    "((a))",
+    "a |& b",
+    "case x in a) b;& c) d;; esac",
+    "case x in a) b;;& c) d;; esac",
+    "diff <(a) <(b)",
+    "a > >(b)",
+    "a=(1 2)",
+    "a+=(3)",
+    "a[0]=x",
+    "a+=b",
+    "x=1 a+=b",
+    "echo {a,b}",
+    "echo a{b,c}d",
+    "echo {1..3} {a..e} {1..9..2}",
+    "echo {$a,b}",
+    "for i in {1..3}; do a; done",
+    "echo ${x//a/b}",
+    "echo ${x:1:2}",
+    "echo ${x:1}",
+    "echo ${x^^} ${x,,}",
+    "echo ${!x}",
+    "echo ${x@Q}",
+    "echo ${x[0]} ${#x[@]}",
+    "echo \"${x//a/b}\"",
+    "echo ${x:-${y//a/b}}",
+    "echo $((${x//a/b}))",
+    "$(<file)",
+    "echo `<file`",
+    "echo \"$(< file)\"",
+    "cat <<EOF\n${x//a/b}\nEOF\n",
+];
+
+/// `${...}` that no shell accepts. Not a bash feature, so only the parser judges these.
+const BAD_SUBSTITUTIONS: &[&str] = &["echo ${}", "echo ${ x}", "echo ${#x:-y}", "echo ${:-x}"];
+
+/// Lines that look like bash-only syntax but are ordinary. `/bin/sh` accepts all of them.
+const LOOK_ALIKES: &[&str] = &[
+    "echo [[ ]]",
+    "echo \"[[\" a",
+    "\"[[\" a",
+    "'function' f",
+    "echo function select coproc shopt",
+    "echo {} {a} '{a,b}' \\{a,b\\} \"{a,b}\" {a",
+    "echo @{u}.. a{ b} {a b}",
+    "echo ${x}{ {$ a}",
+    "x={a,b}",
+    "x=1 y={1..3} echo",
+    "find . -exec echo {} \\;",
+    "( (a))",
+    "((a) )",
+    "((a) | b)",
+    "echo a+=b",
+    "echo a=b",
+    "echo ${x#a} ${x##a} ${x%b} ${x%%b} ${x-a} ${x:-a} ${!} ${#} ${#x}",
+    "echo ${@} ${*} ${-}",
+    "time ls",
+    "$(<f cat)",
+    "$(cat <f)",
+    "$(<f; a)",
+    "$(< f 2>&1)",
+    "$(2<f)",
+    "echo a | b",
 ];
 
 const ALL_GROUPS: &[(&str, &[&str])] = &[
@@ -1022,6 +1103,16 @@ fn strict_errors_snapshot() {
 }
 
 #[test]
+fn unsupported_snapshot() {
+    insta::assert_snapshot!("strict_unsupported", render_failures(UNSUPPORTED));
+    insta::assert_snapshot!(
+        "strict_bad_substitutions",
+        render_failures(BAD_SUBSTITUTIONS)
+    );
+    insta::assert_snapshot!("tolerant_unsupported", render_tolerant(UNSUPPORTED));
+}
+
+#[test]
 fn lex_errors_snapshot() {
     insta::assert_snapshot!("lex_errors", render_failures(LEX_ERRORS));
 }
@@ -1039,6 +1130,8 @@ fn every_construct_is_covered() {
     for (_, lines) in ALL_GROUPS {
         all.push_str(&render_lines(lines));
     }
+    // Strict mode never returns a tree with `ParamOp::Unsupported`, but tolerant mode does.
+    all.push_str(&render_tolerant(UNSUPPORTED));
     for label in [
         "item ",
         " background",
@@ -1362,6 +1455,9 @@ fn all_lines() -> impl Iterator<Item = &'static str> {
         .chain(UNFINISHED)
         .chain(LEX_ERRORS)
         .chain(TOLERANT)
+        .chain(UNSUPPORTED)
+        .chain(BAD_SUBSTITUTIONS)
+        .chain(LOOK_ALIKES)
         .copied()
 }
 
@@ -1546,6 +1642,135 @@ fn unfinished_lines_match_sh() {
         let failure = parse(line).unwrap_err();
         assert!(failure.is_incomplete(), "{line:?} gave {failure:?}");
     }
+}
+
+/// `bash -n` parses without running anything.
+fn bash_accepts(line: &str) -> bool {
+    Process::new("bash")
+        .args(["-n", "-c", line])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap_or_else(|error| panic!("cannot run bash: {error}"))
+        .success()
+}
+
+#[test]
+fn unsupported_lines_are_bash_and_fail_with_one_feature() {
+    for line in UNSUPPORTED {
+        assert!(bash_accepts(line), "bash rejects {line:?}");
+        let failure = parse(line).unwrap_err();
+        assert!(!failure.is_incomplete(), "{line:?} gave {failure:?}");
+        assert!(
+            failure.unsupported().is_some(),
+            "{line:?} gave {:?}",
+            failure.errors
+        );
+    }
+}
+
+#[test]
+fn every_unsupported_feature_comes_up() {
+    let mut seen = Vec::new();
+    for line in UNSUPPORTED {
+        seen.extend(
+            parse_tolerant(line)
+                .errors
+                .iter()
+                .filter_map(|e| match e.kind {
+                    ParseErrorKind::Unsupported(feature) => Some(feature),
+                    _ => None,
+                }),
+        );
+    }
+    for feature in Unsupported::ALL {
+        assert!(seen.contains(&feature), "no test line produces {feature:?}");
+    }
+}
+
+#[test]
+fn bad_substitutions_are_not_a_bash_feature() {
+    for line in BAD_SUBSTITUTIONS {
+        let failure = parse(line).unwrap_err();
+        let kinds: Vec<_> = failure.errors.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [ParseErrorKind::BadSubstitution], "{line:?}");
+        assert_eq!(failure.unsupported(), None, "{line:?}");
+    }
+}
+
+#[test]
+fn look_alikes_are_ordinary_commands() {
+    for line in LOOK_ALIKES {
+        let parsed = parse(line);
+        assert!(parsed.is_ok(), "{line:?} gave {parsed:?}");
+        assert!(sh_accepts(line), "/bin/sh rejects {line:?}");
+    }
+}
+
+/// Two operators that touch are one bash operator. Apart, they are an ordinary mistake.
+#[test]
+fn operators_that_are_apart_are_not_bash_forms() {
+    for line in [
+        "a | & b",
+        "a ; & b",
+        "cat < (a)",
+        "cat > (a)",
+        "a = (1)",
+        "a ;; & b",
+    ] {
+        let failure = parse(line).unwrap_err();
+        assert_eq!(failure.unsupported(), None, "{line:?} gave {failure:?}");
+    }
+}
+
+#[test]
+fn the_span_covers_the_whole_construct() {
+    for (line, expected) in [
+        ("a |& b", "|&"),
+        ("case x in a) b;& c) d;; esac", ";&"),
+        ("case x in a) b;;& c) d;; esac", ";;&"),
+        ("diff <(a) b", "<("),
+        ("a > >(b)", ">("),
+        ("a=(1)", "a=("),
+        ("x=1 a+=(1)", "a+=("),
+        ("((i++))", "((i++))"),
+        ("echo ${x//a/b}", "${x//a/b}"),
+        ("echo \"${x:1}\"", "${x:1}"),
+        ("echo x{a,b}y z", "x{a,b}y"),
+        ("a[0]=x", "a[0]=x"),
+        ("echo $(<file)", "$(<file)"),
+        ("echo `<file`", "`<file`"),
+    ] {
+        let failure = parse(line).unwrap_err();
+        let [error] = failure.errors.as_slice() else {
+            panic!("{line:?} gave {failure:?}");
+        };
+        assert_eq!(error.span.text(line), expected, "{line:?}");
+    }
+}
+
+/// A tolerant parse lists every unsupported construct, where strict mode stops at the first.
+#[test]
+fn tolerant_mode_reports_every_unsupported_construct() {
+    let line = "[[ a ]]\necho {a,b}; ((i++)); echo ${x//a/b} ${y:1}";
+    let features: Vec<_> = parse_tolerant(line)
+        .errors
+        .iter()
+        .filter_map(|e| match e.kind {
+            ParseErrorKind::Unsupported(feature) => Some(feature),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        features,
+        [
+            Unsupported::DoubleBracket,
+            Unsupported::BraceExpansion,
+            Unsupported::ArithmeticCommand,
+            Unsupported::PatternSubstitution,
+            Unsupported::Substring,
+        ]
+    );
+    assert_eq!(parse(line).unwrap_err().errors.len(), 1);
 }
 
 #[test]
@@ -1735,7 +1960,7 @@ fn nesting_below_the_limit_is_fine() {
     on_small_stack(|| {
         let subs = format!("{}a{}", "$(".repeat(60), ")".repeat(60));
         assert!(parse(&subs).is_ok());
-        let parens = format!("{}a{}", "(".repeat(120), ")".repeat(120));
+        let parens = format!("{}a{}", "( ".repeat(120), " )".repeat(120));
         assert!(parse(&parens).is_ok());
         let groups = format!("{}a;{}", "{ ".repeat(120), " }".repeat(120));
         assert!(parse(&groups).is_ok());
@@ -1792,6 +2017,22 @@ fn awkward_input_stays_fast() {
         "if a; then ".repeat(50_000),
         "case x in a) ".repeat(50_000),
         "f() ".repeat(100_000),
+        // The checks for bash-only syntax must stay linear too.
+        "((a)) ".repeat(50_000),
+        "((".repeat(100_000),
+        "{a,".repeat(100_000),
+        "a {".repeat(100_000),
+        format!("a {}", "{b,".repeat(100_000)),
+        format!("a {}", "{b,c}".repeat(100_000)),
+        "a |& ".repeat(50_000),
+        "a=( ".repeat(50_000),
+        "a+=( ".repeat(50_000),
+        "<( ".repeat(50_000),
+        "a > >( ".repeat(50_000),
+        "${x//".repeat(30_000),
+        "${x//a/b} ".repeat(30_000),
+        "$(<f) ".repeat(30_000),
+        "[[ ".repeat(50_000),
     ];
     for src in &cases {
         let started = Instant::now();
@@ -1803,5 +2044,106 @@ fn awkward_input_stays_fast() {
             elapsed < Duration::from_secs(5),
             "{head:?} took {elapsed:?}"
         );
+    }
+}
+
+/// Renders a report with `miette` to be sure that none of the spans or texts trips it up.
+fn assert_renders(src: &str, diagnostic: &omsh_syntax::SyntaxDiagnostic) {
+    let mut out = String::new();
+    GraphicalReportHandler::new_themed(GraphicalTheme::unicode_nocolor())
+        .with_width(80)
+        .render_report(&mut out, diagnostic)
+        .unwrap_or_else(|error| panic!("cannot render a report for {src:?}: {error}"));
+    assert!(!out.is_empty(), "empty report for {src:?}");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(common::CASES))]
+
+    /// Whatever is typed, nothing panics, every span is inside the text, the two modes agree,
+    /// and every problem can be turned into a report that renders.
+    #[test]
+    fn invariants_hold_for_generated_text(src in common::shell_text(all_lines().collect())) {
+        assert_invariants(&src);
+        if let Err(failure) = parse(&src) {
+            assert_renders(&src, &failure.to_diagnostic(&src));
+        }
+        if let Some(diagnostic) = parse_tolerant(&src).to_diagnostic(&src) {
+            assert_renders(&src, &diagnostic);
+        }
+    }
+}
+
+/// A fuzzer that never produces the interesting inputs proves nothing. This samples the same
+/// generator, with a fixed seed, and checks that it gets valid lines, every kind of problem and
+/// every bash-only feature, and that the text is not all the same length.
+#[test]
+fn the_generator_reaches_every_kind_of_problem() {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+    use std::collections::BTreeSet;
+
+    let mut runner = TestRunner::deterministic();
+    let strategy = common::shell_text(all_lines().collect());
+    let mut valid = 0_u32;
+    let mut incomplete = 0_u32;
+    let mut kinds = BTreeSet::new();
+    let mut lengths = BTreeSet::new();
+    for _ in 0..common::CASES {
+        let src = strategy
+            .new_tree(&mut runner)
+            .unwrap_or_else(|error| panic!("cannot generate: {error}"))
+            .current();
+        lengths.insert(src.len() / 10);
+        match parse(&src) {
+            Ok(_) => valid += 1,
+            Err(failure) => {
+                incomplete += u32::from(failure.is_incomplete());
+                for error in &failure.errors {
+                    kinds.insert(match error.kind {
+                        ParseErrorKind::Lex(kind) => format!("{kind:?}"),
+                        ParseErrorKind::Unsupported(feature) => format!("{feature:?}"),
+                        other => format!("{other:?}")
+                            .split([' ', '('])
+                            .next()
+                            .unwrap_or("")
+                            .to_owned(),
+                    });
+                }
+            }
+        }
+    }
+    println!("valid {valid}, incomplete {incomplete}, kinds {kinds:?}");
+    assert!(valid > common::CASES / 20, "only {valid} valid lines");
+    assert!(
+        incomplete > common::CASES / 20,
+        "only {incomplete} unfinished lines"
+    );
+    assert!(lengths.len() > 10, "{lengths:?}");
+    for name in [
+        "Unexpected",
+        "UnexpectedEnd",
+        "BadFunctionName",
+        "BadForName",
+        "NestingTooDeep",
+        "BadSubstitution",
+        "UnterminatedSingleQuote",
+        "UnterminatedAnsiCQuote",
+        "UnterminatedDoubleQuote",
+        "UnterminatedBacktick",
+        "UnterminatedCommandSub",
+        "UnterminatedArithmetic",
+        "UnterminatedParameter",
+        "UnterminatedHereDoc",
+        "TrailingBackslash",
+    ] {
+        // Going too deep takes a long chain of openers, which is the job of the stress tests.
+        if name != "NestingTooDeep" {
+            assert!(kinds.contains(name), "the generator never produced {name}");
+        }
+    }
+    for feature in Unsupported::ALL {
+        let name = format!("{feature:?}");
+        assert!(kinds.contains(&name), "the generator never produced {name}");
     }
 }

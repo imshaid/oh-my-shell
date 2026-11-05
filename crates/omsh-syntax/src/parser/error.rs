@@ -1,5 +1,6 @@
 //! The parser's results and error types.
 
+use super::unsupported::Unsupported;
 use crate::ast::List;
 use crate::span::Span;
 use crate::token::{LexError, LexErrorKind, ReservedWord};
@@ -36,6 +37,21 @@ impl ParseFailure {
     #[must_use]
     pub fn is_incomplete(&self) -> bool {
         all_incomplete(&self.errors)
+    }
+
+    /// The bash-only feature that makes this line fail, if that is the only problem. A shell
+    /// can then offer to run the line once in bash.
+    #[must_use]
+    pub fn unsupported(&self) -> Option<Unsupported> {
+        match self.errors.as_slice() {
+            [
+                ParseError {
+                    kind: ParseErrorKind::Unsupported(feature),
+                    ..
+                },
+            ] => Some(*feature),
+            _ => None,
+        }
     }
 }
 
@@ -96,6 +112,10 @@ pub enum ParseErrorKind {
     BadForName,
     /// Commands nested too deeply. Parsing stops at this point.
     NestingTooDeep,
+    /// A `${...}` that no shell accepts: an empty name (`${}`), or a form such as `${#x:-y}`.
+    BadSubstitution,
+    /// Bash-only syntax that §6.2 rules out. The span covers the whole construct.
+    Unsupported(Unsupported),
 }
 
 /// What the parser wanted to find.

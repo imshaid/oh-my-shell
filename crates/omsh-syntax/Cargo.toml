@@ -9,5 +9,11 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+miette.workspace = true
+
 [dev-dependencies]
 insta.workspace = true
+proptest.workspace = true
+# Only the tests render reports; the shell itself will do so from S05 on.
+miette = { workspace = true, features = ["fancy-no-syscall"] }

@@ -344,6 +344,29 @@ pub enum ReservedWord {
 }
 
 impl ReservedWord {
+    /// The word as written.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::If => "if",
+            Self::Then => "then",
+            Self::Elif => "elif",
+            Self::Else => "else",
+            Self::Fi => "fi",
+            Self::While => "while",
+            Self::Until => "until",
+            Self::For => "for",
+            Self::In => "in",
+            Self::Do => "do",
+            Self::Done => "done",
+            Self::Case => "case",
+            Self::Esac => "esac",
+            Self::LeftBrace => "{",
+            Self::RightBrace => "}",
+            Self::Bang => "!",
+        }
+    }
+
     /// Returns the reserved word spelled exactly by `text`.
     #[must_use]
     pub fn from_text(text: &str) -> Option<Self> {

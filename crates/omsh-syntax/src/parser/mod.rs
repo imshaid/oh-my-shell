@@ -16,9 +16,11 @@
 mod command;
 mod compound;
 mod error;
+mod unsupported;
 mod word;
 
 pub use error::{Expected, ParseError, ParseErrorKind, ParseFailure, Parsed};
+pub use unsupported::Unsupported;
 
 use std::collections::BTreeMap;
 
@@ -31,7 +33,7 @@ use crate::token::{self, Lexed, Op, ReservedWord, Token, TokenKind, Word};
 /// space, and running out of stack would kill the shell. The lexer's own limit of 64 counts
 /// only substitutions and quotes, so this leaves room for a compound command at each of
 /// those levels.
-const MAX_DEPTH: u32 = 128;
+pub(crate) const MAX_DEPTH: u32 = 128;
 
 /// Parses `src` to run it. Fails if anything is wrong, so a tree that comes back is
 /// complete. Never panics.
@@ -255,10 +257,15 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Reports that the token at the cursor, or the end of the input, is not `expected`.
+    /// Reports that the token at the cursor, or the end of the input, is not `expected`. Two
+    /// touching tokens that spell a bash-only operator are reported as that instead.
     fn unexpected(&mut self, expected: Expected) {
         if let Some(token) = self.peek() {
-            self.report(ParseErrorKind::Unexpected { expected }, token.span);
+            if let Some((feature, span)) = self.unsupported_at(token) {
+                self.report(ParseErrorKind::Unsupported(feature), span);
+            } else {
+                self.report(ParseErrorKind::Unexpected { expected }, token.span);
+            }
         } else {
             self.push_error(ParseError {
                 kind: ParseErrorKind::UnexpectedEnd { expected },
@@ -457,7 +464,7 @@ impl<'a> Parser<'a> {
 }
 
 /// True for text that can name a variable or a function.
-fn is_name(text: &str) -> bool {
+pub(crate) fn is_name(text: &str) -> bool {
     let mut bytes = text.bytes();
     bytes
         .next()

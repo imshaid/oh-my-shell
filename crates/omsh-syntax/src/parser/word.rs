@@ -120,13 +120,16 @@ impl Parser<'_> {
             token::PartKind::DoubleQuoted { parts } => {
                 PartKind::DoubleQuoted(self.nested_parts(parts, true, span))
             }
-            token::PartKind::Parameter(parameter) => PartKind::Parameter(Box::new(Parameter {
-                name: strip_line_continuations(parameter.name.text(self.src)).into_owned(),
-                name_span: parameter.name,
-                length: parameter.length,
-                op: parameter.op,
-                arg: self.nested_parts(&parameter.arg, in_dq, span),
-            })),
+            token::PartKind::Parameter(parameter) => {
+                self.check_parameter(parameter, span);
+                PartKind::Parameter(Box::new(Parameter {
+                    name: strip_line_continuations(parameter.name.text(self.src)).into_owned(),
+                    name_span: parameter.name,
+                    length: parameter.length,
+                    op: parameter.op,
+                    arg: self.nested_parts(&parameter.arg, in_dq, span),
+                }))
+            }
             // `dash` treats arithmetic like the inside of double quotes when it comes to
             // backslashes in backticks.
             token::PartKind::Arithmetic { parts, .. } => {
@@ -157,6 +160,7 @@ impl Parser<'_> {
         );
         self.depth -= 1;
         self.adopt_errors(errors, span.end > body.end);
+        self.check_file_contents(&list, span);
         list
     }
 
@@ -194,6 +198,7 @@ impl Parser<'_> {
                 ))
         });
         self.adopt_errors(errors, closed);
+        self.check_file_contents(&list, span);
         list
     }
 

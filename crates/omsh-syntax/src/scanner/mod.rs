@@ -24,7 +24,7 @@ use crate::token::{LexError, LexErrorKind, Op, TokenKind};
 
 /// How deeply quotes and substitutions may nest. Each level uses stack space, and running
 /// out of stack would kill the shell, so hostile or accidental input has to stop here.
-const MAX_NESTING: u32 = 64;
+pub(crate) const MAX_NESTING: u32 = 64;
 
 /// Scans `range` of `src` as if it were the whole input and reports it to `sink`. Spans
 /// count from the start of `src`, so the parser can lex the body of a `$(...)` by itself

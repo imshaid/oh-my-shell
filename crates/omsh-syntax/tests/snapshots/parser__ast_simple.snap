@@ -82,16 +82,3 @@ expression: render_lines(lines)
     simple "time a"
       word "time"
       word "a"
-
-"[[ a ]]"
-  item "[[ a ]]"
-    simple "[[ a ]]"
-      word "[["
-      word "a"
-      word "]]"
-
-"function f"
-  item "function f"
-    simple "function f"
-      word "function"
-      word "f"

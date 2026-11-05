@@ -8,16 +8,20 @@
 //! Everything that `dash` does not have, such as `&>` and `<<<`, is left out, because
 //! `/bin/sh` could not judge it.
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command as Process, Output, Stdio};
+
+use proptest::prelude::*;
 
 use omsh_syntax::ast::{
     AndOr, AndOrOp, CaseCommand, Command, CommandKind, ForCommand, FunctionDef, IfCommand, List,
     ListItem, LoopCommand, ParamOp, Parameter, PartKind, Pipeline, Redirect, RedirectKind,
     RedirectOp, SimpleCommand, Word, WordPart,
 };
-use omsh_syntax::parse;
+use omsh_syntax::{ReservedWord, parse};
 
 /// Every line must be safe to run: it only prints, and only writes in the current directory.
 const LINES: &[&str] = &[
@@ -99,7 +103,7 @@ const LINES: &[&str] = &[
     "x=1; { x=2; }; echo $x",
     "{ echo a; } >f; cat f",
     "(echo a) >f; cat f",
-    "((echo a))",
+    "( (echo a))",
     "{ { echo a; } }",
     "{ (echo a) }",
     "{(echo a);}",
@@ -213,6 +217,14 @@ struct Printer {
     out: String,
     /// Here-document bodies waiting for the next line ending.
     pending: Vec<String>,
+    /// True while printing the body of a here-document with a quoted delimiter, which is
+    /// text and nothing else.
+    raw: bool,
+    /// Set when the tree holds something that cannot be written as text that means the same.
+    /// A here-document whose delimiter contains a line ending is one: no line can equal it,
+    /// so shells run the body to the end of the input, and a printed terminator line would
+    /// never match either.
+    unprintable: bool,
 }
 
 impl Printer {
@@ -268,7 +280,18 @@ impl Printer {
                     self.word(&assignment.value);
                     self.out.push(' ');
                 }
-                for word in words {
+                for (index, word) in words.iter().enumerate() {
+                    // The printer writes redirections after the words, so a command called
+                    // `if` would end up first, where it is a reserved word. A backslash stops that.
+                    let reserved = index == 0
+                        && matches!(
+                            &word.parts[..],
+                            [WordPart { kind: PartKind::Literal(text), .. }]
+                                if ReservedWord::from_text(text).is_some()
+                        );
+                    if reserved {
+                        self.out.push('\\');
+                    }
                     self.word(word);
                     self.out.push(' ');
                 }
@@ -373,30 +396,44 @@ impl Printer {
                     RedirectOp::Clobber => ">|",
                     RedirectOp::DupInput => "<&",
                     RedirectOp::DupOutput => ">&",
-                    RedirectOp::OutputAndError | RedirectOp::AppendAndError => {
-                        panic!("dash does not have {op:?}")
-                    }
-                    RedirectOp::HereString => panic!("dash does not have {op:?}"),
+                    // `dash` has none of these, so a line with one would fail the comparison
+                    // with `/bin/sh`. They are printed as `bash` writes them.
+                    RedirectOp::OutputAndError => "&>",
+                    RedirectOp::AppendAndError => "&>>",
+                    RedirectOp::HereString => "<<<",
                 });
                 self.word(word);
             }
             RedirectKind::HereDoc(doc) => {
                 // The tabs of `<<-` are already gone from the body, so `<<` is enough.
+                let mut body = Printer {
+                    raw: doc.quoted,
+                    ..Printer::default()
+                };
+                body.parts(&doc.body);
+                self.unprintable |= body.unprintable || doc.delimiter.contains('\n');
+                // Inside backticks, a body can end with the input and without a line ending.
+                if !body.out.is_empty() && !body.out.ends_with('\n') {
+                    // A lone backslash at the end would join the terminator line to the body.
+                    self.unprintable |= body.out.ends_with('\\');
+                    body.out.push('\n');
+                }
+                // A here-document inside a substitution in the body ends with a line of its
+                // own, and a line equal to the outer delimiter would end the outer body early.
+                // Both shells cut a body into lines before they look inside it. The name of a
+                // delimiter does not change what the body means, so it can be made different.
+                let mut name = doc.delimiter.clone();
+                while body.out.lines().any(|line| line == name) {
+                    name.push('_');
+                }
                 let delimiter = if doc.quoted {
-                    format!("'{}'", doc.delimiter)
+                    format!("'{name}'")
                 } else {
-                    doc.delimiter.clone()
+                    name.clone()
                 };
                 self.out.push_str("<<");
                 self.out.push_str(&delimiter);
-                let mut body = Printer::default();
-                body.parts(&doc.body);
-                // Inside backticks, a body can end with the input and without a line ending.
-                if !body.out.is_empty() && !body.out.ends_with('\n') {
-                    body.out.push('\n');
-                }
-                self.pending
-                    .push(format!("{}{}\n", body.out, doc.delimiter));
+                self.pending.push(format!("{}{name}\n", body.out));
             }
         }
     }
@@ -408,7 +445,10 @@ impl Printer {
     fn parts(&mut self, parts: &[WordPart]) {
         for part in parts {
             match &part.kind {
-                PartKind::Literal(text) => self.out.push_str(text),
+                // A `$` that expands nothing is text, as in `"$`a`"`. Printed bare, it would join
+                // the `$(` that follows and become `$$`.
+                PartKind::Literal(text) if self.raw => self.out.push_str(text),
+                PartKind::Literal(text) => self.out.push_str(&text.replace('$', "\\$")),
                 PartKind::Escaped(c) => {
                     self.out.push('\\');
                     self.out.push(*c);
@@ -418,7 +458,13 @@ impl Printer {
                     self.out.push_str(text);
                     self.out.push('\'');
                 }
-                PartKind::AnsiCQuoted(_) => panic!("dash does not have $'...'"),
+                // The tree keeps the text undecoded, so it can be written back as it was. `dash`
+                // has no `$'...'`, so a line with one would fail the comparison with `/bin/sh`.
+                PartKind::AnsiCQuoted(text) => {
+                    self.out.push_str("$'");
+                    self.out.push_str(text);
+                    self.out.push('\'');
+                }
                 PartKind::DoubleQuoted(parts) => {
                     self.out.push('"');
                     self.parts(parts);
@@ -430,6 +476,7 @@ impl Printer {
                     // land inside the substitution.
                     let mut inner = Printer::default();
                     inner.list(list);
+                    self.unprintable |= inner.unprintable;
                     self.out.push_str("$( ");
                     self.out.push_str(&inner.out);
                     self.out.push(')');
@@ -471,10 +518,15 @@ impl Printer {
     }
 }
 
-fn print_tree(list: &List) -> String {
+/// The tree as text, or nothing if it cannot be written as text with the same meaning.
+fn try_print_tree(list: &List) -> Option<String> {
     let mut printer = Printer::default();
     printer.list(list);
-    printer.out
+    (!printer.unprintable).then_some(printer.out)
+}
+
+fn print_tree(list: &List) -> String {
+    try_print_tree(list).unwrap_or_else(|| panic!("cannot be printed: {list:?}"))
 }
 
 /// Runs a script in `dir`, which it empties first. `timeout` keeps a wrong loop from hanging.
@@ -519,4 +571,116 @@ fn printed_trees_behave_like_the_source() {
         assert_eq!(print_tree(&again), printed, "{line:?} is not stable");
     }
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// Words that are plain shell: quotes, expansions and substitutions, but nothing from §6.2.
+fn word() -> impl Strategy<Value = &'static str> {
+    prop::sample::select(vec![
+        "a",
+        "b",
+        "echo",
+        "x1",
+        "-n",
+        "'q r'",
+        "\"$x $y\"",
+        "\"a\\\"b\"",
+        "${y:-z}",
+        "${y#p}",
+        "${#y}",
+        "$(echo c)",
+        "`echo d`",
+        "$((1+2))",
+        "\\ ",
+        "\\$",
+        "~",
+        "*",
+        "$1",
+        "$@",
+        "é",
+        "বাংলা",
+    ])
+}
+
+fn redirect() -> impl Strategy<Value = &'static str> {
+    prop::sample::select(vec![
+        ">f", ">>f", "<f", "2>f", "2>&1", ">&2", "<&0", "3<>f", ">|f",
+    ])
+}
+
+/// A program built from the grammar of §6.1, which must always parse.
+fn program() -> impl Strategy<Value = String> {
+    let leaf = (
+        prop::collection::vec(word(), 1..4),
+        prop::option::of(redirect()),
+    )
+        .prop_map(|(words, redirect)| match redirect {
+            Some(redirect) => format!("{} {redirect}", words.join(" ")),
+            None => words.join(" "),
+        });
+    let words = prop::collection::vec(word(), 0..3)
+        .prop_map(|words| words.join(" "))
+        .boxed();
+    let tree = leaf.prop_recursive(4, 40, 3, move |inner| {
+        prop_oneof![
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("{a} | {b}")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("{a} && {b}")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("{a} || {b}")),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("{a}\n{b}")),
+            inner.clone().prop_map(|a| format!("( {a} )")),
+            inner.clone().prop_map(|a| format!("{{ {a}; }}")),
+            (inner.clone(), inner.clone(), inner.clone())
+                .prop_map(|(c, t, e)| format!("if {c}; then {t}; else {e}; fi")),
+            (inner.clone(), inner.clone()).prop_map(|(c, b)| format!("if {c}; then {b}; fi")),
+            (inner.clone(), inner.clone()).prop_map(|(c, b)| format!("while {c}; do {b}; done")),
+            (inner.clone(), inner.clone()).prop_map(|(c, b)| format!("until {c}; do {b}; done")),
+            (words.clone(), inner.clone()).prop_map(|(w, b)| format!("for i in {w}; do {b}; done")),
+            inner.clone().prop_map(|b| format!("for i do {b}; done")),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| format!("case x in a|b) {a};; *) {b};; esac")),
+            inner.clone().prop_map(|b| format!("f() {{ {b}; }}")),
+            inner.prop_map(|b| format!("f() ( {b} ) >f")),
+        ]
+    });
+    (any::<bool>(), tree, any::<bool>()).prop_map(|(bang, tree, background)| {
+        format!(
+            "{}{tree}{}",
+            if bang { "! " } else { "" },
+            if background { " &" } else { "" }
+        )
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(common::CASES))]
+
+    /// Whatever parses prints back to text that parses to a tree with the same printout.
+    #[test]
+    fn printing_is_stable_for_generated_text(src in common::shell_text(LINES.to_vec())) {
+        if let Ok(list) = parse(&src) {
+            let printed = try_print_tree(&list);
+            prop_assume!(printed.is_some());
+            let printed = printed.unwrap_or_default();
+            let again = parse(&printed);
+            prop_assert!(again.is_ok(), "{:?} printed as {:?} gave {:?}", src, printed, again);
+            if let Ok(again) = again {
+                prop_assert_eq!(print_tree(&again), printed);
+            }
+        }
+    }
+
+    /// Plain programs always parse, so nothing in §6.1 is mistaken for a bash-only form, and
+    /// they print stably too.
+    #[test]
+    fn plain_programs_parse_and_print_stably(src in program()) {
+        let parsed = parse(&src);
+        prop_assert!(parsed.is_ok(), "{:?} gave {:?}", src, parsed);
+        if let Ok(list) = parsed {
+            let printed = print_tree(&list);
+            let again = parse(&printed);
+            prop_assert!(again.is_ok(), "{:?} printed as {:?} gave {:?}", src, printed, again);
+            if let Ok(again) = again {
+                prop_assert_eq!(print_tree(&again), printed);
+            }
+        }
+    }
 }

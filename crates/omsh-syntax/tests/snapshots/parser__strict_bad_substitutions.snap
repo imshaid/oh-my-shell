@@ -1,0 +1,12 @@
+---
+source: crates/omsh-syntax/tests/parser.rs
+expression: render_failures(BAD_SUBSTITUTIONS)
+---
+"echo ${}"
+  BadSubstitution at "${}"
+"echo ${ x}"
+  BadSubstitution at "${ x}"
+"echo ${#x:-y}"
+  BadSubstitution at "${#x:-y}"
+"echo ${:-x}"
+  BadSubstitution at "${:-x}"
