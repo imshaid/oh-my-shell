@@ -17,7 +17,7 @@ impl Shell {
     /// alias, a function) is there for the later ones, as it is for lines typed one by one. A
     /// mistake is reported as coming from `what` and gives status 2; what ran before it stays
     /// done and nothing after it runs.
-    fn run_text(&mut self, src: &str, what: &str, io: &Io) -> Flow {
+    pub(crate) fn run_text(&mut self, src: &str, what: &str, io: &Io) -> Flow {
         let mut status = self.status;
         let mut pending = String::new();
         let mut lines = src.split_inclusive('\n').peekable();

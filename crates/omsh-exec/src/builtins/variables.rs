@@ -2,7 +2,7 @@
 //! positional parameters.
 
 use super::{is_name, parse_count, quote};
-use crate::exec::Flow;
+use crate::exec::{Flow, Unwind};
 use crate::io::Io;
 use crate::options::{NAMES, Options};
 use crate::shell::Shell;
@@ -56,12 +56,68 @@ pub(super) fn export(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
         }
         // `is_name` only accepts ASCII, so this is valid UTF-8.
         let name = String::from_utf8_lossy(name).into_owned();
-        if let Some(value) = value {
-            shell.vars.set(&name, value.to_vec());
+        if let Some(value) = value
+            && shell.vars.set(&name, value.to_vec()).is_err()
+        {
+            io.say(format!("oh-my-shell: export: {name}: is read only"));
+            return Err(Unwind::Error(ExitStatus::USAGE));
         }
         shell.vars.export(&name);
     }
     Ok(status)
+}
+
+/// `readonly [-p] [name[=value]...]`: makes variables read only. With no names, or `-p`, lists
+/// them in a form that can be typed back.
+pub(super) fn readonly(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
+    let mut rest = args;
+    let mut list = false;
+    while let Some(arg) = rest.first() {
+        match arg.as_slice() {
+            b"-p" => list = true,
+            b"--" => {
+                rest = &rest[1..];
+                break;
+            }
+            _ => break,
+        }
+        rest = &rest[1..];
+    }
+    if list || rest.is_empty() {
+        let mut out = Vec::new();
+        for (name, value) in shell.vars.readonly_sorted() {
+            out.extend_from_slice(b"readonly ");
+            out.extend_from_slice(name);
+            if let Some(value) = value {
+                out.push(b'=');
+                out.extend_from_slice(&quote(value));
+            }
+            out.push(b'\n');
+        }
+        return shell.emit(io, 1, &out);
+    }
+    for arg in rest {
+        let (name, value) = match arg.iter().position(|b| *b == b'=') {
+            Some(at) => (&arg[..at], Some(&arg[at + 1..])),
+            None => (arg.as_slice(), None),
+        };
+        if !is_name(name) {
+            io.say(format!(
+                "oh-my-shell: readonly: {}: not a valid name",
+                String::from_utf8_lossy(name)
+            ));
+            return Err(Unwind::Error(ExitStatus::USAGE));
+        }
+        let name = String::from_utf8_lossy(name).into_owned();
+        if let Some(value) = value
+            && shell.vars.set(&name, value.to_vec()).is_err()
+        {
+            io.say(format!("oh-my-shell: readonly: {name}: is read only"));
+            return Err(Unwind::Error(ExitStatus::USAGE));
+        }
+        shell.vars.make_readonly(&name);
+    }
+    Ok(ExitStatus::SUCCESS)
 }
 
 /// `unset [-v|-f] name...`.
@@ -93,8 +149,9 @@ pub(super) fn unset(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
         let name = String::from_utf8_lossy(arg).into_owned();
         if functions {
             shell.functions.remove(&name);
-        } else {
-            shell.vars.unset(&name);
+        } else if shell.vars.unset(&name).is_err() {
+            io.say(format!("oh-my-shell: unset: {name}: is read only"));
+            return Err(Unwind::Error(ExitStatus::USAGE));
         }
     }
     Ok(status)

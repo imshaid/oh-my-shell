@@ -137,7 +137,10 @@ impl Expander<'_> {
                         return Err(ExpandError(format!("{name}: cannot assign in this way")));
                     }
                     let assigned = self.string(&parameter.arg, Ctx::ASSIGNMENT)?;
-                    self.shell.vars.set(name, assigned.clone());
+                    self.shell
+                        .vars
+                        .set(name, assigned.clone())
+                        .map_err(|_| ExpandError(format!("{name}: is read only")))?;
                     builder.push(&assigned, ctx.result);
                 } else {
                     self.push_value(value, builder, ctx);

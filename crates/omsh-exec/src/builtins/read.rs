@@ -75,16 +75,22 @@ pub(super) fn read(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
 
     let (line, got_newline) = read_line(io, raw)?;
     let ifs = shell.vars.get("IFS").unwrap_or(b" \t\n").to_vec();
+    let mut assigned = Vec::new();
     if rest.is_empty() {
-        let value: Vec<u8> = line.iter().map(|(b, _)| *b).collect();
-        shell.vars.set("REPLY", value);
+        // Like bash, a `read` without names keeps the line in `REPLY`. (dash needs a name.)
+        assigned.push(("REPLY".to_owned(), line.iter().map(|(b, _)| *b).collect()));
     } else {
         let names: Vec<String> = rest
             .iter()
             .map(|n| String::from_utf8_lossy(n).into_owned())
             .collect();
-        for (name, value) in names.iter().zip(split_fields(&line, &ifs, names.len())) {
-            shell.vars.set(name, value);
+        let values = split_fields(&line, &ifs, names.len());
+        assigned.extend(names.into_iter().zip(values));
+    }
+    for (name, value) in assigned {
+        if shell.vars.set(&name, value).is_err() {
+            io.say(format!("oh-my-shell: read: {name}: is read only"));
+            return Err(Unwind::Error(ExitStatus::USAGE));
         }
     }
     // The end of the input before a line ending gives 1, but the variables are still set.
@@ -137,6 +143,10 @@ fn read_byte(io: &Io) -> Result<Option<u8>, Unwind> {
     loop {
         if signals::interrupted() {
             return Err(Unwind::Interrupted);
+        }
+        // A signal with a `trap` command ends the wait; the command runs after `read`.
+        if signals::trap_pending() {
+            return Ok(None);
         }
         let mut fds = [PollFd::new(slot.as_fd(), PollFlags::POLLIN)];
         match poll(&mut fds, PollTimeout::from(WAIT_MS)) {

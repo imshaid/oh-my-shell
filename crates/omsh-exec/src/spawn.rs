@@ -38,6 +38,13 @@ pub struct ExecRequest<'a> {
     pub envp: &'a [CString],
     /// The directory to run in, if it is not the shell's own (a subshell that used `cd`).
     pub cwd: Option<&'a CStr>,
+    /// The file creation mask to run with, if it is not the process's own (a subshell that
+    /// used `umask`).
+    pub umask: Option<u32>,
+    /// Bit `n` is set for each signal `n` that a `trap` ignores. The shell resets SIGINT,
+    /// SIGQUIT and SIGPIPE to their defaults for a program, except for those: a signal that
+    /// is ignored stays ignored in what the shell starts.
+    pub ignored: u64,
 }
 
 /// Why a program could not be run.
@@ -86,13 +93,17 @@ pub fn start(request: &ExecRequest<'_>, plan: &mut FdPlan) -> Result<Pid, SpawnF
     let forked = unsafe { fork() }.map_err(SpawnFailure::Fork)?;
     match forked {
         ForkResult::Child => exec_child(
-            request.path,
-            &argv,
-            &envp,
-            &fallback,
+            &Prepared {
+                path: request.path,
+                argv: &argv,
+                envp: &envp,
+                fallback: &fallback,
+                cwd: request.cwd,
+                umask: request.umask,
+                ignored: request.ignored,
+            },
             report_fd,
             plan,
-            request.cwd,
         ),
         ForkResult::Parent { child } => {
             // Our copy of the write end must close, or the read below would never see the end.
@@ -125,51 +136,113 @@ fn pointers(strings: &[CString]) -> Vec<*const c_char> {
     out
 }
 
+/// Everything `execve` needs, made before the `fork`: the pointer arrays borrow from strings
+/// that must stay alive.
+struct Prepared<'a> {
+    path: &'a CStr,
+    argv: &'a [*const c_char],
+    envp: &'a [*const c_char],
+    /// The arguments for `/bin/sh` if the file is not a binary.
+    fallback: &'a [*const c_char],
+    cwd: Option<&'a CStr>,
+    umask: Option<u32>,
+    ignored: u64,
+}
+
 /// The code that runs in the child. It never returns.
-fn exec_child(
-    path: &CStr,
-    argv: &[*const c_char],
-    envp: &[*const c_char],
-    fallback: &[*const c_char],
-    report_fd: RawFd,
-    plan: &mut FdPlan,
-    cwd: Option<&CStr>,
-) -> ! {
-    // SAFETY: only async-signal-safe calls (`dup2`, `fcntl`, `close`, `chdir`, `signal`,
-    // `sigemptyset`, `sigprocmask`, `execve`, `write`, `_exit`) on pointers and numbers that
-    // were made before the fork and stay valid, because the parent's memory is copied into the
-    // child and nothing frees it here. The plan writes only into its scratch array, which
-    // already has its final size.
+fn exec_child(prepared: &Prepared<'_>, report_fd: RawFd, plan: &mut FdPlan) -> ! {
+    // SAFETY: `become_program` makes only async-signal-safe calls (see there), and `fail` only
+    // `write` and `_exit`, on numbers and pointers made before the fork.
+    unsafe {
+        let errno = become_program(prepared, plan);
+        fail(report_fd, errno)
+    }
+}
+
+/// Puts the process in the state a program starts in, then runs the program. Returns the error
+/// number if that failed; on success it does not return.
+///
+/// # Safety
+///
+/// The caller must be the child after `fork`, or the shell replacing itself with `exec`. The
+/// pointers must stay valid. The calls made are `signal`, `sigemptyset`, `sigprocmask`,
+/// `dup2`, `fcntl`, `close`, `chdir`, `umask` and `execve`, all async-signal-safe, and the
+/// only memory written is the plan's scratch array, which already has its final size.
+unsafe fn become_program(prepared: &Prepared<'_>, plan: &mut FdPlan) -> i32 {
+    // SAFETY: see the function's contract.
     unsafe {
         // The shell ignores SIGINT, SIGQUIT and (through Rust's runtime) SIGPIPE. Ignored
         // signals stay ignored across `execve`, so a program would not die on Ctrl+C or in
         // `yes | head`. Give them back their default meaning. (The shell catches SIGINT; a
         // caught signal is reset by `execve` anyway, but it must not run our handler first.)
-        libc::signal(libc::SIGINT, libc::SIG_DFL);
-        libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGPIPE] {
+            if prepared.ignored & (1_u64 << signal) == 0 {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+        }
         let mut none: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&raw mut none);
         libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut());
 
         if let Err(errno) = apply_plan(plan) {
-            fail(report_fd, errno);
+            return errno;
         }
-        if let Some(dir) = cwd
+        if let Some(dir) = prepared.cwd
             && libc::chdir(dir.as_ptr()) == -1
         {
-            fail(report_fd, Errno::last_raw());
+            return Errno::last_raw();
+        }
+        if let Some(mask) = prepared.umask {
+            libc::umask(mask as libc::mode_t);
         }
 
-        libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
+        libc::execve(
+            prepared.path.as_ptr(),
+            prepared.argv.as_ptr(),
+            prepared.envp.as_ptr(),
+        );
         let mut errno = Errno::last_raw();
         if errno == libc::ENOEXEC {
             // A text file without `#!`: let the system shell run it.
-            libc::execve(SH.as_ptr(), fallback.as_ptr(), envp.as_ptr());
+            libc::execve(
+                SH.as_ptr(),
+                prepared.fallback.as_ptr(),
+                prepared.envp.as_ptr(),
+            );
             errno = Errno::last_raw();
         }
-        fail(report_fd, errno)
+        errno
     }
+}
+
+/// Replaces the running process with the program (`exec`), after putting the files of `plan`
+/// in place. Returns the error number if that failed. The shell goes on in that case, with
+/// whatever the plan had already changed.
+///
+/// Only the main shell may call this, when no other thread is running a command: `execve`
+/// ends every other thread of the process.
+pub fn replace_process(request: &ExecRequest<'_>, plan: &mut FdPlan) -> Errno {
+    let argv = pointers(request.argv);
+    let envp = pointers(request.envp);
+    let fallback: Vec<CString> = fallback_argv(request.path, request.argv);
+    let fallback = pointers(&fallback);
+    // SAFETY: the pointers were made just above from strings that outlive the call, and the
+    // calls inside are plain system calls, which are fine in a process of any number of threads.
+    let errno = unsafe {
+        become_program(
+            &Prepared {
+                path: request.path,
+                argv: &argv,
+                envp: &envp,
+                fallback: &fallback,
+                cwd: request.cwd,
+                umask: request.umask,
+                ignored: request.ignored,
+            },
+            plan,
+        )
+    };
+    Errno::from_raw(errno)
 }
 
 /// Tells the parent why the program did not start, and ends the child.
@@ -284,6 +357,8 @@ mod tests {
                 argv: &argv,
                 envp: &envp,
                 cwd: None,
+                umask: None,
+                ignored: 0,
             },
             &mut plan,
         );
@@ -377,6 +452,8 @@ mod tests {
                 argv: &argv,
                 envp: &envp,
                 cwd: None,
+                umask: None,
+                ignored: 0,
             },
             &mut plan,
         );
@@ -402,6 +479,8 @@ mod tests {
                 argv: &argv,
                 envp: &envp,
                 cwd: None,
+                umask: None,
+                ignored: 0,
             },
             &mut plan,
         );
@@ -425,6 +504,8 @@ mod tests {
                 argv: &argv,
                 envp: &envp,
                 cwd: None,
+                umask: None,
+                ignored: 0,
             },
             &mut plan,
         );
@@ -445,6 +526,8 @@ mod tests {
                 argv: &argv,
                 envp: &envp,
                 cwd: Some(c"/usr"),
+                umask: None,
+                ignored: 0,
             },
             &mut plan,
         );
@@ -464,9 +547,33 @@ mod tests {
                 argv: &argv,
                 envp: &[],
                 cwd: Some(c"/nonexistent-omsh-dir"),
+                umask: None,
+                ignored: 0,
             },
             &mut plan,
         );
         assert_eq!(ending, Err(SpawnFailure::Exec(Errno::ENOENT)));
+    }
+
+    #[test]
+    fn a_program_runs_with_the_mask_it_is_given() {
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh", "-c", "umask"]);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let captured = Captured::new();
+        let mut plan = captured.io.plan();
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+                cwd: None,
+                umask: Some(0o027),
+                ignored: 0,
+            },
+            &mut plan,
+        );
+        assert_eq!(ending, Ok(Termination::Exited(0)));
+        assert_eq!(captured.stdout(), "0027\n");
     }
 }

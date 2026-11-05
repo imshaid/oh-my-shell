@@ -8,11 +8,15 @@
 mod alias;
 mod cd;
 mod echo;
+mod exec;
 mod flow;
+mod lookup;
 mod printf;
 mod read;
 mod source;
 mod test;
+mod trap;
+mod umask;
 mod variables;
 
 use nix::errno::Errno;
@@ -32,10 +36,12 @@ pub(crate) enum Class {
 /// Says whether `name` is a builtin, and which kind.
 pub(crate) fn classify(name: &[u8]) -> Option<Class> {
     Some(match name {
-        b":" | b"." | b"break" | b"continue" | b"eval" | b"exit" | b"export" | b"return"
-        | b"set" | b"shift" | b"unset" => Class::Special,
-        b"[" | b"alias" | b"cd" | b"echo" | b"false" | b"printf" | b"pwd" | b"read" | b"source"
-        | b"test" | b"true" | b"unalias" => Class::Regular,
+        b":" | b"." | b"break" | b"continue" | b"eval" | b"exec" | b"exit" | b"export"
+        | b"return" | b"readonly" | b"set" | b"shift" | b"trap" | b"unset" => Class::Special,
+        b"[" | b"alias" | b"cd" | b"echo" | b"command" | b"false" | b"hash" | b"printf"
+        | b"pwd" | b"read" | b"source" | b"test" | b"true" | b"type" | b"umask" | b"unalias" => {
+            Class::Regular
+        }
         _ => return None,
     })
 }
@@ -48,6 +54,7 @@ pub(crate) fn run(shell: &mut Shell, name: &[u8], args: &[Vec<u8>], io: &Io) -> 
         b"false" => Ok(ExitStatus(1)),
         b"." | b"source" => source::dot(shell, args, io),
         b"eval" => source::eval(shell, args, io),
+        b"exec" => exec::exec(shell, args, io),
         b"exit" => flow::exit(shell, args, io),
         b"return" => flow::return_(shell, args, io),
         b"break" => flow::loop_control(shell, args, io, Unwind::Break),
@@ -58,11 +65,17 @@ pub(crate) fn run(shell: &mut Shell, name: &[u8], args: &[Vec<u8>], io: &Io) -> 
         b"pwd" => cd::pwd(shell, args, io),
         b"echo" => echo::echo(shell, args, io),
         b"printf" => printf::printf(shell, args, io),
+        b"type" => lookup::type_(shell, args, io),
+        b"command" => lookup::command(shell, args, io),
+        b"hash" => lookup::hash(shell, args, io),
+        b"umask" => umask::umask(shell, args, io),
         b"read" => read::read(shell, args, io),
         b"test" => test::test(shell, args, io, false),
         b"[" => test::test(shell, args, io, true),
         b"export" => variables::export(shell, args, io),
         b"unset" => variables::unset(shell, args, io),
+        b"readonly" => variables::readonly(shell, args, io),
+        b"trap" => trap::trap(shell, args, io),
         b"set" => variables::set(shell, args, io),
         b"shift" => variables::shift(shell, args, io),
         _ => {

@@ -45,7 +45,7 @@ fn run_on(mut input: impl Read, interactive: bool, style: Style) -> ExitStatus {
     let mut shell = Shell::new();
     shell.set_interactive(interactive);
     // The files that commands start with: this process's standard input, output and error.
-    let files = Io::process();
+    let mut files = Io::process();
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     loop {
@@ -68,7 +68,7 @@ fn run_on(mut input: impl Read, interactive: bool, style: Style) -> ExitStatus {
             }
             Ok(None) => {
                 if pending.is_empty() {
-                    return shell.last_status();
+                    return shell.run_exit_trap(shell.last_status(), &files);
                 }
                 true
             }
@@ -78,17 +78,17 @@ fn run_on(mut input: impl Read, interactive: bool, style: Style) -> ExitStatus {
             }
         };
 
-        match shell.run_source(&pending, at_end, &files) {
+        match shell.run_source(&pending, at_end, &mut files) {
             LineResult::Incomplete => {}
             LineResult::Ran(Outcome::Continue(_)) => pending.clear(),
-            LineResult::Ran(Outcome::Exit(status)) => return status,
+            LineResult::Ran(Outcome::Exit(status)) => return shell.run_exit_trap(status, &files),
             LineResult::Rejected(report) => {
                 report::show(&report, style);
                 pending.clear();
             }
         }
         if at_end {
-            return shell.last_status();
+            return shell.run_exit_trap(shell.last_status(), &files);
         }
     }
 }

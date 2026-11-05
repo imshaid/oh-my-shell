@@ -14,7 +14,13 @@ pub struct Variable {
     value: Option<Vec<u8>>,
     /// True if child processes receive it.
     exported: bool,
+    /// True if it cannot be assigned to or unset any more (`readonly`).
+    readonly: bool,
 }
+
+/// An assignment to, or `unset` of, a variable that is read only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadOnly;
 
 /// A variable as `set` and `export -p` list it: name, value (none for an exported name
 /// without one) and whether it is exported.
@@ -83,13 +89,59 @@ impl Variables {
                 name: name.as_bytes().to_vec(),
                 value: None,
                 exported: true,
+                readonly: false,
             });
         }
     }
 
     /// Removes a variable.
-    pub fn unset(&mut self, name: &str) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadOnly`] if the variable is read only; it is then kept.
+    pub fn unset(&mut self, name: &str) -> Result<(), ReadOnly> {
+        if self.is_readonly(name) {
+            return Err(ReadOnly);
+        }
+        self.remove(name);
+        Ok(())
+    }
+
+    fn remove(&mut self, name: &str) {
         self.vars.retain(|v| v.name != name.as_bytes());
+    }
+
+    /// True if the variable cannot be changed.
+    #[must_use]
+    pub fn is_readonly(&self, name: &str) -> bool {
+        self.find(name.as_bytes()).is_some_and(|v| v.readonly)
+    }
+
+    /// Makes a variable read only. A name that is not set stays unset.
+    pub fn make_readonly(&mut self, name: &str) {
+        if let Some(var) = self.find_mut(name.as_bytes()) {
+            var.readonly = true;
+        } else {
+            self.vars.push(Variable {
+                name: name.as_bytes().to_vec(),
+                value: None,
+                exported: false,
+                readonly: true,
+            });
+        }
+    }
+
+    /// The read only variables, sorted by name, with their values if they have one.
+    #[must_use]
+    pub fn readonly_sorted(&self) -> Vec<(&[u8], Option<&[u8]>)> {
+        let mut out: Vec<_> = self
+            .vars
+            .iter()
+            .filter(|v| v.readonly)
+            .map(|v| (v.name.as_slice(), v.value.as_deref()))
+            .collect();
+        out.sort_by_key(|(name, _)| *name);
+        out
     }
 
     /// The set variables, sorted by name, with whether each is exported. This is what `set`
@@ -123,13 +175,21 @@ impl Variables {
                     self.vars.push(var);
                 }
             }
-            None => self.unset(name),
+            None => self.remove(name),
         }
     }
 
     /// Sets a variable. One that is exported stays exported; a new one is not exported.
-    pub fn set(&mut self, name: &str, value: Vec<u8>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadOnly`] if the variable is read only; it is then left as it is.
+    pub fn set(&mut self, name: &str, value: Vec<u8>) -> Result<(), ReadOnly> {
+        if self.is_readonly(name) {
+            return Err(ReadOnly);
+        }
         self.set_bytes(name.as_bytes(), value);
+        Ok(())
     }
 
     fn set_bytes(&mut self, name: &[u8], value: Vec<u8>) {
@@ -140,6 +200,7 @@ impl Variables {
                 name: name.to_vec(),
                 value: Some(value),
                 exported: false,
+                readonly: false,
             });
         }
     }
@@ -250,8 +311,8 @@ mod tests {
     #[test]
     fn a_new_variable_is_not_exported_but_an_old_one_stays_exported() {
         let mut vars = Variables::from_pairs([("A", "1")]);
-        vars.set("A", b"2".to_vec());
-        vars.set("B", b"3".to_vec());
+        vars.set("A", b"2".to_vec()).unwrap();
+        vars.set("B", b"3".to_vec()).unwrap();
         assert_eq!(vars.get("A"), Some(&b"2"[..]));
         assert_eq!(vars.get("B"), Some(&b"3"[..]));
         assert_eq!(strings(&vars.envp(&[])), ["A=2"]);
@@ -270,14 +331,14 @@ mod tests {
         assert_eq!(vars.get("X"), None);
         assert!(vars.is_exported("X"));
         assert!(vars.envp(&[]).is_empty());
-        vars.set("X", b"1".to_vec());
+        vars.set("X", b"1".to_vec()).unwrap();
         assert_eq!(strings(&vars.envp(&[])), ["X=1"]);
     }
 
     #[test]
     fn unset_removes_a_variable() {
         let mut vars = Variables::from_pairs([("A", "1"), ("B", "2")]);
-        vars.unset("A");
+        vars.unset("A").unwrap();
         assert_eq!(vars.get("A"), None);
         assert_eq!(strings(&vars.envp(&[])), ["B=2"]);
     }
@@ -287,9 +348,9 @@ mod tests {
         let mut vars = Variables::from_pairs([("A", "1")]);
         let old_a = vars.snapshot("A");
         let old_b = vars.snapshot("B");
-        vars.set("A", b"2".to_vec());
-        vars.set("B", b"3".to_vec());
-        vars.unset("A");
+        vars.set("A", b"2".to_vec()).unwrap();
+        vars.set("B", b"3".to_vec()).unwrap();
+        vars.unset("A").unwrap();
         vars.restore("A", old_a);
         vars.restore("B", old_b);
         assert_eq!(vars.get("A"), Some(&b"1"[..]));
@@ -315,7 +376,31 @@ mod tests {
     #[test]
     fn bytes_that_are_not_utf8_survive() {
         let mut vars = Variables::from_pairs([("A", "")]);
-        vars.set("A", vec![0xff, b'x']);
+        vars.set("A", vec![0xff, b'x']).unwrap();
         assert_eq!(vars.envp(&[])[0].as_bytes(), b"A=\xffx");
+    }
+
+    #[test]
+    fn a_read_only_variable_cannot_be_set_or_unset() {
+        let mut vars = Variables::from_pairs([("A", "1")]);
+        vars.make_readonly("A");
+        assert_eq!(vars.set("A", b"2".to_vec()), Err(ReadOnly));
+        assert_eq!(vars.unset("A"), Err(ReadOnly));
+        assert_eq!(vars.get("A"), Some(&b"1"[..]));
+        assert!(vars.is_readonly("A"));
+        assert_eq!(vars.readonly_sorted(), [(&b"A"[..], Some(&b"1"[..]))]);
+        // Putting a saved copy back is how a temporary assignment ends, and it works.
+        let saved = vars.snapshot("A");
+        vars.restore("A", saved);
+        assert!(vars.is_readonly("A"));
+    }
+
+    #[test]
+    fn a_read_only_name_without_a_value_stays_unset() {
+        let mut vars = Variables::default();
+        vars.make_readonly("R");
+        assert_eq!(vars.get("R"), None);
+        assert_eq!(vars.set("R", b"1".to_vec()), Err(ReadOnly));
+        assert_eq!(vars.readonly_sorted(), [(&b"R"[..], None)]);
     }
 }

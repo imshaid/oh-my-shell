@@ -46,6 +46,13 @@ impl PathCache {
         self.found.clear();
     }
 
+    /// The names that are remembered, with the file each was found as.
+    pub fn entries(&self) -> impl Iterator<Item = (&[u8], &Path)> {
+        self.found
+            .iter()
+            .map(|(name, path)| (name.as_slice(), path.as_path()))
+    }
+
     /// How many names are remembered.
     #[must_use]
     pub fn len(&self) -> usize {

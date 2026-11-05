@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use omsh_syntax::ast::{CaseCommand, CommandKind, ForCommand, IfCommand, List, LoopCommand};
 
-use super::{Flow, Unwind, boundary};
+use super::{Flow, Unwind};
 use crate::expand::Expander;
 use crate::io::Io;
 use crate::shell::Shell;
@@ -22,7 +22,8 @@ impl Shell {
             }
             CommandKind::Subshell(list) => {
                 let mut copy = self.subshell();
-                Ok(boundary(copy.run_list(list, io)))
+                let flow = copy.run_list(list, io);
+                Ok(copy.finish_copy(flow, io))
             }
             CommandKind::Group(list) => self.run_list(list, io),
             CommandKind::If(command) => self.run_if(command, io),
@@ -111,7 +112,10 @@ impl Shell {
             if signals::interrupted() {
                 return Err(Unwind::Interrupted);
             }
-            self.vars.set(&command.name, item);
+            if self.vars.set(&command.name, item).is_err() {
+                io.say(format!("oh-my-shell: {}: is read only", command.name));
+                return Err(Unwind::Error(ExitStatus::USAGE));
+            }
             if !self.loop_body(&command.body, io, &mut status)? {
                 break;
             }

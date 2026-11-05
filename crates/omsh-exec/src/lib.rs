@@ -24,6 +24,7 @@ mod shell;
 mod signals;
 mod spawn;
 mod status;
+mod traps;
 mod vars;
 
 pub use check::NotYet;
@@ -34,4 +35,4 @@ pub use shell::{LineResult, Outcome, Shell};
 pub use signals::{catch_interrupts, clear_interrupt, interrupted};
 pub use spawn::{ExecRequest, SpawnFailure, start, wait};
 pub use status::{ExitStatus, Termination};
-pub use vars::Variables;
+pub use vars::{ReadOnly, Variables};

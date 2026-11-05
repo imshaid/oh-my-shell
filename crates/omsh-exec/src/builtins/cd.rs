@@ -93,7 +93,13 @@ pub(super) fn cd(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
             }
             _ => return fail("OLDPWD not set".to_owned()),
         },
-        Some(dir) => dir.to_vec(),
+        Some(dir) => match via_cdpath(shell, dir) {
+            Some(found) => {
+                print = found.announce;
+                found.path
+            }
+            None => dir.to_vec(),
+        },
     };
     if target.is_empty() {
         return Ok(ExitStatus::SUCCESS);
@@ -122,16 +128,56 @@ pub(super) fn cd(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
         return fail(format!("{shown}: {}", errno.desc()));
     }
 
-    shell
+    // A read only `PWD` or `OLDPWD` stays as it is; the directory was still changed.
+    let _ = shell
         .vars
         .set("OLDPWD", old.as_os_str().as_bytes().to_vec());
-    shell.vars.set("PWD", new.as_os_str().as_bytes().to_vec());
+    let _ = shell.vars.set("PWD", new.as_os_str().as_bytes().to_vec());
     if print {
         let mut line = new.as_os_str().as_bytes().to_vec();
         line.push(b'\n');
         return shell.emit(io, 1, &line);
     }
     Ok(ExitStatus::SUCCESS)
+}
+
+/// A directory found through `$CDPATH`.
+struct Found {
+    path: Vec<u8>,
+    /// True if the directory is shown, which happens when an entry of `$CDPATH` was used
+    /// (the empty entry is the current directory and is not announced).
+    announce: bool,
+}
+
+/// Looks for `dir` in the directories of `$CDPATH`. A name that starts with `/`, `./` or `../`
+/// is not searched for, and neither are `.` and `..`.
+fn via_cdpath(shell: &Shell, dir: &[u8]) -> Option<Found> {
+    if dir.starts_with(b"/")
+        || dir.starts_with(b"./")
+        || dir.starts_with(b"../")
+        || dir == b"."
+        || dir == b".."
+    {
+        return None;
+    }
+    let cdpath = shell.vars.get("CDPATH").filter(|v| !v.is_empty())?;
+    for entry in cdpath.split(|b| *b == b':') {
+        let mut path = entry.to_vec();
+        if !entry.is_empty() && !entry.ends_with(b"/") {
+            path.push(b'/');
+        }
+        path.extend_from_slice(dir);
+        let candidate = shell.logical_cwd().join(OsStr::from_bytes(&path));
+        if std::fs::metadata(shell.resolve(candidate.as_os_str().as_bytes()))
+            .is_ok_and(|m| m.is_dir())
+        {
+            return Some(Found {
+                path,
+                announce: !entry.is_empty(),
+            });
+        }
+    }
+    None
 }
 
 /// What `chdir` would check, without changing the directory of the process.

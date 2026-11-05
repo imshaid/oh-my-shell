@@ -70,6 +70,35 @@ impl Io {
         self.slots.remove(&fd);
     }
 
+    /// What `self` has changed compared with `base`: each descriptor that now refers to another
+    /// file (or to none, `None`). `exec 3>file` with no command is recorded this way, so the
+    /// change can be made on the table of the code that follows.
+    #[must_use]
+    pub fn diff(&self, base: &Self) -> Vec<(u32, Option<Slot>)> {
+        let mut out = Vec::new();
+        for (fd, slot) in &self.slots {
+            if base.slots.get(fd).is_none_or(|old| !Arc::ptr_eq(old, slot)) {
+                out.push((*fd, Some(Arc::clone(slot))));
+            }
+        }
+        for fd in base.slots.keys() {
+            if !self.slots.contains_key(fd) {
+                out.push((*fd, None));
+            }
+        }
+        out
+    }
+
+    /// Makes the changes that [`diff`](Self::diff) found.
+    pub fn apply(&mut self, changes: &[(u32, Option<Slot>)]) {
+        for (fd, slot) in changes {
+            match slot {
+                Some(slot) => self.set(*fd, Arc::clone(slot)),
+                None => self.close(*fd),
+            }
+        }
+    }
+
     /// Writes all of `bytes` to `fd`.
     ///
     /// # Errors

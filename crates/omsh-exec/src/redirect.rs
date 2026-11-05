@@ -11,7 +11,7 @@ use std::sync::Arc;
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, open};
 use nix::sys::memfd::{MFdFlags, memfd_create};
-use nix::sys::stat::Mode;
+use nix::sys::stat::{Mode, fchmod};
 use nix::unistd::{Whence, lseek};
 use omsh_syntax::ast::{Redirect, RedirectKind, RedirectOp};
 
@@ -137,11 +137,7 @@ impl Shell {
         if !protect {
             return self.open_file(name, flags | OFlag::O_TRUNC);
         }
-        match open(
-            &self.resolve(name),
-            flags | OFlag::O_EXCL | OFlag::O_CLOEXEC,
-            Mode::from_bits_truncate(0o666),
-        ) {
+        match self.create_exclusive(name, flags) {
             Ok(fd) => Ok(fd),
             Err(Errno::EEXIST) => {
                 let regular = std::fs::metadata(self.resolve(name)).is_ok_and(|m| m.is_file());
@@ -162,7 +158,41 @@ impl Shell {
         }
     }
 
+    /// Creates a file that must not exist yet. A copy of the shell with its own `umask` gives
+    /// it the permissions of that mask: the file is made with the process's mask and then
+    /// changed, which `fchmod` can do because it ignores the mask.
+    fn create_exclusive(&self, name: &[u8], flags: OFlag) -> Result<OwnedFd, Errno> {
+        let fd = open(
+            &self.resolve(name),
+            flags | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o666),
+        )?;
+        if let Some(mask) = self.umask_override {
+            fchmod(&fd, Mode::from_bits_truncate(0o666 & !mask))?;
+        }
+        Ok(fd)
+    }
+
     fn open_file(&self, name: &[u8], flags: OFlag) -> Result<OwnedFd, RedirectError> {
+        let failed = |errno: Errno| {
+            RedirectError::Failed(format!(
+                "{}: {}",
+                String::from_utf8_lossy(name),
+                errno.desc()
+            ))
+        };
+        if self.umask_override.is_some() && flags.contains(OFlag::O_CREAT) {
+            // A new file gets the mask of this copy; an old one is opened as it is.
+            return match self.create_exclusive(name, flags) {
+                Err(Errno::EEXIST) => open(
+                    &self.resolve(name),
+                    (flags - OFlag::O_CREAT) | OFlag::O_CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(failed),
+                other => other.map_err(failed),
+            };
+        }
         open(
             &self.resolve(name),
             flags | OFlag::O_CLOEXEC,

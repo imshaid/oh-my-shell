@@ -1238,6 +1238,560 @@ fn simple_builtins_behave_like_sh() -> io::Result<()> {
     ])
 }
 
+/// `read` (S07b). A loop reads from a here-document, a file and a pipe.
+#[test]
+fn read_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "printf 'a b\\nc d\\n' | while read x y; do echo \"[$x][$y]\"; done\n",
+        "while read l; do echo \"<$l>\"; done <<'E'\none two\n  three  \nE\n",
+        "while read -r l; do printf '<%s>\\n' \"$l\"; done <<'E'\none\\two\nthree\nE\n",
+        "while read l; do printf '<%s>\\n' \"$l\"; done <<'E'\none\\two\nthree\nE\n",
+        "while read l; do echo \"[$l]\"; done < f.txt\n",
+        "IFS=: read a b <<'E'\nx:y::\nE\necho \"[$a][$b]\"\n",
+        "IFS=: read a b <<'E'\nx:y:\nE\necho \"[$a][$b]\"\n",
+        "IFS=: read a b c <<'E'\n:x::\nE\necho \"[$a][$b][$c]\"\n",
+        "IFS=' :' read a b <<'E'\n a : b c \nE\necho \"[$a][$b]\"\n",
+        "printf 'no newline' | { read v; echo \"st=$? [$v]\"; }\n",
+        "printf 'a\\\\\\nb\\n' | { read v; echo \"[$v]\"; }\n",
+        "printf 'a\\\\ b c\\n' | { read x y; echo \"[$x][$y]\"; }\n",
+        "{ read a; cat; } <<'E'\nfirst\nsecond\nthird\nE\n",
+        "{ read a; read b; echo \"$a-$b\"; } <<'E'\nfirst\nsecond\nE\n",
+        "read x < /dev/null; echo \"st=$? [$x]\"\n",
+        "read a b c <<'E'\nonly\nE\necho \"[$a][$b][$c]\"\n",
+        "read a <<'E'\n  lead and trail  \nE\necho \"[$a]\"\n",
+        "IFS= read a <<'E'\n  keep  \nE\necho \"[$a]\"\n",
+        "n=0; while read l; do n=$((n+1)); done < f.txt; echo $n\n",
+        "cat f.txt | while read l; do echo \"$l\"; done | wc -l\n",
+        "read 1x </dev/null; echo st=$?\n",
+    ])
+}
+
+/// `test` and `[` (S07b): each operator, and the rules by number of arguments.
+#[test]
+fn test_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "test ; echo \"test:$?\"\n[  ]; echo \"bracket:$?\"\n",
+        "test x; echo \"test:$?\"\n[ x ]; echo \"bracket:$?\"\n",
+        "test -n x; echo \"test:$?\"\n[ -n x ]; echo \"bracket:$?\"\n",
+        "test -z x; echo \"test:$?\"\n[ -z x ]; echo \"bracket:$?\"\n",
+        "test -n ''; echo \"test:$?\"\n[ -n '' ]; echo \"bracket:$?\"\n",
+        "test -z ''; echo \"test:$?\"\n[ -z '' ]; echo \"bracket:$?\"\n",
+        "test ! x; echo \"test:$?\"\n[ ! x ]; echo \"bracket:$?\"\n",
+        "test ! ''; echo \"test:$?\"\n[ ! '' ]; echo \"bracket:$?\"\n",
+        "test a = a; echo \"test:$?\"\n[ a = a ]; echo \"bracket:$?\"\n",
+        "test a = b; echo \"test:$?\"\n[ a = b ]; echo \"bracket:$?\"\n",
+        "test a != b; echo \"test:$?\"\n[ a != b ]; echo \"bracket:$?\"\n",
+        "test a '<' b; echo \"test:$?\"\n[ a '<' b ]; echo \"bracket:$?\"\n",
+        "test b '>' a; echo \"test:$?\"\n[ b '>' a ]; echo \"bracket:$?\"\n",
+        "test 10 -gt 9; echo \"test:$?\"\n[ 10 -gt 9 ]; echo \"bracket:$?\"\n",
+        "test 10 '>' 9; echo \"test:$?\"\n[ 10 '>' 9 ]; echo \"bracket:$?\"\n",
+        "test 1 -eq 1; echo \"test:$?\"\n[ 1 -eq 1 ]; echo \"bracket:$?\"\n",
+        "test 1 -ne 1; echo \"test:$?\"\n[ 1 -ne 1 ]; echo \"bracket:$?\"\n",
+        "test 1 -lt 2; echo \"test:$?\"\n[ 1 -lt 2 ]; echo \"bracket:$?\"\n",
+        "test 1 -le 1; echo \"test:$?\"\n[ 1 -le 1 ]; echo \"bracket:$?\"\n",
+        "test 2 -ge 3; echo \"test:$?\"\n[ 2 -ge 3 ]; echo \"bracket:$?\"\n",
+        "test -1 -lt 0; echo \"test:$?\"\n[ -1 -lt 0 ]; echo \"bracket:$?\"\n",
+        "test ' 7' -eq '7 '; echo \"test:$?\"\n[ ' 7' -eq '7 ' ]; echo \"bracket:$?\"\n",
+        "test -d .; echo \"test:$?\"\n[ -d . ]; echo \"bracket:$?\"\n",
+        "test -d f.txt; echo \"test:$?\"\n[ -d f.txt ]; echo \"bracket:$?\"\n",
+        "test -f f.txt; echo \"test:$?\"\n[ -f f.txt ]; echo \"bracket:$?\"\n",
+        "test -f subdir; echo \"test:$?\"\n[ -f subdir ]; echo \"bracket:$?\"\n",
+        "test -e f.txt; echo \"test:$?\"\n[ -e f.txt ]; echo \"bracket:$?\"\n",
+        "test -e nosuch; echo \"test:$?\"\n[ -e nosuch ]; echo \"bracket:$?\"\n",
+        "test -s f.txt; echo \"test:$?\"\n[ -s f.txt ]; echo \"bracket:$?\"\n",
+        "test -s /dev/null; echo \"test:$?\"\n[ -s /dev/null ]; echo \"bracket:$?\"\n",
+        "test -r f.txt; echo \"test:$?\"\n[ -r f.txt ]; echo \"bracket:$?\"\n",
+        "test -w f.txt; echo \"test:$?\"\n[ -w f.txt ]; echo \"bracket:$?\"\n",
+        "test -x script; echo \"test:$?\"\n[ -x script ]; echo \"bracket:$?\"\n",
+        "test -x f.txt; echo \"test:$?\"\n[ -x f.txt ]; echo \"bracket:$?\"\n",
+        "test -L f.txt; echo \"test:$?\"\n[ -L f.txt ]; echo \"bracket:$?\"\n",
+        "test -h f.txt; echo \"test:$?\"\n[ -h f.txt ]; echo \"bracket:$?\"\n",
+        "test -p f.txt; echo \"test:$?\"\n[ -p f.txt ]; echo \"bracket:$?\"\n",
+        "test -c /dev/null; echo \"test:$?\"\n[ -c /dev/null ]; echo \"bracket:$?\"\n",
+        "test -b /dev/null; echo \"test:$?\"\n[ -b /dev/null ]; echo \"bracket:$?\"\n",
+        "test -S f.txt; echo \"test:$?\"\n[ -S f.txt ]; echo \"bracket:$?\"\n",
+        "test -O f.txt; echo \"test:$?\"\n[ -O f.txt ]; echo \"bracket:$?\"\n",
+        "test -G f.txt; echo \"test:$?\"\n[ -G f.txt ]; echo \"bracket:$?\"\n",
+        "test -t 99; echo \"test:$?\"\n[ -t 99 ]; echo \"bracket:$?\"\n",
+        "test f.txt -nt nosuch; echo \"test:$?\"\n[ f.txt -nt nosuch ]; echo \"bracket:$?\"\n",
+        "test nosuch -ot f.txt; echo \"test:$?\"\n[ nosuch -ot f.txt ]; echo \"bracket:$?\"\n",
+        "test f.txt -ef f.txt; echo \"test:$?\"\n[ f.txt -ef f.txt ]; echo \"bracket:$?\"\n",
+        "test f.txt -ef ./f.txt; echo \"test:$?\"\n[ f.txt -ef ./f.txt ]; echo \"bracket:$?\"\n",
+        "test a = a -a b = b; echo \"test:$?\"\n[ a = a -a b = b ]; echo \"bracket:$?\"\n",
+        "test a = b -o b = b; echo \"test:$?\"\n[ a = b -o b = b ]; echo \"bracket:$?\"\n",
+        "test a = b -a b = b; echo \"test:$?\"\n[ a = b -a b = b ]; echo \"bracket:$?\"\n",
+        "test ! a = b; echo \"test:$?\"\n[ ! a = b ]; echo \"bracket:$?\"\n",
+        "test ! a = a; echo \"test:$?\"\n[ ! a = a ]; echo \"bracket:$?\"\n",
+        "test '(' a = a ')'; echo \"test:$?\"\n[ '(' a = a ')' ]; echo \"bracket:$?\"\n",
+        "test ! '(' a = b ')'; echo \"test:$?\"\n[ ! '(' a = b ')' ]; echo \"bracket:$?\"\n",
+        "test '(' a = b ')' -o c = c; echo \"test:$?\"\n[ '(' a = b ')' -o c = c ]; echo \"bracket:$?\"\n",
+        "test -n x -a -n y; echo \"test:$?\"\n[ -n x -a -n y ]; echo \"bracket:$?\"\n",
+        "test -z x -o -z y; echo \"test:$?\"\n[ -z x -o -z y ]; echo \"bracket:$?\"\n",
+        "test -d . -a -f f.txt; echo \"test:$?\"\n[ -d . -a -f f.txt ]; echo \"bracket:$?\"\n",
+        "test ! -d nosuch; echo \"test:$?\"\n[ ! -d nosuch ]; echo \"bracket:$?\"\n",
+        "test ! -z ''; echo \"test:$?\"\n[ ! -z '' ]; echo \"bracket:$?\"\n",
+        "test '!' = '!'; echo \"test:$?\"\n[ '!' = '!' ]; echo \"bracket:$?\"\n",
+        "test -n = -n; echo \"test:$?\"\n[ -n = -n ]; echo \"bracket:$?\"\n",
+        "test -f = -f; echo \"test:$?\"\n[ -f = -f ]; echo \"bracket:$?\"\n",
+        "test x -a y; echo \"test:$?\"\n[ x -a y ]; echo \"bracket:$?\"\n",
+        "[ a = a; echo st=$?\n",
+        "[ 1 -eq x ]; echo st=$?\n",
+        "[ a = a ] && echo yes || echo no\n",
+        "if [ -f f.txt ] && [ ! -d f.txt ]; then echo file; fi\n",
+        "i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done\n",
+        "x=; [ -z \"$x\" ] && echo empty\n",
+        "x='a b'; [ \"$x\" = 'a b' ] && echo same\n",
+        "[ ]; echo $?\n",
+        "[ '' ]; echo $?\n",
+        "test; echo $?\n",
+    ])
+}
+
+/// `printf` (S07b): conversions, flags, escapes, reuse of the format, and bad numbers.
+#[test]
+fn printf_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "printf '[\\c]\\n'\n",
+        "printf '\\x41|A|\\e|\\q|\\101|\\0101|\\1234|\\8|\\\"|\\'\"'\"'\\n'\n",
+        "printf '%b|' 'a\\cb' 'x\\0101y' 'p\\101q' '\\x41'; echo\n",
+        "printf '[%c][%c][%5c]\\n' abc '' z\n",
+        "printf '[%s][%5s][%-5s][%.2s][%05s][%5.1s]\\n' abc abc abc abc abc abc\n",
+        "printf '[%d][%i][%5d][%-5d][%05d][%+d][% d][%.3d][%5.3d][%x][%#x][%#o][%X][%u]\\n' 42 42 42 42 42 42 42 7 7 255 255 8 255 -1\n",
+        "printf '%d %d %d\\n' 0x1f 010 '\"a'\n",
+        "printf '%d\\n' 12abc; echo st=$?\n",
+        "printf '%d\\n' ' 12' ''; echo st=$?\n",
+        "printf '%d\\n' 99999999999999999999; echo st=$?\n",
+        "printf '%f|%.2f|%e|%E|%g|%G|%10.3f|%-10.1f|%+f|%010.2f\\n' 3.14159 3.14159 31415.9 0.00031 100000 1e-10 2.5 2.5 1 -2.5\n",
+        "printf '%g %g %g %g %g %#g\\n' 0 100000 1000000 0.0001 0.00001 1\n",
+        "printf '%f %f %s\\n' inf nan x\n",
+        "printf '%s %s\\n' a\n",
+        "printf '%*d|%-*d|%.*f\\n' 5 1 5 2 2 3.14159\n",
+        "printf '%5%|\\n'; echo st=$?\n",
+        "printf 'a%sb%sc\\n' 1 2 3 4 5\n",
+        "printf '%.0f %.0f %.0f %.0f\\n' 0.5 1.5 2.5 3.5\n",
+        "printf '%x %o %u\\n' -1 -1 -1\n",
+        "printf '%.3d|%.0d|%5.0d|%x|%#X|%#x\\n' 5 0 0 0 255 0\n",
+        "printf '%e %e\\n' 0 123456789\n",
+        "printf '%G %g %g\\n' 0.000012345 123456789 1.5\n",
+        "printf '%10.4e|%-12.2E|\\n' 3.14159 31415.9\n",
+        "printf '%.10g %.3g %g\\n' 3.14159265358979 1234.5678 -0\n",
+        "printf '%f\\n' 0x10 ' 2.5' .5 5. 1e2 -.5e1\n",
+        "printf '%d\\n' 1.5; echo st=$?\n",
+        "printf '%d %s\\n' 1 2 3\n",
+        "printf 'ab%z\\n' 1; echo st=$?\n",
+        "printf '%s\\n' 'a\\nb'\n",
+        "printf '%b\\n' 'a\\\\b' '\\q' '\\n'\n",
+        "printf '\\0\\n' | od -c\n",
+        "printf '%b' 'a\\0b' | od -c\n",
+        "printf '%%|%5s|%-3d|\\n' x 7\n",
+        "printf '%s\\n' a b c\n",
+        "printf '%s %s\\n' a b c\n",
+        "printf '%d%%\\n' 50\n",
+        "printf '[%10s][%-10s]\\n' right left\n",
+        "printf '%c%c%c\\n' a b c\n",
+        "printf '%05.1f|%+.2e|%G\\n' 2.55 12345.678 0.0000123\n",
+        "printf '%o %x %X %u\\n' 64 255 255 3\n",
+        "printf '%s\\n' \"$(printf 'x\\ny')\"\n",
+        "printf -- '--\\n'\n",
+        "printf; echo st=$?\n",
+    ])
+}
+
+/// Aliases (S07b): they are replaced in the text of a line, so a definition works from the next line on.
+#[test]
+fn aliases_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "alias e=echo\ne hi\n",
+        "alias e=echo; e hi\n",
+        "alias e='echo a;'\ne b\n",
+        "alias ll='ls -d'\nll /tmp\n",
+        "alias ls='ls -d'\nls /tmp\n",
+        "alias a=b b=a\nb 2>/dev/null; echo $?\n",
+        "alias e=echo\n\\e hi 2>/dev/null; echo $?\n'e' hi 2>/dev/null; echo $?\n",
+        "alias e=echo\necho e\n",
+        "alias e=echo\nif e x; then e y; fi\n",
+        "alias e=echo\nf() { e in-func; }\nf\n",
+        "alias e=echo\nx=$(e sub); echo $x\n",
+        "alias e=echo\n( e sub )\n{ e grp; }\n",
+        "alias e=echo\ne a | cat\n",
+        "alias s='e '\nalias e=echo x=XX\ns x\n",
+        "alias s='echo '\nalias x=XX\ns x\n",
+        "alias s='echo'\nalias x=XX\ns x\n",
+        "alias e=echo\nunalias e\ne hi 2>/dev/null; echo $?\n",
+        "alias e=echo f='echo f'\nalias\n",
+        "alias e=echo\nalias e\nalias nosuch 2>/dev/null; echo $?\n",
+        "alias e='echo it'\"'\"'s'\nalias e\n",
+        "unalias nosuch 2>/dev/null; echo $?\n",
+        "alias e=echo\neval 'e from-eval'\n",
+        "alias e=echo\ne=1\necho $e\n",
+        "alias e=echo\nfor i in 1 2; do e $i; done\n",
+        "alias e=echo\n e   spaced\n",
+        "alias if=echo\nif true; then echo ok; fi\n",
+        "alias and='true &&'\nand echo yes\n",
+        "alias e=echo\ncase x in x) e case;; esac\n",
+        "alias e=echo\nX=1 e hi\n",
+        "alias e=echo\n>/dev/null e hi\n",
+        "alias e=echo\nalias | wc -l\n",
+        "alias ll=echo\n$(:)ll hi\nx\\ll hi\n\"x\"ll hi\n",
+        "printf 'alias e=echo\\ne from-file\\n' > a.sh\n. ./a.sh\ne after\n",
+        "printf 'echo one\\nfi\\necho three\\n' > bad.sh\n. ./bad.sh\n",
+        "printf 'f() { echo defined; }\\nf\\nif true; then\\n  f\\nfi\\n' > ok.sh\n. ./ok.sh\nf\n",
+        "alias e=echo\nprintf 'e in-dot\\n' > b.sh\n. ./b.sh\n",
+        "printf 'alias e=echo\\ne same-file\\nunalias e\\ne gone 2>/dev/null; echo $?\\n' > c.sh\n. ./c.sh\n",
+    ])
+}
+
+/// `set` options (S07b): `-e` in every place it does and does not apply, `-u`, `-f`, `-C`, `-x`, `-o`, `$-`.
+#[test]
+fn set_options_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "set -e\nfalse\necho not\n",
+        "set -e\ntrue\necho yes\n",
+        "set -e\nfalse || echo handled\necho after\n",
+        "set -e\nfalse && echo no\necho after\n",
+        "set -e\ntrue && false\necho not\n",
+        "set -e\n! true\necho after\n",
+        "set -e\nif false; then :; fi\necho after\n",
+        "set -e\nif false; then :; else echo e; fi\necho after\n",
+        "set -e\nwhile false; do :; done\necho after\n",
+        "set -e\nuntil true; do :; done\necho after\n",
+        "set -e\nf() { false; echo in-f; }\nf\necho not\n",
+        "set -e\nf() { false; echo in-f; }\nf || echo handled\necho after\n",
+        "set -e\nf() { false; echo in-f; }\nif f; then echo then; fi\necho after\n",
+        "set -e\n(false; echo sub)\necho not\n",
+        "set -e\n(false) || echo handled\necho after\n",
+        "set -e\n{ false; echo grp; }\necho not\n",
+        "set -e\nfalse | true\necho after\n",
+        "set -e\ntrue | false\necho not\n",
+        "set -e\nx=$(false)\necho not\n",
+        "set -e\nx=$(false; echo hi)\necho after $x\n",
+        "set -e\nfor i in 1 2; do false; echo $i; done\necho not\n",
+        "set -e\nfor i in 1 2; do echo $i; done\necho after\n",
+        "set -e\ncase x in x) false; echo c;; esac\necho not\n",
+        "set -e\nset +e\nfalse\necho after\n",
+        "set -e\nfalse; echo x\n",
+        "set -e\nexit 3\n",
+        "set -e\nfalse\n",
+        "set -e\nf() { return 4; }\nf\necho not\n",
+        "set -ex\nfalse\n",
+        "set -e\neval false\necho not\n",
+        "set -e\neval 'false; echo in-eval'\necho not\n",
+        "set -e\nf() { false && true; echo ok; }\nf\n",
+        "set -e\nfalse &&  true || true\necho ok\n",
+        "set -e\n! false\necho ok\n",
+        "set -e\nx=1 false\necho not\n",
+        "set -u\necho ${x-d} ${x:-d} ${x+d} ${x:+d}\necho $@ $* $# $?\necho after\n",
+        "set -u\ny=\necho [$y]\n",
+        "set -u\n: ${z=1}\necho $z\n",
+        "set -eu\necho $x\n",
+        "set -u\necho $1\n",
+        "set -u\nx=1\necho $x ${#x}\necho ${#y}\n",
+        "set -u\necho ${y#a}\n",
+        "set -f\necho /bin/s*\necho *\nset +f\necho /bi[n]\n",
+        "set -f\nx='*'\necho $x\n",
+        "set -C\necho a > cl.txt\necho b > cl.txt 2>/dev/null; echo st=$?\necho c >| cl.txt\ncat cl.txt\n",
+        "set -C\necho a > /dev/null; echo st=$?\n",
+        "set -C\necho a >> /dev/null; echo st=$?\n",
+        "set -x\necho hi\nx=1\nset +x\necho no-trace\n",
+        "set -eu\necho $-\nset +eu\necho $-\nset -C -f\necho $-\n",
+        "set -o errexit\necho $-\nset +o errexit\necho $-\n",
+        "set -o noglob -o nounset\necho $-\n",
+        "set -o | head -3\nset -o errexit\nset -o | head -2\n",
+        "set -e -- a b\necho $1 $2 $#\n",
+        "set a b c\nset -e\necho $#\n",
+        "set -- -x y\necho $1 $2\n",
+        "set -eo nounset\necho $-\n",
+        "set +e\n",
+        "set +o | head -5\n",
+        "set -- a b\nset -\necho $#\n",
+        "set -o pipefail\nfalse | true; echo $?\ntrue | false | true; echo $?\n/bin/sh -c 'exit 3' | false | true; echo $?\n",
+        "set -eo pipefail\nfalse | true\necho not\n",
+        "set -o pipefail\nset +o pipefail\nfalse | true; echo $?\n",
+        "set -o pipefail\nset -o | grep pipefail\nset +o | grep pipefail\n",
+    ])
+}
+
+/// `type`, `command` and `hash` (S07b). The "tracked alias" wording of dash is avoided here: see the direct test.
+#[test]
+fn type_command_and_hash_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "type cd\n",
+        "type export\n",
+        "type if\n",
+        "type nosuch 2>/dev/null; echo $?\n",
+        "type nosuch cd 2>/dev/null; echo $?\n",
+        "f() { :; }\ntype f\n",
+        "alias a=b\ntype a\n",
+        "type echo printf test '['\n",
+        "command -v cd\ncommand -v if\ncommand -v nosuch; echo $?\n",
+        "f() { :; }\ncommand -v f\ncommand -V f\n",
+        "alias a='b c'\ncommand -v a\ncommand -V a\n",
+        "command -V cd\ncommand -V export\ncommand -V if\n",
+        "command -V nosuch 2>/dev/null; echo $?\n",
+        "command -v /bin/sh\n",
+        "command -v\ncommand; echo $?\ncommand -p; echo $?\n",
+        "command echo hi\ncommand -- echo hi\n",
+        "f() { echo func; }\ncommand f 2>/dev/null; echo $?\nf\n",
+        "echo() { printf 'fn\\n'; }\necho a\ncommand echo b\n",
+        "command exit 3\n",
+        "command nosuch 2>/dev/null; echo $?\n",
+        "command -p echo hi\n",
+        "PATH=/nonexistent\ncommand -p ls /bin >/dev/null; echo $?\n",
+        "x=1 command true; echo [$x]\n",
+        "x=1 command export y=2; echo [$x] [$y]\n",
+        "hash -r\nhash nosuch 2>/dev/null; echo $?\nhash ls cat\nhash\nhash -r\nhash\n",
+        "hash cd; echo $?\n",
+        "command -pv ls\n",
+    ])
+}
+
+/// `umask` (S07b), also in subshells, which must not change the umask of the shell or of each other.
+#[test]
+fn umask_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "umask 022\numask\numask -S\n",
+        "umask 027; umask; umask -S\n",
+        "umask 027\numask u=rwx,g=rx,o=; umask\numask g+w; umask -S\numask a=; umask\n",
+        "umask 0777; umask -S\numask 0; umask -S\n",
+        "umask -x 2>/dev/null; echo $?\n",
+        "umask 22\n(umask 077; umask)\numask\n",
+        "umask 22\nx=$(umask 077; umask); echo $x; umask\n",
+        "umask 22\numask 077 | cat; umask\n",
+        "umask 077\n: > u1\nls -l u1 | cut -c1-10\n",
+        "umask 000\n: > u2\n: > u3\nls -l u2 u3 | cut -c1-10\n",
+        "umask 022\n(umask 077; : > u4; echo a > u4a)\n: > u5\nls -l u4 u4a u5 | cut -c1-10\n",
+        "umask 022\n(umask 000; : > u6)\n( umask 077; sh -c ': > u7' )\nls -l u6 u7 | cut -c1-10\n",
+        "umask 077\n(umask 000; umask 000 ; sh -c 'umask')\nsh -c umask\n",
+        "umask 022\n: > u8\n(umask 077; : >> u8; : > u8)\nls -l u8 | cut -c1-10\n",
+        "umask 027\n(umask 000; umask)\n( : > u9 ) \nls -l u9 | cut -c1-10\n",
+        "umask 999 2>/dev/null; echo $?\n",
+    ])
+}
+
+/// `exec` (S07b): replacing the shell, and redirections that last from one command to the next.
+#[test]
+fn exec_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "exec echo hi\necho not\n",
+        "exec sh -c 'exit 3'\n",
+        "exec sh -c 'echo $0 $1' a b\n",
+        "x=1 exec sh -c 'echo [$x]'\n",
+        "(exec echo sub)\necho after\n",
+        "(exec sh -c 'exit 4'); echo $?\n",
+        "echo hi | exec cat\n",
+        "exec true\necho not\n",
+        "exec 3>out1\necho one >&3\necho two >&3\nexec 3>&-\ncat out1\n",
+        "exec >out2\necho captured\necho more\nexec >&2\ncat out2\n",
+        "exec 2>out3\nls /nonexistent-omsh\nexec 2>&1\ncat out3 | wc -l\n",
+        "exec 3<<E\nline1\nline2\nE\nread a <&3\nread b <&3\necho $a $b\n",
+        "echo data > out4\nexec 4<out4\nread x <&4\necho got $x\nexec 4<&-\n",
+        "{ exec 3>out5; }\necho in-group >&3\ncat out5\n",
+        "f() { exec 3>out6; }\nf\necho in-f >&3\ncat out6\n",
+        "(exec 3>out7; echo sub >&3)\necho outer >&3 2>/dev/null; echo st=$?\ncat out7\n",
+        "exec 3>out8 && echo ok >&3\ncat out8\n",
+        "exec 3>out9\nsh -c 'echo child >&3'\ncat out9\n",
+        "exec 3>out10\nexec 3>&-\necho x >&3 2>/dev/null; echo st=$?\n",
+        "exec 3>out11\nx=$(echo hi >&3; echo sub)\necho $x\ncat out11\n",
+        "exec 3>out12\necho a | { cat >&3; }\ncat out12\n",
+        "exec 5>out13\nwhile read l; do echo $l >&5; done <<E\nA\nB\nE\ncat out13\n",
+        "exec\necho still\n",
+        "exec 2>/dev/null\nls /nonexistent-omsh\necho st=$?\n",
+        "exec >/dev/null\necho hidden\n",
+        "exec 3>out14\n(echo in-sub >&3)\ncat out14\n",
+    ])
+}
+
+/// `trap` (S07b): the `EXIT` trap, signals sent to the shell itself, ignored signals, and traps in subshells.
+#[test]
+fn trap_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "trap 'echo bye' EXIT\necho hi\n",
+        "trap 'echo bye' EXIT\nexit 3\n",
+        "trap 'echo bye' 0\necho hi\n",
+        "trap 'echo bye; exit 5' EXIT\necho hi\n",
+        "trap 'echo bye' EXIT\ntrap - EXIT\necho hi\n",
+        "trap 'echo status=$?' EXIT\nfalse\n",
+        "trap 'echo status=$?' EXIT\nexit 7\n",
+        "trap 'echo first' EXIT\ntrap 'echo second' EXIT\n",
+        "trap 'echo bye' EXIT\ntrap\n",
+        "trap '' INT\ntrap\n",
+        "trap 'echo a b' INT TERM\ntrap\n",
+        "trap 'echo got' USR1\nkill -USR1 $$\necho after\n",
+        "trap 'echo got' USR1\nkill -USR1 $$\necho after\nkill -USR1 $$\necho again\n",
+        "trap 'echo got $?' USR1\nfalse\nkill -USR1 $$\necho after $?\n",
+        "trap 'echo hup' HUP\nkill -HUP $$\n",
+        "trap 'echo term' TERM\nkill -TERM $$\necho after\n",
+        "trap '' TERM\nkill -TERM $$\necho survived\n",
+        "trap '' USR1\nsh -c 'kill -USR1 $PPID; echo child-done'\necho survived\n",
+        "trap 'echo caught' USR2\nsh -c 'kill -USR2 $PPID'\necho after\n",
+        "trap 'echo x' USR1\ntrap - USR1\ntrap\n",
+        "trap 'echo x' USR1\ntrap USR1\ntrap\n",
+        "trap 'echo x' 10\ntrap\n",
+        "(trap 'echo sub-exit' EXIT; echo in-sub)\necho after\n",
+        "trap 'echo outer' EXIT\n(echo in-sub)\necho after\n",
+        "x=$(trap 'echo from-sub' EXIT; echo val); echo [$x]\n",
+        "trap 'echo A' EXIT\ntrap 'echo got' USR1\nkill -USR1 $$\n",
+        "f() { trap 'echo in-f' EXIT; }\nf\necho end\n",
+        "trap 'echo bye' EXIT\nexec true\n",
+        "trap 'echo caught' INT\nkill -INT $$\necho after\n",
+        "trap 'kill -USR1 $$' USR2\ntrap 'echo nested' USR1\nkill -USR2 $$\necho end\n",
+        "trap 'echo 1' USR1\nfor i in 1 2 3; do kill -USR1 $$; echo loop $i; done\n",
+        "trap 'exit 4' USR1\nkill -USR1 $$\necho not\n",
+        "trap 'echo x' NOSUCH 2>/dev/null; echo st=$?\n",
+    ])
+}
+
+/// `readonly` (S07b). A violation is always on the last line: dash ends a script there.
+#[test]
+fn readonly_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "readonly R=1\nreadonly -p | grep '^readonly R='\n",
+        "readonly R=1 S='a b'\nreadonly | grep -E '^readonly [RS]='\n",
+        "readonly R\nreadonly -p | grep -c '^readonly R$'\necho [${R-unset}]\n",
+        "readonly R=1\nR=2\n",
+        "readonly R=1\nR=2 true\n",
+        "readonly R=1\nunset R\n",
+        "readonly R=1\nexport R=3\n",
+        "readonly R=1\nexport R\nsh -c 'echo [$R]'\n",
+        "readonly R=1\nfor R in a b; do echo $R; done\n",
+        "readonly R=1\nread R </dev/null\n",
+        "readonly R=1\n: ${R:=2}\necho [$R]\n",
+        "readonly R=1\necho $((R=2))\n",
+        "readonly R=1\nf() { R=2; }\nf\n",
+        "readonly R=1\n(R=2)\necho [$R]\n",
+        "readonly R=1\nreadonly R=1\n",
+        "readonly R=1\nreadonly R=2\n",
+        "readonly R=1\necho $R\nreadonly R\necho $R\n",
+        "readonly 1x=3\n",
+        "x=5\nreadonly x\necho $x\n",
+        "readonly R=1\neval 'echo [$R]'\n",
+        "readonly R=1\nsh -c 'echo [$R]'\n",
+    ])
+}
+
+/// `CDPATH` (S07b): a directory found through it is shown, one found through the empty entry is not.
+#[test]
+fn cdpath_behaves_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "mkdir -p cda/sub cdb/sub cdc 'cdd e/x'\nCDPATH=cda:cdb\ncd sub\npwd\n",
+        "mkdir -p cda/sub cdc\nCDPATH=:cda\ncd cdc\npwd\n",
+        "mkdir -p cda cdc\nCDPATH=cda\ncd ./cdc\npwd\n",
+        "mkdir -p cda cdc\nCDPATH=cda\ncd cdc\npwd\n",
+        "mkdir -p cda/sub\nCDPATH=.:cda\ncd sub\npwd\n",
+        "mkdir -p cdc\nCDPATH=.\ncd cdc\npwd\n",
+        "mkdir -p cda/sub\nCDPATH=cda/\ncd sub\npwd\n",
+        "mkdir -p 'cdd e/x'\nCDPATH='cdd e'\ncd x\npwd\n",
+        "mkdir -p cda/sub\nCDPATH=cda\n(cd sub; pwd)\npwd\n",
+        "mkdir -p cda/sub\nCDPATH=cda\ncd sub\ncd -\npwd\n",
+        "mkdir -p cda/sub\nCDPATH=cda\nx=$(cd sub); echo [$x]\n",
+    ])
+}
+
+// Differences from `/bin/sh` that are on purpose in S07b. Each has a row in the Decision Log.
+
+/// `read` with no name keeps the line in `REPLY`, as in bash. dash needs a name.
+#[test]
+fn read_without_a_name_sets_reply() -> io::Result<()> {
+    assert_eq!(
+        output_of("echo 'a b' | { read; echo \"[$REPLY]\"; }\n")?,
+        "[a b]\n"
+    );
+    Ok(())
+}
+
+/// `type` says "is /usr/bin/ls" where dash says "is a tracked alias for /usr/bin/ls": there is
+/// no tracked alias here, only the path cache.
+#[test]
+fn type_does_not_talk_about_tracked_aliases() -> io::Result<()> {
+    let out = output_of("hash -r; command -v ls >/dev/null; type ls\n")?;
+    assert!(out.starts_with("ls is /"), "{out}");
+    assert!(!out.contains("tracked"), "{out}");
+    Ok(())
+}
+
+/// `trap` accepts a name with the `SIG` prefix, as bash does. dash calls it a bad trap.
+#[test]
+fn trap_accepts_the_sig_prefix() -> io::Result<()> {
+    assert_eq!(
+        output_of("trap 'echo got' SIGUSR1\nkill -USR1 $$\necho after\n")?,
+        "got\nafter\n"
+    );
+    Ok(())
+}
+
+/// Mistakes that end a script do not end the session: an unset variable under `-u`, an
+/// assignment to a read only variable, an unknown option of `set`, a program that `exec` cannot
+/// find. The line ends, the status is the same as dash's, and the next line runs.
+#[test]
+fn the_new_mistakes_that_end_a_script_do_not_end_the_session() -> io::Result<()> {
+    let sandbox = Sandbox::new()?;
+    for input in [
+        "set -u\necho $nope\necho next\n",
+        "readonly R=1\nR=2\necho next\n",
+        "set -z\necho next\n",
+        "exec nosuch-omsh\necho next\n",
+        "trap 'echo x' KILL\necho next\n",
+    ] {
+        let out = sandbox.run(OMSH, input.as_bytes())?;
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "next\n",
+            "{input:?}: the line after the mistake must run"
+        );
+        assert!(
+            !out.stderr.is_empty(),
+            "{input:?}: the mistake must be reported"
+        );
+    }
+    Ok(())
+}
+
+/// `set` refuses options this shell does not have, instead of quietly ignoring them.
+#[test]
+fn set_refuses_options_that_do_not_exist_yet() -> io::Result<()> {
+    assert_eq!(output_of("set -m 2>/dev/null; echo $?\n")?, "2\n");
+    assert_eq!(output_of("set -o monitor 2>/dev/null; echo $?\n")?, "2\n");
+    assert_eq!(output_of("set -o nosuch 2>/dev/null; echo $?\n")?, "2\n");
+    Ok(())
+}
+
+/// `SHLVL` goes up by one and `OMSH_VERSION` is exported. `SHELL` is left alone.
+#[test]
+fn shlvl_and_the_version_are_exported() -> io::Result<()> {
+    let sandbox = Sandbox::new()?;
+    let out = sandbox.run(
+        OMSH,
+        b"echo \"$SHLVL $OMSH_VERSION\"\nsh -c 'echo \"$SHLVL $OMSH_VERSION\"'\necho \"[$SHELL]\"\n",
+    )?;
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("1 {version}\n1 {version}\n[]\n")
+    );
+    Ok(())
+}
+
+/// A copy of the shell keeps its own `umask` and passes it on. The shell itself keeps the
+/// mask it had.
+#[test]
+fn a_subshell_umask_does_not_leak() -> io::Result<()> {
+    assert_eq!(
+        output_of("umask 022; (umask 077; sh -c umask); umask; sh -c umask\n")?,
+        "0077\n0022\n0022\n"
+    );
+    Ok(())
+}
+
+/// Changes made by `exec` to the files last from one line to the next in an interactive session.
+#[test]
+fn exec_redirections_last_across_lines() -> io::Result<()> {
+    assert_eq!(
+        output_of("exec 3>fd3.txt\necho a >&3\necho b >&3\nexec 3>&-\ncat fd3.txt\n")?,
+        "a\nb\n"
+    );
+    Ok(())
+}
+
 // Differences from `/bin/sh` that are on purpose. Each has a row in the Decision Log.
 
 /// `echo` follows bash: escape sequences only with `-e`. dash always reads them.

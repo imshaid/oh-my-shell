@@ -17,8 +17,8 @@ fn shell() -> Shell {
 
 /// Runs `src` and returns what the shell printed on its own behalf (descriptor 2).
 fn run(shell: &mut Shell, src: &str) -> String {
-    let captured = Captured::new();
-    let result = shell.run_source(src, true, &captured.io);
+    let mut captured = Captured::new();
+    let result = shell.run_source(src, true, &mut captured.io);
     assert!(
         matches!(result, crate::LineResult::Ran(_)),
         "not run: {src}: {result:?}"
@@ -124,8 +124,8 @@ fn assigning_defaults() {
 #[test]
 fn a_missing_value_with_a_question_mark_is_an_error() {
     let mut sh = shell();
-    let captured = Captured::new();
-    let result = sh.run_source("x=1; echo ${nope:?it is gone}; x=2", true, &captured.io);
+    let mut captured = Captured::new();
+    let result = sh.run_source("x=1; echo ${nope:?it is gone}; x=2", true, &mut captured.io);
     assert!(matches!(result, crate::LineResult::Ran(_)));
     assert_eq!(captured.stderr(), "oh-my-shell: nope: it is gone\n");
     // The line stopped there.

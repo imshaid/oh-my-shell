@@ -201,7 +201,9 @@ impl Parser<'_> {
                 let left = variable_value(self.vars, &name)?;
                 apply(&op[..op.len() - 1], left, right)?
             };
-            self.vars.set(&name, value.to_string().into_bytes());
+            self.vars
+                .set(&name, value.to_string().into_bytes())
+                .map_err(|_| format!("{name}: is read only"))?;
             return Ok(value);
         }
         self.conditional(eval)

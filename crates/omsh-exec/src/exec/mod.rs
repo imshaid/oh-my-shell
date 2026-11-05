@@ -20,11 +20,11 @@ use omsh_syntax::ast::{FunctionDef, Redirect, SimpleCommand, Word};
 use crate::builtins::{self, Class};
 use crate::expand::{ExpandError, Expander};
 use crate::io::Io;
-use crate::path::Lookup;
+use crate::path::{DEFAULT_PATH, Lookup};
 use crate::redirect::RedirectError;
 use crate::shell::Shell;
 use crate::signals;
-use crate::spawn::{ExecRequest, SpawnFailure, run as spawn};
+use crate::spawn::{ExecRequest, SpawnFailure, replace_process, run as spawn};
 use crate::status::{ExitStatus, Termination};
 use omsh_syntax::ast::{AndOr, AndOrOp, Command, CommandKind, List, Pipeline};
 
@@ -103,13 +103,38 @@ impl Shell {
 
     fn run_items(&mut self, list: &List, io: &Io) -> Flow {
         let mut status = self.status;
+        // The files for the next command: `io`, changed by any `exec` so far.
+        let mut local: Option<Io> = None;
         for item in &list.items {
             if signals::interrupted() {
                 return Err(Unwind::Interrupted);
             }
-            status = self.run_and_or(&item.and_or, io)?;
+            self.run_pending_traps(local.as_ref().unwrap_or(io))?;
+            status = self.run_and_or(&item.and_or, local.as_ref().unwrap_or(io))?;
+            self.follow_fd_changes(io, &mut local);
+            self.run_pending_traps(local.as_ref().unwrap_or(io))?;
         }
         Ok(status)
+    }
+
+    /// Takes over what `exec` changed in the files of the commands that follow. The changes
+    /// stay recorded, so that the list that contains this one takes them over too.
+    fn follow_fd_changes(&self, base: &Io, local: &mut Option<Io>) {
+        if self.fd_changes.is_empty() {
+            return;
+        }
+        let mut table = local.take().unwrap_or_else(|| base.clone());
+        table.apply(&self.fd_changes);
+        *local = Some(table);
+    }
+
+    /// Records the changes `exec` made to a table, replacing earlier ones for the same
+    /// descriptors.
+    pub(crate) fn record_fd_changes(&mut self, changes: Vec<(u32, Option<crate::io::Slot>)>) {
+        for (fd, slot) in changes {
+            self.fd_changes.retain(|(old, _)| *old != fd);
+            self.fd_changes.push((fd, slot));
+        }
     }
 
     fn run_and_or(&mut self, and_or: &AndOr, io: &Io) -> Flow {
@@ -117,15 +142,19 @@ impl Shell {
         let mut status = self.ignoring_errexit(!and_or.rest.is_empty(), |shell| {
             shell.run_pipeline(&and_or.first, io)
         })?;
+        let mut local: Option<Io> = None;
         for (index, part) in and_or.rest.iter().enumerate() {
+            self.follow_fd_changes(io, &mut local);
+            let current = local.as_ref().unwrap_or(io);
             let go = match part.op {
                 AndOrOp::And => status == ExitStatus::SUCCESS,
                 AndOrOp::Or => status != ExitStatus::SUCCESS,
             };
             if go {
                 let is_last = index + 1 == and_or.rest.len();
-                status = self
-                    .ignoring_errexit(!is_last, |shell| shell.run_pipeline(&part.pipeline, io))?;
+                status = self.ignoring_errexit(!is_last, |shell| {
+                    shell.run_pipeline(&part.pipeline, current)
+                })?;
             }
         }
         Ok(status)
@@ -234,9 +263,12 @@ impl Shell {
         result.map_err(|e| self.expand_failed(&e, io))
     }
 
-    fn classify(&self, name: &[u8]) -> Target {
+    fn classify(&self, name: &[u8], skip_functions: bool) -> Target {
         if let Some(class @ Class::Special) = builtins::classify(name) {
             return Target::Builtin(class);
+        }
+        if skip_functions {
+            return builtins::classify(name).map_or(Target::External, Target::Builtin);
         }
         if let Some(function) = std::str::from_utf8(name)
             .ok()
@@ -256,8 +288,12 @@ impl Shell {
         if signals::interrupted() {
             return Err(Unwind::Interrupted);
         }
-        let target = words.first().map(|name| self.classify(name));
-        let special = matches!(target, Some(Target::Builtin(Class::Special)));
+        let (words, via_command) = self.strip_command(words);
+        let target = words
+            .first()
+            .map(|name| self.classify(name, via_command.is_some()));
+        let special =
+            via_command.is_none() && matches!(target, Some(Target::Builtin(Class::Special)));
 
         let redirected;
         let table = if redirects.is_empty() {
@@ -276,6 +312,13 @@ impl Shell {
                 Err(failure) => return self.redirect_failed(failure, io),
             }
         };
+
+        // `exec` with redirections and no command changes the files of what follows.
+        if matches!(words.as_slice(), [name] | [name, _] if name == b"exec")
+            && words.get(1).is_none_or(|w| w == b"--")
+        {
+            self.record_fd_changes(table.diff(io));
+        }
 
         let Some(target) = target else {
             // Only assignments: they stay. The status is that of the last `$(...)`, if any.
@@ -302,12 +345,22 @@ impl Shell {
         let flow = match applied {
             Ok(applied) => {
                 self.trace(&applied, &words, io);
-                if !special {
+                // A special builtin keeps its assignments but does not pass them on, except
+                // `exec`, which becomes the program that should receive them.
+                if !special || words[0] == b"exec" {
                     for assignment in &simple.assignments {
                         self.vars.export(&assignment.name);
                     }
                 }
-                self.dispatch(&target, &words, table)
+                // `command -p` searches the default path for this one command.
+                let saved_path = via_command.and_then(|p| {
+                    p.then(|| self.path_override.replace(DEFAULT_PATH.as_bytes().to_vec()))
+                });
+                let flow = self.dispatch(&target, &words, table);
+                if let Some(old) = saved_path {
+                    self.path_override = old;
+                }
+                flow
             }
             Err(error) => Err(self.expand_failed(&error, io)),
         };
@@ -315,6 +368,43 @@ impl Shell {
             self.vars.restore(name, old);
         }
         flow
+    }
+
+    /// `command name args` runs `name` while skipping functions, and a special builtin run
+    /// this way loses its special properties. Returns the words without `command` and its
+    /// options, and `Some(use_default_path)` if they were removed. The forms that only look
+    /// something up (`command -v name`) are left for the builtin.
+    fn strip_command(&self, words: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Option<bool>) {
+        if words.first().map(Vec::as_slice) != Some(b"command")
+            || self.functions.contains_key("command")
+        {
+            return (words, None);
+        }
+        let mut at = 1;
+        let mut default_path = false;
+        while let Some(word) = words.get(at) {
+            match word.as_slice() {
+                b"-p" => default_path = true,
+                b"--" => {
+                    at += 1;
+                    break;
+                }
+                _ => break,
+            }
+            at += 1;
+        }
+        match words.get(at) {
+            // No command follows, or the next word is an option such as `-v`.
+            None => (words, None),
+            Some(word)
+                if word.starts_with(b"-")
+                    && word.len() > 1
+                    && at == 1 + usize::from(default_path) =>
+            {
+                (words, None)
+            }
+            Some(_) => (words[at..].to_vec(), Some(default_path)),
+        }
     }
 
     /// Under `-x`, writes the command about to run to standard error, after `$PS4`.
@@ -368,11 +458,14 @@ impl Shell {
         }
     }
 
-    /// Starts a program and waits for it. Returns its status. Problems are reported to
-    /// descriptor 2 of `io`.
-    fn run_external(&mut self, words: &[Vec<u8>], io: &Io) -> ExitStatus {
+    /// Finds the program for `words` and builds everything `execve` needs. A problem is
+    /// reported to descriptor 2 of `io` and gives the status of the command.
+    fn prepare_external(&mut self, words: &[Vec<u8>], io: &Io) -> Result<Program, ExitStatus> {
         let name = String::from_utf8_lossy(&words[0]).into_owned();
-        let search_path = self.vars.search_path(&[]);
+        let search_path = self
+            .path_override
+            .clone()
+            .unwrap_or_else(|| self.vars.search_path(&[]));
         let file = match self
             .paths
             .lookup(&words[0], &search_path, self.cwd_override.as_deref())
@@ -380,58 +473,114 @@ impl Shell {
             Lookup::Found(file) => file,
             Lookup::Denied(_) => {
                 io.say(format!("oh-my-shell: {name}: permission denied"));
-                return ExitStatus::NOT_EXECUTABLE;
+                return Err(ExitStatus::NOT_EXECUTABLE);
             }
             Lookup::NotFound => {
                 io.say(format!("oh-my-shell: {name}: not found"));
-                return ExitStatus::NOT_FOUND;
+                return Err(ExitStatus::NOT_FOUND);
             }
         };
         let Some(argv) = to_cstrings(words) else {
             io.say(format!("oh-my-shell: {name}: an argument holds a NUL byte"));
-            return ExitStatus::NOT_EXECUTABLE;
+            return Err(ExitStatus::NOT_EXECUTABLE);
         };
         let Ok(path) = CString::new(file.as_os_str().as_bytes()) else {
             io.say(format!("oh-my-shell: {name}: the path holds a NUL byte"));
-            return ExitStatus::NOT_EXECUTABLE;
+            return Err(ExitStatus::NOT_EXECUTABLE);
         };
         let cwd = self
             .cwd_override
             .as_ref()
             .and_then(|dir| CString::new(OsStr::as_bytes(dir.as_os_str())).ok());
-        let envp = self.vars.envp(&[]);
+        Ok(Program {
+            name,
+            path,
+            argv,
+            envp: self.vars.envp(&[]),
+            cwd,
+            umask: self.umask_override,
+            ignored: self.traps.ignored_mask(),
+        })
+    }
 
-        let request = ExecRequest {
-            path: &path,
-            argv: &argv,
-            envp: &envp,
-            cwd: cwd.as_deref(),
+    /// Starts a program and waits for it. Returns its status. Problems are reported to
+    /// descriptor 2 of `io`.
+    fn run_external(&mut self, words: &[Vec<u8>], io: &Io) -> ExitStatus {
+        match self.prepare_external(words, io) {
+            Ok(program) => run_program(&program, io),
+            Err(status) => status,
+        }
+    }
+
+    /// `exec command args`: the shell becomes the program. In a copy of the shell (a
+    /// subshell, a pipeline stage) that cannot be done, because the copy is a thread and
+    /// `execve` would replace the whole process: the program runs, and the copy ends with
+    /// its status. If the program cannot be started, the shell goes on.
+    pub(crate) fn replace_with(&mut self, words: &[Vec<u8>], io: &Io) -> Flow {
+        let program = match self.prepare_external(words, io) {
+            Ok(program) => program,
+            Err(status) => return Ok(status),
         };
+        if self.in_subshell {
+            return Err(Unwind::Exit(run_program(&program, io)));
+        }
         let mut plan = io.plan();
-        match spawn(&request, &mut plan) {
-            Ok(ending) => {
-                // A program that survived Ctrl+C dealt with it itself. One that died of it
-                // leaves the flag set, which stops the rest of the line, as in bash.
-                let died_of_it = matches!(
-                    ending,
-                    Termination::Signaled { signal, .. } if signal == libc::SIGINT
-                );
-                if signals::interrupted() && !died_of_it {
-                    signals::clear_interrupt();
-                }
-                if let Some(line) = ending.describe(&name) {
-                    io.say(line);
-                }
-                ending.status()
+        let errno = replace_process(&program.request(), &mut plan);
+        Ok(report_exec_failure(&program.name, errno, io))
+    }
+}
+
+/// A program ready to start: the strings that `execve` takes, built before any `fork`.
+struct Program {
+    name: String,
+    path: CString,
+    argv: Vec<CString>,
+    envp: Vec<CString>,
+    cwd: Option<CString>,
+    umask: Option<u32>,
+    ignored: u64,
+}
+
+impl Program {
+    fn request(&self) -> ExecRequest<'_> {
+        ExecRequest {
+            path: &self.path,
+            argv: &self.argv,
+            envp: &self.envp,
+            cwd: self.cwd.as_deref(),
+            umask: self.umask,
+            ignored: self.ignored,
+        }
+    }
+}
+
+/// Starts the program, waits for it, and reports how it ended.
+fn run_program(program: &Program, io: &Io) -> ExitStatus {
+    let name = &program.name;
+    let mut plan = io.plan();
+    match spawn(&program.request(), &mut plan) {
+        Ok(ending) => {
+            // A program that survived Ctrl+C dealt with it itself. One that died of it
+            // leaves the flag set, which stops the rest of the line, as in bash.
+            let died_of_it = matches!(
+                ending,
+                Termination::Signaled { signal, .. } if signal == libc::SIGINT
+            );
+            if signals::interrupted() && !died_of_it {
+                signals::clear_interrupt();
             }
-            Err(SpawnFailure::Exec(errno)) => report_exec_failure(&name, errno, io),
-            Err(SpawnFailure::Fork(errno)) => {
-                io.say(format!(
-                    "oh-my-shell: cannot start {name}: {}",
-                    errno.desc()
-                ));
-                ExitStatus::NOT_EXECUTABLE
+            if let Some(line) = ending.describe(name) {
+                io.say(line);
             }
+            ending.status()
+        }
+        Err(SpawnFailure::Exec(errno)) => report_exec_failure(name, errno, io),
+        Err(SpawnFailure::Fork(errno)) => {
+            io.say(format!(
+                "oh-my-shell: cannot start {name}: {}",
+                errno.desc()
+            ));
+            ExitStatus::NOT_EXECUTABLE
         }
     }
 }

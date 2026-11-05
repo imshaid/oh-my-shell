@@ -59,12 +59,20 @@ fn expand_text(
     // Everything before this position is already in `out` or was handled with a replacement.
     let mut cursor = 0;
     let mut changed = false;
-    for piece in lex_for_highlight(src).spans {
+    let spans = lex_for_highlight(src).spans;
+    for (index, piece) in spans.iter().enumerate() {
         if piece.kind != HighlightKind::Command || piece.span.start < cursor {
             continue;
         }
         let (start, end) = (piece.span.start, piece.span.end);
-        if !whole_word(bytes, start, end) {
+        // Something right in front of the piece that is not an operator belongs to the same
+        // word: the `$(:)` of `$(:)ll`, the quotes of `"x"ll`.
+        let joined_to_before = index > 0
+            && spans[index - 1].span.end == start
+            && spans[index - 1].kind != HighlightKind::Operator
+            // The `$(` that opens a substitution is no part of the word inside it.
+            && bytes[start - 1] != b'(';
+        if joined_to_before || !whole_word(bytes, end, bytes.len()) {
             continue;
         }
         let Some(mut value) = lookup(aliases, &src[start..end], blocked) else {
@@ -119,13 +127,11 @@ fn lookup<'a>(
     aliases.get(word).map(String::as_str)
 }
 
-/// True if `start..end` is a whole word: nothing that belongs to the word comes right before
-/// or after it. The highlighter gives a quoted part of a word its own span, so `ll"x"` has a
-/// command span `ll` that is not the word.
-fn whole_word(bytes: &[u8], start: usize, end: usize) -> bool {
-    let before = start == 0 || b" \t\n;&|()".contains(&bytes[start - 1]);
-    let after = end >= bytes.len() || DELIMITERS.contains(&bytes[end]);
-    before && after
+/// True if the word that ends at `end` ends there: the next byte is not part of it. The
+/// highlighter gives a quoted part of a word its own span, so `ll"x"` has a command span `ll`
+/// that is not the whole word.
+fn whole_word(bytes: &[u8], end: usize, _len: usize) -> bool {
+    end >= bytes.len() || DELIMITERS.contains(&bytes[end])
 }
 
 #[cfg(test)]
@@ -170,6 +176,19 @@ mod tests {
         assert_eq!(expand(&a, "ll\"x\""), "ll\"x\"");
         assert_eq!(expand(&a, "if true; then :; fi"), "if true; then :; fi");
         assert_eq!(expand(&a, "echo x > ll"), "echo x > ll");
+    }
+
+    #[test]
+    fn something_joined_to_the_front_of_the_word_stops_it_being_an_alias() {
+        let a = [("ll", "ls -l")];
+        assert_eq!(expand(&a, "$(:)ll hi"), "$(:)ll hi");
+        assert_eq!(expand(&a, "\"x\"ll hi"), "\"x\"ll hi");
+        assert_eq!(expand(&a, "x\\ll hi"), "x\\ll hi");
+        assert_eq!(expand(&a, "(ll)"), "(ls -l)");
+        assert_eq!(
+            expand(&a, "case x in x)ll;; esac"),
+            "case x in x)ls -l;; esac"
+        );
     }
 
     #[test]

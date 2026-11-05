@@ -18,7 +18,7 @@ use nix::fcntl::OFlag;
 use nix::unistd::pipe2;
 use omsh_syntax::ast::Command;
 
-use super::{Flow, Unwind, boundary};
+use super::{Flow, Unwind};
 use crate::io::Io;
 use crate::shell::Shell;
 use crate::signals;
@@ -59,7 +59,8 @@ impl Shell {
                     thread::Builder::new()
                         .stack_size(STAGE_STACK)
                         .spawn_scoped(scope, move || {
-                            let status = boundary(stage.run_command(command, &table));
+                            let flow = stage.run_command(command, &table);
+                            let status = stage.finish_copy(flow, &table);
                             // The table goes away here, which closes this stage's ends of
                             // the pipes.
                             drop(table);

@@ -16,6 +16,7 @@ use crate::options::Options;
 use crate::path::PathCache;
 use crate::signals;
 use crate::status::ExitStatus;
+use crate::traps::Traps;
 use crate::vars::Variables;
 
 /// What the shell does after a line.
@@ -71,6 +72,23 @@ pub struct Shell {
     /// Aliases by name. They are replaced in the text of a line before it is parsed (see
     /// `alias.rs`).
     pub(crate) aliases: BTreeMap<String, String>,
+    /// The traps set with `trap`.
+    pub(crate) traps: Traps,
+    /// True while the command of a trap runs, so that a trap does not run inside itself.
+    pub(crate) running_trap: bool,
+    /// Changes to the files of the commands that `exec` (with no command) has made and that
+    /// the code running the following commands has not taken over yet. Each list of commands
+    /// applies them to its own table; the top of the line applies what is left to the table it
+    /// was given, so they last from line to line. A copy of the shell starts with none and
+    /// loses them at its end.
+    pub(crate) fd_changes: Vec<(u32, Option<crate::io::Slot>)>,
+    /// The file creation mask of a copy of the shell that used `umask`, when it is not the
+    /// process's. Like the working directory, the mask belongs to the whole process, so a
+    /// copy (which runs on a thread next to others) keeps its own and tells its children and
+    /// the files it creates itself.
+    pub(crate) umask_override: Option<u32>,
+    /// The directories to search for a program while `command -p` runs it.
+    pub(crate) path_override: Option<Vec<u8>>,
     /// The options set with `set`.
     pub(crate) options: Options,
     /// More than 0 while a failing command must not end the shell under `-e`: in a condition,
@@ -107,7 +125,29 @@ impl Shell {
     pub fn new() -> Self {
         let mut shell = Self::with_variables(Variables::from_process());
         shell.init_pwd();
+        shell.init_environment();
         shell
+    }
+
+    /// `SHLVL` goes up by one for each shell inside another (a missing or bad value counts as
+    /// 0), and `OMSH_VERSION` tells programs which shell they run under. Both are exported.
+    /// `SHELL` is left as the system gave it.
+    fn init_environment(&mut self) {
+        let level = self
+            .vars
+            .get("SHLVL")
+            .and_then(|v| std::str::from_utf8(v).ok())
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .filter(|n| *n >= 0)
+            .map_or(1, |n| n.saturating_add(1));
+        // The variables come from the environment, so none is read only yet.
+        let _ = self.vars.set("SHLVL", level.to_string().into_bytes());
+        self.vars.export("SHLVL");
+        let _ = self.vars.set(
+            "OMSH_VERSION",
+            env!("CARGO_PKG_VERSION").as_bytes().to_vec(),
+        );
+        self.vars.export("OMSH_VERSION");
     }
 
     /// A shell with the given variables.
@@ -123,6 +163,11 @@ impl Shell {
             cmdsub_status: None,
             functions: HashMap::new(),
             aliases: BTreeMap::new(),
+            traps: Traps::default(),
+            running_trap: false,
+            fd_changes: Vec::new(),
+            umask_override: None,
+            path_override: None,
             options: Options::default(),
             errexit_off: 0,
             cwd_override: None,
@@ -156,7 +201,8 @@ impl Shell {
             return;
         }
         if let Ok(dir) = std::env::current_dir() {
-            self.vars.set("PWD", dir.as_os_str().as_bytes().to_vec());
+            // The variables come from the environment, so none is read only yet.
+            let _ = self.vars.set("PWD", dir.as_os_str().as_bytes().to_vec());
             self.vars.export("PWD");
         }
     }
@@ -183,6 +229,8 @@ impl Shell {
     pub(crate) fn subshell(&self) -> Self {
         let mut copy = self.clone();
         copy.in_subshell = true;
+        copy.fd_changes.clear();
+        copy.traps = self.traps.for_subshell();
         if copy.cwd_override.is_none() {
             copy.cwd_override = std::env::current_dir().ok();
         }
@@ -204,7 +252,7 @@ impl Shell {
     ///
     /// Messages from the shell itself ("not found", "killed by SIGSEGV") go to descriptor 2
     /// of `io`.
-    pub fn run_source(&mut self, src: &str, at_end: bool, io: &Io) -> LineResult {
+    pub fn run_source(&mut self, src: &str, at_end: bool, io: &mut Io) -> LineResult {
         let src = &*self.expand_aliases(src).into_owned();
         let list = match parse(src) {
             Ok(list) => list,
@@ -231,10 +279,15 @@ impl Shell {
     ///
     /// Returns [`NotYet`] if the list holds something this shell cannot run yet. This is
     /// checked for the whole list first, so in that case nothing has run.
-    pub fn run(&mut self, list: &List, io: &Io) -> Result<Outcome, NotYet> {
+    pub fn run(&mut self, list: &List, io: &mut Io) -> Result<Outcome, NotYet> {
         check_list(list)?;
         signals::clear_interrupt();
-        let outcome = match self.run_list(list, io) {
+        let result = self.run_list(list, io);
+        // `exec 3>file` changes the files of everything that comes after it, also on the next
+        // line.
+        io.apply(&self.fd_changes);
+        self.fd_changes.clear();
+        let outcome = match result {
             Ok(status) => {
                 // A program killed by Ctrl+C ended the line's last command: the terminal
                 // has echoed `^C`, so move to a new line, as other shells do.
@@ -290,8 +343,8 @@ mod tests {
 
     /// Runs a line and returns the result and what was written to descriptor 2.
     fn run(shell: &mut Shell, src: &str) -> (LineResult, String) {
-        let captured = Captured::new();
-        let result = shell.run_source(src, true, &captured.io);
+        let mut captured = Captured::new();
+        let result = shell.run_source(src, true, &mut captured.io);
         (result, captured.stderr())
     }
 
@@ -398,13 +451,13 @@ mod tests {
     #[test]
     fn an_unfinished_line_waits_unless_the_input_has_ended() {
         let mut sh = shell();
-        let captured = Captured::new();
+        let mut captured = Captured::new();
         assert!(matches!(
-            sh.run_source("echo 'a", false, &captured.io),
+            sh.run_source("echo 'a", false, &mut captured.io),
             LineResult::Incomplete
         ));
         assert!(matches!(
-            sh.run_source("echo 'a", true, &captured.io),
+            sh.run_source("echo 'a", true, &mut captured.io),
             LineResult::Rejected(_)
         ));
         assert_eq!(sh.last_status(), ExitStatus::USAGE);

@@ -31,8 +31,8 @@ fn shell() -> Shell {
 }
 
 fn run(sh: &mut Shell, src: &str) -> Done {
-    let captured = Captured::new();
-    let result = sh.run_source(src, true, &captured.io);
+    let mut captured = Captured::new();
+    let result = sh.run_source(src, true, &mut captured.io);
     let (status, exited) = match result {
         LineResult::Ran(Outcome::Continue(s)) => (s.code(), false),
         LineResult::Ran(Outcome::Exit(s)) => (s.code(), true),
@@ -76,7 +76,8 @@ impl Dir {
         let mut sh = shell();
         sh.cwd_override = Some(self.0.clone());
         sh.vars
-            .set("PWD", self.0.as_os_str().as_encoded_bytes().to_vec());
+            .set("PWD", self.0.as_os_str().as_encoded_bytes().to_vec())
+            .unwrap();
         sh
     }
 
@@ -309,7 +310,8 @@ fn the_target_is_expanded_but_not_split_or_globbed() {
     run(&mut sh, "echo z > *.txt");
     assert_eq!(dir.read("*.txt"), "z\n");
     sh.vars
-        .set("HOME", dir.path().as_os_str().as_encoded_bytes().to_vec());
+        .set("HOME", dir.path().as_os_str().as_encoded_bytes().to_vec())
+        .unwrap();
     run(&mut sh, "echo t > ~/tilde.txt");
     assert_eq!(dir.read("tilde.txt"), "t\n");
 }
@@ -716,8 +718,8 @@ fn a_function_comes_before_a_program_and_after_a_special_builtin() {
     assert_eq!(out("cat() { echo mine; }; cat"), "mine\n");
     assert_eq!(out("echo() { printf 'fn\\n'; }; echo x"), "fn\n");
     // A special builtin comes before a function. The parser does not even allow the name.
-    let captured = Captured::new();
-    let result = shell().run_source("export() { echo fn; }", true, &captured.io);
+    let mut captured = Captured::new();
+    let result = shell().run_source("export() { echo fn; }", true, &mut captured.io);
     assert!(matches!(result, LineResult::Rejected(_)));
 }
 
@@ -757,8 +759,8 @@ fn endless_recursion_ends_with_an_error_and_not_with_a_crash() {
             "f() { case x in x) for i in 1; do f; done;; esac; }; f",
         ] {
             let mut sh = shell();
-            let captured = Captured::new();
-            let result = sh.run_source(src, true, &captured.io);
+            let mut captured = Captured::new();
+            let result = sh.run_source(src, true, &mut captured.io);
             assert!(matches!(result, LineResult::Ran(_)), "{src}: {result:?}");
             assert!(
                 captured.stderr().contains("too deeply nested"),
@@ -1311,20 +1313,22 @@ fn cd_updates_pwd_and_oldpwd() {
 fn cd_with_no_argument_goes_home() {
     let dir = Dir::new();
     let mut sh = dir.shell();
-    sh.vars.set(
-        "HOME",
-        dir.path()
-            .join("sub")
-            .as_os_str()
-            .as_encoded_bytes()
-            .to_vec(),
-    );
+    sh.vars
+        .set(
+            "HOME",
+            dir.path()
+                .join("sub")
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec(),
+        )
+        .unwrap();
     run(&mut sh, "cd");
     assert_eq!(
         run(&mut sh, "pwd").out,
         format!("{}\n", dir.path().join("sub").display())
     );
-    sh.vars.unset("HOME");
+    sh.vars.unset("HOME").unwrap();
     let d = run(&mut sh, "cd");
     assert_eq!(d.status, 1);
     assert!(d.err.contains("HOME not set"), "{}", d.err);

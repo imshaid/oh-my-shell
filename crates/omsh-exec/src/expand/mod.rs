@@ -25,7 +25,6 @@ use nix::fcntl::OFlag;
 use nix::unistd::{pipe2, read};
 use omsh_syntax::ast::{Assignment, List, PartKind, Word, WordPart};
 
-use crate::exec::boundary;
 use crate::io::Io;
 use crate::shell::Shell;
 
@@ -222,7 +221,10 @@ impl Expander<'_> {
         let mut out = Vec::with_capacity(assignments.len());
         for assignment in assignments {
             let value = self.string(&assignment.value.parts, Ctx::ASSIGNMENT)?;
-            self.shell.vars.set(&assignment.name, value.clone());
+            self.shell
+                .vars
+                .set(&assignment.name, value.clone())
+                .map_err(|_| ExpandError(format!("{}: is read only", assignment.name)))?;
             out.push((assignment.name.clone(), value));
         }
         Ok(out)
@@ -361,9 +363,11 @@ impl Expander<'_> {
                 return crate::status::ExitStatus(1);
             }
             let flow = copy.run_list(list, &table);
+            // The `EXIT` trap of the substitution writes to the same pipe.
+            let status = copy.finish_copy(flow, &table);
             // Let go of the writing end, or the reader never sees the end of the output.
             drop(table);
-            boundary(flow)
+            status
         });
         self.shell.cmdsub_status = Some(status);
         while output.last() == Some(&b'\n') {
