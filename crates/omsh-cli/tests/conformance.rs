@@ -1313,8 +1313,6 @@ fn test_behaves_like_sh() -> io::Result<()> {
         "test -O f.txt; echo \"test:$?\"\n[ -O f.txt ]; echo \"bracket:$?\"\n",
         "test -G f.txt; echo \"test:$?\"\n[ -G f.txt ]; echo \"bracket:$?\"\n",
         "test -t 99; echo \"test:$?\"\n[ -t 99 ]; echo \"bracket:$?\"\n",
-        "test f.txt -nt nosuch; echo \"test:$?\"\n[ f.txt -nt nosuch ]; echo \"bracket:$?\"\n",
-        "test nosuch -ot f.txt; echo \"test:$?\"\n[ nosuch -ot f.txt ]; echo \"bracket:$?\"\n",
         "test f.txt -ef f.txt; echo \"test:$?\"\n[ f.txt -ef f.txt ]; echo \"bracket:$?\"\n",
         "test f.txt -ef ./f.txt; echo \"test:$?\"\n[ f.txt -ef ./f.txt ]; echo \"bracket:$?\"\n",
         "test a = a -a b = b; echo \"test:$?\"\n[ a = a -a b = b ]; echo \"bracket:$?\"\n",
@@ -1504,11 +1502,57 @@ fn set_options_behave_like_sh() -> io::Result<()> {
         "set +e\n",
         "set +o | head -5\n",
         "set -- a b\nset -\necho $#\n",
-        "set -o pipefail\nfalse | true; echo $?\ntrue | false | true; echo $?\n/bin/sh -c 'exit 3' | false | true; echo $?\n",
-        "set -eo pipefail\nfalse | true\necho not\n",
-        "set -o pipefail\nset +o pipefail\nfalse | true; echo $?\n",
-        "set -o pipefail\nset -o | grep pipefail\nset +o | grep pipefail\n",
     ])
+}
+
+/// `set -o pipefail` is not compared with `/bin/sh`: dash only has it since Debian's 0.5.12-7
+/// (Ubuntu 24.04, which CI runs on, ships an older build that says "Illegal option -o pipefail").
+/// The expected output is what bash prints.
+#[test]
+fn pipefail_reports_the_last_failing_stage() -> io::Result<()> {
+    assert_eq!(
+        output_of(
+            "set -o pipefail\nfalse | true; echo $?\ntrue | false | true; echo $?\n\
+             /bin/sh -c 'exit 3' | true; echo $?\n/bin/sh -c 'exit 3' | false | true; echo $?\n"
+        )?,
+        "1\n1\n3\n1\n"
+    );
+    assert_eq!(
+        output_of("set -o pipefail\nset +o pipefail\nfalse | true; echo $?\n")?,
+        "0\n"
+    );
+    assert_eq!(
+        output_of("set -o pipefail\nset -o | grep pipefail\nset +o | grep pipefail\n")?,
+        "pipefail        on\nset -o pipefail\n"
+    );
+    Ok(())
+}
+
+/// With `-e`, a failing stage ends the shell when `pipefail` is on.
+#[test]
+fn errexit_with_pipefail_ends_the_shell() -> io::Result<()> {
+    let sandbox = Sandbox::new()?;
+    let out = sandbox.run(OMSH, b"set -eo pipefail\nfalse | true\necho not\n")?;
+    assert!(out.stdout.is_empty());
+    assert_eq!(out.status.code(), Some(1));
+    Ok(())
+}
+
+/// `test f -nt g` and `-ot` with a missing file follow POSIX.1-2024 and bash: an existing file
+/// is newer than a missing one. They are not compared with `/bin/sh`, because dash changed this
+/// in Debian's 0.5.12-10 and older builds (Ubuntu 24.04, used by CI) answer 1.
+#[test]
+fn newer_and_older_than_follow_posix_2024_for_missing_files() -> io::Result<()> {
+    let out = output_of(
+        "touch f.txt\ntouch -d 2001-01-01 old.txt\n\
+         test f.txt -nt nosuch; echo $?\n[ nosuch -ot f.txt ]; echo $?\n\
+         test nosuch -nt f.txt; echo $?\ntest f.txt -ot nosuch; echo $?\n\
+         test nosuch -nt nosuch2; echo $?\n\
+         test f.txt -nt old.txt; echo $?\ntest old.txt -nt f.txt; echo $?\n\
+         test old.txt -ot f.txt; echo $?\n",
+    )?;
+    assert_eq!(out, "0\n0\n1\n1\n1\n0\n1\n0\n");
+    Ok(())
 }
 
 /// `type`, `command` and `hash` (S07b). The "tracked alias" wording of dash is avoided here: see the direct test.
