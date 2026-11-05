@@ -1312,16 +1312,46 @@ fn a_failed_cd_gives_1() -> io::Result<()> {
 
 /// A program receives the descriptors of its table and nothing else, whatever pipes, here
 /// documents and substitutions the shell has open around it.
+///
+/// A descriptor that the test environment itself hands down without close-on-exec (the CI
+/// runner passes two, 142 and 145) reaches every program, as it does in bash and dash: a
+/// shell does not close what it inherited. So the test asks `/bin/sh` which numbers above 2
+/// the environment provides and does not count those as strays.
 #[test]
 fn a_program_inherits_no_stray_descriptors() -> io::Result<()> {
-    let out = output_of(
+    let sandbox = Sandbox::new()?;
+    let list = |program: &str, input: &str| -> io::Result<Vec<String>> {
+        let out = sandbox.run(program, input.as_bytes())?;
+        assert_eq!(out.status.code(), Some(0), "{input:?}");
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect())
+    };
+    let inherited: Vec<String> = list("/bin/sh", "ls /proc/$$/fd\n")?
+        .into_iter()
+        .filter(|fd| !matches!(fd.as_str(), "0" | "1" | "2"))
+        .collect();
+    let seen = list(
+        OMSH,
         "sh -c 'ls /proc/$$/fd'\n\
          echo x | sh -c 'ls /proc/$$/fd'\n\
          sh -c 'ls /proc/$$/fd' <<EOF\nbody\nEOF\n\
          y=$(sh -c 'ls /proc/$$/fd'); echo $y\n\
          sh -c 'ls /proc/$$/fd' 3>/dev/null\n",
     )?;
-    assert_eq!(out, "0\n1\n2\n0\n1\n2\n0\n1\n2\n0 1 2\n0\n1\n2\n3\n");
+    let strays: Vec<&str> = seen
+        .iter()
+        .map(String::as_str)
+        .filter(|fd| !inherited.iter().any(|known| known == fd))
+        .collect();
+    assert_eq!(
+        strays,
+        [
+            "0", "1", "2", "0", "1", "2", "0", "1", "2", "0", "1", "2", "0", "1", "2", "3"
+        ],
+        "all: {seen:?}, provided by the environment: {inherited:?}"
+    );
     Ok(())
 }
 
