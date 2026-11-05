@@ -43,6 +43,7 @@ fn stdin_without_buffer() -> io::Result<File> {
 
 fn run_on(mut input: impl Read, interactive: bool, style: Style) -> ExitStatus {
     let mut shell = Shell::new();
+    shell.set_interactive(interactive);
     let mut err = io::stderr();
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();

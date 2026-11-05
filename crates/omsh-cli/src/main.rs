@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-/// An interactive Linux shell in early development. It runs simple commands only: no pipes,
-/// redirections, variables or globbing yet.
+/// An interactive Linux shell in early development. It runs simple commands with the usual
+/// expansions (variables, `$(...)`, arithmetic, globbing), but has no pipes or redirections yet.
 #[derive(Debug, Parser)]
 #[command(name = "oh-my-shell", version)]
 struct Cli {}

@@ -48,11 +48,18 @@ pub enum SpawnFailure {
 
 /// Runs a program in a child process and waits until it ends.
 ///
+/// With `capture`, the program's standard output goes to a pipe that this function reads
+/// while the program runs, and the bytes are added to the buffer. This is how `$(...)` gets
+/// the output of its commands.
+///
 /// # Errors
 ///
 /// Returns [`SpawnFailure`] if the child could not be created or the program could not be
 /// started.
-pub fn run(request: &ExecRequest<'_>) -> Result<Termination, SpawnFailure> {
+pub fn run(
+    request: &ExecRequest<'_>,
+    capture: Option<&mut Vec<u8>>,
+) -> Result<Termination, SpawnFailure> {
     // Everything the child needs is made here, before the fork.
     let argv = pointers(request.argv);
     let envp = pointers(request.envp);
@@ -61,17 +68,32 @@ pub fn run(request: &ExecRequest<'_>) -> Result<Termination, SpawnFailure> {
 
     let (report_read, report_write) = pipe2(OFlag::O_CLOEXEC).map_err(SpawnFailure::Fork)?;
     let report_fd = report_write.as_raw_fd();
+    let capture_pipe = if capture.is_some() {
+        Some(pipe2(OFlag::O_CLOEXEC).map_err(SpawnFailure::Fork)?)
+    } else {
+        None
+    };
+    let stdout_fd = capture_pipe.as_ref().map_or(-1, |(_, w)| w.as_raw_fd());
 
     // SAFETY: the child only runs `exec_child`, which makes raw system calls that are
     // async-signal-safe and never returns. Nothing that could hold a lock or allocate runs
     // between `fork` and `execve`.
     let forked = unsafe { fork() }.map_err(SpawnFailure::Fork)?;
     match forked {
-        ForkResult::Child => exec_child(request.path, &argv, &envp, &fallback, report_fd),
+        ForkResult::Child => {
+            exec_child(request.path, &argv, &envp, &fallback, report_fd, stdout_fd)
+        }
         ForkResult::Parent { child } => {
             // Our copy of the write end must close, or the read below would never see the end.
             drop(report_write);
+            let capture_read = capture_pipe.map(|(read_end, write_end)| {
+                drop(write_end);
+                read_end
+            });
             let failure = read_report(&report_read);
+            if let (Some(read_end), Some(buffer)) = (capture_read, capture) {
+                drain(&read_end, buffer);
+            }
             let ending = wait_for(child);
             match failure {
                 Some(errno) => Err(SpawnFailure::Exec(errno)),
@@ -105,9 +127,10 @@ fn exec_child(
     envp: &[*const c_char],
     fallback: &[*const c_char],
     report_fd: RawFd,
+    stdout_fd: RawFd,
 ) -> ! {
-    // SAFETY: only async-signal-safe calls (`signal`, `sigemptyset`, `sigprocmask`, `execve`,
-    // `write`, `_exit`) on pointers that were made before the fork and stay valid, because the
+    // SAFETY: only async-signal-safe calls (`dup2`, `fcntl`, `signal`, `sigemptyset`,
+    // `sigprocmask`, `execve`, `write`, `_exit`) on pointers that were made before the fork and stay valid, because the
     // parent's memory is copied into the child and nothing frees it here.
     unsafe {
         // The shell ignores SIGINT, SIGQUIT and (through Rust's runtime) SIGPIPE. Ignored
@@ -119,6 +142,21 @@ fn exec_child(
         let mut none: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&raw mut none);
         libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut());
+
+        if stdout_fd >= 0 {
+            // Put the pipe where the program writes its output. `dup2` clears close-on-exec
+            // on the copy; if the pipe already is fd 1 there is no copy, so clear it by hand.
+            let moved = if stdout_fd == 1 {
+                libc::fcntl(1, libc::F_SETFD, 0)
+            } else {
+                libc::dup2(stdout_fd, 1)
+            };
+            if moved == -1 {
+                let bytes = Errno::last_raw().to_ne_bytes();
+                libc::write(report_fd, bytes.as_ptr().cast::<c_void>(), bytes.len());
+                libc::_exit(126);
+            }
+        }
 
         libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
         let mut errno = Errno::last_raw();
@@ -136,6 +174,19 @@ fn exec_child(
             126
         };
         libc::_exit(code)
+    }
+}
+
+/// Reads from `pipe` until the other end is closed, adding everything to `buffer`.
+fn drain(pipe: &impl AsFd, buffer: &mut Vec<u8>) {
+    let mut chunk = [0_u8; 8192];
+    loop {
+        match read(pipe, &mut chunk) {
+            Ok(0) | Err(Errno::EIO) => return,
+            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+            Err(Errno::EINTR) => {}
+            Err(_) => return,
+        }
     }
 }
 
@@ -187,11 +238,14 @@ mod tests {
         let path = CString::new(path).unwrap();
         let argv = cstrings(args);
         let envp = cstrings(&["PATH=/usr/bin:/bin"]);
-        run(&ExecRequest {
-            path: &path,
-            argv: &argv,
-            envp: &envp,
-        })
+        run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+            },
+            None,
+        )
     }
 
     #[test]
@@ -242,11 +296,65 @@ mod tests {
         let path = CString::new("/bin/sh").unwrap();
         let argv = cstrings(&["sh", "-c", "test \"$OMSH_TEST\" = yes"]);
         let envp = cstrings(&["OMSH_TEST=yes"]);
-        let ending = run(&ExecRequest {
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+            },
+            None,
+        );
+        assert_eq!(ending, Ok(Termination::Exited(0)));
+    }
+
+    #[test]
+    fn the_output_of_a_program_can_be_captured() {
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh", "-c", "printf 'one\ntwo'; echo err >&2"]);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let mut out = Vec::new();
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+            },
+            Some(&mut out),
+        );
+        assert_eq!(ending, Ok(Termination::Exited(0)));
+        assert_eq!(out, b"one\ntwo");
+    }
+
+    #[test]
+    fn a_lot_of_captured_output_does_not_block_the_program() {
+        // More than a pipe holds (64 KiB), so the program only finishes if we keep reading.
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh", "-c", "head -c 300000 /dev/zero"]);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let mut out = Vec::new();
+        let request = ExecRequest {
             path: &path,
             argv: &argv,
             envp: &envp,
-        });
-        assert_eq!(ending, Ok(Termination::Exited(0)));
+        };
+        assert_eq!(run(&request, Some(&mut out)), Ok(Termination::Exited(0)));
+        assert_eq!(out.len(), 300_000);
+    }
+
+    #[test]
+    fn a_program_that_cannot_start_captures_nothing() {
+        let path = CString::new("/nonexistent/omsh-test").unwrap();
+        let argv = cstrings(&["x"]);
+        let mut out = Vec::new();
+        let request = ExecRequest {
+            path: &path,
+            argv: &argv,
+            envp: &[],
+        };
+        assert_eq!(
+            run(&request, Some(&mut out)),
+            Err(SpawnFailure::Exec(Errno::ENOENT))
+        );
+        assert!(out.is_empty());
     }
 }

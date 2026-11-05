@@ -6,14 +6,15 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use nix::errno::Errno;
-use omsh_syntax::ast::{Assignment, CommandKind, List, SimpleCommand};
-use omsh_syntax::{Span, SyntaxDiagnostic, parse};
+use omsh_syntax::ast::{CommandKind, List, SimpleCommand};
+use omsh_syntax::{SyntaxDiagnostic, parse};
 
-use crate::env::Environment;
-use crate::expand::{NotYet, Position, expand_word};
+use crate::check::{NotYet, check_list};
+use crate::expand::{ExpandError, Expander};
 use crate::path::{Lookup, PathCache};
 use crate::spawn::{ExecRequest, SpawnFailure, run as spawn};
 use crate::status::ExitStatus;
+use crate::vars::Variables;
 
 /// What the shell does after a line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +23,16 @@ pub enum Outcome {
     Continue(ExitStatus),
     /// The shell should end, with this status.
     Exit(ExitStatus),
+}
+
+impl Outcome {
+    /// The status, whichever way it ended.
+    #[must_use]
+    pub const fn status(self) -> ExitStatus {
+        match self {
+            Self::Continue(status) | Self::Exit(status) => status,
+        }
+    }
 }
 
 /// The result of [`Shell::run_source`].
@@ -37,18 +48,22 @@ pub enum LineResult {
     Rejected(SyntaxDiagnostic),
 }
 
-/// One command, with its words turned into plain text.
-struct Planned {
-    assignments: Vec<(String, String)>,
-    words: Vec<String>,
-}
-
-/// The shell's state: where commands were found, the environment, and the last status.
-#[derive(Debug)]
+/// The shell's state: its variables, where commands were found, and the last status.
+#[derive(Clone, Debug)]
 pub struct Shell {
-    paths: PathCache,
-    env: Environment,
-    status: ExitStatus,
+    pub(crate) paths: PathCache,
+    pub(crate) vars: Variables,
+    pub(crate) status: ExitStatus,
+    /// `$1`, `$2`, ... There is no way to change them yet (`set --` and functions come in
+    /// S07).
+    pub(crate) positional: Vec<Vec<u8>>,
+    /// `$0`.
+    pub(crate) name: Vec<u8>,
+    /// True if a person is typing the commands, which `$-` reports as `i`.
+    pub(crate) interactive: bool,
+    /// The status of the last `$(...)` expanded in the current command. A command made of
+    /// assignments only has this status.
+    pub(crate) cmdsub_status: Option<ExitStatus>,
 }
 
 impl Default for Shell {
@@ -61,17 +76,26 @@ impl Shell {
     /// A shell with the environment of this process.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_environment(Environment::from_process())
+        Self::with_variables(Variables::from_process())
     }
 
-    /// A shell with the given environment.
+    /// A shell with the given variables.
     #[must_use]
-    pub fn with_environment(env: Environment) -> Self {
+    pub fn with_variables(vars: Variables) -> Self {
         Self {
             paths: PathCache::new(),
-            env,
+            vars,
             status: ExitStatus::SUCCESS,
+            positional: Vec::new(),
+            name: b"oh-my-shell".to_vec(),
+            interactive: false,
+            cmdsub_status: None,
         }
+    }
+
+    /// Says whether a person is typing the commands. This only changes what `$-` shows.
+    pub const fn set_interactive(&mut self, interactive: bool) {
+        self.interactive = interactive;
     }
 
     /// The status of the last command (`$?`).
@@ -117,37 +141,107 @@ impl Shell {
     /// Returns [`NotYet`] if the list holds something this shell cannot run yet. This is
     /// checked for the whole list first, so in that case nothing has run.
     pub fn run(&mut self, list: &List, err: &mut dyn Write) -> Result<Outcome, NotYet> {
-        let plan = plan(list)?;
-        for command in &plan {
-            if command.words.first().is_some_and(|w| w == "exit") {
-                return Ok(Outcome::Exit(self.exit_status(&command.words, err)));
+        check_list(list)?;
+        Ok(self.execute(list, err, None))
+    }
+
+    /// Runs a list that [`check_list`] accepted. Each command is expanded just before it
+    /// runs, because it can depend on the commands before it (`x=1; echo $x`).
+    ///
+    /// With `capture`, the output of the programs goes into the buffer instead of to the
+    /// terminal.
+    pub(crate) fn execute(
+        &mut self,
+        list: &List,
+        err: &mut dyn Write,
+        mut capture: Option<&mut Vec<u8>>,
+    ) -> Outcome {
+        for item in &list.items {
+            let command = &item.and_or.first.commands[0];
+            let CommandKind::Simple(simple) = &command.kind else {
+                debug_assert!(false, "check_list lets only simple commands through");
+                continue;
+            };
+            match self.run_simple(simple, err, capture.as_deref_mut()) {
+                Ok(None) => {}
+                Ok(Some(status)) => return Outcome::Exit(status),
+                Err(ExpandError(message)) => {
+                    let _ = writeln!(err, "oh-my-shell: {message}");
+                    self.status = ExitStatus::USAGE;
+                    return Outcome::Continue(ExitStatus::USAGE);
+                }
             }
-            self.status = self.run_command(command, err);
         }
-        Ok(Outcome::Continue(self.status))
+        Outcome::Continue(self.status)
+    }
+
+    /// Runs one simple command. Returns a status if the shell should exit with it.
+    fn run_simple(
+        &mut self,
+        simple: &SimpleCommand,
+        err: &mut dyn Write,
+        capture: Option<&mut Vec<u8>>,
+    ) -> Result<Option<ExitStatus>, ExpandError> {
+        self.cmdsub_status = None;
+        // The words are expanded first, then the values of the assignments.
+        let words = Expander { shell: self, err }.expand_words(&simple.words)?;
+
+        if words.is_empty() {
+            // Only assignments: they stay. The status is that of the last `$(...)`, if any.
+            Expander { shell: self, err }.apply_assignments(&simple.assignments)?;
+            self.status = self.cmdsub_status.unwrap_or(ExitStatus::SUCCESS);
+            return Ok(None);
+        }
+        if words[0] == b"exit" {
+            return Ok(Some(self.exit_status(&words, err)));
+        }
+        if simple.assignments.is_empty() {
+            self.status = self.run_command(&words, &[], err, capture);
+            return Ok(None);
+        }
+        // Assignments in front of a command last for that command only. They are applied to
+        // the variables so that later ones can use earlier ones, and then taken back.
+        let saved = self.vars.clone();
+        let applied = Expander { shell: self, err }.apply_assignments(&simple.assignments);
+        let result = applied.map(|assignments| {
+            self.status = self.run_command(&words, &assignments, err, capture);
+        });
+        self.vars = saved;
+        result.map(|()| None)
     }
 
     /// The status for `exit [n]`.
-    fn exit_status(&self, words: &[String], err: &mut dyn Write) -> ExitStatus {
+    fn exit_status(&self, words: &[Vec<u8>], err: &mut dyn Write) -> ExitStatus {
         let Some(arg) = words.get(1) else {
             return self.status;
         };
-        match arg.parse::<i64>() {
+        match std::str::from_utf8(arg)
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+        {
             // The kernel keeps only the low 8 bits of an exit status.
-            Ok(n) => ExitStatus((n & 0xff) as u8),
-            Err(_) => {
-                let _ = writeln!(err, "oh-my-shell: exit: {arg}: numeric argument required");
+            Some(n) => ExitStatus((n & 0xff) as u8),
+            None => {
+                let _ = writeln!(
+                    err,
+                    "oh-my-shell: exit: {}: numeric argument required",
+                    String::from_utf8_lossy(arg)
+                );
                 ExitStatus::USAGE
             }
         }
     }
 
-    fn run_command(&mut self, command: &Planned, err: &mut dyn Write) -> ExitStatus {
-        let Some(name) = command.words.first() else {
-            return ExitStatus::SUCCESS;
-        };
-        let search_path = self.env.search_path(&command.assignments);
-        let file = match self.paths.lookup(name, &search_path) {
+    fn run_command(
+        &mut self,
+        words: &[Vec<u8>],
+        assignments: &[(String, Vec<u8>)],
+        err: &mut dyn Write,
+        capture: Option<&mut Vec<u8>>,
+    ) -> ExitStatus {
+        let name = String::from_utf8_lossy(&words[0]).into_owned();
+        let search_path = self.vars.search_path(assignments);
+        let file = match self.paths.lookup(&words[0], &search_path) {
             Lookup::Found(file) => file,
             Lookup::Denied(_) => {
                 let _ = writeln!(err, "oh-my-shell: {name}: permission denied");
@@ -158,7 +252,7 @@ impl Shell {
                 return ExitStatus::NOT_FOUND;
             }
         };
-        let Some(argv) = to_cstrings(&command.words) else {
+        let Some(argv) = to_cstrings(words) else {
             let _ = writeln!(err, "oh-my-shell: {name}: an argument holds a NUL byte");
             return ExitStatus::NOT_EXECUTABLE;
         };
@@ -166,21 +260,21 @@ impl Shell {
             let _ = writeln!(err, "oh-my-shell: {name}: the path holds a NUL byte");
             return ExitStatus::NOT_EXECUTABLE;
         };
-        let envp = self.env.envp(&command.assignments);
+        let envp = self.vars.envp(assignments);
 
         let request = ExecRequest {
             path: &path,
             argv: &argv,
             envp: &envp,
         };
-        match spawn(&request) {
+        match spawn(&request, capture) {
             Ok(ending) => {
-                if let Some(line) = ending.describe(name) {
+                if let Some(line) = ending.describe(&name) {
                     let _ = writeln!(err, "{line}");
                 }
                 ending.status()
             }
-            Err(SpawnFailure::Exec(errno)) => report_exec_failure(name, errno, err),
+            Err(SpawnFailure::Exec(errno)) => report_exec_failure(&name, errno, err),
             Err(SpawnFailure::Fork(errno)) => {
                 let _ = writeln!(err, "oh-my-shell: cannot start {name}: {}", errno.desc());
                 ExitStatus::NOT_EXECUTABLE
@@ -208,74 +302,11 @@ fn report_exec_failure(name: &str, errno: Errno, err: &mut dyn Write) -> ExitSta
     }
 }
 
-fn to_cstrings(words: &[String]) -> Option<Vec<CString>> {
+fn to_cstrings(words: &[Vec<u8>]) -> Option<Vec<CString>> {
     words
         .iter()
-        .map(|w| CString::new(w.as_bytes()).ok())
+        .map(|w| CString::new(w.as_slice()).ok())
         .collect()
-}
-
-/// Checks the whole list and expands its words. Nothing runs until this succeeds.
-fn plan(list: &List) -> Result<Vec<Planned>, NotYet> {
-    let mut out = Vec::with_capacity(list.items.len());
-    for item in &list.items {
-        if item.background {
-            return Err(NotYet::new("background jobs", item.span));
-        }
-        let and_or = &item.and_or;
-        if let Some(part) = and_or.rest.first() {
-            return Err(NotYet::new("`&&` and `||`", part.pipeline.span));
-        }
-        let pipeline = &and_or.first;
-        if pipeline.negated {
-            return Err(NotYet::new("`!`", pipeline.span));
-        }
-        let [command] = pipeline.commands.as_slice() else {
-            return Err(NotYet::new("pipelines", pipeline.span));
-        };
-        if let Some(redirect) = command.redirects.first() {
-            return Err(NotYet::new("redirections", redirect.span));
-        }
-        out.push(plan_command(&command.kind, command.span)?);
-    }
-    Ok(out)
-}
-
-fn plan_command(kind: &CommandKind, span: Span) -> Result<Planned, NotYet> {
-    let simple = match kind {
-        CommandKind::Simple(simple) => simple,
-        CommandKind::Subshell(_) => return Err(NotYet::new("subshells", span)),
-        CommandKind::Group(_) => return Err(NotYet::new("command groups", span)),
-        CommandKind::If(_) => return Err(NotYet::new("`if` commands", span)),
-        CommandKind::While(_) | CommandKind::Until(_) | CommandKind::For(_) => {
-            return Err(NotYet::new("loops", span));
-        }
-        CommandKind::Case(_) => return Err(NotYet::new("`case` commands", span)),
-        CommandKind::Function(_) => return Err(NotYet::new("function definitions", span)),
-    };
-    plan_simple(simple, span)
-}
-
-fn plan_simple(simple: &SimpleCommand, span: Span) -> Result<Planned, NotYet> {
-    if simple.words.is_empty() {
-        return Err(NotYet::new("variable assignments", span));
-    }
-    let assignments = simple
-        .assignments
-        .iter()
-        .map(expand_assignment)
-        .collect::<Result<Vec<_>, _>>()?;
-    let words = simple
-        .words
-        .iter()
-        .map(|word| expand_word(word, Position::Argument))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Planned { assignments, words })
-}
-
-fn expand_assignment(assignment: &Assignment) -> Result<(String, String), NotYet> {
-    let value = expand_word(&assignment.value, Position::AssignmentValue)?;
-    Ok((assignment.name.clone(), value))
 }
 
 impl NotYet {
@@ -298,7 +329,7 @@ mod tests {
     use super::*;
 
     fn shell() -> Shell {
-        Shell::with_environment(Environment::from_pairs([("PATH", "/usr/bin:/bin")]))
+        Shell::with_variables(Variables::from_pairs([("PATH", "/usr/bin:/bin")]))
     }
 
     /// Runs a line and returns the result and what was written to `err`.
@@ -458,10 +489,6 @@ mod tests {
             ("for i in a; do b; done", "loops"),
             ("case a in b) c;; esac", "`case` commands"),
             ("f() { a; }", "function definitions"),
-            ("A=1", "variable assignments"),
-            ("echo $x", "parameter expansion"),
-            ("echo *", "pathname expansion"),
-            ("echo ~", "tilde expansion"),
         ] {
             let (result, _) = run(&mut shell(), src);
             let LineResult::Rejected(report) = result else {

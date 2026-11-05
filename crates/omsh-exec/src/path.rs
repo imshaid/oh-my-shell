@@ -1,7 +1,9 @@
 //! Finding a command name in `$PATH`, with a cache.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use nix::unistd::{AccessFlags, access};
@@ -26,10 +28,10 @@ pub enum Lookup {
 /// The cache is keyed by the `PATH` string: a lookup with a different `PATH` empties it first.
 /// A hit is checked again before it is used, so a program that was deleted is searched for
 /// again, and a miss is never stored, so a program that was just installed is found.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PathCache {
-    path_value: String,
-    found: HashMap<String, PathBuf>,
+    path_value: Vec<u8>,
+    found: HashMap<Vec<u8>, PathBuf>,
 }
 
 impl PathCache {
@@ -60,9 +62,9 @@ impl PathCache {
     ///
     /// The first executable regular file wins. If there is none but a regular file with that
     /// name exists, the result is [`Lookup::Denied`], as in bash.
-    pub fn lookup(&mut self, name: &str, path_value: &str) -> Lookup {
-        if name.contains('/') {
-            return Lookup::Found(PathBuf::from(name));
+    pub fn lookup(&mut self, name: &[u8], path_value: &[u8]) -> Lookup {
+        if name.contains(&b'/') {
+            return Lookup::Found(PathBuf::from(OsStr::from_bytes(name)));
         }
         if self.path_value != path_value {
             self.found.clear();
@@ -75,15 +77,16 @@ impl PathCache {
             self.found.remove(name);
         }
         let mut denied = None;
-        for dir in path_value.split(':') {
+        for dir in path_value.split(|&b| b == b':') {
             // An empty entry means the current directory.
+            let name_path = Path::new(OsStr::from_bytes(name));
             let candidate = if dir.is_empty() {
-                Path::new(".").join(name)
+                Path::new(".").join(name_path)
             } else {
-                Path::new(dir).join(name)
+                Path::new(OsStr::from_bytes(dir)).join(name_path)
             };
             if is_executable_file(&candidate) {
-                self.found.insert(name.to_owned(), candidate.clone());
+                self.found.insert(name.to_vec(), candidate.clone());
                 return Lookup::Found(candidate);
             }
             if denied.is_none() && is_regular_file(&candidate) {
@@ -148,7 +151,10 @@ mod tests {
         let in_a = a.file("tool", 0o755);
         b.file("tool", 0o755);
         let path = format!("{}:{}", a.as_str(), b.as_str());
-        assert_eq!(PathCache::new().lookup("tool", &path), Lookup::Found(in_a));
+        assert_eq!(
+            PathCache::new().lookup(b"tool", path.as_bytes()),
+            Lookup::Found(in_a)
+        );
     }
 
     #[test]
@@ -157,7 +163,10 @@ mod tests {
         a.file("tool", 0o644);
         let in_b = b.file("tool", 0o755);
         let path = format!("{}:{}", a.as_str(), b.as_str());
-        assert_eq!(PathCache::new().lookup("tool", &path), Lookup::Found(in_b));
+        assert_eq!(
+            PathCache::new().lookup(b"tool", path.as_bytes()),
+            Lookup::Found(in_b)
+        );
     }
 
     #[test]
@@ -165,7 +174,7 @@ mod tests {
         let a = TempDir::new();
         let file = a.file("tool", 0o644);
         assert_eq!(
-            PathCache::new().lookup("tool", a.as_str()),
+            PathCache::new().lookup(b"tool", a.as_str().as_bytes()),
             Lookup::Denied(file)
         );
     }
@@ -175,7 +184,7 @@ mod tests {
         let a = TempDir::new();
         fs::create_dir(a.0.join("tool")).unwrap();
         assert_eq!(
-            PathCache::new().lookup("tool", a.as_str()),
+            PathCache::new().lookup(b"tool", a.as_str().as_bytes()),
             Lookup::NotFound
         );
     }
@@ -184,7 +193,7 @@ mod tests {
     fn a_missing_command_is_not_found() {
         let a = TempDir::new();
         assert_eq!(
-            PathCache::new().lookup("tool", a.as_str()),
+            PathCache::new().lookup(b"tool", a.as_str().as_bytes()),
             Lookup::NotFound
         );
     }
@@ -193,7 +202,7 @@ mod tests {
     fn a_name_with_a_slash_skips_the_search() {
         let mut cache = PathCache::new();
         assert_eq!(
-            cache.lookup("./nothing/here", ""),
+            cache.lookup(b"./nothing/here", b""),
             Lookup::Found(PathBuf::from("./nothing/here"))
         );
         assert!(cache.is_empty());
@@ -201,7 +210,7 @@ mod tests {
 
     #[test]
     fn an_empty_path_entry_means_the_current_directory() {
-        let found = PathCache::new().lookup("Cargo.toml", "/nonexistent-omsh:");
+        let found = PathCache::new().lookup(b"Cargo.toml", b"/nonexistent-omsh:");
         // Cargo.toml is a regular file but not executable, so it is `Denied`, and that proves
         // that the empty entry was searched in the current directory (the crate's own).
         assert_eq!(found, Lookup::Denied(PathBuf::from("./Cargo.toml")));
@@ -215,21 +224,30 @@ mod tests {
         let path = format!("{}:{}", a.as_str(), b.as_str());
         let mut cache = PathCache::new();
 
-        assert_eq!(cache.lookup("tool", &path), Lookup::Found(in_a.clone()));
+        assert_eq!(
+            cache.lookup(b"tool", path.as_bytes()),
+            Lookup::Found(in_a.clone())
+        );
         assert_eq!(cache.len(), 1);
 
         fs::remove_file(&in_a).unwrap();
-        assert_eq!(cache.lookup("tool", &path), Lookup::Found(in_b));
+        assert_eq!(cache.lookup(b"tool", path.as_bytes()), Lookup::Found(in_b));
     }
 
     #[test]
     fn a_miss_is_not_remembered_so_a_new_program_is_found() {
         let a = TempDir::new();
         let mut cache = PathCache::new();
-        assert_eq!(cache.lookup("tool", a.as_str()), Lookup::NotFound);
+        assert_eq!(
+            cache.lookup(b"tool", a.as_str().as_bytes()),
+            Lookup::NotFound
+        );
 
         let installed = a.file("tool", 0o755);
-        assert_eq!(cache.lookup("tool", a.as_str()), Lookup::Found(installed));
+        assert_eq!(
+            cache.lookup(b"tool", a.as_str().as_bytes()),
+            Lookup::Found(installed)
+        );
     }
 
     #[test]
@@ -239,8 +257,14 @@ mod tests {
         let in_b = b.file("tool", 0o755);
         let mut cache = PathCache::new();
 
-        assert_eq!(cache.lookup("tool", a.as_str()), Lookup::Found(in_a));
-        assert_eq!(cache.lookup("tool", b.as_str()), Lookup::Found(in_b));
+        assert_eq!(
+            cache.lookup(b"tool", a.as_str().as_bytes()),
+            Lookup::Found(in_a)
+        );
+        assert_eq!(
+            cache.lookup(b"tool", b.as_str().as_bytes()),
+            Lookup::Found(in_b)
+        );
         assert_eq!(cache.len(), 1);
     }
 
@@ -249,7 +273,7 @@ mod tests {
         let a = TempDir::new();
         a.file("tool", 0o755);
         let mut cache = PathCache::new();
-        cache.lookup("tool", a.as_str());
+        cache.lookup(b"tool", a.as_str().as_bytes());
         cache.clear();
         assert!(cache.is_empty());
     }
