@@ -16,10 +16,17 @@ mod pattern;
 mod split;
 mod tilde;
 
-use std::io::Write;
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
+use std::thread;
 
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::unistd::{pipe2, read};
 use omsh_syntax::ast::{Assignment, List, PartKind, Word, WordPart};
 
+use crate::exec::boundary;
+use crate::io::Io;
 use crate::shell::Shell;
 
 use self::pattern::Pattern;
@@ -129,6 +136,12 @@ impl Ctx {
         tilde: Tilde::Assignment,
         ..Self::QUOTED
     };
+    /// The target of a redirection and the word of a `case`: like an assignment value, but
+    /// only a tilde at the start counts.
+    const TARGET: Self = Self {
+        tilde: Tilde::Word,
+        ..Self::QUOTED
+    };
     /// The word after `#` or `%`, which is a pattern.
     const PATTERN: Self = Self {
         tilde: Tilde::Off,
@@ -164,8 +177,9 @@ type Result<T> = std::result::Result<T, ExpandError>;
 /// Expands words in the state of a shell.
 pub(crate) struct Expander<'a> {
     pub(crate) shell: &'a mut Shell,
-    /// Where the shell's own messages go, also for commands inside `$(...)`.
-    pub(crate) err: &'a mut dyn Write,
+    /// The files of the command being expanded. The shell's own messages go to its
+    /// descriptor 2, and a command inside `$(...)` starts with the same table.
+    pub(crate) io: &'a Io,
 }
 
 impl Expander<'_> {
@@ -180,7 +194,7 @@ impl Expander<'_> {
             let ifs = self.shell.vars.get("IFS").unwrap_or(DEFAULT_IFS).to_vec();
             for field in fields {
                 for field in split::split(field, &ifs) {
-                    let matches = pathname::expand(&field);
+                    let matches = pathname::expand(&field, self.shell.cwd_override.as_deref());
                     if matches.is_empty() {
                         out.push(field.bytes);
                     } else {
@@ -210,6 +224,17 @@ impl Expander<'_> {
         Ok(out)
     }
 
+    /// Expands a word that stays one piece of text: the target of a redirection and the word
+    /// of a `case`. Quote removal applies; splitting and pathname expansion do not.
+    pub(crate) fn target(&mut self, word: &Word) -> Result<Vec<u8>> {
+        self.string(&word.parts, Ctx::TARGET)
+    }
+
+    /// Expands the body of a here-document that is not quoted.
+    pub(crate) fn heredoc_body(&mut self, parts: &[WordPart]) -> Result<Vec<u8>> {
+        self.string(parts, Ctx::QUOTED)
+    }
+
     /// Expands parts into one piece of text: for the word of `${x:=word}`, an arithmetic
     /// expression, and the like.
     fn string(&mut self, parts: &[WordPart], ctx: Ctx) -> Result<Vec<u8>> {
@@ -227,7 +252,7 @@ impl Expander<'_> {
     }
 
     /// Expands parts as a pattern, in which quoted characters are plain.
-    fn pattern(&mut self, parts: &[WordPart]) -> Result<Pattern> {
+    pub(crate) fn pattern(&mut self, parts: &[WordPart]) -> Result<Pattern> {
         let mut builder = Builder::default();
         self.sequence(parts, &mut builder, Ctx::PATTERN)?;
         let mut bytes = Vec::new();
@@ -310,20 +335,52 @@ impl Expander<'_> {
     /// Runs `$(...)` and returns what it printed, without the final line endings.
     ///
     /// The commands run in this process, on a copy of the shell, so that an assignment or an
-    /// `exit` inside does not reach the outer shell. Only the output of the programs is
-    /// captured: they are started with their standard output on a pipe that this process
-    /// reads.
+    /// `exit` inside does not reach the outer shell. Their standard output is a pipe. A second
+    /// thread reads the pipe while the commands run, because a program that prints more than a
+    /// pipe holds (64 KiB) would otherwise wait for a reader that is waiting for it.
     fn command_substitution(&mut self, list: &List) -> Vec<u8> {
-        let mut copy = self.shell.clone();
+        let Ok((reader, writer)) = pipe2(OFlag::O_CLOEXEC) else {
+            self.io.say("oh-my-shell: cannot make a pipe");
+            return Vec::new();
+        };
+        let mut table = self.io.clone();
+        table.set(1, Arc::new(writer));
+        let mut copy = self.shell.subshell();
         let mut output = Vec::new();
-        let outcome = copy.execute(list, self.err, Some(&mut output));
-        self.shell.cmdsub_status = Some(outcome.status());
+        let status = thread::scope(|scope| {
+            let drain = thread::Builder::new().spawn_scoped(scope, || {
+                drain(&reader, &mut output);
+            });
+            if let Err(error) = drain {
+                self.io
+                    .say(format!("oh-my-shell: cannot read a substitution: {error}"));
+                return crate::status::ExitStatus(1);
+            }
+            let flow = copy.run_list(list, &table);
+            // Let go of the writing end, or the reader never sees the end of the output.
+            drop(table);
+            boundary(flow)
+        });
+        self.shell.cmdsub_status = Some(status);
         while output.last() == Some(&b'\n') {
             output.pop();
         }
         // A shell word cannot hold a NUL byte. dash drops it quietly.
         output.retain(|b| *b != 0);
         output
+    }
+}
+
+/// Reads `pipe` until its writers are gone, adding everything to `buffer`.
+fn drain(pipe: &OwnedFd, buffer: &mut Vec<u8>) {
+    let mut chunk = [0_u8; 8192];
+    loop {
+        match read(pipe, &mut chunk) {
+            Ok(0) => return,
+            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+            Err(Errno::EINTR) => {}
+            Err(_) => return,
+        }
     }
 }
 

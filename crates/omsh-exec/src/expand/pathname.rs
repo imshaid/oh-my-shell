@@ -3,6 +3,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 use super::pattern::Pattern;
 use super::{Field, Kind};
@@ -12,7 +13,16 @@ use super::{Field, Kind};
 ///
 /// Only characters that were not quoted are special. A name that starts with `.` matches only
 /// a pattern that starts with a literal `.`, and `.` and `..` never match a pattern.
-pub(crate) fn expand(field: &Field) -> Vec<Vec<u8>> {
+pub(crate) fn expand(field: &Field, base: Option<&Path>) -> Vec<Vec<u8>> {
+    // Where a relative name is looked for: the working directory of a copy of the shell
+    // when it has its own. The results stay as written, relative.
+    let at = |name: &[u8]| -> PathBuf {
+        let path = Path::new(OsStr::from_bytes(name));
+        match base {
+            Some(base) if path.is_relative() => base.join(path),
+            _ => path.to_path_buf(),
+        }
+    };
     let active: Vec<bool> = field.kinds.iter().map(|k| *k != Kind::Quoted).collect();
     let has_pattern = field
         .bytes
@@ -67,7 +77,7 @@ pub(crate) fn expand(field: &Field) -> Vec<Vec<u8>> {
                 } else {
                     base.as_slice()
                 };
-                let Ok(entries) = fs::read_dir(OsStr::from_bytes(dir)) else {
+                let Ok(entries) = fs::read_dir(at(dir)) else {
                     continue;
                 };
                 for entry in entries.flatten() {
@@ -89,14 +99,14 @@ pub(crate) fn expand(field: &Field) -> Vec<Vec<u8>> {
     }
     if check_at_end {
         // Also what makes `dir/*/` keep directories only: a file cannot be opened as one.
-        found.retain(|path| exists(path));
+        found.retain(|path| exists(&at(path)));
     }
     found.sort();
     found
 }
 
-fn exists(path: &[u8]) -> bool {
-    fs::symlink_metadata(OsStr::from_bytes(path)).is_ok()
+fn exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 #[cfg(test)]
@@ -138,7 +148,7 @@ mod tests {
                 forced: false,
             };
             let prefix = format!("{}/", self.0.display());
-            expand(&field)
+            expand(&field, None)
                 .into_iter()
                 .map(|p| {
                     String::from_utf8_lossy(&p)
@@ -179,7 +189,7 @@ mod tests {
             kinds: vec![Kind::Literal; 5],
             forced: false,
         };
-        assert!(expand(&field).is_empty());
+        assert!(expand(&field, None).is_empty());
     }
 
     #[test]
@@ -194,7 +204,7 @@ mod tests {
             kinds,
             forced: true,
         };
-        assert!(expand(&field).is_empty());
+        assert!(expand(&field, None).is_empty());
     }
 
     #[test]
@@ -243,7 +253,7 @@ mod tests {
             bytes: full.into_bytes(),
             forced: false,
         };
-        let found = expand(&field);
+        let found = expand(&field, None);
         assert_eq!(found.len(), 1);
         assert!(found[0].ends_with(b"bad\xffname"));
     }

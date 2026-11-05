@@ -22,6 +22,7 @@ use nix::libc;
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, fork, pipe2, read};
 
+use crate::io::FdPlan;
 use crate::status::Termination;
 
 /// The shell used to run a file that has no `#!` line, like other shells do.
@@ -35,6 +36,8 @@ pub struct ExecRequest<'a> {
     pub argv: &'a [CString],
     /// The environment, as `NAME=value` strings.
     pub envp: &'a [CString],
+    /// The directory to run in, if it is not the shell's own (a subshell that used `cd`).
+    pub cwd: Option<&'a CStr>,
 }
 
 /// Why a program could not be run.
@@ -48,18 +51,26 @@ pub enum SpawnFailure {
 
 /// Runs a program in a child process and waits until it ends.
 ///
-/// With `capture`, the program's standard output goes to a pipe that this function reads
-/// while the program runs, and the bytes are added to the buffer. This is how `$(...)` gets
-/// the output of its commands.
-///
 /// # Errors
 ///
 /// Returns [`SpawnFailure`] if the child could not be created or the program could not be
 /// started.
-pub fn run(
-    request: &ExecRequest<'_>,
-    capture: Option<&mut Vec<u8>>,
-) -> Result<Termination, SpawnFailure> {
+pub fn run(request: &ExecRequest<'_>, plan: &mut FdPlan) -> Result<Termination, SpawnFailure> {
+    let child = start(request, plan)?;
+    Ok(wait(child))
+}
+
+/// Starts a program in a child process and returns once it is running (`execve` worked).
+/// Call [`wait`] to collect it.
+///
+/// The child first puts the file descriptors in place (`plan`), then changes to the directory
+/// in `request.cwd`, if any.
+///
+/// # Errors
+///
+/// Returns [`SpawnFailure`] if the child could not be created or the program could not be
+/// started. In the second case the child has already been reaped.
+pub fn start(request: &ExecRequest<'_>, plan: &mut FdPlan) -> Result<Pid, SpawnFailure> {
     // Everything the child needs is made here, before the fork.
     let argv = pointers(request.argv);
     let envp = pointers(request.envp);
@@ -68,36 +79,30 @@ pub fn run(
 
     let (report_read, report_write) = pipe2(OFlag::O_CLOEXEC).map_err(SpawnFailure::Fork)?;
     let report_fd = report_write.as_raw_fd();
-    let capture_pipe = if capture.is_some() {
-        Some(pipe2(OFlag::O_CLOEXEC).map_err(SpawnFailure::Fork)?)
-    } else {
-        None
-    };
-    let stdout_fd = capture_pipe.as_ref().map_or(-1, |(_, w)| w.as_raw_fd());
 
     // SAFETY: the child only runs `exec_child`, which makes raw system calls that are
     // async-signal-safe and never returns. Nothing that could hold a lock or allocate runs
     // between `fork` and `execve`.
     let forked = unsafe { fork() }.map_err(SpawnFailure::Fork)?;
     match forked {
-        ForkResult::Child => {
-            exec_child(request.path, &argv, &envp, &fallback, report_fd, stdout_fd)
-        }
+        ForkResult::Child => exec_child(
+            request.path,
+            &argv,
+            &envp,
+            &fallback,
+            report_fd,
+            plan,
+            request.cwd,
+        ),
         ForkResult::Parent { child } => {
             // Our copy of the write end must close, or the read below would never see the end.
             drop(report_write);
-            let capture_read = capture_pipe.map(|(read_end, write_end)| {
-                drop(write_end);
-                read_end
-            });
-            let failure = read_report(&report_read);
-            if let (Some(read_end), Some(buffer)) = (capture_read, capture) {
-                drain(&read_end, buffer);
-            }
-            let ending = wait_for(child);
-            match failure {
-                Some(errno) => Err(SpawnFailure::Exec(errno)),
-                None => Ok(ending),
+            match read_report(&report_read) {
+                Some(errno) => {
+                    wait(child);
+                    Err(SpawnFailure::Exec(errno))
+                }
+                None => Ok(child),
             }
         }
     }
@@ -127,15 +132,19 @@ fn exec_child(
     envp: &[*const c_char],
     fallback: &[*const c_char],
     report_fd: RawFd,
-    stdout_fd: RawFd,
+    plan: &mut FdPlan,
+    cwd: Option<&CStr>,
 ) -> ! {
-    // SAFETY: only async-signal-safe calls (`dup2`, `fcntl`, `signal`, `sigemptyset`,
-    // `sigprocmask`, `execve`, `write`, `_exit`) on pointers that were made before the fork and stay valid, because the
-    // parent's memory is copied into the child and nothing frees it here.
+    // SAFETY: only async-signal-safe calls (`dup2`, `fcntl`, `close`, `chdir`, `signal`,
+    // `sigemptyset`, `sigprocmask`, `execve`, `write`, `_exit`) on pointers and numbers that
+    // were made before the fork and stay valid, because the parent's memory is copied into the
+    // child and nothing frees it here. The plan writes only into its scratch array, which
+    // already has its final size.
     unsafe {
         // The shell ignores SIGINT, SIGQUIT and (through Rust's runtime) SIGPIPE. Ignored
         // signals stay ignored across `execve`, so a program would not die on Ctrl+C or in
-        // `yes | head`. Give them back their default meaning.
+        // `yes | head`. Give them back their default meaning. (The shell catches SIGINT; a
+        // caught signal is reset by `execve` anyway, but it must not run our handler first.)
         libc::signal(libc::SIGINT, libc::SIG_DFL);
         libc::signal(libc::SIGQUIT, libc::SIG_DFL);
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
@@ -143,19 +152,13 @@ fn exec_child(
         libc::sigemptyset(&raw mut none);
         libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut());
 
-        if stdout_fd >= 0 {
-            // Put the pipe where the program writes its output. `dup2` clears close-on-exec
-            // on the copy; if the pipe already is fd 1 there is no copy, so clear it by hand.
-            let moved = if stdout_fd == 1 {
-                libc::fcntl(1, libc::F_SETFD, 0)
-            } else {
-                libc::dup2(stdout_fd, 1)
-            };
-            if moved == -1 {
-                let bytes = Errno::last_raw().to_ne_bytes();
-                libc::write(report_fd, bytes.as_ptr().cast::<c_void>(), bytes.len());
-                libc::_exit(126);
-            }
+        if let Err(errno) = apply_plan(plan) {
+            fail(report_fd, errno);
+        }
+        if let Some(dir) = cwd
+            && libc::chdir(dir.as_ptr()) == -1
+        {
+            fail(report_fd, Errno::last_raw());
         }
 
         libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
@@ -165,8 +168,20 @@ fn exec_child(
             libc::execve(SH.as_ptr(), fallback.as_ptr(), envp.as_ptr());
             errno = Errno::last_raw();
         }
+        fail(report_fd, errno)
+    }
+}
 
-        let bytes = errno.to_ne_bytes();
+/// Tells the parent why the program did not start, and ends the child.
+///
+/// # Safety
+///
+/// Only for the child after `fork`: it calls `write` and `_exit`.
+unsafe fn fail(report_fd: RawFd, errno: i32) -> ! {
+    let bytes = errno.to_ne_bytes();
+    // SAFETY: `write` and `_exit` are async-signal-safe, and `bytes` lives until the call
+    // returns.
+    unsafe {
         libc::write(report_fd, bytes.as_ptr().cast::<c_void>(), bytes.len());
         let code = if errno == libc::ENOENT || errno == libc::ENOTDIR {
             127
@@ -177,17 +192,34 @@ fn exec_child(
     }
 }
 
-/// Reads from `pipe` until the other end is closed, adding everything to `buffer`.
-fn drain(pipe: &impl AsFd, buffer: &mut Vec<u8>) {
-    let mut chunk = [0_u8; 8192];
-    loop {
-        match read(pipe, &mut chunk) {
-            Ok(0) | Err(Errno::EIO) => return,
-            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
-            Err(Errno::EINTR) => {}
-            Err(_) => return,
+/// Puts the file descriptors of `plan` in place, in the child. Returns the error number of
+/// the first call that failed.
+///
+/// # Safety
+///
+/// Only for the child after `fork`: it calls `fcntl`, `dup2` and `close` on the numbers in the
+/// plan.
+unsafe fn apply_plan(plan: &mut FdPlan) -> Result<(), i32> {
+    // SAFETY: those calls are async-signal-safe and take plain numbers. The only memory
+    // written is the plan's scratch array.
+    unsafe {
+        for (slot, (_, source)) in plan.scratch.iter_mut().zip(&plan.pairs) {
+            let copy = libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, plan.floor);
+            if copy == -1 {
+                return Err(Errno::last_raw());
+            }
+            *slot = copy;
+        }
+        for (copy, (target, _)) in plan.scratch.iter().zip(&plan.pairs) {
+            if libc::dup2(*copy, *target) == -1 {
+                return Err(Errno::last_raw());
+            }
+        }
+        for target in &plan.closes {
+            libc::close(*target);
         }
     }
+    Ok(())
 }
 
 /// Reads what the child reported. Nothing means the program started.
@@ -206,7 +238,7 @@ fn read_report(pipe: &impl AsFd) -> Option<Errno> {
 }
 
 /// Waits until `child` is gone and says how it ended.
-fn wait_for(child: Pid) -> Termination {
+pub fn wait(child: Pid) -> Termination {
     loop {
         match waitpid(child, None) {
             Ok(status) => {
@@ -229,45 +261,54 @@ fn wait_for(child: Pid) -> Termination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::capture::Captured;
 
     fn cstrings(items: &[&str]) -> Vec<CString> {
         items.iter().map(|s| CString::new(*s).unwrap()).collect()
     }
 
-    fn run_program(path: &str, args: &[&str]) -> Result<Termination, SpawnFailure> {
+    /// Runs a program with its output captured. Returns how it ended and what it printed.
+    fn run_program(
+        path: &str,
+        args: &[&str],
+        envp: &[&str],
+    ) -> (Result<Termination, SpawnFailure>, String, String) {
         let path = CString::new(path).unwrap();
         let argv = cstrings(args);
-        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
-        run(
+        let envp = cstrings(envp);
+        let captured = Captured::new();
+        let mut plan = captured.io.plan();
+        let ending = run(
             &ExecRequest {
                 path: &path,
                 argv: &argv,
                 envp: &envp,
+                cwd: None,
             },
-            None,
-        )
+            &mut plan,
+        );
+        (ending, captured.stdout(), captured.stderr())
     }
+
+    const PATH: &[&str] = &["PATH=/usr/bin:/bin"];
 
     #[test]
     fn a_program_that_succeeds_ends_with_zero() {
-        assert_eq!(
-            run_program("/bin/sh", &["sh", "-c", "exit 0"]),
-            Ok(Termination::Exited(0))
-        );
+        let (ending, ..) = run_program("/bin/sh", &["sh", "-c", "exit 0"], PATH);
+        assert_eq!(ending, Ok(Termination::Exited(0)));
     }
 
     #[test]
     fn the_exit_code_is_passed_on() {
-        assert_eq!(
-            run_program("/bin/sh", &["sh", "-c", "exit 42"]),
-            Ok(Termination::Exited(42))
-        );
+        let (ending, ..) = run_program("/bin/sh", &["sh", "-c", "exit 42"], PATH);
+        assert_eq!(ending, Ok(Termination::Exited(42)));
     }
 
     #[test]
     fn a_killed_program_reports_the_signal() {
+        let (ending, ..) = run_program("/bin/sh", &["sh", "-c", "kill -TERM $$"], PATH);
         assert_eq!(
-            run_program("/bin/sh", &["sh", "-c", "kill -TERM $$"]),
+            ending,
             Ok(Termination::Signaled {
                 signal: libc::SIGTERM,
                 core_dumped: false
@@ -277,84 +318,155 @@ mod tests {
 
     #[test]
     fn a_missing_file_reports_enoent() {
-        assert_eq!(
-            run_program("/nonexistent/omsh-test", &["x"]),
-            Err(SpawnFailure::Exec(Errno::ENOENT))
-        );
+        let (ending, ..) = run_program("/nonexistent/omsh-test", &["x"], PATH);
+        assert_eq!(ending, Err(SpawnFailure::Exec(Errno::ENOENT)));
     }
 
     #[test]
     fn a_directory_reports_eacces() {
-        assert_eq!(
-            run_program("/tmp", &["x"]),
-            Err(SpawnFailure::Exec(Errno::EACCES))
-        );
+        let (ending, ..) = run_program("/tmp", &["x"], PATH);
+        assert_eq!(ending, Err(SpawnFailure::Exec(Errno::EACCES)));
     }
 
     #[test]
     fn the_environment_reaches_the_program() {
-        let path = CString::new("/bin/sh").unwrap();
-        let argv = cstrings(&["sh", "-c", "test \"$OMSH_TEST\" = yes"]);
-        let envp = cstrings(&["OMSH_TEST=yes"]);
-        let ending = run(
-            &ExecRequest {
-                path: &path,
-                argv: &argv,
-                envp: &envp,
-            },
-            None,
+        let (ending, ..) = run_program(
+            "/bin/sh",
+            &["sh", "-c", "test \"$OMSH_TEST\" = yes"],
+            &["OMSH_TEST=yes"],
         );
         assert_eq!(ending, Ok(Termination::Exited(0)));
     }
 
     #[test]
-    fn the_output_of_a_program_can_be_captured() {
-        let path = CString::new("/bin/sh").unwrap();
-        let argv = cstrings(&["sh", "-c", "printf 'one\ntwo'; echo err >&2"]);
-        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
-        let mut out = Vec::new();
-        let ending = run(
-            &ExecRequest {
-                path: &path,
-                argv: &argv,
-                envp: &envp,
-            },
-            Some(&mut out),
+    fn the_output_of_a_program_goes_where_the_table_says() {
+        let (ending, out, err) = run_program(
+            "/bin/sh",
+            &["sh", "-c", "printf 'one\ntwo'; echo err >&2"],
+            PATH,
         );
         assert_eq!(ending, Ok(Termination::Exited(0)));
-        assert_eq!(out, b"one\ntwo");
+        assert_eq!(out, "one\ntwo");
+        assert_eq!(err, "err\n");
     }
 
     #[test]
-    fn a_lot_of_captured_output_does_not_block_the_program() {
-        // More than a pipe holds (64 KiB), so the program only finishes if we keep reading.
-        let path = CString::new("/bin/sh").unwrap();
-        let argv = cstrings(&["sh", "-c", "head -c 300000 /dev/zero"]);
-        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
-        let mut out = Vec::new();
-        let request = ExecRequest {
-            path: &path,
-            argv: &argv,
-            envp: &envp,
-        };
-        assert_eq!(run(&request, Some(&mut out)), Ok(Termination::Exited(0)));
+    fn a_lot_of_output_does_not_block_the_program() {
+        // More than a pipe holds (64 KiB). A memory file has no such limit, so this checks
+        // that a big write works at all.
+        let (ending, out, _) = run_program(
+            "/bin/sh",
+            &["sh", "-c", "head -c 300000 /dev/zero | tr '\\0' x"],
+            PATH,
+        );
+        assert_eq!(ending, Ok(Termination::Exited(0)));
         assert_eq!(out.len(), 300_000);
     }
 
     #[test]
-    fn a_program_that_cannot_start_captures_nothing() {
-        let path = CString::new("/nonexistent/omsh-test").unwrap();
-        let argv = cstrings(&["x"]);
-        let mut out = Vec::new();
-        let request = ExecRequest {
-            path: &path,
-            argv: &argv,
-            envp: &[],
-        };
-        assert_eq!(
-            run(&request, Some(&mut out)),
-            Err(SpawnFailure::Exec(Errno::ENOENT))
+    fn a_closed_descriptor_is_closed_in_the_program() {
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh", "-c", "echo hi >&2"]);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let mut captured = Captured::new();
+        captured.io.close(2);
+        let mut plan = captured.io.plan();
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+                cwd: None,
+            },
+            &mut plan,
         );
-        assert!(out.is_empty());
+        // The write to the closed descriptor fails, so `echo` reports a failure.
+        assert_ne!(ending, Ok(Termination::Exited(0)));
+    }
+
+    #[test]
+    fn swapping_two_descriptors_works() {
+        // `3>&1 1>&2 2>&3` in the table: 1 and 2 trade places.
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh", "-c", "echo to-one; echo to-two >&2"]);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let mut captured = Captured::new();
+        let one = captured.io.get(1).unwrap().clone();
+        let two = captured.io.get(2).unwrap().clone();
+        captured.io.set(1, two);
+        captured.io.set(2, one);
+        let mut plan = captured.io.plan();
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+                cwd: None,
+            },
+            &mut plan,
+        );
+        assert_eq!(ending, Ok(Termination::Exited(0)));
+        assert_eq!(captured.stdout(), "to-two\n");
+        assert_eq!(captured.stderr(), "to-one\n");
+    }
+
+    #[test]
+    fn a_descriptor_above_two_reaches_the_program() {
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh", "-c", "echo via-three >&3"]);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let mut captured = Captured::new();
+        let one = captured.io.get(1).unwrap().clone();
+        captured.io.set(3, one);
+        let mut plan = captured.io.plan();
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+                cwd: None,
+            },
+            &mut plan,
+        );
+        assert_eq!(ending, Ok(Termination::Exited(0)));
+        assert_eq!(captured.stdout(), "via-three\n");
+    }
+
+    #[test]
+    fn the_program_runs_in_the_given_directory() {
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh", "-c", "pwd -P"]);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let captured = Captured::new();
+        let mut plan = captured.io.plan();
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+                cwd: Some(c"/usr"),
+            },
+            &mut plan,
+        );
+        assert_eq!(ending, Ok(Termination::Exited(0)));
+        assert_eq!(captured.stdout(), "/usr\n");
+    }
+
+    #[test]
+    fn a_missing_directory_is_reported_as_a_failure() {
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(&["sh"]);
+        let captured = Captured::new();
+        let mut plan = captured.io.plan();
+        let ending = run(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &[],
+                cwd: Some(c"/nonexistent-omsh-dir"),
+            },
+            &mut plan,
+        );
+        assert_eq!(ending, Err(SpawnFailure::Exec(Errno::ENOENT)));
     }
 }

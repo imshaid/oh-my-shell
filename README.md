@@ -5,10 +5,12 @@ familiar POSIX shell, helps like fish, and can optionally hand a task to an AI, 
 showing what will happen before anything runs.
 
 **Status: early development.** The `oh-my-shell` binary reads commands from standard input
-and runs simple ones: a program name, arguments and `NAME=value` prefixes, separated by `;`
-or line endings. Words get the usual POSIX expansions: `~`, `$var` and `${var:-x}`, `$(...)`,
-`$((1+2))`, field splitting and globbing. Pipes, redirections, `&&`, job control and the rest
-of the shell language are not there yet, and a line that needs them is refused whole. Do not
+and runs it: pipelines, redirections (including here-documents), `;` `&&` `||` `!`, `( )` and
+`{ }`, `if`, `while`, `until`, `for`, `case` and functions. Words get the usual POSIX
+expansions: `~`, `$var` and `${var:-x}`, `$(...)`, `$((1+2))`, field splitting and globbing.
+The first builtins are there (`cd`, `pwd`, `export`, `unset`, `set --`, `shift`, `echo`,
+`eval`, `.`, `exit`, `return`, `break`, `continue`). Background jobs (`&`), job control, aliases
+and `read` are not there yet, and a line that needs a missing feature is refused whole. Do not
 set it as your login shell.
 
 ## Build and run

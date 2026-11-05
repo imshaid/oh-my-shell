@@ -8,12 +8,17 @@ use crate::path::DEFAULT_PATH;
 /// One variable. Names and values are bytes, because the environment can hold any bytes
 /// except NUL.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Variable {
+pub struct Variable {
     name: Vec<u8>,
-    value: Vec<u8>,
+    /// Nothing for a name that was exported before it got a value (`export X`).
+    value: Option<Vec<u8>>,
     /// True if child processes receive it.
     exported: bool,
 }
+
+/// A variable as `set` and `export -p` list it: name, value (none for an exported name
+/// without one) and whether it is exported.
+pub type Entry<'a> = (&'a [u8], Option<&'a [u8]>, bool);
 
 /// The variable table, in the order the variables were created.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -59,7 +64,67 @@ impl Variables {
     /// The value of a variable, or nothing if it is not set.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.find(name.as_bytes()).map(|v| v.value.as_slice())
+        self.find(name.as_bytes()).and_then(|v| v.value.as_deref())
+    }
+
+    /// True if child processes receive the variable.
+    #[must_use]
+    pub fn is_exported(&self, name: &str) -> bool {
+        self.find(name.as_bytes()).is_some_and(|v| v.exported)
+    }
+
+    /// Marks a variable for export. A name that is not set stays unset, and is exported if
+    /// it gets a value later.
+    pub fn export(&mut self, name: &str) {
+        if let Some(var) = self.find_mut(name.as_bytes()) {
+            var.exported = true;
+        } else {
+            self.vars.push(Variable {
+                name: name.as_bytes().to_vec(),
+                value: None,
+                exported: true,
+            });
+        }
+    }
+
+    /// Removes a variable.
+    pub fn unset(&mut self, name: &str) {
+        self.vars.retain(|v| v.name != name.as_bytes());
+    }
+
+    /// The set variables, sorted by name, with whether each is exported. This is what `set`
+    /// and `export -p` print. A name that is exported and has no value is included with
+    /// `None`.
+    #[must_use]
+    pub fn sorted(&self) -> Vec<Entry<'_>> {
+        let mut out: Vec<_> = self
+            .vars
+            .iter()
+            .map(|v| (v.name.as_slice(), v.value.as_deref(), v.exported))
+            .collect();
+        out.sort_by_key(|(name, ..)| *name);
+        out
+    }
+
+    /// A copy of a variable as it is now, to put back with [`restore`](Self::restore).
+    #[must_use]
+    pub fn snapshot(&self, name: &str) -> Option<Variable> {
+        self.find(name.as_bytes()).cloned()
+    }
+
+    /// Puts a variable back as `snapshot` saw it: with its old value and export flag, or
+    /// removed if it did not exist.
+    pub fn restore(&mut self, name: &str, saved: Option<Variable>) {
+        match saved {
+            Some(var) => {
+                if let Some(slot) = self.find_mut(name.as_bytes()) {
+                    *slot = var;
+                } else {
+                    self.vars.push(var);
+                }
+            }
+            None => self.unset(name),
+        }
     }
 
     /// Sets a variable. One that is exported stays exported; a new one is not exported.
@@ -69,11 +134,11 @@ impl Variables {
 
     fn set_bytes(&mut self, name: &[u8], value: Vec<u8>) {
         if let Some(var) = self.find_mut(name) {
-            var.value = value;
+            var.value = Some(value);
         } else {
             self.vars.push(Variable {
                 name: name.to_vec(),
-                value,
+                value: Some(value),
                 exported: false,
             });
         }
@@ -98,8 +163,8 @@ impl Variables {
         let mut out = Vec::with_capacity(self.vars.len() + overrides.len());
         for var in self.vars.iter().filter(|v| v.exported) {
             let replaced = overrides.iter().any(|(n, _)| n.as_bytes() == var.name);
-            if !replaced {
-                push_entry(&mut out, &var.name, &var.value);
+            if let (false, Some(value)) = (replaced, &var.value) {
+                push_entry(&mut out, &var.name, value);
             }
         }
         for (i, (name, value)) in overrides.iter().enumerate() {
@@ -196,6 +261,48 @@ mod tests {
     fn a_name_that_repeats_in_the_input_is_set_once() {
         let vars = Variables::from_pairs([("A", "1"), ("A", "2")]);
         assert_eq!(strings(&vars.envp(&[])), ["A=2"]);
+    }
+
+    #[test]
+    fn export_marks_a_variable_and_keeps_a_name_without_a_value() {
+        let mut vars = Variables::default();
+        vars.export("X");
+        assert_eq!(vars.get("X"), None);
+        assert!(vars.is_exported("X"));
+        assert!(vars.envp(&[]).is_empty());
+        vars.set("X", b"1".to_vec());
+        assert_eq!(strings(&vars.envp(&[])), ["X=1"]);
+    }
+
+    #[test]
+    fn unset_removes_a_variable() {
+        let mut vars = Variables::from_pairs([("A", "1"), ("B", "2")]);
+        vars.unset("A");
+        assert_eq!(vars.get("A"), None);
+        assert_eq!(strings(&vars.envp(&[])), ["B=2"]);
+    }
+
+    #[test]
+    fn restore_puts_back_the_value_and_the_export_flag() {
+        let mut vars = Variables::from_pairs([("A", "1")]);
+        let old_a = vars.snapshot("A");
+        let old_b = vars.snapshot("B");
+        vars.set("A", b"2".to_vec());
+        vars.set("B", b"3".to_vec());
+        vars.unset("A");
+        vars.restore("A", old_a);
+        vars.restore("B", old_b);
+        assert_eq!(vars.get("A"), Some(&b"1"[..]));
+        assert!(vars.is_exported("A"));
+        assert_eq!(vars.get("B"), None);
+    }
+
+    #[test]
+    fn sorted_lists_names_in_order() {
+        let mut vars = Variables::from_pairs([("B", "2"), ("A", "1")]);
+        vars.export("C");
+        let names: Vec<_> = vars.sorted().iter().map(|(n, ..)| n.to_vec()).collect();
+        assert_eq!(names, [b"A".to_vec(), b"B".to_vec(), b"C".to_vec()]);
     }
 
     #[test]

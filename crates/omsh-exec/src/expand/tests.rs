@@ -4,6 +4,7 @@
 //! the command's output is captured into a variable that the test reads.
 
 use super::*;
+use crate::io::capture::Captured;
 use crate::status::ExitStatus;
 use crate::vars::Variables;
 
@@ -14,15 +15,15 @@ fn shell() -> Shell {
     ]))
 }
 
-/// Runs `src` and returns what the shell printed on its own behalf.
+/// Runs `src` and returns what the shell printed on its own behalf (descriptor 2).
 fn run(shell: &mut Shell, src: &str) -> String {
-    let mut err = Vec::new();
-    let result = shell.run_source(src, true, &mut err);
+    let captured = Captured::new();
+    let result = shell.run_source(src, true, &captured.io);
     assert!(
         matches!(result, crate::LineResult::Ran(_)),
         "not run: {src}: {result:?}"
     );
-    String::from_utf8(err).unwrap()
+    captured.stderr()
 }
 
 fn var(shell: &Shell, name: &str) -> String {
@@ -123,13 +124,10 @@ fn assigning_defaults() {
 #[test]
 fn a_missing_value_with_a_question_mark_is_an_error() {
     let mut sh = shell();
-    let mut err = Vec::new();
-    let result = sh.run_source("x=1; echo ${nope:?it is gone}; x=2", true, &mut err);
+    let captured = Captured::new();
+    let result = sh.run_source("x=1; echo ${nope:?it is gone}; x=2", true, &captured.io);
     assert!(matches!(result, crate::LineResult::Ran(_)));
-    assert_eq!(
-        String::from_utf8(err).unwrap(),
-        "oh-my-shell: nope: it is gone\n"
-    );
+    assert_eq!(captured.stderr(), "oh-my-shell: nope: it is gone\n");
     // The line stopped there.
     assert_eq!(var(&sh, "x"), "1");
     assert_eq!(sh.last_status(), ExitStatus::USAGE);

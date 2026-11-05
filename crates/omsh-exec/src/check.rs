@@ -1,16 +1,20 @@
 //! Checking a parsed line before anything in it runs.
 //!
-//! The parser accepts the whole language, but the executor does not yet. Running the first
-//! half of a line and then refusing the rest would be worse than refusing all of it, so the
-//! whole line (including every `$(...)` inside it) is looked at first.
+//! The parser accepts the whole language, but the executor does not run all of it yet (today
+//! only background jobs, `&`, are missing; S09 adds them). Running the first half of a line
+//! and then refusing the rest would be worse than refusing all of it, so the whole line
+//! (including every `$(...)`, function body and compound command inside it) is looked at
+//! first.
 
 use omsh_syntax::Span;
-use omsh_syntax::ast::{Command, CommandKind, List, PartKind, Pipeline, Word, WordPart};
+use omsh_syntax::ast::{
+    Command, CommandKind, List, PartKind, Pipeline, Redirect, RedirectKind, Word, WordPart,
+};
 
 /// Something the shell cannot run yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NotYet {
-    /// What it is, as a noun phrase: "pipelines" in "pipelines are not implemented yet".
+    /// What it is, as a noun phrase: "background jobs" in "background jobs cannot run yet".
     pub what: &'static str,
     /// Where it is in the line.
     pub span: Span,
@@ -22,51 +26,69 @@ impl NotYet {
     }
 }
 
-/// Looks at every command in `list`, and in the lists inside its words.
+/// Looks at every command in `list`, and in the lists inside its words and compound commands.
 pub(crate) fn check_list(list: &List) -> Result<(), NotYet> {
     for item in &list.items {
         if item.background {
             return Err(NotYet::new("background jobs", item.span));
         }
         let and_or = &item.and_or;
-        if let Some(part) = and_or.rest.first() {
-            return Err(NotYet::new("`&&` and `||`", part.pipeline.span));
-        }
         check_pipeline(&and_or.first)?;
+        for part in &and_or.rest {
+            check_pipeline(&part.pipeline)?;
+        }
     }
     Ok(())
 }
 
 fn check_pipeline(pipeline: &Pipeline) -> Result<(), NotYet> {
-    if pipeline.negated {
-        return Err(NotYet::new("`!`", pipeline.span));
-    }
-    let [command] = pipeline.commands.as_slice() else {
-        return Err(NotYet::new("pipelines", pipeline.span));
-    };
-    check_command(command)
+    pipeline.commands.iter().try_for_each(check_command)
 }
 
 fn check_command(command: &Command) -> Result<(), NotYet> {
-    if let Some(redirect) = command.redirects.first() {
-        return Err(NotYet::new("redirections", redirect.span));
-    }
-    let span = command.span;
-    let simple = match &command.kind {
-        CommandKind::Simple(simple) => simple,
-        CommandKind::Subshell(_) => return Err(NotYet::new("subshells", span)),
-        CommandKind::Group(_) => return Err(NotYet::new("command groups", span)),
-        CommandKind::If(_) => return Err(NotYet::new("`if` commands", span)),
-        CommandKind::While(_) | CommandKind::Until(_) | CommandKind::For(_) => {
-            return Err(NotYet::new("loops", span));
+    command.redirects.iter().try_for_each(check_redirect)?;
+    match &command.kind {
+        CommandKind::Simple(simple) => {
+            for assignment in &simple.assignments {
+                check_word(&assignment.value)?;
+            }
+            simple.words.iter().try_for_each(check_word)
         }
-        CommandKind::Case(_) => return Err(NotYet::new("`case` commands", span)),
-        CommandKind::Function(_) => return Err(NotYet::new("function definitions", span)),
-    };
-    for assignment in &simple.assignments {
-        check_word(&assignment.value)?;
+        CommandKind::Subshell(list) | CommandKind::Group(list) => check_list(list),
+        CommandKind::If(command) => {
+            for branch in &command.branches {
+                check_list(&branch.condition)?;
+                check_list(&branch.body)?;
+            }
+            command.else_body.as_ref().map_or(Ok(()), check_list)
+        }
+        CommandKind::While(command) | CommandKind::Until(command) => {
+            check_list(&command.condition)?;
+            check_list(&command.body)
+        }
+        CommandKind::For(command) => {
+            if let Some(words) = &command.words {
+                words.iter().try_for_each(check_word)?;
+            }
+            check_list(&command.body)
+        }
+        CommandKind::Case(command) => {
+            check_word(&command.word)?;
+            for arm in &command.arms {
+                arm.patterns.iter().try_for_each(check_word)?;
+                check_list(&arm.body)?;
+            }
+            Ok(())
+        }
+        CommandKind::Function(function) => check_command(&function.body),
     }
-    simple.words.iter().try_for_each(check_word)
+}
+
+fn check_redirect(redirect: &Redirect) -> Result<(), NotYet> {
+    match &redirect.kind {
+        RedirectKind::Target { word, .. } => check_word(word),
+        RedirectKind::HereDoc(doc) => check_parts(&doc.body),
+    }
 }
 
 fn check_word(word: &Word) -> Result<(), NotYet> {

@@ -1,18 +1,19 @@
-//! The shell: runs a parsed line, one command after another.
+//! The shell: its state, and the entry points that run a line.
 
-use std::ffi::CString;
-use std::io::Write;
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use nix::errno::Errno;
-use omsh_syntax::ast::{CommandKind, List, SimpleCommand};
+use omsh_syntax::ast::{FunctionDef, List};
 use omsh_syntax::{SyntaxDiagnostic, parse};
 
 use crate::check::{NotYet, check_list};
-use crate::expand::{ExpandError, Expander};
-use crate::path::{Lookup, PathCache};
-use crate::spawn::{ExecRequest, SpawnFailure, run as spawn};
+use crate::exec::Unwind;
+use crate::io::Io;
+use crate::path::PathCache;
+use crate::signals;
 use crate::status::ExitStatus;
 use crate::vars::Variables;
 
@@ -48,14 +49,14 @@ pub enum LineResult {
     Rejected(SyntaxDiagnostic),
 }
 
-/// The shell's state: its variables, where commands were found, and the last status.
+/// The shell's state: its variables, functions, where commands were found, and the last
+/// status.
 #[derive(Clone, Debug)]
 pub struct Shell {
     pub(crate) paths: PathCache,
     pub(crate) vars: Variables,
     pub(crate) status: ExitStatus,
-    /// `$1`, `$2`, ... There is no way to change them yet (`set --` and functions come in
-    /// S07).
+    /// `$1`, `$2`, ...
     pub(crate) positional: Vec<Vec<u8>>,
     /// `$0`.
     pub(crate) name: Vec<u8>,
@@ -64,6 +65,23 @@ pub struct Shell {
     /// The status of the last `$(...)` expanded in the current command. A command made of
     /// assignments only has this status.
     pub(crate) cmdsub_status: Option<ExitStatus>,
+    /// Functions by name. The definitions are shared, so a copy of the shell is cheap.
+    pub(crate) functions: HashMap<String, Arc<FunctionDef>>,
+    /// The working directory of a copy of the shell (a subshell, a pipeline stage, a
+    /// `$(...)`), when it is not the process's. `cd` in a copy must not call `chdir`: the
+    /// working directory belongs to the whole process, which other threads are using. A copy
+    /// keeps its own and tells its children with `chdir` before `execve`.
+    pub(crate) cwd_override: Option<PathBuf>,
+    /// True in a copy of the shell. A write to a closed pipe then ends it like `SIGPIPE`
+    /// ends a process.
+    pub(crate) in_subshell: bool,
+    /// How many lists are being run inside each other. Bounded, so that endless recursion
+    /// ends with an error and not with a stack overflow.
+    pub(crate) depth: u32,
+    /// How many loops are being run inside each other.
+    pub(crate) loop_depth: u32,
+    /// How many functions and sourced files are being run inside each other.
+    pub(crate) func_depth: u32,
 }
 
 impl Default for Shell {
@@ -73,10 +91,13 @@ impl Default for Shell {
 }
 
 impl Shell {
-    /// A shell with the environment of this process.
+    /// A shell with the environment of this process. `PWD` is set from the working
+    /// directory, unless the environment already has a correct one.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_variables(Variables::from_process())
+        let mut shell = Self::with_variables(Variables::from_process());
+        shell.init_pwd();
+        shell
     }
 
     /// A shell with the given variables.
@@ -90,6 +111,40 @@ impl Shell {
             name: b"oh-my-shell".to_vec(),
             interactive: false,
             cmdsub_status: None,
+            functions: HashMap::new(),
+            cwd_override: None,
+            in_subshell: false,
+            depth: 0,
+            loop_depth: 0,
+            func_depth: 0,
+        }
+    }
+
+    /// Keeps `$PWD` if it names the working directory (it may go through symbolic links, so
+    /// it can differ from the real path), and sets it to the real path otherwise.
+    fn init_pwd(&mut self) {
+        use std::os::unix::fs::MetadataExt;
+        let same = |a: &Path, b: &Path| match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        };
+        let keep = self.vars.get("PWD").is_some_and(|pwd| {
+            let path = Path::new(OsStr::from_bytes(pwd));
+            path.is_absolute()
+                && path.components().all(|c| {
+                    !matches!(
+                        c,
+                        std::path::Component::CurDir | std::path::Component::ParentDir
+                    )
+                })
+                && same(path, Path::new("."))
+        });
+        if keep {
+            return;
+        }
+        if let Ok(dir) = std::env::current_dir() {
+            self.vars.set("PWD", dir.as_os_str().as_bytes().to_vec());
+            self.vars.export("PWD");
         }
     }
 
@@ -110,11 +165,33 @@ impl Shell {
         self.status = status;
     }
 
+    /// A copy of the shell for a subshell, a pipeline stage or a `$(...)`: changes made in
+    /// the copy do not reach this shell.
+    pub(crate) fn subshell(&self) -> Self {
+        let mut copy = self.clone();
+        copy.in_subshell = true;
+        if copy.cwd_override.is_none() {
+            copy.cwd_override = std::env::current_dir().ok();
+        }
+        copy
+    }
+
+    /// A path as the working directory of this shell sees it: a relative path is joined to
+    /// the directory of a copy of the shell (see `cwd_override`).
+    pub(crate) fn resolve(&self, path: &[u8]) -> PathBuf {
+        let path = Path::new(OsStr::from_bytes(path));
+        match &self.cwd_override {
+            Some(base) if path.is_relative() => base.join(path),
+            _ => path.to_path_buf(),
+        }
+    }
+
     /// Parses `src` and runs it. Set `at_end` when no more input will come, so that an
     /// unfinished line is reported instead of waiting for more.
     ///
-    /// Messages from the shell itself ("not found", "killed by SIGSEGV") go to `err`.
-    pub fn run_source(&mut self, src: &str, at_end: bool, err: &mut dyn Write) -> LineResult {
+    /// Messages from the shell itself ("not found", "killed by SIGSEGV") go to descriptor 2
+    /// of `io`.
+    pub fn run_source(&mut self, src: &str, at_end: bool, io: &Io) -> LineResult {
         let list = match parse(src) {
             Ok(list) => list,
             Err(failure) => {
@@ -125,7 +202,7 @@ impl Shell {
                 return LineResult::Rejected(failure.to_diagnostic(src));
             }
         };
-        match self.run(&list, err) {
+        match self.run(&list, io) {
             Ok(outcome) => LineResult::Ran(outcome),
             Err(not_yet) => {
                 self.status = ExitStatus::USAGE;
@@ -140,173 +217,37 @@ impl Shell {
     ///
     /// Returns [`NotYet`] if the list holds something this shell cannot run yet. This is
     /// checked for the whole list first, so in that case nothing has run.
-    pub fn run(&mut self, list: &List, err: &mut dyn Write) -> Result<Outcome, NotYet> {
+    pub fn run(&mut self, list: &List, io: &Io) -> Result<Outcome, NotYet> {
         check_list(list)?;
-        Ok(self.execute(list, err, None))
-    }
-
-    /// Runs a list that [`check_list`] accepted. Each command is expanded just before it
-    /// runs, because it can depend on the commands before it (`x=1; echo $x`).
-    ///
-    /// With `capture`, the output of the programs goes into the buffer instead of to the
-    /// terminal.
-    pub(crate) fn execute(
-        &mut self,
-        list: &List,
-        err: &mut dyn Write,
-        mut capture: Option<&mut Vec<u8>>,
-    ) -> Outcome {
-        for item in &list.items {
-            let command = &item.and_or.first.commands[0];
-            let CommandKind::Simple(simple) = &command.kind else {
-                debug_assert!(false, "check_list lets only simple commands through");
-                continue;
-            };
-            match self.run_simple(simple, err, capture.as_deref_mut()) {
-                Ok(None) => {}
-                Ok(Some(status)) => return Outcome::Exit(status),
-                Err(ExpandError(message)) => {
-                    let _ = writeln!(err, "oh-my-shell: {message}");
-                    self.status = ExitStatus::USAGE;
-                    return Outcome::Continue(ExitStatus::USAGE);
+        signals::clear_interrupt();
+        let outcome = match self.run_list(list, io) {
+            Ok(status) => {
+                // A program killed by Ctrl+C ended the line's last command: the terminal
+                // has echoed `^C`, so move to a new line, as other shells do.
+                if signals::interrupted() {
+                    signals::clear_interrupt();
+                    if self.interactive && status == ExitStatus::from_signal(2) {
+                        let _ = io.write_all(2, b"\n");
+                    }
                 }
+                Outcome::Continue(status)
             }
-        }
-        Outcome::Continue(self.status)
-    }
-
-    /// Runs one simple command. Returns a status if the shell should exit with it.
-    fn run_simple(
-        &mut self,
-        simple: &SimpleCommand,
-        err: &mut dyn Write,
-        capture: Option<&mut Vec<u8>>,
-    ) -> Result<Option<ExitStatus>, ExpandError> {
-        self.cmdsub_status = None;
-        // The words are expanded first, then the values of the assignments.
-        let words = Expander { shell: self, err }.expand_words(&simple.words)?;
-
-        if words.is_empty() {
-            // Only assignments: they stay. The status is that of the last `$(...)`, if any.
-            Expander { shell: self, err }.apply_assignments(&simple.assignments)?;
-            self.status = self.cmdsub_status.unwrap_or(ExitStatus::SUCCESS);
-            return Ok(None);
-        }
-        if words[0] == b"exit" {
-            return Ok(Some(self.exit_status(&words, err)));
-        }
-        if simple.assignments.is_empty() {
-            self.status = self.run_command(&words, &[], err, capture);
-            return Ok(None);
-        }
-        // Assignments in front of a command last for that command only. They are applied to
-        // the variables so that later ones can use earlier ones, and then taken back.
-        let saved = self.vars.clone();
-        let applied = Expander { shell: self, err }.apply_assignments(&simple.assignments);
-        let result = applied.map(|assignments| {
-            self.status = self.run_command(&words, &assignments, err, capture);
-        });
-        self.vars = saved;
-        result.map(|()| None)
-    }
-
-    /// The status for `exit [n]`.
-    fn exit_status(&self, words: &[Vec<u8>], err: &mut dyn Write) -> ExitStatus {
-        let Some(arg) = words.get(1) else {
-            return self.status;
-        };
-        match std::str::from_utf8(arg)
-            .ok()
-            .and_then(|s| s.parse::<i64>().ok())
-        {
-            // The kernel keeps only the low 8 bits of an exit status.
-            Some(n) => ExitStatus((n & 0xff) as u8),
-            None => {
-                let _ = writeln!(
-                    err,
-                    "oh-my-shell: exit: {}: numeric argument required",
-                    String::from_utf8_lossy(arg)
-                );
-                ExitStatus::USAGE
-            }
-        }
-    }
-
-    fn run_command(
-        &mut self,
-        words: &[Vec<u8>],
-        assignments: &[(String, Vec<u8>)],
-        err: &mut dyn Write,
-        capture: Option<&mut Vec<u8>>,
-    ) -> ExitStatus {
-        let name = String::from_utf8_lossy(&words[0]).into_owned();
-        let search_path = self.vars.search_path(assignments);
-        let file = match self.paths.lookup(&words[0], &search_path) {
-            Lookup::Found(file) => file,
-            Lookup::Denied(_) => {
-                let _ = writeln!(err, "oh-my-shell: {name}: permission denied");
-                return ExitStatus::NOT_EXECUTABLE;
-            }
-            Lookup::NotFound => {
-                let _ = writeln!(err, "oh-my-shell: {name}: not found");
-                return ExitStatus::NOT_FOUND;
-            }
-        };
-        let Some(argv) = to_cstrings(words) else {
-            let _ = writeln!(err, "oh-my-shell: {name}: an argument holds a NUL byte");
-            return ExitStatus::NOT_EXECUTABLE;
-        };
-        let Ok(path) = CString::new(Path::new(&file).as_os_str().as_bytes()) else {
-            let _ = writeln!(err, "oh-my-shell: {name}: the path holds a NUL byte");
-            return ExitStatus::NOT_EXECUTABLE;
-        };
-        let envp = self.vars.envp(assignments);
-
-        let request = ExecRequest {
-            path: &path,
-            argv: &argv,
-            envp: &envp,
-        };
-        match spawn(&request, capture) {
-            Ok(ending) => {
-                if let Some(line) = ending.describe(&name) {
-                    let _ = writeln!(err, "{line}");
+            Err(Unwind::Exit(status)) => Outcome::Exit(status),
+            Err(Unwind::Error(status) | Unwind::Return(status)) => Outcome::Continue(status),
+            Err(Unwind::Break(_) | Unwind::Continue(_)) => Outcome::Continue(self.status),
+            Err(Unwind::Interrupted) => {
+                signals::clear_interrupt();
+                if self.interactive {
+                    let _ = io.write_all(2, b"\n");
                 }
-                ending.status()
+                Outcome::Continue(ExitStatus::from_signal(2))
             }
-            Err(SpawnFailure::Exec(errno)) => report_exec_failure(&name, errno, err),
-            Err(SpawnFailure::Fork(errno)) => {
-                let _ = writeln!(err, "oh-my-shell: cannot start {name}: {}", errno.desc());
-                ExitStatus::NOT_EXECUTABLE
-            }
+        };
+        if let Outcome::Continue(status) = outcome {
+            self.status = status;
         }
+        Ok(outcome)
     }
-}
-
-/// Says why `execve` failed, and picks the status: 127 if there was nothing to run, 126 if
-/// there was a file that could not be run.
-fn report_exec_failure(name: &str, errno: Errno, err: &mut dyn Write) -> ExitStatus {
-    match errno {
-        Errno::ENOENT | Errno::ENOTDIR => {
-            let _ = writeln!(err, "oh-my-shell: {name}: not found");
-            ExitStatus::NOT_FOUND
-        }
-        Errno::EACCES => {
-            let _ = writeln!(err, "oh-my-shell: {name}: permission denied");
-            ExitStatus::NOT_EXECUTABLE
-        }
-        other => {
-            let _ = writeln!(err, "oh-my-shell: {name}: {}", other.desc());
-            ExitStatus::NOT_EXECUTABLE
-        }
-    }
-}
-
-fn to_cstrings(words: &[Vec<u8>]) -> Option<Vec<CString>> {
-    words
-        .iter()
-        .map(|w| CString::new(w.as_slice()).ok())
-        .collect()
 }
 
 impl NotYet {
@@ -327,16 +268,17 @@ impl NotYet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::capture::Captured;
 
     fn shell() -> Shell {
         Shell::with_variables(Variables::from_pairs([("PATH", "/usr/bin:/bin")]))
     }
 
-    /// Runs a line and returns the result and what was written to `err`.
+    /// Runs a line and returns the result and what was written to descriptor 2.
     fn run(shell: &mut Shell, src: &str) -> (LineResult, String) {
-        let mut err = Vec::new();
-        let result = shell.run_source(src, true, &mut err);
-        (result, String::from_utf8(err).unwrap())
+        let captured = Captured::new();
+        let result = shell.run_source(src, true, &captured.io);
+        (result, captured.stderr())
     }
 
     fn status_of(shell: &mut Shell, src: &str) -> (u8, String) {
@@ -388,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_path_assignment_is_used_to_find_the_command() {
-        let (code, _) = status_of(&mut shell(), "PATH=/nonexistent-omsh true");
+        let (code, _) = status_of(&mut shell(), "PATH=/nonexistent-omsh sh -c :");
         assert_eq!(code, 127);
     }
 
@@ -442,13 +384,13 @@ mod tests {
     #[test]
     fn an_unfinished_line_waits_unless_the_input_has_ended() {
         let mut sh = shell();
-        let mut err = Vec::new();
+        let captured = Captured::new();
         assert!(matches!(
-            sh.run_source("echo 'a", false, &mut err),
+            sh.run_source("echo 'a", false, &captured.io),
             LineResult::Incomplete
         ));
         assert!(matches!(
-            sh.run_source("echo 'a", true, &mut err),
+            sh.run_source("echo 'a", true, &captured.io),
             LineResult::Rejected(_)
         ));
         assert_eq!(sh.last_status(), ExitStatus::USAGE);
@@ -466,45 +408,45 @@ mod tests {
     fn something_not_implemented_runs_nothing_at_all() {
         let mut sh = shell();
         // The first command would make `exit 9` end the shell if it ran.
-        let (result, _) = run(&mut sh, "exit 9; a | b");
+        let (result, _) = run(&mut sh, "exit 9; a &");
         let LineResult::Rejected(report) = result else {
             panic!("expected a rejection");
         };
-        assert_eq!(report.message(), "pipelines cannot run yet");
+        assert_eq!(report.message(), "background jobs cannot run yet");
         assert_eq!(sh.last_status(), ExitStatus::USAGE);
     }
 
     #[test]
-    fn every_unsupported_construct_is_named() {
-        for (src, what) in [
-            ("a &", "background jobs"),
-            ("a && b", "`&&` and `||`"),
-            ("! a", "`!`"),
-            ("a | b", "pipelines"),
-            ("a > f", "redirections"),
-            ("(a)", "subshells"),
-            ("{ a; }", "command groups"),
-            ("if a; then b; fi", "`if` commands"),
-            ("while a; do b; done", "loops"),
-            ("for i in a; do b; done", "loops"),
-            ("case a in b) c;; esac", "`case` commands"),
-            ("f() { a; }", "function definitions"),
+    fn a_background_job_is_refused_wherever_it_is() {
+        for src in [
+            "a &",
+            "echo $(a &)",
+            "(a &)",
+            "{ a & }",
+            "if a; then b & fi",
+            "while a; do b & done",
+            "for i in 1; do b & done",
+            "case x in x) b & ;; esac",
+            "f() { a & }",
+            "echo >f$(a &)",
+            "cat <<EOF\n$(a &)\nEOF",
+            "a | b &",
         ] {
             let (result, _) = run(&mut shell(), src);
             let LineResult::Rejected(report) = result else {
                 panic!("{src} should be rejected");
             };
-            assert_eq!(report.message(), format!("{what} cannot run yet"), "{src}");
+            assert_eq!(report.message(), "background jobs cannot run yet", "{src}");
         }
     }
 
     #[test]
     fn the_report_points_at_the_unsupported_part() {
-        let (result, _) = run(&mut shell(), "echo ok; a | b");
+        let (result, _) = run(&mut shell(), "echo ok; a &");
         let LineResult::Rejected(report) = result else {
             panic!("expected a rejection");
         };
         let span = report.span();
-        assert_eq!((span.start, span.end), (9, 14));
+        assert_eq!((span.start, span.end), (9, 12));
     }
 }

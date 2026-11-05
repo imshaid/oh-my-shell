@@ -672,14 +672,14 @@ fn an_unfinished_line_at_the_end_of_input_is_an_error() -> io::Result<()> {
 #[test]
 fn a_line_with_something_not_implemented_runs_nothing() -> io::Result<()> {
     let sandbox = Sandbox::new()?;
-    let out = sandbox.run(OMSH, b"touch marker; echo a | cat\n")?;
+    let out = sandbox.run(OMSH, b"touch marker; sleep 0 &\n")?;
     assert!(
         !sandbox.dir.join("marker").exists(),
         "the first command ran"
     );
     assert!(out.stdout.is_empty());
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("pipelines cannot run yet"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("background jobs cannot run yet"));
     Ok(())
 }
 
@@ -687,14 +687,14 @@ fn a_line_with_something_not_implemented_runs_nothing() -> io::Result<()> {
 #[test]
 fn something_not_implemented_inside_a_substitution_runs_nothing() -> io::Result<()> {
     let sandbox = Sandbox::new()?;
-    let out = sandbox.run(OMSH, b"touch marker; echo $(echo a | cat)\n")?;
+    let out = sandbox.run(OMSH, b"touch marker; echo $(sleep 0 &)\n")?;
     assert!(
         !sandbox.dir.join("marker").exists(),
         "the first command ran"
     );
     assert!(out.stdout.is_empty());
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("pipelines cannot run yet"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("background jobs cannot run yet"));
     Ok(())
 }
 
@@ -863,5 +863,476 @@ fn a_program_reads_the_input_that_follows_its_line() -> io::Result<()> {
 
     assert_eq!(String::from_utf8_lossy(&out.stdout), "second line\ndone\n");
     assert_eq!(out.status.code(), Some(0));
+    Ok(())
+}
+
+// Execution (S07a). The inputs run in a fresh copy of the same directory for each shell, so
+// that a file that one of them writes cannot change what the other sees. The directory name is
+// replaced by `<D>` in what they print. A runtime error such as `${x?msg}` in the middle of a
+// line is avoided where `/bin/sh` and this shell end the line differently.
+
+/// The sandbox of the other tests plus the files that the execution tests read.
+fn fixture() -> io::Result<Sandbox> {
+    let sandbox = Sandbox::new()?;
+    sandbox.file("f.txt", "one\ntwo\nthree\n", 0o644)?;
+    sandbox.file("subdir/inner.txt", "inner\n", 0o644)?;
+    Ok(sandbox)
+}
+
+/// Like [`assert_all_same`], but every input runs in a new copy of the fixture for each shell.
+fn assert_all_same_in_fresh_directories(inputs: &[&str]) -> io::Result<()> {
+    let mut differences = Vec::new();
+    for input in inputs {
+        let (mine, theirs) = (fixture()?, fixture()?);
+        let ours = mine.run(OMSH, input.as_bytes())?;
+        let reference = theirs.run("/bin/sh", input.as_bytes())?;
+        let show = |out: &Output, sandbox: &Sandbox| {
+            let text = String::from_utf8_lossy(&out.stdout)
+                .replace(&sandbox.dir.display().to_string(), "<D>");
+            format!(
+                "status {:?}, stdout {text:?}, stderr {:?}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        };
+        let clean = |out: &Output, sandbox: &Sandbox| {
+            String::from_utf8_lossy(&out.stdout).replace(&sandbox.dir.display().to_string(), "<D>")
+        };
+        let what = if clean(&ours, &mine) != clean(&reference, &theirs) {
+            "stdout differs"
+        } else if ours.status.code() != reference.status.code() {
+            "status differs"
+        } else if ours.stderr.is_empty() != reference.stderr.is_empty() {
+            "stderr emptiness differs"
+        } else {
+            continue;
+        };
+        differences.push(format!(
+            "{what}\ninput {input:?}\n ours: {}\n /bin/sh: {}",
+            show(&ours, &mine),
+            show(&reference, &theirs)
+        ));
+    }
+    assert!(
+        differences.is_empty(),
+        "{} of {} inputs differ:\n\n{}",
+        differences.len(),
+        inputs.len(),
+        differences.join("\n\n")
+    );
+    Ok(())
+}
+#[test]
+fn pipelines_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "echo a | cat\n",
+        "echo a | cat | tr a b\n",
+        "false | true; echo $?\n",
+        "true | false; echo $?\n",
+        "echo a | exit 3; echo $?\n",
+        "yes | head -2\n",
+        "yes | head -1 | tr y z\n",
+        "echo $(echo a | tr a b)\n",
+        "{ echo a; echo b; } | tr a-z A-Z\n",
+        "f() { cat; }; echo piped | f\n",
+        "while :; do echo y; done | head -2\n",
+        "seq 1 50000 | tail -1\n",
+        "seq 1 50000 | wc -l\n",
+        "echo x | { cat; echo y; }\n",
+        "x=1; echo | x=2; echo $x\n",
+        "echo a; echo b | cat; echo c\n",
+        "echo ${x?boom} | cat; echo after $?\n",
+        "for i in 1 2 3; do echo $i; done | wc -l\n",
+        "x=$(echo one; echo two | tr t T); echo $x\n",
+        "f() { echo made; }; f | tr a-z A-Z\n",
+        "echo one | cat | cat | cat | cat | cat\n",
+    ])
+}
+
+#[test]
+fn lists_and_negation_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "! true; echo $?\n",
+        "! false; echo $?\n",
+        "true && echo yes; false && echo no; echo $?\n",
+        "false || echo or; true || echo no2\n",
+        "! echo a | grep -q b; echo $?\n",
+        "! echo a | grep -q a; echo $?\n",
+        "(exit 5) || echo failed $?\n",
+        "true && false || echo rescued\n",
+        "false || false || echo third\n",
+        "echo a; echo b; false; echo $?\n",
+        "false && true; echo $?\n",
+        "true || false; echo $?\n",
+    ])
+}
+
+#[test]
+fn redirections_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "echo hi > o.txt; cat o.txt\n",
+        "echo hi >> o.txt; echo more >> o.txt; cat o.txt\n",
+        "cat < f.txt\n",
+        "cat 0< f.txt\n",
+        "cat < f.txt > g.txt; cat g.txt\n",
+        "echo err 2>&1 >/dev/null | cat\n",
+        "sh -c 'echo out; echo err >&2' 2>&1 | sort\n",
+        "sh -c 'echo out; echo err >&2' >/dev/null 2>&1; echo $?\n",
+        "sh -c 'echo o; echo e >&2' >both.txt 2>&1; cat both.txt\n",
+        "sh -c 'echo o; echo e >&2' 2>&1 >only.txt | cat; cat only.txt\n",
+        "echo hi >&2 2>/dev/null; echo done\n",
+        "3>&1 sh -c 'echo three >&3'\n",
+        "cat 3<f.txt <&3\n",
+        "echo hi 1<>rw.txt; cat rw.txt\n",
+        "echo x >| clob.txt; cat clob.txt\n",
+        ": > created.txt; ls created.txt\n",
+        "> made.txt; ls made.txt\n",
+        "x=1 > made.txt; echo $x; ls made.txt\n",
+        "echo x > /nonexistent/dir/f; echo $?\n",
+        "cat < /nonexistent; echo $?\n",
+        "{ echo a; echo b >&2; } 2>&1 | sort\n",
+        "{ echo a; echo b; } > g.txt; cat g.txt\n",
+        "if true; then echo x; fi > g.txt; cat g.txt\n",
+        "f() { echo body; } > g.txt; f; cat g.txt\n",
+        "for f in a b; do echo $f; done > g.txt; cat g.txt\n",
+        "(echo sub) > g.txt; cat g.txt\n",
+        "echo one; echo two 1>&2; echo three\n",
+        "n='two words'; echo x > \"$n\"; ls\n",
+        "echo z > *.txt; ls\n",
+        "x=a; echo hi > $x.txt; ls\n",
+        "sh -c 'echo to-three >&3' 3>t.txt; cat t.txt\n",
+        "sh -c 'cat <&3' 3<f.txt\n",
+        "sh -c 'echo closed >&2' 2>&-; echo $?\n",
+        "exec_missing 2>/dev/null; echo $?\n",
+        "echo a > one.txt > two.txt; cat one.txt; cat two.txt\n",
+    ])
+}
+
+#[test]
+fn here_documents_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "cat <<EOF\nhello world\nEOF\n",
+        "x=5; cat <<EOF\nx is $x and $(echo sub) $((1+2))\nEOF\n",
+        "cat <<'EOF'\nno $expand here $(nor this)\nEOF\n",
+        "cat <<\"EOF\"\n$x\nEOF\n",
+        "cat <<\\EOF\n$x\nEOF\n",
+        "cat <<-EOF\n\ttabbed\n\t\ttwo\n\tEOF\n",
+        "cat <<EOF | tr a-z A-Z\npiped heredoc\nEOF\n",
+        "cat <<EOF >g.txt\nto file\nEOF\ncat g.txt\n",
+        "cat 3<<EOF <&3\nfrom fd3\nEOF\n",
+        "cat <<A; cat <<B\nfirst\nA\nsecond\nB\n",
+        "x=1; cat <<EOF\n\\$x \\\\\\\\ \\` $x\nEOF\n",
+        "cat <<EOF\n\"quoted\" 'single'\nEOF\n",
+        "f() { cat; }; f <<EOF\nto function\nEOF\n",
+        "if true; then cat <<EOF\nin if\nEOF\nfi\n",
+        "x=$(cat <<EOF\ninside subst\nEOF\n); echo $x\n",
+        "cat <<EOF\nline\n\nafter blank\nEOF\n",
+    ])
+}
+
+#[test]
+fn if_commands_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "if true; then echo t; else echo e; fi\n",
+        "if false; then echo t; else echo e; fi\n",
+        "if false; then echo t; elif true; then echo elif; else echo e; fi\n",
+        "if false; then echo 1; elif false; then echo 2; else echo 3; fi\n",
+        "if false; then echo t; fi; echo $?\n",
+        "if true; then sh -c 'exit 4'; fi; echo $?\n",
+        "if echo cond; false; then echo no; else echo else; fi\n",
+        "if true\nthen\n  echo multi\nfi\n",
+    ])
+}
+
+#[test]
+fn loops_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done\n",
+        "i=0; until [ $i -ge 2 ]; do echo u$i; i=$((i+1)); done\n",
+        "for i in a b c; do echo $i; done\n",
+        "for i in a b c; do if [ $i = b ]; then continue; fi; echo $i; done\n",
+        "for i in 1 2 3; do for j in x y; do if [ $j = y ]; then break 2; fi; echo $i$j; done; done\n",
+        "for i in 1 2; do for j in a b; do if [ $j = b ]; then continue 2; fi; echo $i$j; done; done\n",
+        "for i in *.txt; do echo $i; done\n",
+        "set -- p q r; for i; do echo $i; done\n",
+        "for i in; do echo $i; done; echo end\n",
+        "for i in 1 2 3; do :; done; echo $i\n",
+        "for i in 1 2; do echo $i; break; done; echo $?\n",
+        "while true; do break; done; echo $?\n",
+        "i=0; while [ $i -lt 5 ]; do i=$((i+1)); if [ $i = 3 ]; then continue; fi; echo $i; done\n",
+        "for i in 1 2; do for j in 1 2; do break 9; done; echo no; done; echo end\n",
+        "for i in 1 2; do sh -c \"exit $i\"; done; echo $?\n",
+        "x='a b'; for i in $x; do echo \"[$i]\"; done\n",
+        "x='a b'; for i in \"$x\"; do echo \"[$i]\"; done\n",
+        "break; echo after-break\n",
+        "while false; do :; done; echo $?\n",
+    ])
+}
+
+#[test]
+fn case_commands_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "case foo in f*) echo star;; *) echo other;; esac\n",
+        "case bar in f*) echo star;; *) echo other;; esac\n",
+        "case x in a|b) echo ab;; x) echo x;; esac\n",
+        "case \"a b\" in \"a b\") echo quoted;; esac\n",
+        "case x in x) echo first;; x) echo second;; esac\n",
+        "case b in [a-c]) echo range;; esac\n",
+        "case '*' in '*') echo literal;; esac\n",
+        "case abc in '*') echo literal;; *) echo glob;; esac\n",
+        "x=hello; case $x in hel*) echo yes;; esac\n",
+        "p='h*'; case hello in $p) echo yes;; esac\n",
+        "p='h*'; case hello in \"$p\") echo yes;; *) echo no;; esac\n",
+        "case x in y) echo y;; esac; echo $?\n",
+        "case x in x) sh -c 'exit 4';; esac; echo $?\n",
+        "case $(echo x) in x) echo cmdsub;; esac\n",
+        "case x in\n  x) echo multi\n     echo line;;\nesac\n",
+        "case x in (x) echo paren;; esac\n",
+    ])
+}
+
+#[test]
+fn subshells_and_groups_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "(echo sub; exit 3); echo $?\n",
+        "x=1; (x=2); echo $x\n",
+        "x=1; { x=2; }; echo $x\n",
+        "(cd /; pwd); pwd\n",
+        "{ echo a; echo b; } | tr a-z A-Z\n",
+        "(echo a; echo b) | tr a-z A-Z\n",
+        "f() { :; }; (f() { echo changed; }); f; echo $?\n",
+        "(exit 5) ; echo $?\n",
+        "( ( echo spaced ) )\n",
+        "x=$( (echo in; exit 2) ); echo $x $?\n",
+    ])
+}
+
+#[test]
+fn functions_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "f() { echo \"f:$1:$#\"; }; f a b\n",
+        "f() { return 4; }; f; echo $?\n",
+        "f() { echo in; return; echo notreached; }; f\n",
+        "f() { false; return; }; f; echo $?\n",
+        "f() { x=set; }; f; echo $x\n",
+        "x=1; f() { echo $x; }; x=2 f; echo $x\n",
+        "f() { y=2; }; x=1 f; echo \"$x $y\"\n",
+        "f() { g; }; g() { echo g-called; }; f\n",
+        "fact() { if [ $1 -le 1 ]; then echo 1; else echo $(( $1 * $(fact $(($1-1))) )); fi; }; fact 5\n",
+        "f() { echo \"$@\"; }; f \"a b\" c\n",
+        "f() { for x; do echo \"[$x]\"; done; }; f \"a b\" c\n",
+        "f() { echo \"$1\"; shift; echo \"$#\"; }; f a b c\n",
+        "set -- outer; f() { echo \"$1\"; }; f inner; echo \"$1\"\n",
+        "f() { echo one; }; f() { echo two; }; f\n",
+        "f() { if true; then return 3; fi; echo no; }; f; echo $?\n",
+        "f() { for i in 1 2; do return 5; done; }; f; echo $?\n",
+        "f() ( echo subshell body; ); f\n",
+        "f() echo oneliner; f\n",
+        "cat() { echo mine; }; cat\n",
+        "f() { echo f; }; unset -f f; f; echo $?\n",
+        "f() { sh -c 'echo $x'; }; x=exported f\n",
+        "f() { cat; }; echo in | f | tr a-z A-Z\n",
+        "f() { echo $1; }; f $(echo from-subst)\n",
+        "f() { x=in-f; echo $(echo $x); }; f\n",
+    ])
+}
+
+#[test]
+fn cd_and_pwd_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "cd subdir; pwd; cd ..; pwd\n",
+        "cd /; pwd; cd -\n",
+        "(cd /tmp; pwd); pwd\n",
+        "x=$(cd /; pwd); echo $x; pwd\n",
+        "cd subdir\npwd\ncat ../f.txt | head -1\nls\n",
+        "echo $PWD; cd subdir; echo $PWD; echo $OLDPWD\n",
+        "cd subdir && cd .. && pwd\n",
+        "cd ./subdir/../subdir/.; pwd\n",
+        "cd subdir; cd ../subdir; pwd; echo $?\n",
+        "cd /; cd ..; pwd\n",
+        "cd subdir; echo made > new.txt; cd ..; ls subdir\n",
+        "cd subdir; ls; cd ..; ls\n",
+        "cd subdir; cat < inner.txt; cd ..\n",
+        "mkdir -p lnk_target; ln -s lnk_target lnk; cd lnk; pwd; pwd -P\n",
+        "mkdir -p lnk_target; ln -s lnk_target lnk; cd -P lnk; pwd\n",
+        "mkdir -p lnk_target; ln -s lnk_target lnk; cd lnk; cd ..; pwd\n",
+        "cd \"\"; echo $?\n",
+        "cd subdir; echo hi | cat; (cd ..; pwd); pwd\n",
+        "pwd -L; pwd -P\n",
+        "cd; pwd\n",
+    ])
+}
+
+#[test]
+fn variable_builtins_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "export FOO=bar; sh -c 'echo $FOO'\n",
+        "FOO=1; sh -c 'echo ${FOO-unset}'; export FOO; sh -c 'echo ${FOO-unset}'\n",
+        "export A; sh -c 'echo ${A-unset}'; A=1; sh -c 'echo ${A-unset}'\n",
+        "export B=1; unset B; echo ${B-gone}\n",
+        "export B=1; unset B; sh -c 'echo ${B-gone}'\n",
+        "A=1 B=2; export A B; sh -c 'echo $A $B'\n",
+        "export A=1 B=2; sh -c 'echo $A $B'\n",
+        "export X='a b'; sh -c 'echo \"$X\"'\n",
+        "x=1; unset x; echo ${x-unset}; echo $?\n",
+        "unset nothing_here; echo $?\n",
+        "set -- a b c; shift; echo $@; shift 2; echo $#\n",
+        "set -- a b c; echo $#; set --; echo $#\n",
+        "set a b; echo $# $1\n",
+        "set -- 'a b' c; for i in \"$@\"; do echo \"[$i]\"; done\n",
+        "set -- a b c; shift 0; echo $#\n",
+        "set -- -x; echo $1\n",
+        "x=1 :; echo $x\n",
+        "x=1 true; echo ${x-unset}\n",
+        "x=1 eval 'echo $x'; echo $x\n",
+        "x=1; x=2 sh -c 'echo $x'; echo $x\n",
+        "export P=1; P=2 sh -c 'echo $P'; sh -c 'echo $P'\n",
+        "export FOO=bar\nsh -c 'echo $FOO'\n",
+        "A=1\nexport A\nsh -c 'echo $A'\n",
+        "export A=1\nunset A\nsh -c 'echo ${A-gone}'\n",
+        "f() { echo fn; }\nf\nf\n",
+        "x=1\n(x=2)\necho $x\n",
+        "set -- a b\nshift\necho $1\n",
+        "cd subdir\nexport HERE=$PWD\ncd ..\nsh -c 'echo $HERE'\npwd\n",
+    ])
+}
+
+#[test]
+fn eval_and_dot_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "eval 'echo evaled'; eval \"x=1; echo \\$x\"\n",
+        "eval echo a b\n",
+        "eval 'echo a' 'echo b'\n",
+        "eval; echo $?\n",
+        "eval ''; echo $?\n",
+        "x='echo from x'; eval $x\n",
+        "eval 'exit 5'; echo not\n",
+        "eval 'a=1; echo $a'; echo $a\n",
+        "echo 'echo sourced; y=9' > s.sh; . ./s.sh; echo $y\n",
+        "echo 'return 5; echo no' > r.sh; . ./r.sh; echo $?\n",
+        "printf 'f() { echo from-lib; }\\n' > lib.sh; . ./lib.sh; f\n",
+        "printf 'echo on-path\\n' > onpath.sh; PATH=.:$PATH . onpath.sh\n",
+        "echo 'cd subdir' > c.sh; . ./c.sh; pwd\n",
+        "eval 'f() { echo defined; }'; f\n",
+        "eval 'for i in 1 2; do echo $i; done'\n",
+    ])
+}
+
+#[test]
+fn simple_builtins_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        ":; echo $?\n",
+        "true; echo $?\n",
+        "false; echo $?\n",
+        ": a b c; echo $?\n",
+        "echo a b   c\n",
+        "echo -n x; echo y\n",
+        "echo\n",
+        "echo \"\"\n",
+        "echo a > /dev/null; echo $?\n",
+        "exit 3\n",
+        "false; exit\n",
+        "(exit 5); echo $?\n",
+        "x=$(exit 3); echo $?\n",
+        "echo one; exit 2; echo not\n",
+    ])
+}
+
+// Differences from `/bin/sh` that are on purpose. Each has a row in the Decision Log.
+
+/// `echo` follows bash: escape sequences only with `-e`. dash always reads them.
+#[test]
+fn echo_does_not_read_escapes_unless_asked() -> io::Result<()> {
+    assert_eq!(output_of("echo 'a\\nb'\n")?, "a\\nb\n");
+    assert_eq!(output_of("echo -e 'a\\tb'\n")?, "a\tb\n");
+    assert_eq!(output_of("echo -n a; echo b\n")?, "ab\n");
+    Ok(())
+}
+
+/// `&>`, `&>>` and `<<<` are bash forms that dash does not have.
+#[test]
+fn the_bash_redirections_work() -> io::Result<()> {
+    let out = output_of(
+        "sh -c 'echo o; echo e >&2' &> all.txt\n\
+         sh -c 'echo o2; echo e2 >&2' &>> all.txt\n\
+         cat all.txt\n\
+         cat <<< 'a here string'\n",
+    )?;
+    assert_eq!(out, "o\ne\no2\ne2\na here string\n");
+    Ok(())
+}
+
+/// `. file args` sets `$1`, `$2`, ... while the file runs, as in bash. dash ignores the
+/// arguments.
+#[test]
+fn dot_passes_its_arguments_to_the_file() -> io::Result<()> {
+    let out =
+        output_of("printf 'echo \"$# $1\"\\n' > a.sh\nset -- outer\n. ./a.sh p q\necho $1\n")?;
+    assert_eq!(out, "2 p\nouter\n");
+    Ok(())
+}
+
+/// `return` outside a function is an error that does not end the session (dash ends the
+/// script). A mistake in a redirection of a special builtin does not end it either.
+#[test]
+fn mistakes_that_end_a_script_do_not_end_the_session() -> io::Result<()> {
+    let sandbox = Sandbox::new()?;
+    let out = sandbox.run(
+        OMSH,
+        b"return 3\necho after-return\n: < missing\necho after-redirect\n",
+    )?;
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "after-return\nafter-redirect\n"
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("return"), "{stderr}");
+    assert!(stderr.contains("missing"), "{stderr}");
+    Ok(())
+}
+
+/// A status is only the low eight bits: `return 300` is 44, as in bash and POSIX. dash prints
+/// 300.
+#[test]
+fn a_status_has_eight_bits() -> io::Result<()> {
+    assert_eq!(output_of("f() { return 300; }; f; echo $?\n")?, "44\n");
+    Ok(())
+}
+
+/// A failed `cd` gives 1, as in bash. dash gives 2.
+#[test]
+fn a_failed_cd_gives_1() -> io::Result<()> {
+    assert_eq!(
+        output_of("cd /nonexistent-omsh 2>/dev/null; echo $?\n")?,
+        "1\n"
+    );
+    Ok(())
+}
+
+/// A program receives the descriptors of its table and nothing else, whatever pipes, here
+/// documents and substitutions the shell has open around it.
+#[test]
+fn a_program_inherits_no_stray_descriptors() -> io::Result<()> {
+    let out = output_of(
+        "sh -c 'ls /proc/$$/fd'\n\
+         echo x | sh -c 'ls /proc/$$/fd'\n\
+         sh -c 'ls /proc/$$/fd' <<EOF\nbody\nEOF\n\
+         y=$(sh -c 'ls /proc/$$/fd'); echo $y\n\
+         sh -c 'ls /proc/$$/fd' 3>/dev/null\n",
+    )?;
+    assert_eq!(out, "0\n1\n2\n0\n1\n2\n0\n1\n2\n0 1 2\n0\n1\n2\n3\n");
+    Ok(())
+}
+
+/// The commands of a line that cannot run yet (a background job) are refused as a whole
+/// also when they are nested in a compound command or a function.
+#[test]
+fn a_background_job_inside_a_compound_command_runs_nothing() -> io::Result<()> {
+    let sandbox = Sandbox::new()?;
+    let out = sandbox.run(OMSH, b"touch marker; if true; then sleep 0 & fi\n")?;
+    assert!(!sandbox.dir.join("marker").exists());
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("background jobs cannot run yet"));
     Ok(())
 }

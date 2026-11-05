@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 
-use omsh_exec::{ExitStatus, LineResult, Outcome, Shell, ignore_interrupts};
+use omsh_exec::{ExitStatus, Io, LineResult, Outcome, Shell, catch_interrupts};
 
 use crate::report::{self, Style};
 
@@ -18,7 +18,7 @@ const CONTINUATION_PROMPT: &str = "> ";
 pub fn run() -> ExitStatus {
     let interactive = io::stdin().is_terminal();
     if interactive {
-        ignore_interrupts();
+        catch_interrupts();
     }
     let input = match stdin_without_buffer() {
         Ok(file) => file,
@@ -44,7 +44,8 @@ fn stdin_without_buffer() -> io::Result<File> {
 fn run_on(mut input: impl Read, interactive: bool, style: Style) -> ExitStatus {
     let mut shell = Shell::new();
     shell.set_interactive(interactive);
-    let mut err = io::stderr();
+    // The files that commands start with: this process's standard input, output and error.
+    let files = Io::process();
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     loop {
@@ -77,7 +78,7 @@ fn run_on(mut input: impl Read, interactive: bool, style: Style) -> ExitStatus {
             }
         };
 
-        match shell.run_source(&pending, at_end, &mut err) {
+        match shell.run_source(&pending, at_end, &files) {
             LineResult::Incomplete => {}
             LineResult::Ran(Outcome::Continue(_)) => pending.clear(),
             LineResult::Ran(Outcome::Exit(status)) => return status,
