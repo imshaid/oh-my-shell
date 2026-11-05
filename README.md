@@ -4,9 +4,11 @@ An interactive Linux shell, written in Rust. The goal is a shell that behaves li
 familiar POSIX shell, helps like fish, and can optionally hand a task to an AI, always
 showing what will happen before anything runs.
 
-**Status: early development.** Only the project skeleton exists today. The
-`oh-my-shell` binary builds and answers `--version` and `--help`, but it cannot run
-commands yet, so do not set it as your login shell.
+**Status: early development.** The `oh-my-shell` binary reads commands from standard input
+and runs simple ones: a program name, quoted arguments and `NAME=value` prefixes, separated
+by `;` or line endings. Pipes, redirections, variables, globbing, job control and the rest
+of the shell language are not there yet, and a line that needs them is refused whole. Do not
+set it as your login shell.
 
 ## Build and run
 

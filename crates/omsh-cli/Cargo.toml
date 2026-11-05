@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+# `fancy-no-syscall` brings the graphical report renderer without the crates that probe the
+# terminal; the shell does that itself, in `report.rs`.
+miette = { workspace = true, features = ["fancy-no-syscall"] }
 omsh-ai.workspace = true
 omsh-config.workspace = true
 omsh-editor.workspace = true

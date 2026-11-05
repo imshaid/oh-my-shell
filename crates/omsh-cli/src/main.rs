@@ -1,15 +1,18 @@
 //! The `oh-my-shell` binary: argument parsing, mode selection and wiring of the
 //! other crates.
 //!
-//! Only `--version` and `--help` work for now. Running the binary without arguments
-//! says so and fails, rather than pretending to be a working shell.
+//! For now every run starts the line-by-line shell on standard input. Choosing between
+//! that and handing the work to `/bin/sh` (`-c`, scripts, a pipe) comes in S11.
 
-use std::io::{self, Write};
+mod repl;
+mod report;
+
 use std::process::ExitCode;
 
 use clap::Parser;
 
-/// An interactive Linux shell in early development: it cannot run commands yet.
+/// An interactive Linux shell in early development. It runs simple commands only: no pipes,
+/// redirections, variables or globbing yet.
 #[derive(Debug, Parser)]
 #[command(name = "oh-my-shell", version)]
 struct Cli {}
@@ -19,13 +22,7 @@ fn main() -> ExitCode {
     // output and exits the process, so this function only continues for a normal run.
     Cli::parse();
 
-    // Not `eprintln!`, which panics when stderr cannot be written. There is nowhere
-    // left to report such a failure, so the result is deliberately ignored.
-    let _ = writeln!(
-        io::stderr(),
-        "oh-my-shell: the interactive shell is not implemented yet"
-    );
-    ExitCode::FAILURE
+    ExitCode::from(repl::run().code())
 }
 
 #[cfg(test)]

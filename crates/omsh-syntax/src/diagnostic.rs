@@ -35,6 +35,29 @@ pub struct SyntaxDiagnostic {
 }
 
 impl SyntaxDiagnostic {
+    /// A report for a place in `src` that is syntactically fine but that a later stage cannot
+    /// handle, such as a feature that is not implemented yet. It looks like the parser's own
+    /// reports. `code` is a stable name such as `omsh::exec::not_yet`.
+    #[must_use]
+    pub fn new(
+        src: &str,
+        span: Span,
+        code: &'static str,
+        message: impl Into<String>,
+        label: impl Into<String>,
+        help: Option<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            label: label.into(),
+            help,
+            code,
+            span,
+            source: Arc::from(src),
+            related: Vec::new(),
+        }
+    }
+
     /// The short message, such as ``unexpected `fi` ``.
     #[must_use]
     pub fn message(&self) -> &str {

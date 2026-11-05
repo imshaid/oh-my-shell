@@ -1,7 +1,7 @@
 //! Runs the real `oh-my-shell` binary and checks what a user would see.
 
 use std::fs::OpenOptions;
-use std::io;
+use std::io::{self, Write};
 use std::process::{Command, Output, Stdio};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_oh-my-shell");
@@ -36,29 +36,59 @@ fn help_flag_prints_usage_and_options() -> io::Result<()> {
     Ok(())
 }
 
-#[test]
-fn running_without_arguments_says_the_shell_is_not_ready() -> io::Result<()> {
-    let output = oh_my_shell(&[])?;
+/// Runs the shell with `input` on standard input.
+fn with_input(input: &[u8]) -> io::Result<Output> {
+    let mut child = Command::new(BINARY)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input)?;
+    }
+    child.wait_with_output()
+}
 
-    assert_eq!(output.status.code(), Some(1));
+#[test]
+fn empty_input_ends_the_shell_with_status_zero() -> io::Result<()> {
+    let output = with_input(b"")?;
+
+    assert_eq!(output.status.code(), Some(0));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not implemented yet"));
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_command_on_standard_input_runs_without_a_prompt() -> io::Result<()> {
+    let output = with_input(b"echo hello\n")?;
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello\n");
+    // No prompt is printed when input is not a terminal.
+    assert!(output.stderr.is_empty());
     Ok(())
 }
 
 /// Regression test: `eprintln!` panics when stderr cannot be written, which made the
-/// binary exit with 101 instead of 1.
+/// binary exit with 101 instead of with the status of the last command. The command here
+/// fails, so the shell has a message to write to a stderr that rejects it.
 #[test]
 fn unwritable_stderr_does_not_cause_a_panic() -> io::Result<()> {
     // Every write to /dev/full fails with "no space left on device".
     let stderr = OpenOptions::new().write(true).open("/dev/full")?;
 
-    let status = Command::new(BINARY)
+    let mut child = Command::new(BINARY)
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(stderr)
-        .status()?;
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(b"nosuchcmd_omsh\n")?;
+    }
+    let status = child.wait()?;
 
-    assert_eq!(status.code(), Some(1));
+    assert_eq!(status.code(), Some(127));
     Ok(())
 }
 
