@@ -113,24 +113,60 @@ impl Shell {
     }
 
     fn run_and_or(&mut self, and_or: &AndOr, io: &Io) -> Flow {
-        let mut status = self.run_pipeline(&and_or.first, io)?;
-        for part in &and_or.rest {
+        // Under `-e`, a failure on the left of `&&` or `||` is expected and ends nothing.
+        let mut status = self.ignoring_errexit(!and_or.rest.is_empty(), |shell| {
+            shell.run_pipeline(&and_or.first, io)
+        })?;
+        for (index, part) in and_or.rest.iter().enumerate() {
             let go = match part.op {
                 AndOrOp::And => status == ExitStatus::SUCCESS,
                 AndOrOp::Or => status != ExitStatus::SUCCESS,
             };
             if go {
-                status = self.run_pipeline(&part.pipeline, io)?;
+                let is_last = index + 1 == and_or.rest.len();
+                status = self
+                    .ignoring_errexit(!is_last, |shell| shell.run_pipeline(&part.pipeline, io))?;
             }
         }
         Ok(status)
     }
 
+    /// Runs `body`. If `ignore` is set, a command that fails inside does not end the shell
+    /// under `-e` (see `errexit_off`).
+    pub(crate) fn ignoring_errexit<T>(
+        &mut self,
+        ignore: bool,
+        body: impl FnOnce(&mut Self) -> Result<T, Unwind>,
+    ) -> Result<T, Unwind> {
+        if !ignore {
+            return body(self);
+        }
+        self.errexit_off += 1;
+        let result = body(self);
+        self.errexit_off -= 1;
+        result
+    }
+
+    /// Ends the shell if `-e` is on and a command failed where that counts.
+    pub(crate) fn errexit_check(&self, status: ExitStatus) -> Result<(), Unwind> {
+        if status != ExitStatus::SUCCESS && self.options.errexit && self.errexit_off == 0 {
+            return Err(Unwind::Exit(status));
+        }
+        Ok(())
+    }
+
     fn run_pipeline(&mut self, pipeline: &Pipeline, io: &Io) -> Flow {
-        let status = match pipeline.commands.as_slice() {
-            [command] => self.run_command(command, io)?,
-            commands => self.run_stages(commands, io)?,
-        };
+        // After `!`, the failure is the point, so `-e` does not apply inside.
+        let status = self.ignoring_errexit(pipeline.negated, |shell| {
+            match pipeline.commands.as_slice() {
+                [command] => shell.run_command(command, io),
+                commands => {
+                    let status = shell.run_stages(commands, io)?;
+                    shell.errexit_check(status)?;
+                    Ok(status)
+                }
+            }
+        })?;
         if !pipeline.negated {
             return Ok(status);
         }
@@ -145,6 +181,10 @@ impl Shell {
 
     /// Runs one command with its redirections, and records its status in `$?`.
     pub(crate) fn run_command(&mut self, command: &Command, io: &Io) -> Flow {
+        let checked = matches!(
+            command.kind,
+            CommandKind::Simple(_) | CommandKind::Subshell(_)
+        );
         let status = if let CommandKind::Simple(simple) = &command.kind {
             self.run_simple(simple, &command.redirects, io)?
         } else {
@@ -163,6 +203,9 @@ impl Shell {
             self.run_compound(&command.kind, inner)?
         };
         self.status = status;
+        if checked {
+            self.errexit_check(status)?;
+        }
         Ok(status)
     }
 
@@ -237,7 +280,8 @@ impl Shell {
         let Some(target) = target else {
             // Only assignments: they stay. The status is that of the last `$(...)`, if any.
             let result = Expander { shell: self, io }.apply_assignments(&simple.assignments);
-            result.map_err(|e| self.expand_failed(&e, io))?;
+            let applied = result.map_err(|e| self.expand_failed(&e, io))?;
+            self.trace(&applied, &words, io);
             return Ok(self.cmdsub_status.unwrap_or(ExitStatus::SUCCESS));
         };
 
@@ -256,7 +300,8 @@ impl Shell {
         };
         let applied = Expander { shell: self, io }.apply_assignments(&simple.assignments);
         let flow = match applied {
-            Ok(_) => {
+            Ok(applied) => {
+                self.trace(&applied, &words, io);
                 if !special {
                     for assignment in &simple.assignments {
                         self.vars.export(&assignment.name);
@@ -270,6 +315,34 @@ impl Shell {
             self.vars.restore(name, old);
         }
         flow
+    }
+
+    /// Under `-x`, writes the command about to run to standard error, after `$PS4`.
+    fn trace(&self, assignments: &[(String, Vec<u8>)], words: &[Vec<u8>], io: &Io) {
+        if !self.options.xtrace {
+            return;
+        }
+        let mut line = self
+            .vars
+            .get("PS4")
+            .map_or_else(|| b"+ ".to_vec(), <[u8]>::to_vec);
+        let mut first = true;
+        for (name, value) in assignments {
+            if !std::mem::take(&mut first) {
+                line.push(b' ');
+            }
+            line.extend_from_slice(name.as_bytes());
+            line.push(b'=');
+            line.extend_from_slice(value);
+        }
+        for word in words {
+            if !std::mem::take(&mut first) {
+                line.push(b' ');
+            }
+            line.extend_from_slice(word);
+        }
+        line.push(b'\n');
+        let _ = io.write_all(2, &line);
     }
 
     fn dispatch(&mut self, target: &Target, words: &[Vec<u8>], io: &Io) -> Flow {

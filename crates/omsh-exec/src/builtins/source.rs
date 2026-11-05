@@ -13,25 +13,39 @@ use crate::shell::Shell;
 use crate::status::ExitStatus;
 
 impl Shell {
-    /// Parses `src` as a whole and runs it. A mistake in it is reported as coming from `what`
-    /// and gives status 2, without running anything.
+    /// Runs `src` one complete command at a time, so that what an earlier command defines (an
+    /// alias, a function) is there for the later ones, as it is for lines typed one by one. A
+    /// mistake is reported as coming from `what` and gives status 2; what ran before it stays
+    /// done and nothing after it runs.
     fn run_text(&mut self, src: &str, what: &str, io: &Io) -> Flow {
-        let list = match parse(src) {
-            Ok(list) => list,
-            Err(failure) => {
-                let report = failure.to_diagnostic(src);
-                io.say(format!("oh-my-shell: {what}: {}", report.message()));
+        let mut status = self.status;
+        let mut pending = String::new();
+        let mut lines = src.split_inclusive('\n').peekable();
+        while let Some(line) = lines.next() {
+            pending.push_str(line);
+            let expanded = self.expand_aliases(&pending).into_owned();
+            let list = match parse(&expanded) {
+                Ok(list) => list,
+                // More lines may finish it.
+                Err(failure) if failure.is_incomplete() && lines.peek().is_some() => continue,
+                Err(failure) => {
+                    let report = failure.to_diagnostic(&expanded);
+                    io.say(format!("oh-my-shell: {what}: {}", report.message()));
+                    return Ok(ExitStatus::USAGE);
+                }
+            };
+            pending.clear();
+            if let Err(not_yet) = check_list(&list) {
+                io.say(format!(
+                    "oh-my-shell: {what}: {} cannot run yet",
+                    not_yet.what
+                ));
                 return Ok(ExitStatus::USAGE);
             }
-        };
-        if let Err(not_yet) = check_list(&list) {
-            io.say(format!(
-                "oh-my-shell: {what}: {} cannot run yet",
-                not_yet.what
-            ));
-            return Ok(ExitStatus::USAGE);
+            status = self.run_list(&list, io)?;
+            self.status = status;
         }
-        self.run_list(&list, io)
+        Ok(status)
     }
 }
 

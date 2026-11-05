@@ -41,7 +41,7 @@ clap = { version = "4.6", default-features = false, features = [
 miette = { version = "7.6", default-features = false }
 # POSIX calls for the executor (S05): fork, waitpid, pipe2, access, sigaction. Default
 # features are off; each feature below is one module of the crate that we use.
-nix = { version = "0.31", default-features = false, features = ["fs", "process", "signal", "user"] }
+nix = { version = "0.31", default-features = false, features = ["fs", "poll", "process", "signal", "user"] }
 # Test-only. Its `colors` feature is left out: it only colors the diff shown when a
 # snapshot test fails.
 insta = { version = "1.49", default-features = false }

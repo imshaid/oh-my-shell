@@ -82,7 +82,8 @@ impl Shell {
                 table.set(fd.unwrap_or(0), Arc::new(file));
             }
             RedirectOp::Output | RedirectOp::Clobber => {
-                let file = self.open_file(target, output | OFlag::O_TRUNC)?;
+                let protect = op == RedirectOp::Output && self.options.noclobber;
+                let file = self.open_for_output(target, protect)?;
                 table.set(fd.unwrap_or(1), Arc::new(file));
             }
             RedirectOp::Append => {
@@ -94,12 +95,12 @@ impl Shell {
                 table.set(fd.unwrap_or(0), Arc::new(file));
             }
             RedirectOp::OutputAndError | RedirectOp::AppendAndError => {
-                let how = if op == RedirectOp::OutputAndError {
-                    OFlag::O_TRUNC
+                let file = if op == RedirectOp::OutputAndError {
+                    self.open_for_output(target, self.options.noclobber)?
                 } else {
-                    OFlag::O_APPEND
+                    self.open_file(target, output | OFlag::O_APPEND)?
                 };
-                let file = Arc::new(self.open_file(target, output | how)?);
+                let file = Arc::new(file);
                 table.set(1, Arc::clone(&file));
                 table.set(2, file);
             }
@@ -127,6 +128,38 @@ impl Shell {
             }
         }
         Ok(())
+    }
+
+    /// Opens a file for `>`. With `protect` (`set -C`), an existing regular file is not
+    /// overwritten; other files, such as `/dev/null`, are still opened.
+    fn open_for_output(&self, name: &[u8], protect: bool) -> Result<OwnedFd, RedirectError> {
+        let flags = OFlag::O_WRONLY | OFlag::O_CREAT;
+        if !protect {
+            return self.open_file(name, flags | OFlag::O_TRUNC);
+        }
+        match open(
+            &self.resolve(name),
+            flags | OFlag::O_EXCL | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o666),
+        ) {
+            Ok(fd) => Ok(fd),
+            Err(Errno::EEXIST) => {
+                let regular = std::fs::metadata(self.resolve(name)).is_ok_and(|m| m.is_file());
+                if regular {
+                    Err(RedirectError::Failed(format!(
+                        "{}: cannot overwrite existing file",
+                        String::from_utf8_lossy(name)
+                    )))
+                } else {
+                    self.open_file(name, flags)
+                }
+            }
+            Err(errno) => Err(RedirectError::Failed(format!(
+                "{}: {}",
+                String::from_utf8_lossy(name),
+                errno.desc()
+            ))),
+        }
     }
 
     fn open_file(&self, name: &[u8], flags: OFlag) -> Result<OwnedFd, RedirectError> {

@@ -5,10 +5,14 @@
 //! assigned in front of one stays assigned. *Regular* builtins are found after functions, and
 //! behave like programs.
 
+mod alias;
 mod cd;
 mod echo;
 mod flow;
+mod printf;
+mod read;
 mod source;
+mod test;
 mod variables;
 
 use nix::errno::Errno;
@@ -30,7 +34,8 @@ pub(crate) fn classify(name: &[u8]) -> Option<Class> {
     Some(match name {
         b":" | b"." | b"break" | b"continue" | b"eval" | b"exit" | b"export" | b"return"
         | b"set" | b"shift" | b"unset" => Class::Special,
-        b"cd" | b"echo" | b"false" | b"pwd" | b"source" | b"true" => Class::Regular,
+        b"[" | b"alias" | b"cd" | b"echo" | b"false" | b"printf" | b"pwd" | b"read" | b"source"
+        | b"test" | b"true" | b"unalias" => Class::Regular,
         _ => return None,
     })
 }
@@ -47,9 +52,15 @@ pub(crate) fn run(shell: &mut Shell, name: &[u8], args: &[Vec<u8>], io: &Io) -> 
         b"return" => flow::return_(shell, args, io),
         b"break" => flow::loop_control(shell, args, io, Unwind::Break),
         b"continue" => flow::loop_control(shell, args, io, Unwind::Continue),
+        b"alias" => alias::alias(shell, args, io),
+        b"unalias" => alias::unalias(shell, args, io),
         b"cd" => cd::cd(shell, args, io),
         b"pwd" => cd::pwd(shell, args, io),
         b"echo" => echo::echo(shell, args, io),
+        b"printf" => printf::printf(shell, args, io),
+        b"read" => read::read(shell, args, io),
+        b"test" => test::test(shell, args, io, false),
+        b"[" => test::test(shell, args, io, true),
         b"export" => variables::export(shell, args, io),
         b"unset" => variables::unset(shell, args, io),
         b"set" => variables::set(shell, args, io),

@@ -4,6 +4,7 @@
 use super::{is_name, parse_count, quote};
 use crate::exec::Flow;
 use crate::io::Io;
+use crate::options::{NAMES, Options};
 use crate::shell::Shell;
 use crate::status::ExitStatus;
 
@@ -99,38 +100,117 @@ pub(super) fn unset(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     Ok(status)
 }
 
-/// `set [--] [arg...]`. With arguments it replaces the positional parameters. With none it
-/// lists the variables. Options such as `-e` come in S07b.
+/// `set [-+eufxC] [-+o name] [--] [arg...]`. Options come first; what is left replaces the
+/// positional parameters. With no arguments at all it lists the variables, `set -o` lists the
+/// options, and `set +o` lists commands that set them back.
 pub(super) fn set(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
-    match args.first().map(Vec::as_slice) {
-        None => {
-            let mut out = Vec::new();
-            for (name, value, _) in shell.vars.sorted() {
-                if let Some(value) = value {
-                    out.extend_from_slice(name);
-                    out.push(b'=');
-                    out.extend_from_slice(&quote(value));
-                    out.push(b'\n');
-                }
+    if args.is_empty() {
+        let mut out = Vec::new();
+        for (name, value, _) in shell.vars.sorted() {
+            if let Some(value) = value {
+                out.extend_from_slice(name);
+                out.push(b'=');
+                out.extend_from_slice(&quote(value));
+                out.push(b'\n');
             }
-            shell.emit(io, 1, &out)
         }
-        Some(b"--") => {
-            shell.positional = args[1..].to_vec();
-            Ok(ExitStatus::SUCCESS)
+        return shell.emit(io, 1, &out);
+    }
+    let mut options = shell.options;
+    let mut i = 0;
+    let mut replace_positional = false;
+    while i < args.len() {
+        let arg = args[i].as_slice();
+        if arg == b"--" {
+            i += 1;
+            replace_positional = true;
+            break;
         }
-        Some(first) if first.len() > 1 && matches!(first[0], b'-' | b'+') => {
-            io.say(format!(
-                "oh-my-shell: set: {}: options are not supported yet",
-                String::from_utf8_lossy(first)
-            ));
-            Ok(ExitStatus::USAGE)
+        // A lone `-` ends the options too. (`set -` also turns off `-x` and `-v` in POSIX.)
+        if arg == b"-" {
+            options.xtrace = false;
+            i += 1;
+            // `set - a b` replaces the parameters; a lone `set -` keeps them.
+            replace_positional = i < args.len();
+            break;
         }
-        Some(_) => {
-            shell.positional = args.to_vec();
-            Ok(ExitStatus::SUCCESS)
+        let on = match arg.first() {
+            Some(b'-') if arg.len() > 1 => true,
+            Some(b'+') if arg.len() > 1 => false,
+            _ => {
+                replace_positional = true;
+                break;
+            }
+        };
+        i += 1;
+        for &letter in &arg[1..] {
+            if letter == b'o' {
+                let name = args.get(i).map(Vec::as_slice);
+                i += 1;
+                match name {
+                    None => return list_options(shell, &options, on, io),
+                    Some(name) => {
+                        if let Err(message) = set_named(&mut options, name, on) {
+                            io.say(format!("oh-my-shell: set: {message}"));
+                            return Ok(ExitStatus::USAGE);
+                        }
+                    }
+                }
+            } else if !char::from(letter).is_ascii() || !options.set_letter(char::from(letter), on)
+            {
+                io.say(format!(
+                    "oh-my-shell: set: {}{}: option is not supported",
+                    if on { '-' } else { '+' },
+                    String::from_utf8_lossy(&[letter])
+                ));
+                return Ok(ExitStatus::USAGE);
+            }
         }
     }
+    shell.options = options;
+    if replace_positional {
+        shell.positional = args[i..].to_vec();
+    }
+    Ok(ExitStatus::SUCCESS)
+}
+
+/// `set -o name` and `set +o name`.
+fn set_named(options: &mut Options, name: &[u8], on: bool) -> Result<(), String> {
+    let shown = String::from_utf8_lossy(name).into_owned();
+    if !NAMES.iter().any(|n| n.as_bytes() == name) {
+        return Err(format!("{}o {shown}: unknown option", sign(on)));
+    }
+    if options.set_named(&shown, on) {
+        Ok(())
+    } else {
+        Err(format!("{}o {shown}: option is not supported", sign(on)))
+    }
+}
+
+fn sign(on: bool) -> char {
+    if on { '-' } else { '+' }
+}
+
+/// `set -o` (a table) and `set +o` (commands that restore the options).
+fn list_options(shell: &Shell, options: &Options, table: bool, io: &Io) -> Flow {
+    let mut out = String::new();
+    if table {
+        out.push_str("Current option settings\n");
+    }
+    for name in NAMES {
+        let on = match *name {
+            "interactive" => shell.interactive,
+            // The shell reads its commands from standard input.
+            "stdin" => true,
+            other => options.named(other),
+        };
+        if table {
+            out.push_str(&format!("{name:<16}{}\n", if on { "on" } else { "off" }));
+        } else {
+            out.push_str(&format!("set {}o {name}\n", sign(on)));
+        }
+    }
+    shell.emit(io, 1, out.as_bytes())
 }
 
 /// `shift [n]`.

@@ -11,11 +11,13 @@
 //! are still to come, and a line that needs them is refused whole by [`Shell::run`] before
 //! anything runs.
 
+mod alias;
 mod builtins;
 mod check;
 mod exec;
 mod expand;
 mod io;
+mod options;
 mod path;
 mod redirect;
 mod shell;

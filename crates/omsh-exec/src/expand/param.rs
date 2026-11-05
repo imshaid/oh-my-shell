@@ -51,11 +51,7 @@ impl Expander<'_> {
             "$" => Value::Scalar(std::process::id().to_string().into_bytes()),
             // There are no background jobs until S09.
             "!" => Value::Unset,
-            "-" => Value::Scalar(if shell.interactive {
-                b"is".to_vec()
-            } else {
-                b"s".to_vec()
-            }),
+            "-" => Value::Scalar(shell.options.dollar_dash(shell.interactive).into_bytes()),
             "0" => Value::Scalar(shell.name.clone()),
             digits if digits.bytes().all(|b| b.is_ascii_digit()) && !digits.is_empty() => digits
                 .parse::<usize>()
@@ -77,6 +73,29 @@ impl Expander<'_> {
     ) -> Result<()> {
         let name = parameter.name.as_str();
         let value = self.value_of(name);
+
+        // Under `-u`, a variable or positional parameter that is not set is an error, except
+        // where the operator says what to do about it (`-`, `=`, `?`, `+`).
+        let handles_unset = matches!(
+            parameter.op.map(|(op, _)| op),
+            Some(
+                ParamOp::ColonDash
+                    | ParamOp::Dash
+                    | ParamOp::ColonEquals
+                    | ParamOp::Equals
+                    | ParamOp::ColonQuestion
+                    | ParamOp::Question
+                    | ParamOp::ColonPlus
+                    | ParamOp::Plus
+            )
+        );
+        if self.shell.options.nounset
+            && value == Value::Unset
+            && !handles_unset
+            && (is_variable_name(name) || name.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Err(ExpandError(format!("{name}: parameter not set")));
+        }
 
         if parameter.length {
             let length = match &value {

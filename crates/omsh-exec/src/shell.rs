@@ -1,6 +1,6 @@
 //! The shell: its state, and the entry points that run a line.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use omsh_syntax::{SyntaxDiagnostic, parse};
 use crate::check::{NotYet, check_list};
 use crate::exec::Unwind;
 use crate::io::Io;
+use crate::options::Options;
 use crate::path::PathCache;
 use crate::signals;
 use crate::status::ExitStatus;
@@ -67,6 +68,15 @@ pub struct Shell {
     pub(crate) cmdsub_status: Option<ExitStatus>,
     /// Functions by name. The definitions are shared, so a copy of the shell is cheap.
     pub(crate) functions: HashMap<String, Arc<FunctionDef>>,
+    /// Aliases by name. They are replaced in the text of a line before it is parsed (see
+    /// `alias.rs`).
+    pub(crate) aliases: BTreeMap<String, String>,
+    /// The options set with `set`.
+    pub(crate) options: Options,
+    /// More than 0 while a failing command must not end the shell under `-e`: in a condition,
+    /// on the left of `&&` and `||`, and after `!`. It is a count and not a flag because these
+    /// can be nested, and it reaches into functions called from there.
+    pub(crate) errexit_off: u32,
     /// The working directory of a copy of the shell (a subshell, a pipeline stage, a
     /// `$(...)`), when it is not the process's. `cd` in a copy must not call `chdir`: the
     /// working directory belongs to the whole process, which other threads are using. A copy
@@ -112,6 +122,9 @@ impl Shell {
             interactive: false,
             cmdsub_status: None,
             functions: HashMap::new(),
+            aliases: BTreeMap::new(),
+            options: Options::default(),
+            errexit_off: 0,
             cwd_override: None,
             in_subshell: false,
             depth: 0,
@@ -192,6 +205,7 @@ impl Shell {
     /// Messages from the shell itself ("not found", "killed by SIGSEGV") go to descriptor 2
     /// of `io`.
     pub fn run_source(&mut self, src: &str, at_end: bool, io: &Io) -> LineResult {
+        let src = &*self.expand_aliases(src).into_owned();
         let list = match parse(src) {
             Ok(list) => list,
             Err(failure) => {

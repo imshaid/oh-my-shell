@@ -950,10 +950,180 @@ fn set_without_arguments_lists_variables() {
 }
 
 #[test]
-fn set_options_are_refused_for_now() {
-    let d = run(&mut shell(), "set -e");
-    assert_eq!(d.status, 2);
-    assert!(d.err.contains("not supported yet"), "{}", d.err);
+fn set_errexit_ends_the_shell_at_a_failing_command() {
+    let d = run(&mut shell(), "set -e; echo a; false; echo b");
+    assert_eq!((d.out.as_str(), d.status, d.exited), ("a\n", 1, true));
+    assert_eq!(out("set -e; set +e; false; echo after"), "after\n");
+}
+
+#[test]
+fn errexit_does_not_apply_where_the_failure_is_expected() {
+    for line in [
+        "false || echo ok",
+        "false && echo no; echo ok",
+        "! true; echo ok",
+        "if false; then :; fi; echo ok",
+        "while false; do :; done; echo ok",
+        "f() { false; echo in; }; f || echo no; echo ok",
+        "f() { false; echo in; }; if f; then :; fi; echo ok",
+        "false | true; echo ok",
+    ] {
+        let d = run(&mut shell(), &format!("set -e; {line}"));
+        assert!(d.out.ends_with("ok\n"), "{line}: {d:?}");
+        assert!(!d.exited || d.status == 0, "{line}: {d:?}");
+    }
+}
+
+#[test]
+fn errexit_applies_to_the_last_command_of_a_list_and_to_subshells() {
+    for line in [
+        "true && false; echo no",
+        "(false); echo no",
+        "true | false; echo no",
+        "f() { return 3; }; f; echo no",
+        "x=$(false); echo no",
+        "{ false; echo no; }",
+        "for i in 1; do false; echo no; done",
+    ] {
+        let d = run(&mut shell(), &format!("set -e; {line}"));
+        assert!(d.exited, "{line}: {d:?}");
+        assert!(!d.out.contains("no"), "{line}: {d:?}");
+    }
+}
+
+#[test]
+fn pipefail_takes_the_last_failure_of_the_pipeline() {
+    assert_eq!(out("false | true; echo $?"), "0\n");
+    assert_eq!(
+        out("set -o pipefail; false | true; echo $?; true | true; echo $?"),
+        "1\n0\n"
+    );
+    assert_eq!(
+        out("set -o pipefail; sh -c 'exit 3' | false | true; echo $?"),
+        "1\n"
+    );
+}
+
+#[test]
+fn nounset_makes_an_unset_parameter_an_error_that_ends_the_line() {
+    let d = run(&mut shell(), "set -u; echo $nope; echo no");
+    assert_eq!((d.out.as_str(), d.status, d.exited), ("", 2, false));
+    assert!(d.err.contains("nope: parameter not set"), "{}", d.err);
+    // Operators that say what to do with an unset parameter are fine, and so are the
+    // special parameters.
+    assert_eq!(
+        out("set -u; echo [${a-x}${a:-y}${a+z}${a:+w}] $# $? $@ $*; : ${b=1}; echo $b"),
+        "[xy] 0 0\n1\n"
+    );
+    assert!(
+        run(&mut shell(), "set -u; echo ${#nope}")
+            .err
+            .contains("not set")
+    );
+    assert!(
+        run(&mut shell(), "set -u; echo ${nope#a}")
+            .err
+            .contains("not set")
+    );
+    assert!(
+        run(&mut shell(), "set -u; echo $1")
+            .err
+            .contains("1: parameter not set")
+    );
+    assert_eq!(out("set -u; x=; echo [$x]"), "[]\n");
+}
+
+#[test]
+fn noglob_keeps_patterns_as_they_are() {
+    let dir = Dir::new();
+    let line = format!(
+        "cd {}; set -f; echo *.txt; set +f; echo *.txt",
+        dir.path().display()
+    );
+    assert_eq!(out(&line), "*.txt\na.txt b.txt\n");
+}
+
+#[test]
+fn xtrace_writes_each_command_to_stderr() {
+    let d = run(
+        &mut shell(),
+        "set -x; x=1; echo \"a b\" c; set +x; echo quiet",
+    );
+    assert_eq!(d.out, "a b c\nquiet\n");
+    assert_eq!(d.err, "+ x=1\n+ echo a b c\n+ set +x\n");
+    let d = run(&mut shell(), "PS4='# '; set -x; true");
+    assert_eq!(d.err, "# true\n");
+}
+
+#[test]
+fn noclobber_protects_regular_files_only() {
+    let dir = Dir::new();
+    let cd = format!("cd {}; set -C;", dir.path().display());
+    let d = run(&mut shell(), &format!("{cd} echo x > a.txt; echo after"));
+    assert_eq!(d.out, "after\n");
+    assert_eq!(d.status, 0);
+    assert!(
+        d.err.contains("cannot overwrite existing file"),
+        "{}",
+        d.err
+    );
+    assert_eq!(out(&format!("{cd} echo x >| a.txt; cat a.txt")), "x\n");
+    assert_eq!(
+        out(&format!("{cd} echo y > fresh.txt; cat fresh.txt")),
+        "y\n"
+    );
+    assert_eq!(out(&format!("{cd} echo x > /dev/null; echo ok")), "ok\n");
+    assert_eq!(
+        out(&format!("{cd} echo more >> a.txt; cat a.txt")),
+        "x\nmore\n"
+    );
+}
+
+#[test]
+fn set_o_lists_and_sets_options_by_name() {
+    let listing = out("set -o errexit -o nounset; set -o");
+    assert!(
+        listing.starts_with("Current option settings\nerrexit         on\n"),
+        "{listing}"
+    );
+    assert!(listing.contains("nounset         on\n"));
+    assert!(listing.contains("xtrace          off\n"));
+    let restore = out("set -o xtrace; set +o");
+    assert!(
+        restore.contains("set -o xtrace\n") && restore.contains("set +o errexit\n"),
+        "{restore}"
+    );
+    assert_eq!(out("set -eu; echo $-; set +e; echo $-"), "use\nus\n");
+}
+
+#[test]
+fn set_with_options_and_arguments() {
+    assert_eq!(
+        out("set -e a b; echo $1 $2 $#; set -- ; echo $#"),
+        "a b 2\n0\n"
+    );
+    assert_eq!(out("set a b; set -e; echo $#"), "2\n");
+    assert_eq!(out("set a b; set -; echo $#"), "2\n");
+    assert_eq!(out("set -- -x; echo $1"), "-x\n");
+}
+
+#[test]
+fn set_refuses_what_this_shell_does_not_have() {
+    for line in [
+        "set -m",
+        "set -o monitor",
+        "set -o nosuchname",
+        "set -z",
+        "set +q",
+    ] {
+        let d = run(&mut shell(), line);
+        assert_eq!(d.status, 2, "{line}");
+        assert!(
+            !d.exited,
+            "{line}: an interactive shell survives a typing mistake"
+        );
+        assert!(!d.err.is_empty(), "{line}");
+    }
 }
 
 #[test]

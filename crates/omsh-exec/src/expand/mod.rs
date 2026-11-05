@@ -194,7 +194,11 @@ impl Expander<'_> {
             let ifs = self.shell.vars.get("IFS").unwrap_or(DEFAULT_IFS).to_vec();
             for field in fields {
                 for field in split::split(field, &ifs) {
-                    let matches = pathname::expand(&field, self.shell.cwd_override.as_deref());
+                    let matches = if self.shell.options.noglob {
+                        Vec::new()
+                    } else {
+                        pathname::expand(&field, self.shell.cwd_override.as_deref())
+                    };
                     if matches.is_empty() {
                         out.push(field.bytes);
                     } else {

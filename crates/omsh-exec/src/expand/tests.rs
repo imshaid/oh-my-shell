@@ -178,7 +178,7 @@ fn special_parameters() {
     assert_eq!(fields(&mut sh, "$@ $*"), "");
     assert_eq!(fields(&mut sh, "$-"), "<s>");
     sh.set_interactive(true);
-    assert_eq!(fields(&mut sh, "$-"), "<is>");
+    assert_eq!(fields(&mut sh, "$-"), "<si>");
 }
 
 /// What `/bin/sh` makes of the same positional parameters.

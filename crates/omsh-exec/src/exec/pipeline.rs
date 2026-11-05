@@ -83,7 +83,16 @@ impl Shell {
         if signals::interrupted() {
             return Err(Unwind::Interrupted);
         }
-        let status = statuses.last().copied().unwrap_or(ExitStatus::SUCCESS);
+        let mut status = statuses.last().copied().unwrap_or(ExitStatus::SUCCESS);
+        if self.options.pipefail {
+            // The last command that failed, if any.
+            status = statuses
+                .iter()
+                .rev()
+                .copied()
+                .find(|s| *s != ExitStatus::SUCCESS)
+                .unwrap_or(ExitStatus::SUCCESS);
+        }
         self.status = status;
         Ok(status)
     }

@@ -40,7 +40,9 @@ impl Shell {
 
     fn run_if(&mut self, command: &IfCommand, io: &Io) -> Flow {
         for branch in &command.branches {
-            if self.run_list(&branch.condition, io)? == ExitStatus::SUCCESS {
+            let condition =
+                self.ignoring_errexit(true, |shell| shell.run_list(&branch.condition, io))?;
+            if condition == ExitStatus::SUCCESS {
                 return self.run_list(&branch.body, io);
             }
         }
@@ -64,7 +66,9 @@ impl Shell {
             if signals::interrupted() {
                 return Err(Unwind::Interrupted);
             }
-            let condition = self.run_list(&command.condition, io)? == ExitStatus::SUCCESS;
+            let condition = self
+                .ignoring_errexit(true, |shell| shell.run_list(&command.condition, io))?
+                == ExitStatus::SUCCESS;
             if condition == until {
                 return Ok(status);
             }
