@@ -18,7 +18,10 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::panic;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread::{self, ThreadId};
+use std::time::Duration;
 
+use nix::errno::Errno;
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::{Signal, killpg};
 use nix::sys::termios::{SetArg, Termios, tcgetattr, tcsetattr};
 use nix::unistd::{Pid, getpgrp, getpid, setpgid, tcgetpgrp, tcsetpgrp};
@@ -178,6 +181,25 @@ impl Terminal {
         }
     }
 
+    /// A job that was in the foreground has stopped. The shell takes the terminal and puts its
+    /// own settings back. Returns the settings the job had, for `fg`.
+    pub(crate) fn suspend_job(&self) -> Option<Termios> {
+        let _ = tcsetpgrp(&self.fd, self.shell_pgid);
+        let modes = tcgetattr(&self.fd).ok();
+        let saved = self.saved();
+        let _ = tcsetattr(&self.fd, SetArg::TCSADRAIN, &saved);
+        modes
+    }
+
+    /// Gives the terminal to the job in group `pgid`, with the settings it had when it was
+    /// stopped (if it was).
+    pub(crate) fn give_to(&self, pgid: Pid, modes: Option<&Termios>) {
+        if let Some(modes) = modes {
+            let _ = tcsetattr(&self.fd, SetArg::TCSADRAIN, modes);
+        }
+        let _ = tcsetpgrp(&self.fd, pgid);
+    }
+
     /// Hands the terminal and the process group back to where they were at the start.
     fn give_back(&self) {
         let _ = tcsetpgrp(&self.fd, self.original_pgid);
@@ -211,4 +233,26 @@ pub(crate) fn reacquire_terminal() {
         let _ = setpgid(Pid::from_raw(0), Pid::from_raw(0));
     }
     let _ = tcsetpgrp(&terminal.fd, terminal.shell_pgid);
+}
+
+/// How long [`wait_for_input`] sleeps before it looks at the hangup flag again.
+const INPUT_STEP: Duration = Duration::from_millis(100);
+
+/// Waits until `input` can be read, or the shell is hung up. Returns false on a hangup.
+///
+/// A read that waits for the keyboard restarts after a signal, so a `SIGHUP` sent to an idle
+/// shell would never be noticed. Waiting in steps of 100 ms lets the shell look at the flag. A
+/// closed terminal also makes the descriptor readable (end of input), so that is reported as
+/// readable and the read says what happened.
+pub fn wait_for_input(input: impl AsFd) -> bool {
+    loop {
+        if signals::hung_up() {
+            return false;
+        }
+        let mut fds = [PollFd::new(input.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, PollTimeout::from(INPUT_STEP.as_millis() as u16)) {
+            Ok(0) | Err(Errno::EINTR) => {}
+            Ok(_) | Err(_) => return true,
+        }
+    }
 }

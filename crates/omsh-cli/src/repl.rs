@@ -8,8 +8,8 @@ use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 
 use omsh_exec::{
-    ExitStatus, Io, LineResult, Outcome, Shell, note_inherited_signals, release_terminal,
-    start_interactive,
+    ExitStatus, Io, LineResult, Outcome, Shell, hung_up, note_inherited_signals, release_terminal,
+    start_interactive, wait_for_input,
 };
 
 use crate::report::{self, Style};
@@ -70,6 +70,9 @@ fn run_on(mut input: impl Read, interactive: bool, job_control: bool, style: Sty
     let mut pending = String::new();
     loop {
         if interactive {
+            if hung_up() {
+                return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files);
+            }
             if pending.is_empty() {
                 // What happened to the background jobs since the last prompt.
                 shell.job_notices(&files);
@@ -79,6 +82,11 @@ fn run_on(mut input: impl Read, interactive: bool, job_control: bool, style: Sty
             } else {
                 CONTINUATION_PROMPT
             });
+        }
+        // Wait in steps, so that a `SIGHUP` sent to an idle shell is noticed: a plain read
+        // would be restarted after the signal and never come back.
+        if interactive && !wait_for_input(io::stdin().as_fd()) {
+            return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files);
         }
         let at_end = match read_line(&mut input) {
             Ok(Some(bytes)) => {
@@ -92,7 +100,12 @@ fn run_on(mut input: impl Read, interactive: bool, job_control: bool, style: Sty
             }
             Ok(None) => {
                 if pending.is_empty() {
-                    return shell.run_exit_trap(shell.last_status(), &files);
+                    // End of input with stopped jobs: the first time only warns.
+                    if !shell.confirm_exit(&files) {
+                        continue;
+                    }
+                    let status = shell.last_status();
+                    return finish(&mut shell, status, &files);
                 }
                 true
             }
@@ -105,16 +118,28 @@ fn run_on(mut input: impl Read, interactive: bool, job_control: bool, style: Sty
         match shell.run_source(&pending, at_end, &mut files) {
             LineResult::Incomplete => {}
             LineResult::Ran(Outcome::Continue(_)) => pending.clear(),
-            LineResult::Ran(Outcome::Exit(status)) => return shell.run_exit_trap(status, &files),
+            LineResult::Ran(Outcome::Exit(status)) => return finish(&mut shell, status, &files),
             LineResult::Rejected(report) => {
                 report::show(&report, style);
                 pending.clear();
             }
         }
         if at_end {
-            return shell.run_exit_trap(shell.last_status(), &files);
+            let status = shell.last_status();
+            return finish(&mut shell, status, &files);
         }
     }
+}
+
+/// The status of a shell that was hung up: 128 + `SIGHUP`.
+const HANGUP_STATUS: u8 = 129;
+
+/// The shell ends: its `EXIT` trap runs, then its jobs are dealt with (stopped ones are told to
+/// hang up, since no one could continue them any more).
+fn finish(shell: &mut Shell, status: ExitStatus, files: &Io) -> ExitStatus {
+    let status = shell.run_exit_trap(status, files);
+    shell.end_session();
+    status
 }
 
 /// Adds `bytes` to `text` if they are valid UTF-8. The parser works on `str`.

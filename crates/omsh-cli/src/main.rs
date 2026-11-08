@@ -15,7 +15,8 @@ use clap::Parser;
 /// (pipelines, redirections, `&&` and `||`, `if`, loops, `case`, functions, the usual
 /// expansions) with a few builtins. Each command runs in its own process group, so Ctrl+C
 /// stops the command and not the shell. A command that ends with `&` runs in the background
-/// (`jobs`, `wait` and `kill %n` work with it). `fg`, `bg` and stopped jobs are not there yet.
+/// (`jobs`, `wait` and `kill %n` work with it). Ctrl+Z stops the foreground job; `fg` and `bg`
+/// continue it, and `disown` forgets it.
 #[derive(Debug, Parser)]
 #[command(name = "oh-my-shell", version)]
 struct Cli {}

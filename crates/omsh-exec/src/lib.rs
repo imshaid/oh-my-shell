@@ -39,8 +39,10 @@ pub use io::{FdPlan, Io, Slot};
 pub use omsh_syntax::{Span, SyntaxDiagnostic};
 pub use path::{DEFAULT_PATH, Lookup, PathCache};
 pub use shell::{LineResult, Outcome, Shell};
-pub use signals::{clear_interrupt, enter_interactive, interrupted, note_inherited_signals};
+pub use signals::{
+    clear_interrupt, enter_interactive, hung_up, interrupted, note_inherited_signals,
+};
 pub use spawn::{ChildGroup, ExecRequest, SpawnFailure, start, wait};
 pub use status::{ExitStatus, Termination};
-pub use terminal::{release_terminal, start_interactive};
+pub use terminal::{release_terminal, start_interactive, wait_for_input};
 pub use vars::{ReadOnly, Variables};

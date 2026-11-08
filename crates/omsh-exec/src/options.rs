@@ -1,4 +1,4 @@
-//! The shell options that `set` changes: `-e`, `-u`, `-x`, `-f` and `-C`.
+//! The shell options that `set` changes: `-e`, `-u`, `-x`, `-f`, `-C` and `-m`.
 
 /// Which options are on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -15,6 +15,9 @@ pub(crate) struct Options {
     pub(crate) noclobber: bool,
     /// `-o pipefail`: a pipeline fails if any of its commands failed. There is no letter.
     pub(crate) pipefail: bool,
+    /// `-m`, `monitor`: job control. Every command is a job in a process group of its own, and
+    /// a job can be stopped and continued. The interactive shell turns it on by itself.
+    pub(crate) monitor: bool,
 }
 
 /// The names of `set -o`, in the order dash lists them. Those that this shell does not have
@@ -51,6 +54,7 @@ impl Options {
             'x' => self.xtrace = on,
             'f' => self.noglob = on,
             'C' => self.noclobber = on,
+            'm' => self.monitor = on,
             _ => return false,
         }
         true
@@ -64,6 +68,7 @@ impl Options {
             b"noclobber" => Some('C'),
             b"nounset" => Some('u'),
             b"xtrace" => Some('x'),
+            b"monitor" => Some('m'),
             _ => None,
         }
     }
@@ -94,6 +99,7 @@ impl Options {
             'x' => self.xtrace,
             'f' => self.noglob,
             'C' => self.noclobber,
+            'm' => self.monitor,
             _ => false,
         }
     }
@@ -109,6 +115,9 @@ impl Options {
         }
         // The shell reads its commands from standard input.
         out.push('s');
+        if self.monitor {
+            out.push('m');
+        }
         if interactive {
             out.push('i');
         }
@@ -133,6 +142,16 @@ mod tests {
             assert!(options.set_letter(letter, true));
         }
         assert_eq!(options.dollar_dash(false), "uCxsfe");
-        assert!(!options.set_letter('m', true));
+        assert!(!options.set_letter('z', true));
+    }
+
+    #[test]
+    fn monitor_shows_up_between_s_and_i() {
+        let mut options = Options::default();
+        assert!(options.set_letter('m', true));
+        assert_eq!(options.dollar_dash(true), "smi");
+        assert!(options.named("monitor"));
+        assert!(options.set_named("monitor", false));
+        assert_eq!(options.dollar_dash(true), "si");
     }
 }

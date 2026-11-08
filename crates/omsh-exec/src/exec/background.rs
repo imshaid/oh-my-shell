@@ -28,27 +28,14 @@ use crate::status::ExitStatus;
 /// starts no program (`{ x=1; } &`) is not worth waiting for.
 const START_WAIT: Duration = Duration::from_millis(100);
 
-/// Tells the job's table entry that the job is over, when it is dropped. That also happens if
-/// the thread panics, so a `wait` cannot sleep on a job that is gone.
-struct Report {
-    job: Arc<Job>,
-    status: ExitStatus,
-}
-
-impl Drop for Report {
-    fn drop(&mut self) {
-        self.job.finish_background(self.status);
-    }
-}
-
 impl Shell {
     /// Starts `item` as a background job and returns at once with status 0.
     pub(super) fn run_background(&mut self, item: &ListItem, io: &Io) -> Flow {
-        let job = Job::background(self.job_control, self.jobs.bell());
+        let job = Job::background(self.options.monitor, self.jobs.bell());
         let mut copy = self.subshell();
         copy.job = Some(Arc::clone(&job));
         let mut table = io.clone();
-        if !self.job_control {
+        if !self.options.monitor {
             // Without job control a background command must not read what the user types
             // (POSIX). Redirections of the command itself are applied after this.
             table.null_stdin();
@@ -56,24 +43,22 @@ impl Shell {
 
         let number = self.jobs.add(Arc::clone(&job), self.job_text(item.span));
         let and_or = item.and_or.clone();
+        // Dropped without a status (a panic), the task counts as 134, as for a pipeline stage.
+        let task = job.task(0);
         let thread_job = Arc::clone(&job);
         let spawned = thread::Builder::new()
             .stack_size(STAGE_STACK)
             .spawn(move || {
-                // 134, as for a pipeline stage that panicked, until the commands have ended.
-                let mut report = Report {
-                    job: thread_job,
-                    status: ExitStatus(134),
-                };
                 let flow = copy.run_and_or(&and_or, &table);
                 // `kill %n` told the shell code to stop: that is how it ended.
-                let flow = match (flow, report.job.cancelled_by()) {
+                let flow = match (flow, thread_job.cancelled_by()) {
                     (Err(Unwind::Interrupted), Some(signal)) => Ok(ExitStatus::from_signal(signal)),
                     (flow, _) => flow,
                 };
-                report.status = copy.finish_copy(flow, &table);
+                let status = copy.finish_copy(flow, &table);
                 // Let go of the pipes before the job counts as over.
                 drop(table);
+                task.done(status);
             });
         if let Err(error) = spawned {
             self.jobs.remove(number);
@@ -116,14 +101,12 @@ impl Shell {
 
     /// The text `jobs` shows for a command: what the user typed, without the `&`.
     fn job_text(&self, span: Span) -> String {
-        let text = self
-            .source
-            .as_deref()
-            .and_then(|source| source.get(span.start..span.end))
-            .map(|text| text.trim_end_matches(|c: char| c == '&' || c.is_whitespace()));
-        text.map_or_else(
+        self.source_text(span).map_or_else(
             || "(background job)".to_owned(),
-            |text| text.trim().replace('\n', " "),
+            |text| {
+                text.trim_end_matches(|c: char| c == '&' || c.is_whitespace())
+                    .to_owned()
+            },
         )
     }
 
@@ -133,12 +116,21 @@ impl Shell {
     }
 
     /// The signals a program must ignore because of the job it belongs to: Ctrl+C and Ctrl+\
-    /// for a background job of a shell without job control (POSIX). With job control the job
-    /// is in a group that the terminal does not signal.
+    /// for a background job of a shell without job control (POSIX), and the stop signals for a
+    /// top-level `$(...)`. With job control a background job is in a group that the terminal
+    /// does not signal.
     pub(super) fn job_ignored_signals(&self) -> u64 {
         match &self.job {
             Some(job) if job.is_background() && !job.is_grouped() => {
                 (1_u64 << nix::libc::SIGINT) | (1_u64 << nix::libc::SIGQUIT)
+            }
+            // A top-level `$(...)` is part of the command being expanded, which is in the
+            // foreground: Ctrl+Z must not stop one of its programs and leave the shell waiting
+            // for the words (bash ignores the stop signals there too).
+            None if self.no_new_jobs && self.options.monitor => {
+                (1_u64 << nix::libc::SIGTSTP)
+                    | (1_u64 << nix::libc::SIGTTIN)
+                    | (1_u64 << nix::libc::SIGTTOU)
             }
             _ => 0,
         }

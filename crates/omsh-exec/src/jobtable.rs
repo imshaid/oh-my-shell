@@ -117,6 +117,8 @@ pub(crate) struct View {
     pub(crate) job: Arc<Job>,
     pub(crate) phase: Phase,
     pub(crate) text: String,
+    /// `disown -h`: the job is left alone when the shell hangs up.
+    pub(crate) no_hup: bool,
 }
 
 impl View {
@@ -154,6 +156,7 @@ struct Entry {
     text: String,
     /// The stopped state the user has been told about.
     shown: Option<Phase>,
+    no_hup: bool,
 }
 
 #[derive(Debug, Default)]
@@ -201,6 +204,7 @@ impl Table {
             job: Arc::clone(&entry.job),
             phase: entry.job.phase(),
             text: entry.text.clone(),
+            no_hup: entry.no_hup,
         }
     }
 }
@@ -232,7 +236,18 @@ impl Jobs {
     /// Adds a job and returns its number: one more than the highest in use, or 1 for an empty
     /// table.
     pub(crate) fn add(&self, job: Arc<Job>, text: String) -> u32 {
+        self.insert(job, text, false)
+    }
+
+    /// Adds a job that has just been stopped in the foreground. The user is told about it
+    /// right away, so no notice follows.
+    pub(crate) fn add_stopped(&self, job: Arc<Job>, text: String) -> u32 {
+        self.insert(job, text, true)
+    }
+
+    fn insert(&self, job: Arc<Job>, text: String, shown: bool) -> u32 {
         let mut table = self.table();
+        let shown = shown.then(|| job.phase());
         let number = table.entries.last().map_or(1, |e| e.number + 1);
         let (current, _) = table.marks();
         table.previous = current;
@@ -241,7 +256,8 @@ impl Jobs {
             number,
             job,
             text,
-            shown: None,
+            shown,
+            no_hup: false,
         });
         drop(table);
         self.bell.ring();
@@ -298,6 +314,45 @@ impl Jobs {
             .map(|e| table.view(e))
     }
 
+    /// Records that the user has been told a job is stopped, and returns the line to tell them.
+    pub(crate) fn announce_stopped(&self, number: u32) -> Option<String> {
+        let mut table = self.table();
+        let view = table
+            .entries
+            .iter()
+            .find(|e| e.number == number)
+            .map(|e| table.view(e))?;
+        if let Some(entry) = table.entries.iter_mut().find(|e| e.number == number) {
+            entry.shown = Some(view.phase);
+        }
+        Some(view.line(false))
+    }
+
+    /// Makes a job the current one (`fg` and `bg` do), and the old current one the previous.
+    pub(crate) fn make_current(&self, number: u32) {
+        let mut table = self.table();
+        let (current, _) = table.marks();
+        if current != Some(number) {
+            table.previous = current;
+            table.current = Some(number);
+        }
+    }
+
+    /// `disown -h`: the job stays in the table but does not get `SIGHUP` when the shell ends.
+    pub(crate) fn keep_on_hangup(&self, number: u32) {
+        if let Some(entry) = self.table().entries.iter_mut().find(|e| e.number == number) {
+            entry.no_hup = true;
+        }
+    }
+
+    /// True if some job is stopped.
+    pub(crate) fn has_stopped(&self) -> bool {
+        self.table()
+            .entries
+            .iter()
+            .any(|e| matches!(e.job.phase(), Phase::Stopped(_)))
+    }
+
     /// Takes a job out of the table.
     pub(crate) fn remove(&self, number: u32) {
         self.table().entries.retain(|e| e.number != number);
@@ -326,7 +381,9 @@ impl Jobs {
                     entry.shown = Some(view.phase);
                     lines.push(view.line(false));
                 }
-                Phase::Stopped(_) | Phase::Running => {}
+                Phase::Stopped(_) => {}
+                // Running again: if it stops once more, the user is told once more.
+                Phase::Running => entry.shown = None,
             }
         }
         table.entries.retain(|e| !done.contains(&e.number));
@@ -471,11 +528,11 @@ mod tests {
         jobs.add(Arc::clone(&running), "slow".into());
         jobs.add(Arc::clone(&done), "quick".into());
         assert!(jobs.notices().is_empty());
-        done.finish_background(ExitStatus(0));
+        done.task(0).done(ExitStatus(0));
         assert_eq!(jobs.notices(), ["[2]+  Done                       quick"]);
         assert!(jobs.notices().is_empty());
         assert_eq!(jobs.list().len(), 1);
-        running.finish_background(ExitStatus(3));
+        running.task(0).done(ExitStatus(3));
         assert_eq!(jobs.notices(), ["[1]+  Exit 3                     slow"]);
         assert!(jobs.is_empty());
     }
@@ -490,6 +547,76 @@ mod tests {
         assert_eq!(jobs.notices(), ["[1]+  Stopped (tty input)        cat"]);
         assert!(jobs.notices().is_empty());
         assert_eq!(jobs.list().len(), 1);
+        assert!(jobs.has_stopped());
+    }
+
+    #[test]
+    fn a_job_stopped_in_the_foreground_is_not_announced_a_second_time() {
+        let jobs = Jobs::new();
+        let stopped = job(&jobs);
+        stopped.state_for_test(Phase::Stopped(nix::libc::SIGTSTP));
+        jobs.add_stopped(Arc::clone(&stopped), "vim".into());
+        assert!(jobs.notices().is_empty());
+        // It runs again and stops again: that is news.
+        stopped.state_for_test(Phase::Running);
+        assert!(jobs.notices().is_empty());
+        stopped.state_for_test(Phase::Stopped(nix::libc::SIGTSTP));
+        assert_eq!(jobs.notices(), ["[1]+  Stopped                    vim"]);
+    }
+
+    #[test]
+    fn fg_and_bg_make_a_job_the_current_one() {
+        let jobs = Jobs::new();
+        jobs.add(job(&jobs), "one".into());
+        jobs.add(job(&jobs), "two".into());
+        jobs.make_current(1);
+        assert_eq!(jobs.find(&Spec::Current).unwrap().text, "one");
+        assert_eq!(jobs.find(&Spec::Previous).unwrap().text, "two");
+        // Already current: nothing moves.
+        jobs.make_current(1);
+        assert_eq!(jobs.find(&Spec::Previous).unwrap().text, "two");
+    }
+
+    #[test]
+    fn a_job_is_stopped_only_when_every_program_of_it_is() {
+        use nix::unistd::Pid;
+        let jobs = Jobs::new();
+        let job = job(&jobs);
+        // Two programs, one stopped: the job still runs. (Pids are made up; no process is
+        // touched.)
+        job.pretend_started(&[Pid::from_raw(900_001), Pid::from_raw(900_002)]);
+        job.pretend_stopped(Pid::from_raw(900_001), nix::libc::SIGTSTP);
+        assert_eq!(job.phase(), Phase::Running);
+        job.pretend_stopped(Pid::from_raw(900_002), nix::libc::SIGTSTP);
+        assert_eq!(job.phase(), Phase::Stopped(nix::libc::SIGTSTP));
+        job.mark_continued();
+        assert_eq!(job.phase(), Phase::Running);
+    }
+
+    #[test]
+    fn a_job_is_finished_when_every_task_is_over() {
+        let jobs = Jobs::new();
+        let job = Job::foreground(jobs.bell(), 3, false);
+        job.task(0).done(ExitStatus(5));
+        job.task(2).done(ExitStatus(0));
+        assert_eq!(job.phase(), Phase::Running);
+        job.task(1).done(ExitStatus(7));
+        // The status is the last stage's.
+        assert_eq!(job.phase(), Phase::Finished(ExitStatus(0)));
+        // With pipefail it is the last failure.
+        let job = Job::foreground(jobs.bell(), 3, true);
+        job.task(0).done(ExitStatus(5));
+        job.task(1).done(ExitStatus(7));
+        job.task(2).done(ExitStatus(0));
+        assert_eq!(job.phase(), Phase::Finished(ExitStatus(7)));
+    }
+
+    #[test]
+    fn a_task_that_is_dropped_without_a_status_counts_as_a_crash() {
+        let jobs = Jobs::new();
+        let job = Job::foreground(jobs.bell(), 1, false);
+        drop(job.task(0));
+        assert_eq!(job.phase(), Phase::Finished(ExitStatus(134)));
     }
 
     #[test]

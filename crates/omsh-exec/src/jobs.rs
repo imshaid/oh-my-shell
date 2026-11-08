@@ -18,28 +18,45 @@
 //!   leader had been reaped when it exited, `true | { sleep 1; cat; }` would find no group to
 //!   join, and its pid could even be handed to an unrelated process.
 //!
-//! A *background* job (`cmd &`) is the same object, with two differences. It never takes the
-//! terminal, and it lives in the job table (`jobtable.rs`), so its state is kept here: running,
-//! stopped or finished. The thread that runs the job's shell code waits for its programs, as the
-//! stages of a pipeline do; nobody calls `waitpid(-1)`, which would steal their children.
+//! # State, stops and who waits
+//!
+//! The job keeps its own state: *running*, *stopped* or *finished*. It is stopped when it has
+//! programs and every one of them is stopped (the bash rule: `a | b` with only `a` stopped is
+//! still running). It is finished when every *task* is over. A task is one thread that runs shell
+//! code for the job: the stages of a pipeline, or the thread of a background job. Each holds a
+//! [`Task`] and reports its status with [`Task::done`]; a task that is dropped without it (a
+//! panic) counts as 134, so a job cannot stay running forever.
+//!
+//! Nobody calls `waitpid(-1)`, which would steal the children of other threads. The thread
+//! that started a program waits for exactly that pid ([`Job::wait_or_stop`]) and writes what it
+//! saw into the job. A stop is not an ending: the waiter records it and the job's state changes.
+//! The main shell, which has the prompt to go back to, is the only one that gives up on a
+//! stopped foreground job (`exec/stopped.rs`); it hands the waiting to a thread, so a later
+//! `fg` or `bg` finds the job's threads still waiting.
+//!
+//! A job is *foreground* while it owns the terminal. `Ctrl+Z` makes it a background job (in the
+//! job table, stopped); `fg` makes it foreground again. A job also remembers the terminal
+//! settings (termios) it had when it was stopped, and gets them back with `fg`.
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill, killpg};
+use nix::sys::termios::Termios;
 use nix::sys::wait::{WaitPidFlag, waitpid};
 use nix::unistd::Pid;
 
-use crate::io::{FdPlan, Io};
+use crate::io::FdPlan;
 use crate::jobtable::Bell;
 use crate::signals;
 use crate::spawn::{self, ChildGroup, ExecRequest, SpawnFailure, Waited};
 use crate::status::{ExitStatus, Termination};
 use crate::terminal;
 
-/// What the stop of a foreground job tells the user, until S09b can keep stopped jobs.
-const STOPPED_NOTE: &str = "stopped; job control comes in a later version, so it was continued";
+/// How often shell code that waits for a stopped job looks at whether it was told to stop.
+const PAUSE_STEP: Duration = Duration::from_millis(100);
 
 /// Where a background job is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,17 +71,18 @@ pub(crate) enum Phase {
 /// A process group made of the programs of one pipeline.
 #[derive(Debug)]
 pub(crate) struct Job {
-    /// True if the job owns the terminal while it runs.
-    foreground: bool,
-    /// True if its programs get a process group of their own. A foreground job always does; a
-    /// background job does when the shell has job control.
+    /// True while the job owns the terminal. Ctrl+Z clears it, `fg` sets it again.
+    foreground: AtomicBool,
+    /// True if its programs get a process group of their own. A job of a shell with job control
+    /// always has one.
     grouped: bool,
-    /// The signal that told the job to stop (`kill %n`), or 0. A background job whose shell
-    /// code is running on a thread of the shell reads this where a foreground job reads the
-    /// Ctrl+C flag.
+    /// `set -o pipefail` was on when the job started: the status is the last failure.
+    pipefail: bool,
+    /// The signal that told the job to stop (`kill %n`), or 0. The shell code of a background
+    /// job reads this where a foreground job reads the Ctrl+C flag.
     cancelled: AtomicI32,
-    /// Rung when the state changes, for a job in the table.
-    bell: Option<Arc<Bell>>,
+    /// Rung when the state changes: what `wait`, `fg` and paused shell code sleep on.
+    bell: Arc<Bell>,
     state: Mutex<State>,
 }
 
@@ -76,14 +94,19 @@ struct State {
     leader: Option<Pid>,
     /// The programs that have started and not ended yet.
     live: Vec<Pid>,
-    /// A member was killed by a signal or stopped: it may have left the terminal in a
-    /// strange state.
+    /// The programs of `live` that are stopped.
+    stopped: Vec<Pid>,
+    /// The signal of the latest stop.
+    stop_signal: i32,
+    /// A member was killed by a signal: it may have left the terminal in a strange state.
     hurt: bool,
-    /// The user has been told that the job stopped.
-    noted: bool,
     phase: Phase,
     /// How the last program that ended did so.
     last: Option<Termination>,
+    /// The status of each task, once it is over.
+    results: Vec<Option<ExitStatus>>,
+    /// The terminal settings the job had when it was stopped.
+    modes: Option<Termios>,
 }
 
 /// A program of a job that has started.
@@ -94,34 +117,79 @@ pub(crate) struct Member {
     anchor: bool,
 }
 
+/// One thread's share of a job: the shell code it runs. Report its status with [`Task::done`].
+#[derive(Debug)]
+pub(crate) struct Task {
+    job: Arc<Job>,
+    index: usize,
+    done: bool,
+}
+
+impl Task {
+    /// The task is over with this status.
+    pub(crate) fn done(mut self, status: ExitStatus) {
+        self.done = true;
+        self.job.set_result(self.index, status);
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        if !self.done {
+            // The thread ended without saying how, which only a panic does.
+            self.job.set_result(self.index, ExitStatus(134));
+        }
+    }
+}
+
 impl Job {
-    fn new(foreground: bool, grouped: bool, bell: Option<Arc<Bell>>) -> Arc<Self> {
+    fn new(
+        foreground: bool,
+        grouped: bool,
+        bell: Arc<Bell>,
+        tasks: usize,
+        pipefail: bool,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            foreground,
+            foreground: AtomicBool::new(foreground),
             grouped,
+            pipefail,
             cancelled: AtomicI32::new(0),
             bell,
             state: Mutex::new(State {
                 pgid: None,
                 leader: None,
                 live: Vec::new(),
+                stopped: Vec::new(),
+                stop_signal: 0,
                 hurt: false,
-                noted: false,
                 phase: Phase::Running,
                 last: None,
+                results: vec![None; tasks],
+                modes: None,
             }),
         })
     }
 
-    /// A job that will own the terminal while it runs.
-    pub(crate) fn foreground() -> Arc<Self> {
-        Self::new(true, true, None)
+    /// A job that will own the terminal while it runs, made of `tasks` threads of shell code.
+    /// `bell` is rung whenever the job changes.
+    pub(crate) fn foreground(bell: Arc<Bell>, tasks: usize, pipefail: bool) -> Arc<Self> {
+        Self::new(true, true, bell, tasks, pipefail)
     }
 
-    /// A job that runs without the terminal. With `grouped` its programs get a process group
-    /// of their own. `bell` is rung whenever the job changes.
+    /// A job that runs without the terminal, made of one thread of shell code. With `grouped`
+    /// its programs get a process group of their own.
     pub(crate) fn background(grouped: bool, bell: Arc<Bell>) -> Arc<Self> {
-        Self::new(false, grouped, Some(bell))
+        Self::new(false, grouped, bell, 1, false)
+    }
+
+    /// The share of the job that thread number `index` has.
+    pub(crate) fn task(self: &Arc<Self>, index: usize) -> Task {
+        Task {
+            job: Arc::clone(self),
+            index,
+            done: false,
+        }
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -129,13 +197,59 @@ impl Job {
     }
 
     fn ring(&self) {
-        if let Some(bell) = &self.bell {
-            bell.ring();
-        }
+        self.bell.ring();
     }
 
-    pub(crate) const fn is_background(&self) -> bool {
-        !self.foreground
+    /// The job is stopped when it has programs and all of them are stopped. It is no longer
+    /// stopped when one runs again. A finished job stays finished.
+    fn refresh(state: &mut State) {
+        if matches!(state.phase, Phase::Finished(_)) {
+            return;
+        }
+        let all_stopped =
+            !state.live.is_empty() && state.live.iter().all(|pid| state.stopped.contains(pid));
+        state.phase = match (all_stopped, state.phase) {
+            (true, Phase::Stopped(signal)) => Phase::Stopped(signal),
+            (true, _) => Phase::Stopped(state.stop_signal),
+            (false, _) => Phase::Running,
+        };
+    }
+
+    fn set_result(&self, index: usize, status: ExitStatus) {
+        let mut state = self.state();
+        if let Some(slot) = state.results.get_mut(index) {
+            *slot = Some(status);
+        }
+        if state.results.iter().all(Option::is_some) {
+            let results: Vec<ExitStatus> = state.results.iter().flatten().copied().collect();
+            let status = if self.pipefail {
+                // The last command that failed, if any.
+                results
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|s| *s != ExitStatus::SUCCESS)
+                    .unwrap_or(ExitStatus::SUCCESS)
+            } else {
+                results.last().copied().unwrap_or(ExitStatus::SUCCESS)
+            };
+            state.phase = Phase::Finished(status);
+        }
+        drop(state);
+        self.ring();
+    }
+
+    /// The bell this job rings.
+    pub(crate) fn bell(&self) -> &Arc<Bell> {
+        &self.bell
+    }
+
+    pub(crate) fn is_foreground(&self) -> bool {
+        self.foreground.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn is_background(&self) -> bool {
+        !self.is_foreground()
     }
 
     pub(crate) const fn is_grouped(&self) -> bool {
@@ -177,6 +291,7 @@ impl Job {
     /// back through `wait`, so whoever sends it says so.
     pub(crate) fn mark_continued(&self) {
         let mut state = self.state();
+        state.stopped.clear();
         if matches!(state.phase, Phase::Stopped(_)) {
             state.phase = Phase::Running;
         }
@@ -190,6 +305,23 @@ impl Job {
         self.state().live.clone()
     }
 
+    /// Records programs as started, without starting anything.
+    #[cfg(test)]
+    pub(crate) fn pretend_started(&self, pids: &[Pid]) {
+        let mut state = self.state();
+        state.live.extend_from_slice(pids);
+        Self::refresh(&mut state);
+    }
+
+    /// Records a stop of `pid` as `wait_or_stop` does.
+    #[cfg(test)]
+    pub(crate) fn pretend_stopped(&self, pid: Pid, signal: i32) {
+        let mut state = self.state();
+        state.stopped.push(pid);
+        state.stop_signal = signal;
+        Self::refresh(&mut state);
+    }
+
     /// Sets the phase without any program behind it.
     #[cfg(test)]
     pub(crate) fn state_for_test(&self, phase: Phase) {
@@ -197,10 +329,17 @@ impl Job {
         self.ring();
     }
 
-    /// The job's shell code has ended with this status.
-    pub(crate) fn finish_background(&self, status: ExitStatus) {
-        self.state().phase = Phase::Finished(status);
-        self.ring();
+    /// Shell code of this job calls this where it looks for Ctrl+C: while the job is stopped
+    /// it sleeps, so a loop in a stopped pipeline does not spin. It returns when the job runs
+    /// again or is told to stop.
+    pub(crate) fn pause_while_stopped(&self) {
+        loop {
+            let seen = self.bell.count();
+            if !matches!(self.phase(), Phase::Stopped(_)) || self.is_cancelled() {
+                return;
+            }
+            self.bell.wait_after(seen, PAUSE_STEP);
+        }
     }
 
     /// Sends `signal` to every program of the job that is running. For `SIGTERM` and `SIGHUP`
@@ -244,6 +383,8 @@ impl Job {
         } else if stopped && matches!(signal, Signal::SIGTERM | Signal::SIGHUP) {
             send(Signal::SIGCONT)?;
             self.mark_continued();
+        } else {
+            self.ring();
         }
         Ok(())
     }
@@ -263,7 +404,7 @@ impl Job {
         let mut state = self.state();
         let leading = self.grouped && state.pgid.is_none();
         let group = self.grouped.then(|| {
-            let tty = if leading && self.foreground {
+            let tty = if leading && self.is_foreground() {
                 terminal::get().map_or(-1, terminal::Terminal::raw_fd)
             } else {
                 -1
@@ -279,6 +420,7 @@ impl Job {
         }
         state.leader.get_or_insert(pid);
         state.live.push(pid);
+        Self::refresh(&mut state);
         drop(state);
         self.ring();
         Ok(Member {
@@ -287,59 +429,88 @@ impl Job {
         })
     }
 
-    /// Waits until the member ends. If a foreground job stops (Ctrl+Z) it is continued at once,
-    /// with a note to the user: there are no stopped foreground jobs yet. A background job that
-    /// stops is recorded as stopped and waited for again.
-    pub(crate) fn wait(&self, member: &Member, name: &str, io: &Io) -> Termination {
-        loop {
-            match spawn::wait_member(member.pid, member.anchor) {
-                Waited::Ended(ending) => {
-                    {
-                        let mut state = self.state();
-                        state.live.retain(|pid| *pid != member.pid);
-                        state.last = Some(ending);
-                        if matches!(ending, Termination::Signaled { .. }) {
-                            state.hurt = true;
-                        }
-                    }
-                    self.ring();
-                    if let Termination::Signaled { signal, .. } = ending
-                        && signal == nix::libc::SIGINT
-                        && self.foreground
-                    {
-                        // The shell is not in the foreground group, so it never saw the
-                        // Ctrl+C itself. (A background job killed by `kill -INT` is none of
-                        // the foreground's business.)
-                        signals::note_interrupt();
-                    }
-                    return ending;
-                }
-                Waited::Stopped(signal) => {
-                    if !self.foreground {
-                        self.state().phase = Phase::Stopped(signal);
-                        self.ring();
-                        continue;
-                    }
-                    let (first, pgid) = {
-                        let mut state = self.state();
+    /// Waits until the member ends or stops, and records which in the job. A stop is not the
+    /// end: the caller decides whether to wait again.
+    pub(crate) fn wait_or_stop(&self, member: &Member) -> Waited {
+        let waited = spawn::wait_member(member.pid, member.anchor);
+        match waited {
+            Waited::Ended(ending) => {
+                {
+                    let mut state = self.state();
+                    state.live.retain(|pid| *pid != member.pid);
+                    state.stopped.retain(|pid| *pid != member.pid);
+                    state.last = Some(ending);
+                    if matches!(ending, Termination::Signaled { .. }) {
                         state.hurt = true;
-                        (!std::mem::replace(&mut state.noted, true), state.pgid)
-                    };
-                    if first {
-                        io.say(format!("oh-my-shell: {name}: {STOPPED_NOTE}"));
                     }
-                    if let Some(pgid) = pgid {
-                        let _ = killpg(pgid, Signal::SIGCONT);
-                    }
+                    Self::refresh(&mut state);
                 }
+                self.ring();
+                if let Termination::Signaled { signal, .. } = ending
+                    && signal == nix::libc::SIGINT
+                    && self.is_foreground()
+                {
+                    // The shell is not in the foreground group, so it never saw the
+                    // Ctrl+C itself. (A background job killed by `kill -INT` is none of
+                    // the foreground's business.)
+                    signals::note_interrupt();
+                }
+            }
+            Waited::Stopped(signal) => {
+                {
+                    let mut state = self.state();
+                    if !state.stopped.contains(&member.pid) {
+                        state.stopped.push(member.pid);
+                    }
+                    state.stop_signal = signal;
+                    Self::refresh(&mut state);
+                }
+                self.ring();
+            }
+        }
+        waited
+    }
+
+    /// Waits until the member ends. Stops are recorded and waited out: the job's state shows
+    /// them, and a `fg` or `bg` continues the program.
+    pub(crate) fn wait_until_end(&self, member: &Member) -> Termination {
+        loop {
+            if let Waited::Ended(ending) = self.wait_or_stop(member) {
+                return ending;
             }
         }
     }
 
-    /// The job is over: the shell takes the terminal back. Call it once every member has been
-    /// waited for.
+    /// The job stops owning the terminal: the shell takes it back and puts its own terminal
+    /// settings back, keeping the job's for `fg`.
+    pub(crate) fn suspend(&self) {
+        self.foreground.store(false, Ordering::SeqCst);
+        let modes = terminal::get().and_then(terminal::Terminal::suspend_job);
+        self.state().modes = modes;
+        self.ring();
+    }
+
+    /// `fg`: the job owns the terminal again, with the settings it had, and runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of sending `SIGCONT`.
+    pub(crate) fn resume_foreground(&self) -> Result<(), Errno> {
+        let (pgid, modes) = {
+            let mut state = self.state();
+            state.hurt = false;
+            (state.pgid, state.modes.clone())
+        };
+        self.foreground.store(true, Ordering::SeqCst);
+        if let (Some(terminal), Some(group)) = (terminal::get(), pgid) {
+            terminal.give_to(group, modes.as_ref());
+        }
+        self.signal(Signal::SIGCONT)
+    }
+
+    /// The job is over: the shell takes the terminal back. Call it once the job has finished.
     pub(crate) fn finish(&self) {
-        if !self.foreground {
+        if !self.is_foreground() {
             return;
         }
         let hurt = self.state().hurt;
@@ -357,5 +528,71 @@ impl Drop for Job {
         if let Some(leader) = state.pgid {
             let _ = waitpid(leader, Some(WaitPidFlag::WNOHANG));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::jobtable::Jobs;
+
+    #[test]
+    fn shell_code_of_a_stopped_job_sleeps_until_it_runs_again() {
+        let jobs = Jobs::new();
+        let job = Job::foreground(jobs.bell(), 1, false);
+        job.pretend_started(&[Pid::from_raw(900_001)]);
+        job.pretend_stopped(Pid::from_raw(900_001), nix::libc::SIGTSTP);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sleeper = {
+            let job = Arc::clone(&job);
+            std::thread::spawn(move || {
+                job.pause_while_stopped();
+                let _ = sender.send(Instant::now());
+            })
+        };
+        // Still asleep after a while.
+        assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
+        let woken = Instant::now();
+        job.mark_continued();
+        let at = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the shell code did not wake up");
+        assert!(at >= woken);
+        sleeper.join().unwrap();
+    }
+
+    #[test]
+    fn shell_code_of_a_stopped_job_wakes_when_the_job_is_told_to_end() {
+        let jobs = Jobs::new();
+        let job = Job::background(false, jobs.bell());
+        job.pretend_started(&[Pid::from_raw(900_002)]);
+        job.pretend_stopped(Pid::from_raw(900_002), nix::libc::SIGTTIN);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sleeper = {
+            let job = Arc::clone(&job);
+            std::thread::spawn(move || {
+                job.pause_while_stopped();
+                let _ = sender.send(());
+            })
+        };
+        assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
+        // `cancelled` is what `kill %n` sets; the pids here are made up, so signal nothing.
+        job.cancelled
+            .store(Signal::SIGTERM as i32, Ordering::SeqCst);
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the shell code did not wake up");
+        sleeper.join().unwrap();
+    }
+
+    #[test]
+    fn a_job_that_has_not_stopped_does_not_make_shell_code_wait() {
+        let jobs = Jobs::new();
+        let job = Job::foreground(jobs.bell(), 1, false);
+        let start = Instant::now();
+        job.pause_while_stopped();
+        assert!(start.elapsed() < Duration::from_millis(50));
     }
 }

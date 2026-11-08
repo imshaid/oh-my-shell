@@ -39,9 +39,9 @@ pub(crate) fn classify(name: &[u8]) -> Option<Class> {
     Some(match name {
         b":" | b"." | b"break" | b"continue" | b"eval" | b"exec" | b"exit" | b"export"
         | b"return" | b"readonly" | b"set" | b"shift" | b"trap" | b"unset" => Class::Special,
-        b"[" | b"alias" | b"cd" | b"echo" | b"command" | b"false" | b"hash" | b"jobs" | b"kill"
-        | b"printf" | b"pwd" | b"read" | b"source" | b"test" | b"true" | b"type" | b"umask"
-        | b"unalias" | b"wait" => Class::Regular,
+        b"[" | b"alias" | b"bg" | b"cd" | b"echo" | b"command" | b"disown" | b"false" | b"fg"
+        | b"hash" | b"jobs" | b"kill" | b"printf" | b"pwd" | b"read" | b"source" | b"test"
+        | b"true" | b"type" | b"umask" | b"unalias" | b"wait" => Class::Regular,
         _ => return None,
     })
 }
@@ -71,6 +71,9 @@ pub(crate) fn run(shell: &mut Shell, name: &[u8], args: &[Vec<u8>], io: &Io) -> 
         b"umask" => umask::umask(shell, args, io),
         b"jobs" => jobs::jobs(shell, args, io),
         b"wait" => jobs::wait(shell, args, io),
+        b"fg" => jobs::fg(shell, args, io),
+        b"bg" => jobs::bg(shell, args, io),
+        b"disown" => jobs::disown(shell, args, io),
         b"kill" => jobs::kill_(shell, args, io),
         b"read" => read::read(shell, args, io),
         b"test" => test::test(shell, args, io, false),

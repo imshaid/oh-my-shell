@@ -8,7 +8,7 @@ use crate::status::ExitStatus;
 
 /// `exit [n]`: ends the shell (or the subshell it is in) with status `n`, or the status of
 /// the last command.
-pub(super) fn exit(shell: &Shell, args: &[Vec<u8>], io: &Io) -> Flow {
+pub(super) fn exit(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     let status = match args.first() {
         None => shell.status,
         Some(arg) => match std::str::from_utf8(arg)
@@ -26,6 +26,10 @@ pub(super) fn exit(shell: &Shell, args: &[Vec<u8>], io: &Io) -> Flow {
             }
         },
     };
+    // Stopped jobs would be lost: the first `exit` only warns.
+    if !shell.confirm_exit(io) {
+        return Ok(shell.status);
+    }
     Err(Unwind::Exit(status))
 }
 

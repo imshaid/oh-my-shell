@@ -2,7 +2,7 @@
 //!
 //! `kill` is a builtin so that it understands job specs (`kill %1`), which only the shell can
 //! turn into a process group. `wait` is one because only the shell's own children can be waited
-//! for. `fg` and `bg` come with S09b.
+//! for. `fg`, `bg` and `disown` work on stopped jobs and on the job table.
 
 use std::time::Duration;
 
@@ -23,7 +23,11 @@ const WAIT_STEP: Duration = Duration::from_millis(100);
 
 /// Finds the job a word names, or says why not. `name` is the builtin, for the message.
 fn find_job(shell: &Shell, name: &str, word: &[u8], io: &Io) -> Option<View> {
-    let shown = String::from_utf8_lossy(word);
+    find_job_shown(shell, name, word, &String::from_utf8_lossy(word), io)
+}
+
+/// Like [`find_job`], with the name to show in a message (`current` for no argument at all).
+fn find_job_shown(shell: &Shell, name: &str, word: &[u8], shown: &str, io: &Io) -> Option<View> {
     let Some(spec) = parse_spec(word) else {
         io.say(format!("oh-my-shell: {name}: {shown}: no such job"));
         return None;
@@ -43,6 +47,7 @@ fn find_job(shell: &Shell, name: &str, word: &[u8], io: &Io) -> Option<View> {
 /// more here and then forgotten.
 pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     let (mut long, mut pids_only) = (false, false);
+    let (mut only_running, mut only_stopped) = (false, false);
     let mut rest = args;
     while let Some(arg) = rest.first() {
         if arg == b"--" {
@@ -56,6 +61,8 @@ pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
             match letter {
                 b'l' => long = true,
                 b'p' => pids_only = true,
+                b'r' => only_running = true,
+                b's' => only_stopped = true,
                 other => {
                     io.say(format!(
                         "oh-my-shell: jobs: -{}: invalid option",
@@ -69,8 +76,18 @@ pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     }
 
     let mut status = ExitStatus::SUCCESS;
+    let wanted = |view: &View| match view.phase {
+        Phase::Running => !only_stopped,
+        Phase::Stopped(_) => !only_running,
+        Phase::Finished(_) => !only_running && !only_stopped,
+    };
     let views = if rest.is_empty() {
-        shell.jobs.list()
+        shell
+            .jobs
+            .list()
+            .into_iter()
+            .filter(&wanted)
+            .collect::<Vec<View>>()
     } else {
         let mut views = Vec::new();
         for word in rest {
@@ -79,7 +96,7 @@ pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
                 None => status = ExitStatus(1),
             }
         }
-        views
+        views.into_iter().filter(&wanted).collect::<Vec<View>>()
     };
 
     let mut text = String::new();
@@ -102,6 +119,152 @@ pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     } else {
         status
     })
+}
+
+// ------------------------------------------------------------------------- fg, bg, disown
+
+/// The job `fg`, `bg` and `disown` name when given no spec: the current one.
+const CURRENT: &[u8] = b"%%";
+
+fn no_job_control(name: &str, io: &Io) -> Flow {
+    io.say(format!("oh-my-shell: {name}: no job control"));
+    Ok(ExitStatus(1))
+}
+
+/// `fg [spec]`: continues a stopped or background job in the foreground and waits for it.
+pub(super) fn fg(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
+    if !shell.options.monitor {
+        return no_job_control("fg", io);
+    }
+    let (word, shown) = args.first().map_or_else(
+        || (CURRENT, "current".to_owned()),
+        |word| (word.as_slice(), String::from_utf8_lossy(word).into_owned()),
+    );
+    let Some(view) = find_job_shown(shell, "fg", word, &shown, io) else {
+        return Ok(ExitStatus(1));
+    };
+    if matches!(view.phase, Phase::Finished(_)) {
+        io.say(format!("oh-my-shell: fg: {shown}: job has terminated"));
+        return Ok(ExitStatus(1));
+    }
+    shell.resume_in_foreground(&view, io)
+}
+
+/// `bg [spec...]`: continues stopped jobs in the background.
+pub(super) fn bg(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
+    if !shell.options.monitor {
+        return no_job_control("bg", io);
+    }
+    let words: Vec<(&[u8], String)> = if args.is_empty() {
+        vec![(CURRENT, "current".to_owned())]
+    } else {
+        args.iter()
+            .map(|w| (w.as_slice(), String::from_utf8_lossy(w).into_owned()))
+            .collect()
+    };
+    let mut status = ExitStatus::SUCCESS;
+    for (word, shown) in words {
+        let Some(view) = find_job_shown(shell, "bg", word, &shown, io) else {
+            status = ExitStatus(1);
+            continue;
+        };
+        match view.phase {
+            Phase::Finished(_) => {
+                io.say(format!("oh-my-shell: bg: {shown}: job has terminated"));
+                status = ExitStatus(1);
+            }
+            Phase::Running => {
+                io.say(format!(
+                    "oh-my-shell: bg: job {} already in background",
+                    view.number
+                ));
+            }
+            Phase::Stopped(_) => {
+                if let Err(errno) = view.job.signal(Signal::SIGCONT) {
+                    io.say(format!("oh-my-shell: bg: {shown}: {}", errno.desc()));
+                    status = ExitStatus(1);
+                    continue;
+                }
+                shell.jobs.make_current(view.number);
+                // The mark may have moved, so look the line up again.
+                let mark = shell
+                    .jobs
+                    .find(&crate::jobtable::Spec::Number(view.number))
+                    .map_or(' ', |v| v.mark);
+                io.say(format!("[{}]{mark} {} &", view.number, view.text));
+            }
+        }
+    }
+    Ok(status)
+}
+
+/// `disown [-a] [-h] [-r] [spec...]`: takes jobs out of the table, so the shell forgets them
+/// (no notice, nothing at exit). With `-h` they stay listed but do not get `SIGHUP` when the
+/// shell is hung up. `-a` is all jobs and `-r` the running ones.
+pub(super) fn disown(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
+    let (mut all, mut keep, mut running) = (false, false, false);
+    let mut rest = args;
+    while let Some(arg) = rest.first() {
+        if arg == b"--" {
+            rest = &rest[1..];
+            break;
+        }
+        if !arg.starts_with(b"-") || arg.len() == 1 {
+            break;
+        }
+        for &letter in &arg[1..] {
+            match letter {
+                b'a' => all = true,
+                b'h' => keep = true,
+                b'r' => running = true,
+                other => {
+                    io.say(format!(
+                        "oh-my-shell: disown: -{}: invalid option",
+                        char::from(other)
+                    ));
+                    return Ok(ExitStatus::USAGE);
+                }
+            }
+        }
+        rest = &rest[1..];
+    }
+
+    let mut status = ExitStatus::SUCCESS;
+    let views: Vec<View> = if !rest.is_empty() {
+        rest.iter()
+            .filter_map(|word| {
+                let view = find_job(shell, "disown", word, io);
+                if view.is_none() {
+                    status = ExitStatus(1);
+                }
+                view
+            })
+            .collect()
+    } else if all || running {
+        shell.jobs.list()
+    } else {
+        match find_job_shown(shell, "disown", CURRENT, "current", io) {
+            Some(view) => vec![view],
+            None => return Ok(ExitStatus(1)),
+        }
+    };
+    for view in views {
+        if running && !matches!(view.phase, Phase::Running) {
+            continue;
+        }
+        if keep {
+            shell.jobs.keep_on_hangup(view.number);
+        } else {
+            if let (Phase::Stopped(_), Some(pid)) = (view.phase, view.job.leader()) {
+                io.say(format!(
+                    "oh-my-shell: warning: deleting stopped job {} with process group {pid}",
+                    view.number
+                ));
+            }
+            shell.jobs.remove(view.number);
+        }
+    }
+    Ok(status)
 }
 
 // ------------------------------------------------------------------------------------ wait

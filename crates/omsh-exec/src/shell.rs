@@ -6,13 +6,14 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nix::sys::signal::Signal;
 use omsh_syntax::ast::{FunctionDef, List};
-use omsh_syntax::{SyntaxDiagnostic, parse};
+use omsh_syntax::{Span, SyntaxDiagnostic, parse};
 
 use crate::check::{NotYet, check_list};
 use crate::exec::Unwind;
 use crate::io::Io;
-use crate::jobs::Job;
+use crate::jobs::{Job, Phase};
 use crate::jobtable::Jobs;
 use crate::options::Options;
 use crate::path::PathCache;
@@ -112,9 +113,6 @@ pub struct Shell {
     pub(crate) loop_depth: u32,
     /// How many functions and sourced files are being run inside each other.
     pub(crate) func_depth: u32,
-    /// True if each command runs in a process group of its own, with the terminal handed to
-    /// it. Only the interactive shell turns this on (see [`Shell::set_job_control`]).
-    pub(crate) job_control: bool,
     /// The job whose programs this shell (a pipeline stage, or something inside one) starts.
     /// They all join its process group, so Ctrl+C reaches them together.
     pub(crate) job: Option<Arc<Job>>,
@@ -129,6 +127,13 @@ pub struct Shell {
     /// The text of the line being run, for the `jobs` listing. Spans in the tree index into
     /// it. It is not set inside a function, whose spans index the line that defined it.
     pub(crate) source: Option<Arc<str>>,
+    /// Where the command that is being run is in `source`. A job that stops is named after it.
+    pub(crate) current_span: Option<Span>,
+    /// `exit` was refused once because of stopped jobs (see [`Shell::confirm_exit`]).
+    pub(crate) exit_warned: bool,
+    /// The same, as it stood when the current line began: a second `exit` goes through only
+    /// if nothing else ran in between.
+    pub(crate) exit_carried: bool,
 }
 
 impl Default for Shell {
@@ -194,12 +199,14 @@ impl Shell {
             depth: 0,
             loop_depth: 0,
             func_depth: 0,
-            job_control: false,
             job: None,
             no_new_jobs: false,
             jobs: Jobs::new(),
             last_background: None,
             source: None,
+            current_span: None,
+            exit_warned: false,
+            exit_carried: false,
         }
     }
 
@@ -242,7 +249,7 @@ impl Shell {
     /// after a successful [`crate::start_interactive`]. Without a terminal it still makes the
     /// groups, which is what the tests use.
     pub const fn set_job_control(&mut self, on: bool) {
-        self.job_control = on;
+        self.options.monitor = on;
     }
 
     /// The status of the last command (`$?`).
@@ -277,8 +284,56 @@ impl Shell {
     /// not read the Ctrl+C flag: Ctrl+C is meant for the foreground job.
     pub(crate) fn interrupted(&self) -> bool {
         match &self.job {
-            Some(job) if job.is_background() => job.is_cancelled(),
-            _ => signals::interrupted(),
+            Some(job) => {
+                // A stopped job's shell code waits here until the job runs again.
+                job.pause_while_stopped();
+                if job.is_background() {
+                    job.is_cancelled()
+                } else {
+                    signals::interrupted()
+                }
+            }
+            None => signals::interrupted(),
+        }
+    }
+
+    /// Asks whether the shell may end now. With stopped jobs the first attempt is refused with
+    /// a warning, and the same attempt again (an `exit` or end of input right after, with no
+    /// other command in between) goes through, as in bash. Only an interactive shell with job
+    /// control asks.
+    pub fn confirm_exit(&mut self, io: &Io) -> bool {
+        if !self.options.monitor
+            || !self.interactive
+            || self.in_subshell
+            || !self.jobs.has_stopped()
+            || self.exit_carried
+            || self.exit_warned
+        {
+            return true;
+        }
+        self.exit_warned = true;
+        io.say("There are stopped jobs.");
+        false
+    }
+
+    /// The shell is ending: stopped jobs get `SIGHUP` (and `SIGCONT`, so they can act on it),
+    /// since nobody could continue them any more. After a hangup, running jobs do too. A job
+    /// that was disowned with `-h` is left alone.
+    pub fn end_session(&mut self) {
+        let hangup = signals::hung_up();
+        for view in self.jobs.list() {
+            if view.no_hup {
+                continue;
+            }
+            match view.phase {
+                Phase::Stopped(_) => {
+                    let _ = view.job.signal(Signal::SIGHUP);
+                }
+                Phase::Running if hangup => {
+                    let _ = view.job.signal(Signal::SIGHUP);
+                }
+                Phase::Running | Phase::Finished(_) => {}
+            }
         }
     }
 
@@ -337,6 +392,7 @@ impl Shell {
     pub fn run(&mut self, list: &List, io: &mut Io) -> Result<Outcome, NotYet> {
         check_list(list)?;
         signals::clear_interrupt();
+        self.exit_carried = std::mem::take(&mut self.exit_warned);
         let result = self.run_list(list, io);
         // `exec 3>file` changes the files of everything that comes after it, also on the next
         // line.
@@ -355,7 +411,9 @@ impl Shell {
                 Outcome::Continue(status)
             }
             Err(Unwind::Exit(status)) => Outcome::Exit(status),
-            Err(Unwind::Error(status) | Unwind::Return(status)) => Outcome::Continue(status),
+            Err(Unwind::Error(status) | Unwind::Return(status) | Unwind::Stopped(status)) => {
+                Outcome::Continue(status)
+            }
             Err(Unwind::Break(_) | Unwind::Continue(_)) => Outcome::Continue(self.status),
             Err(Unwind::Interrupted) => {
                 signals::clear_interrupt();

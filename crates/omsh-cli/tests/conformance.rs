@@ -1789,8 +1789,8 @@ fn the_new_mistakes_that_end_a_script_do_not_end_the_session() -> io::Result<()>
 /// `set` refuses options this shell does not have, instead of quietly ignoring them.
 #[test]
 fn set_refuses_options_that_do_not_exist_yet() -> io::Result<()> {
-    assert_eq!(output_of("set -m 2>/dev/null; echo $?\n")?, "2\n");
-    assert_eq!(output_of("set -o monitor 2>/dev/null; echo $?\n")?, "2\n");
+    assert_eq!(output_of("set -z 2>/dev/null; echo $?\n")?, "2\n");
+    assert_eq!(output_of("set -o vi 2>/dev/null; echo $?\n")?, "2\n");
     assert_eq!(output_of("set -o nosuch 2>/dev/null; echo $?\n")?, "2\n");
     Ok(())
 }

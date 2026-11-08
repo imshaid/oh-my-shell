@@ -12,6 +12,7 @@
 mod background;
 mod compound;
 mod pipeline;
+mod stopped;
 
 use std::ffi::{CString, OsStr};
 use std::os::unix::ffi::OsStrExt;
@@ -26,7 +27,7 @@ use crate::path::{DEFAULT_PATH, Lookup};
 use crate::redirect::RedirectError;
 use crate::shell::Shell;
 use crate::signals;
-use crate::spawn::{ExecRequest, SpawnFailure, replace_process, run as spawn};
+use crate::spawn::{ExecRequest, SpawnFailure, Waited, replace_process, run as spawn};
 use crate::status::{ExitStatus, Termination};
 use crate::terminal;
 use omsh_syntax::ast::{AndOr, AndOrOp, Command, CommandKind, List, Pipeline};
@@ -62,6 +63,9 @@ pub(crate) enum Unwind {
     Error(ExitStatus),
     /// Ctrl+C.
     Interrupted,
+    /// Ctrl+Z stopped a program while loops were running. The loops are left, one after the
+    /// other, and the rest of the line goes on with this status (148 for Ctrl+Z), as in bash.
+    Stopped(ExitStatus),
 }
 
 /// The result of running something.
@@ -70,9 +74,13 @@ pub(crate) type Flow = Result<ExitStatus, Unwind>;
 /// What comes out of a subshell, a pipeline stage or a `$(...)`: a status.
 pub(crate) fn boundary(flow: Flow) -> ExitStatus {
     match flow {
-        Ok(status) | Err(Unwind::Exit(status) | Unwind::Return(status) | Unwind::Error(status)) => {
-            status
-        }
+        Ok(status)
+        | Err(
+            Unwind::Exit(status)
+            | Unwind::Return(status)
+            | Unwind::Error(status)
+            | Unwind::Stopped(status),
+        ) => status,
         Err(Unwind::Break(_) | Unwind::Continue(_)) => ExitStatus::SUCCESS,
         Err(Unwind::Interrupted) => ExitStatus::from_signal(2),
     }
@@ -111,6 +119,9 @@ impl Shell {
         for item in &list.items {
             if self.interrupted() {
                 return Err(Unwind::Interrupted);
+            }
+            if signals::hung_up() && !self.in_subshell {
+                return Err(Unwind::Exit(ExitStatus(129)));
             }
             self.run_pending_traps(local.as_ref().unwrap_or(io))?;
             status = if item.background {
@@ -197,7 +208,7 @@ impl Shell {
             match pipeline.commands.as_slice() {
                 [command] => shell.run_command(command, io),
                 commands => {
-                    let status = shell.run_stages(commands, io)?;
+                    let status = shell.run_stages(commands, io, pipeline.span)?;
                     shell.errexit_check(status)?;
                     Ok(status)
                 }
@@ -217,6 +228,7 @@ impl Shell {
 
     /// Runs one command with its redirections, and records its status in `$?`.
     pub(crate) fn run_command(&mut self, command: &Command, io: &Io) -> Flow {
+        self.current_span = Some(command.span);
         let checked = matches!(
             command.kind,
             CommandKind::Simple(_) | CommandKind::Subshell(_)
@@ -446,7 +458,7 @@ impl Shell {
         match target {
             Target::Builtin(_) => builtins::run(self, &words[0], &words[1..], io),
             Target::Function(function) => self.call_function(function, &words[1..], io),
-            Target::External => Ok(self.run_external(words, io)),
+            Target::External => self.run_external(words, io),
         }
     }
 
@@ -517,10 +529,10 @@ impl Shell {
 
     /// Starts a program and waits for it. Returns its status. Problems are reported to
     /// descriptor 2 of `io`.
-    fn run_external(&mut self, words: &[Vec<u8>], io: &Io) -> ExitStatus {
+    fn run_external(&mut self, words: &[Vec<u8>], io: &Io) -> Flow {
         match self.prepare_external(words, io) {
             Ok(program) => self.run_program(&program, io),
-            Err(status) => status,
+            Err(status) => Ok(status),
         }
     }
 
@@ -534,16 +546,16 @@ impl Shell {
             Err(status) => return Ok(status),
         };
         if self.in_subshell {
-            return Err(Unwind::Exit(self.run_program(&program, io)));
+            return Err(Unwind::Exit(boundary(self.run_program(&program, io))));
         }
         let mut plan = io.plan();
         // The program takes the shell's place, so it must be in the group that owns the
         // terminal when the shell started, or it would be stopped when it reads.
-        if self.job_control {
+        if self.options.monitor {
             terminal::release_terminal();
         }
         let errno = replace_process(&program.request(), &mut plan);
-        if self.job_control {
+        if self.options.monitor {
             terminal::reacquire_terminal();
         }
         Ok(report_exec_failure(&program.name, errno, io))
@@ -555,18 +567,36 @@ impl Shell {
         if let Some(job) = &self.job {
             return Some((Arc::clone(job), false));
         }
-        (self.job_control && !self.no_new_jobs).then(|| (Job::foreground(), true))
+        (self.options.monitor && !self.no_new_jobs)
+            .then(|| (Job::foreground(self.jobs.bell(), 1, false), true))
     }
 
-    /// Starts the program, waits for it, and reports how it ended.
-    fn run_program(&self, program: &Program, io: &Io) -> ExitStatus {
+    /// Starts the program, waits for it, and reports how it ended. If the program is a job of
+    /// its own and Ctrl+Z stops it, the job goes to the table and the shell goes on with
+    /// status 128 + the signal (see `stopped.rs`).
+    fn run_program(&self, program: &Program, io: &Io) -> Flow {
         let name = &program.name;
         let mut plan = io.plan();
         let job = self.job_for_program();
         let result = match &job {
-            Some((job, _)) => job
+            Some((job, true)) => match job.start(&program.request(), &mut plan) {
+                Ok(member) => {
+                    let task = job.task(0);
+                    match job.wait_or_stop(&member) {
+                        Waited::Ended(ending) => {
+                            task.done(ending.status());
+                            Ok(ending)
+                        }
+                        Waited::Stopped(_) => {
+                            return self.hand_over_and_stop(job, member, task, program, io);
+                        }
+                    }
+                }
+                Err(failure) => Err(failure),
+            },
+            Some((job, false)) => job
                 .start(&program.request(), &mut plan)
-                .map(|member| job.wait(&member, name, io)),
+                .map(|member| job.wait_until_end(&member)),
             None => spawn(&program.request(), &mut plan),
         };
         if let Some((job, true)) = &job {
@@ -582,7 +612,7 @@ impl Shell {
                     ending,
                     Termination::Signaled { signal, .. } if signal == libc::SIGINT
                 );
-                if !self.job_control
+                if !self.options.monitor
                     && !self.in_background_job()
                     && signals::interrupted()
                     && !died_of_it
@@ -592,15 +622,15 @@ impl Shell {
                 if let Some(line) = ending.describe(name) {
                     io.say(line);
                 }
-                ending.status()
+                Ok(ending.status())
             }
-            Err(SpawnFailure::Exec(errno)) => report_exec_failure(name, errno, io),
+            Err(SpawnFailure::Exec(errno)) => Ok(report_exec_failure(name, errno, io)),
             Err(SpawnFailure::Fork(errno)) => {
                 io.say(format!(
                     "oh-my-shell: cannot start {name}: {}",
                     errno.desc()
                 ));
-                ExitStatus::NOT_EXECUTABLE
+                Ok(ExitStatus::NOT_EXECUTABLE)
             }
         }
     }

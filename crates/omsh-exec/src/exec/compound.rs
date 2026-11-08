@@ -2,12 +2,15 @@
 //! definitions.
 
 use std::sync::Arc;
+use std::thread;
 
 use omsh_syntax::ast::{CaseCommand, CommandKind, ForCommand, IfCommand, List, LoopCommand};
 
+use super::pipeline::STAGE_STACK;
 use super::{Flow, Unwind};
 use crate::expand::Expander;
 use crate::io::Io;
+use crate::jobs::Job;
 use crate::shell::Shell;
 use crate::status::ExitStatus;
 
@@ -18,6 +21,11 @@ impl Shell {
             CommandKind::Simple(_) => {
                 debug_assert!(false, "simple commands do not come here");
                 Ok(self.status)
+            }
+            CommandKind::Subshell(list)
+                if self.options.monitor && !self.no_new_jobs && self.job.is_none() =>
+            {
+                self.run_subshell_job(list, io)
             }
             CommandKind::Subshell(list) => {
                 let mut copy = self.subshell();
@@ -36,6 +44,34 @@ impl Shell {
                 Ok(ExitStatus::SUCCESS)
             }
         }
+    }
+
+    /// `( list )` typed at the prompt of a shell with job control: one job, whose shell code
+    /// runs on a thread, as the stages of a pipeline do. Ctrl+Z stops the whole subshell and
+    /// `fg` continues it where it was, as in bash.
+    fn run_subshell_job(&mut self, list: &List, io: &Io) -> Flow {
+        let job = Job::foreground(self.jobs.bell(), 1, false);
+        let mut copy = self.subshell();
+        copy.job = Some(Arc::clone(&job));
+        let list = list.clone();
+        let table = io.clone();
+        let task = job.task(0);
+        let spawned = thread::Builder::new()
+            .stack_size(STAGE_STACK)
+            .spawn(move || {
+                let flow = copy.run_list(&list, &table);
+                let status = copy.finish_copy(flow, &table);
+                drop(table);
+                task.done(status);
+            });
+        if let Err(error) = spawned {
+            io.say(format!("oh-my-shell: cannot start a subshell: {error}"));
+            return Ok(ExitStatus(1));
+        }
+        let text = self
+            .current_span
+            .map_or_else(|| "(subshell)".to_owned(), |span| self.span_text(span));
+        self.finish_or_stop(&job, &text, io)
     }
 
     fn run_if(&mut self, command: &IfCommand, io: &Io) -> Flow {
@@ -57,7 +93,16 @@ impl Shell {
         self.loop_depth += 1;
         let result = self.loop_passes(command, until, io);
         self.loop_depth -= 1;
-        result
+        self.leave_loop(result)
+    }
+
+    /// A stop (Ctrl+Z) leaves every loop it is in. The outermost loop ends it: from there the
+    /// line goes on with the status of the stop.
+    fn leave_loop(&self, result: Flow) -> Flow {
+        match result {
+            Err(Unwind::Stopped(status)) if self.loop_depth == 0 => Ok(status),
+            other => other,
+        }
     }
 
     fn loop_passes(&mut self, command: &LoopCommand, until: bool, io: &Io) -> Flow {
@@ -102,7 +147,7 @@ impl Shell {
         self.loop_depth += 1;
         let result = self.for_passes(command, items, io);
         self.loop_depth -= 1;
-        result
+        self.leave_loop(result)
     }
 
     fn for_passes(&mut self, command: &ForCommand, items: Vec<Vec<u8>>, io: &Io) -> Flow {

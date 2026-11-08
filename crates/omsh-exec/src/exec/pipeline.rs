@@ -16,6 +16,7 @@ use std::thread;
 
 use nix::fcntl::OFlag;
 use nix::unistd::pipe2;
+use omsh_syntax::Span;
 use omsh_syntax::ast::Command;
 
 use super::{Flow, Unwind};
@@ -31,7 +32,7 @@ pub(super) const STAGE_STACK: usize = 8 * 1024 * 1024;
 impl Shell {
     /// Runs the commands of a pipeline at the same time and waits for all of them. The
     /// status is that of the last one.
-    pub(super) fn run_stages(&mut self, commands: &[Command], io: &Io) -> Flow {
+    pub(super) fn run_stages(&mut self, commands: &[Command], io: &Io, span: Span) -> Flow {
         let mut tables: Vec<Io> = Vec::with_capacity(commands.len());
         let mut previous: Option<OwnedFd> = None;
         for index in 0..commands.len() {
@@ -52,15 +53,18 @@ impl Shell {
 
         // One job for the whole pipeline: its programs share a process group. A pipeline
         // inside a job or a `$(...)` has no job of its own.
-        let own_job =
-            (self.job_control && !self.no_new_jobs && self.job.is_none()).then(Job::foreground);
+        let own_job = (self.options.monitor && !self.no_new_jobs && self.job.is_none())
+            .then(|| Job::foreground(self.jobs.bell(), commands.len(), self.options.pipefail));
+        if let Some(job) = own_job {
+            return self.run_job_stages(&job, commands, tables, io, span);
+        }
         let statuses: Vec<ExitStatus> = thread::scope(|scope| {
             let handles: Vec<_> = commands
                 .iter()
                 .zip(tables)
                 .map(|(command, table)| {
                     let mut stage = self.subshell();
-                    if let Some(job) = &own_job {
+                    if let Some(job) = &self.job {
                         stage.job = Some(Arc::clone(job));
                     }
                     thread::Builder::new()
@@ -88,9 +92,6 @@ impl Shell {
                 })
                 .collect()
         });
-        if let Some(job) = &own_job {
-            job.finish();
-        }
         if self.interrupted() {
             return Err(Unwind::Interrupted);
         }
@@ -103,6 +104,47 @@ impl Shell {
                 .copied()
                 .find(|s| *s != ExitStatus::SUCCESS)
                 .unwrap_or(ExitStatus::SUCCESS);
+        }
+        self.status = status;
+        Ok(status)
+    }
+
+    /// Runs the stages of a pipeline that is a job of its own: each stage on a thread that
+    /// reports to the job. The threads are not joined: if Ctrl+Z stops the job, they stay
+    /// behind, still waiting for their programs, while the shell goes back to its prompt. The
+    /// stages own copies of what they run, since they may outlive this call.
+    pub(super) fn run_job_stages(
+        &mut self,
+        job: &Arc<Job>,
+        commands: &[Command],
+        tables: Vec<Io>,
+        io: &Io,
+        span: Span,
+    ) -> Flow {
+        for (index, (command, table)) in commands.iter().zip(tables).enumerate() {
+            let mut stage = self.subshell();
+            stage.job = Some(Arc::clone(job));
+            let command = command.clone();
+            let task = job.task(index);
+            let spawned = thread::Builder::new()
+                .stack_size(STAGE_STACK)
+                .spawn(move || {
+                    let flow = stage.run_command(&command, &table);
+                    let status = stage.finish_copy(flow, &table);
+                    drop(table);
+                    task.done(status);
+                });
+            if let Err(error) = spawned {
+                // The closure was dropped with its task, which counts as a crash (134).
+                io.say(format!(
+                    "oh-my-shell: cannot start a pipeline stage: {error}"
+                ));
+            }
+        }
+        let text = self.span_text(span);
+        let status = self.finish_or_stop(job, &text, io)?;
+        if self.interrupted() {
+            return Err(Unwind::Interrupted);
         }
         self.status = status;
         Ok(status)

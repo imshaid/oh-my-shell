@@ -1111,13 +1111,7 @@ fn set_with_options_and_arguments() {
 
 #[test]
 fn set_refuses_what_this_shell_does_not_have() {
-    for line in [
-        "set -m",
-        "set -o monitor",
-        "set -o nosuchname",
-        "set -z",
-        "set +q",
-    ] {
+    for line in ["set -o nosuchname", "set -z", "set +q"] {
         let d = run(&mut shell(), line);
         assert_eq!(d.status, 2, "{line}");
         assert!(
@@ -1442,7 +1436,7 @@ mod job_groups {
 
     fn jc_shell() -> Shell {
         let mut sh = shell();
-        sh.job_control = true;
+        sh.options.monitor = true;
         sh
     }
 
@@ -1516,30 +1510,6 @@ mod job_groups {
     }
 
     #[test]
-    fn a_stopped_job_is_continued_with_a_note() {
-        let done = run(&mut jc_shell(), "sh -c 'kill -STOP $$; echo resumed'");
-        assert_eq!(done.out, "resumed\n");
-        assert_eq!(done.status, 0);
-        assert!(
-            done.err
-                .contains("stopped; job control comes in a later version"),
-            "{}",
-            done.err
-        );
-    }
-
-    #[test]
-    fn a_member_that_is_not_the_leader_can_be_stopped_too() {
-        let done = run(
-            &mut jc_shell(),
-            "sleep 0.2 | sh -c 'kill -STOP $$; echo resumed'",
-        );
-        assert_eq!(done.out, "resumed\n");
-        assert_eq!(done.status, 0);
-        assert_eq!(done.err.matches("stopped;").count(), 1, "{}", done.err);
-    }
-
-    #[test]
     fn a_program_that_cannot_start_does_not_break_the_job() {
         let done = run(&mut jc_shell(), &format!("/nonexistent/omsh | {GROUP}"));
         assert_eq!(done.status, 0);
@@ -1568,6 +1538,7 @@ mod background {
     use super::*;
     use crate::jobs::Phase;
     use crate::jobtable::Jobs;
+    use crate::status::ExitStatus;
 
     /// How long a test body may take. The slowest ones sleep for about a second.
     const LIMIT: Duration = Duration::from_secs(20);
@@ -1613,7 +1584,7 @@ mod background {
     /// Runs `body` on a thread with a time limit and cleans up after it.
     fn guarded(job_control: bool, body: impl FnOnce(&mut Shell) + Send + 'static) {
         let mut sh = shell();
-        sh.job_control = job_control;
+        sh.options.monitor = job_control;
         let jobs = Arc::clone(&sh.jobs);
         let (done, result) = mpsc::channel::<Result<(), Box<dyn Any + Send>>>();
         let thread = thread::spawn(move || {
@@ -1950,6 +1921,481 @@ mod background {
             let done = run(sh, "sleep 30 & kill $!; wait $!; echo $?");
             assert_eq!(done.out, "143\n");
         });
+    }
+
+    // ------------------------------------------------------------------ stopped jobs
+    //
+    // A program stops itself with `kill -STOP $$`; `kill -STOP 0` stops its whole group. (There
+    // is no terminal in a unit test, so no Ctrl+Z. The terminal part is in `jobs_pty.rs`.)
+
+    /// A file the test's programs write to, because a program that outlives `run` no longer
+    /// writes to that call's captured output.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("omsh-s09b-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            Self(path)
+        }
+
+        fn path(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+
+        fn text(&self) -> String {
+            std::fs::read_to_string(&self.0).unwrap_or_default()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Waits until the only job in the table has `programs` programs and all are stopped.
+    fn all_stopped(sh: &Shell, programs: usize) {
+        eventually("the job did not stop", || {
+            sh.jobs.list().first().is_some_and(|view| {
+                matches!(view.job.phase(), Phase::Stopped(_))
+                    && view.job.live_pids().len() == programs
+            })
+        });
+    }
+
+    #[test]
+    fn a_stopped_program_keeps_its_job_and_the_shell_goes_on() {
+        guarded(true, |sh| {
+            let done = run(sh, "sh -c 'kill -TSTP $$'; echo after $?");
+            assert_eq!(done.out, "after 148\n");
+            assert!(
+                done.err
+                    .contains("[1]+  Stopped                    sh -c 'kill -TSTP $$'"),
+                "{}",
+                done.err
+            );
+            let listed = run(sh, "jobs");
+            assert_eq!(
+                listed.out,
+                format!("[1]+  {:<27}sh -c 'kill -TSTP $$'\n", "Stopped")
+            );
+            // Told once: not again before the next prompt.
+            let captured = crate::io::capture::Captured::new();
+            sh.job_notices(&captured.io);
+            assert_eq!(captured.stderr(), "");
+        });
+    }
+
+    #[test]
+    fn fg_continues_a_stopped_job_and_gives_its_status() {
+        guarded(true, |sh| {
+            let file = Scratch::new("fg");
+            run(
+                sh,
+                &format!(
+                    "sh -c 'kill -STOP $$; echo resumed > {}; exit 3'",
+                    file.path()
+                ),
+            );
+            assert_eq!(file.text(), "");
+            let done = run(sh, "fg");
+            assert_eq!(done.status, 3);
+            // `fg` shows which job it continued.
+            assert!(
+                done.out.starts_with("sh -c 'kill -STOP $$; echo resumed"),
+                "{}",
+                done.out
+            );
+            assert_eq!(file.text(), "resumed\n");
+            // The job is gone, and `fg` has nothing to continue.
+            assert_eq!(run(sh, "jobs").out, "");
+            let none = run(sh, "fg");
+            assert_eq!(none.status, 1);
+            assert!(
+                none.err.contains("fg: current: no such job"),
+                "{}",
+                none.err
+            );
+        });
+    }
+
+    #[test]
+    fn a_job_can_be_stopped_and_continued_again() {
+        guarded(true, |sh| {
+            let file = Scratch::new("twice");
+            run(
+                sh,
+                &format!(
+                    "sh -c 'kill -STOP $$; echo one >> {0}; kill -STOP $$; echo two >> {0}'",
+                    file.path()
+                ),
+            );
+            let second = run(sh, "fg");
+            assert_eq!(second.status, 147, "{}", second.err);
+            assert_eq!(file.text(), "one\n");
+            assert_eq!(run(sh, "fg").status, 0);
+            assert_eq!(file.text(), "one\ntwo\n");
+        });
+    }
+
+    #[test]
+    fn bg_continues_a_stopped_job_in_the_background() {
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$; exit 4'");
+            let done = run(sh, "bg");
+            assert_eq!(done.status, 0);
+            assert_eq!(done.err, "[1]+ sh -c 'kill -STOP $$; exit 4' &\n");
+            assert_eq!(run(sh, "wait %1; echo $?").out, "4\n");
+            // A job that already runs is left alone.
+            run(sh, "sleep 30 &");
+            let again = run(sh, "bg %1");
+            assert!(
+                again.err.contains("job 1 already in background"),
+                "{}",
+                again.err
+            );
+            assert_eq!(again.status, 0);
+        });
+    }
+
+    #[test]
+    fn fg_and_bg_need_job_control() {
+        guarded(false, |sh| {
+            for line in ["fg", "bg"] {
+                let done = run(sh, line);
+                assert_eq!(done.status, 1);
+                assert!(done.err.contains("no job control"), "{}", done.err);
+            }
+        });
+    }
+
+    #[test]
+    fn a_pipeline_stops_as_one_job_and_fg_finishes_it() {
+        guarded(true, |sh| {
+            let file = Scratch::new("pipeline");
+            let done = run(
+                sh,
+                &format!(
+                    "sh -c 'kill -STOP $$; echo one' | sh -c 'kill -STOP $$; cat > {}'",
+                    file.path()
+                ),
+            );
+            assert_eq!(done.err.matches("Stopped").count(), 1, "{}", done.err);
+            all_stopped(sh, 2);
+            assert_eq!(run(sh, "jobs").out.lines().count(), 1);
+            let resumed = run(sh, "fg");
+            assert_eq!(resumed.status, 0, "{}", resumed.err);
+            assert_eq!(file.text(), "one\n");
+        });
+    }
+
+    #[test]
+    fn a_job_is_not_stopped_while_one_of_its_programs_runs() {
+        guarded(true, |sh| {
+            // Only the first program stops; the second runs until it is told to end.
+            let done = run(sh, "sh -c 'kill -STOP $$' | sleep 30 &\nsleep 0.3; jobs");
+            assert!(done.out.contains("Running"), "{}", done.out);
+            assert!(!done.out.contains("Stopped"), "{}", done.out);
+        });
+    }
+
+    #[test]
+    fn a_subshell_stops_as_a_whole_and_fg_goes_on_inside_it() {
+        guarded(true, |sh| {
+            let file = Scratch::new("subshell");
+            let done = run(
+                sh,
+                &format!(
+                    "( sh -c 'kill -STOP $$'; echo x > {} ); echo after $?",
+                    file.path()
+                ),
+            );
+            assert_eq!(done.out, "after 147\n");
+            all_stopped(sh, 1);
+            assert!(
+                run(sh, "jobs")
+                    .out
+                    .contains("( sh -c 'kill -STOP $$'; echo x")
+            );
+            assert_eq!(file.text(), "");
+            assert_eq!(run(sh, "fg").status, 0);
+            assert_eq!(file.text(), "x\n");
+        });
+    }
+
+    #[test]
+    fn after_a_stop_a_list_goes_on_a_loop_is_left_and_a_function_goes_on() {
+        guarded(true, |sh| {
+            let done = run(
+                sh,
+                "for i in 1 2; do sh -c 'kill -STOP $$'; echo in $i; done; echo out $?",
+            );
+            assert_eq!(done.out, "out 147\n");
+            assert_eq!(run(sh, "jobs").out.lines().count(), 1);
+            let done = run(
+                sh,
+                "f() { sh -c 'kill -STOP $$'; echo in f $?; echo f2; }; f; echo out $?",
+            );
+            assert_eq!(done.out, "in f 147\nf2\nout 0\n");
+            assert_eq!(run(sh, "jobs").out.lines().count(), 2);
+        });
+    }
+
+    #[test]
+    fn a_nested_loop_is_left_whole() {
+        guarded(true, |sh| {
+            let done = run(
+                sh,
+                "while true; do for i in 1 2; do sh -c 'kill -STOP $$'; echo in; done; echo again; done; echo out $?",
+            );
+            assert_eq!(done.out, "out 147\n");
+        });
+    }
+
+    #[test]
+    fn a_job_started_in_a_function_is_named_after_its_words() {
+        guarded(true, |sh| {
+            run(sh, "f() { sh -c 'kill -STOP $$'; }; f");
+            let listed = run(sh, "jobs").out;
+            assert!(
+                listed.contains("Stopped") && listed.contains("sh -c kill -STOP "),
+                "{listed}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_stop_ends_the_shell_under_errexit_like_any_failure() {
+        guarded(true, |sh| {
+            let done = run(sh, "set -e; sh -c 'kill -STOP $$'; echo not");
+            assert!(done.exited);
+            assert_eq!(done.status, 147);
+            assert_eq!(done.out, "");
+        });
+    }
+
+    /// The signals that a program started by `command` ignores, from `/proc`.
+    fn ignored_by(sh: &mut Shell, command: &str) -> u64 {
+        let status = run(sh, command).out;
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigIgn:"))
+            .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            .unwrap_or_else(|| panic!("no SigIgn in {status:?}"))
+    }
+
+    #[test]
+    fn a_substitution_ignores_the_stop_signals() {
+        // Ctrl+Z must not stop a program whose output the shell is waiting for. (The signals
+        // are checked in the program's mask: whether the kernel would really stop a process
+        // that signals itself depends on how the test run was started.)
+        let stops = (1_u64 << (Signal::SIGTSTP as i32 - 1))
+            | (1_u64 << (Signal::SIGTTIN as i32 - 1))
+            | (1_u64 << (Signal::SIGTTOU as i32 - 1));
+        guarded(true, move |sh| {
+            let inside = ignored_by(sh, "echo \"$(cat /proc/self/status)\"");
+            assert_eq!(inside & stops, stops, "ignored inside $(...): {inside:#x}");
+            // A command of its own is a job and keeps the defaults: Ctrl+Z must stop it.
+            let direct = ignored_by(sh, "cat /proc/self/status");
+            assert_eq!(direct & stops, 0, "ignored by a job: {direct:#x}");
+        });
+    }
+
+    #[test]
+    fn jobs_can_be_listed_by_state() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 &");
+            run(sh, "sh -c 'kill -STOP $$'");
+            assert_eq!(run(sh, "jobs -s").out.lines().count(), 1);
+            assert!(run(sh, "jobs -s").out.contains("Stopped"));
+            assert_eq!(run(sh, "jobs -r").out.lines().count(), 1);
+            assert!(run(sh, "jobs -r").out.contains("Running"));
+            assert_eq!(run(sh, "jobs").out.lines().count(), 2);
+        });
+    }
+
+    #[test]
+    fn kill_ends_a_stopped_job() {
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$'");
+            assert_eq!(run(sh, "kill %1; wait %1; echo $?").out, "143\n");
+        });
+    }
+
+    #[test]
+    fn disown_forgets_a_job() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 & p1=$!; sleep 31 & p2=$!");
+            assert_eq!(run(sh, "disown %1; jobs").out.lines().count(), 1);
+            let done = run(sh, "disown %9");
+            assert_eq!(done.status, 1);
+            assert!(done.err.contains("no such job"), "{}", done.err);
+            // `disown -a` and `-r`.
+            assert_eq!(run(sh, "disown -r; jobs").out, "");
+            // The disowned programs are not the table's any more: end them here.
+            run(sh, "kill $p1 $p2");
+        });
+    }
+
+    #[test]
+    fn disown_h_keeps_the_job_listed_but_safe_from_hangup() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 &");
+            run(sh, "disown -h");
+            assert!(run(sh, "jobs").out.contains("Running"));
+            assert!(sh.jobs.list()[0].no_hup);
+        });
+    }
+
+    #[test]
+    fn disowning_a_stopped_job_warns() {
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$'");
+            let pid = sh.jobs.list()[0].job.leader().unwrap();
+            let done = run(sh, "disown");
+            assert!(
+                done.err.contains(&format!(
+                    "warning: deleting stopped job 1 with process group {pid}"
+                )),
+                "{}",
+                done.err
+            );
+            assert_eq!(run(sh, "jobs").out, "");
+            // Not the table's now: end it here.
+            let _ = nix::sys::signal::kill(pid, Signal::SIGKILL);
+            let _ = nix::sys::signal::kill(pid, Signal::SIGCONT);
+        });
+    }
+
+    #[test]
+    fn monitor_is_an_option_and_shows_in_dollar_dash() {
+        guarded(false, |sh| {
+            assert_eq!(run(sh, "set -m; echo $-").out, "sm\n");
+            assert_eq!(run(sh, "set -o | grep monitor").out, "monitor         on\n");
+            assert_eq!(run(sh, "set +m; echo $-").out, "s\n");
+            assert_eq!(run(sh, "set -o monitor; echo $-").out, "sm\n");
+        });
+    }
+
+    #[test]
+    fn the_first_exit_with_stopped_jobs_only_warns() {
+        guarded(true, |sh| {
+            sh.in_subshell = false;
+            sh.interactive = true;
+            run(sh, "sh -c 'kill -STOP $$'");
+            let first = run(sh, "exit");
+            assert!(!first.exited);
+            assert!(
+                first.err.contains("There are stopped jobs."),
+                "{}",
+                first.err
+            );
+            // Straight away again: it goes through.
+            assert!(run(sh, "exit").exited);
+        });
+    }
+
+    #[test]
+    fn another_command_in_between_brings_the_warning_back() {
+        guarded(true, |sh| {
+            sh.in_subshell = false;
+            sh.interactive = true;
+            run(sh, "sh -c 'kill -STOP $$'");
+            assert!(!run(sh, "exit").exited);
+            assert!(!run(sh, "true").exited);
+            let third = run(sh, "exit");
+            assert!(!third.exited);
+            assert!(third.err.contains("There are stopped jobs."));
+        });
+    }
+
+    #[test]
+    fn no_warning_without_stopped_jobs_or_outside_an_interactive_shell() {
+        guarded(true, |sh| {
+            sh.in_subshell = false;
+            sh.interactive = true;
+            run(sh, "sleep 30 &");
+            assert!(
+                run(sh, "exit").exited,
+                "a running job does not hold the shell back"
+            );
+            sh.interactive = false;
+            run(sh, "sh -c 'kill -STOP $$'");
+            assert!(run(sh, "exit").exited);
+        });
+    }
+
+    /// True if this test process ignores `SIGHUP` (it was started under `nohup`). Programs it
+    /// starts inherit that, and then a hangup does nothing to them, which is right.
+    fn hup_is_ignored() -> bool {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("SigIgn:"))
+                    .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            })
+            .is_some_and(|mask| mask & 1 != 0)
+    }
+
+    #[test]
+    fn ending_the_session_hangs_up_stopped_jobs_but_not_running_ones() {
+        if hup_is_ignored() {
+            eprintln!("skipped: SIGHUP is ignored here (started under nohup?)");
+            return;
+        }
+        guarded(true, |sh| {
+            run(sh, "sleep 30 &");
+            run(sh, "sh -c 'kill -STOP $$'");
+            sh.end_session();
+            // The stopped job got SIGHUP (and SIGCONT, so that it could act on it).
+            eventually("the stopped job did not end", || {
+                matches!(sh.jobs.list()[1].job.phase(), Phase::Finished(_))
+            });
+            assert_eq!(
+                sh.jobs.list()[1].job.phase(),
+                Phase::Finished(ExitStatus(129))
+            );
+            assert_eq!(sh.jobs.list()[0].job.phase(), Phase::Running);
+        });
+    }
+
+    #[test]
+    fn a_disowned_with_h_stopped_job_survives_the_end_of_the_session() {
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$'");
+            run(sh, "disown -h");
+            sh.end_session();
+            thread::sleep(Duration::from_millis(200));
+            assert!(matches!(sh.jobs.list()[0].job.phase(), Phase::Stopped(_)));
+        });
+    }
+
+    #[test]
+    fn the_shell_code_of_a_stopped_job_waits_where_it_looks_for_ctrl_c() {
+        // A loop looks at `interrupted()` on every pass: for a stopped job it must sleep there
+        // and not spin until the job runs again.
+        let bell = Jobs::new().bell();
+        let job = crate::jobs::Job::foreground(bell, 1, false);
+        job.pretend_started(&[Pid::from_raw(900_003)]);
+        job.pretend_stopped(Pid::from_raw(900_003), Signal::SIGTSTP as i32);
+        let mut sh = shell();
+        sh.job = Some(Arc::clone(&job));
+        let (sender, receiver) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let interrupted = sh.interrupted();
+            let _ = sender.send(interrupted);
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(300)).is_err());
+        job.mark_continued();
+        let interrupted = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the shell code did not wake up");
+        assert!(!interrupted);
+        thread.join().unwrap();
     }
 
     #[test]

@@ -14,6 +14,10 @@ use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction
 /// a loop, and stops the line when it is set.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+/// Set by the SIGHUP handler of an interactive shell: the terminal is gone, or someone sent
+/// the signal. The shell ends, and takes its jobs with it.
+static HUNG_UP: AtomicBool = AtomicBool::new(false);
+
 /// Bit `n` is set when signal `n` arrived and has a `trap` command that has not run yet.
 static PENDING: AtomicU64 = AtomicU64::new(0);
 
@@ -30,6 +34,11 @@ extern "C" fn on_trapped(signal: i32) {
     if (0..64).contains(&signal) {
         PENDING.fetch_or(1_u64 << signal, Ordering::SeqCst);
     }
+}
+
+extern "C" fn on_hangup(_signal: i32) {
+    // Storing to an atomic is async-signal-safe. Nothing else happens in the handler.
+    HUNG_UP.store(true, Ordering::SeqCst);
 }
 
 extern "C" fn on_interrupt(_signal: i32) {
@@ -88,6 +97,16 @@ pub fn enter_interactive() {
     );
     // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
     let _ = unsafe { sigaction(Signal::SIGINT, &catch) };
+    // A hangup ends the shell (and its jobs), unless it was told to ignore it (`nohup`).
+    if inherited_ignored() & (1_u64 << libc::SIGHUP) == 0 {
+        let hangup = SigAction::new(
+            SigHandler::Handler(on_hangup),
+            SaFlags::SA_RESTART,
+            SigSet::empty(),
+        );
+        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        let _ = unsafe { sigaction(Signal::SIGHUP, &hangup) };
+    }
     let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
     for signal in [
         Signal::SIGQUIT,
@@ -119,6 +138,13 @@ pub fn interrupted() -> bool {
 /// and after it has stopped one.
 pub fn clear_interrupt() {
     INTERRUPTED.store(false, Ordering::SeqCst);
+}
+
+/// True if the shell has been hung up: the terminal closed, or `SIGHUP` was sent to it. Only an
+/// interactive shell catches the signal, so this is false in any other.
+#[must_use]
+pub fn hung_up() -> bool {
+    HUNG_UP.load(Ordering::SeqCst)
 }
 
 /// What the shell asks the system to do with a signal.
@@ -153,6 +179,7 @@ pub(crate) fn set_disposition(signal: i32, disposition: Disposition) {
         (Disposition::Ignore, _) => SigHandler::SigIgn,
         (Disposition::Catch, _) => SigHandler::Handler(on_trapped),
         (Disposition::Default, _) if inherited => SigHandler::SigIgn,
+        (Disposition::Default, Signal::SIGHUP) if interactive => SigHandler::Handler(on_hangup),
         (Disposition::Default, _) if interactive && the_shell_ignores => SigHandler::SigIgn,
         (Disposition::Default, Signal::SIGINT) if interactive => SigHandler::Handler(on_interrupt),
         (Disposition::Default, _) => SigHandler::SigDfl,
