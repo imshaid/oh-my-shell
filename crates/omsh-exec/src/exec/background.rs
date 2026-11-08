@@ -34,6 +34,7 @@ impl Shell {
         let job = Job::background(self.options.monitor, self.jobs.bell());
         let mut copy = self.subshell();
         copy.job = Some(Arc::clone(&job));
+        copy.task = 0;
         let mut table = io.clone();
         if !self.options.monitor {
             // Without job control a background command must not read what the user types

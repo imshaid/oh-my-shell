@@ -2076,8 +2076,9 @@ mod background {
         guarded(true, |sh| {
             let file = Scratch::new("pipeline");
             // The first program stops only after the second has started (it waits for the
-            // marker). Otherwise the job is stopped for a moment with one program only, and the
-            // shell may give it up at that moment: see "Known gaps" of S09b.
+            // marker), so that this test is about stopping two programs together. A stage that
+            // has not started its program no longer makes the job count as stopped (see
+            // `a_job_is_not_stopped_before_every_stage_has_started_its_program`).
             let marker = Scratch::new("pipeline-started");
             let done = run(
                 sh,
@@ -2101,8 +2102,8 @@ mod background {
     fn a_job_is_not_stopped_while_one_of_its_programs_runs() {
         guarded(true, |sh| {
             // Only the first program stops; the second runs until it is told to end. The first
-            // waits for a marker from the second, so that the second is part of the job when the
-            // stop is noticed (see the first test above and "Known gaps" of S09b).
+            // waits for a marker from the second, so that the second's program is live when the
+            // job is looked at: this test is about a running program keeping the job running.
             let marker = Scratch::new("not-stopped-started");
             let done = run(
                 sh,
@@ -2115,6 +2116,91 @@ mod background {
             assert!(done.out.contains("Running"), "{}", done.out);
             assert!(!done.out.contains("Stopped"), "{}", done.out);
         });
+    }
+
+    /// The state letter of a process in `/proc/<pid>/stat` (`T` is stopped).
+    fn process_state(pid: i32) -> Option<char> {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        text.rsplit_once(')')?.1.trim().chars().next()
+    }
+
+    #[test]
+    fn a_job_is_not_stopped_before_every_stage_has_started_its_program() {
+        guarded(true, |sh| {
+            // The race, made certain: the second stage opens a FIFO for `cat` before it can
+            // fork `cat`, and nobody writes to the FIFO until this test says so. So the first
+            // program stops while the second stage is on its way to a program, for as long as
+            // we like. The shell must not give the job up then. (Before the fix `run` came back
+            // at once with status 147 and a "Stopped" notice.)
+            let pid_file = Scratch::new("race-pid");
+            let fifo = Scratch::new("race-fifo");
+            nix::unistd::mkfifo(&fifo.0, nix::sys::stat::Mode::S_IRWXU).expect("mkfifo");
+            let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let helper = {
+                let released = Arc::clone(&released);
+                let pid_path = pid_file.0.clone();
+                let fifo_path = fifo.0.clone();
+                thread::spawn(move || {
+                    let mut pid = 0;
+                    eventually("the first program did not stop", || {
+                        pid = std::fs::read_to_string(&pid_path)
+                            .ok()
+                            .and_then(|text| text.trim().parse().ok())
+                            .unwrap_or(0);
+                        pid != 0 && process_state(pid) == Some('T')
+                    });
+                    // Long enough for a wrong implementation to have given the job up.
+                    thread::sleep(Duration::from_millis(300));
+                    released.store(true, Ordering::SeqCst);
+                    nix::sys::signal::kill(Pid::from_raw(pid), Signal::SIGCONT).expect("SIGCONT");
+                    // Read and write, so that opening does not wait for anybody.
+                    let mut writer = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&fifo_path)
+                        .expect("open the fifo");
+                    std::io::Write::write_all(&mut writer, b"x\n").expect("write");
+                })
+            };
+            let done = run(
+                sh,
+                &format!(
+                    "sh -c 'echo $$ > {pid}; kill -STOP $$' | cat < {fifo}; echo after $?",
+                    pid = pid_file.path(),
+                    fifo = fifo.path()
+                ),
+            );
+            let released_when_back = released.load(Ordering::SeqCst);
+            helper.join().expect("the helper thread ended");
+            assert!(
+                released_when_back,
+                "the shell gave the job up before cat had started: {done:?}"
+            );
+            assert_eq!(done.out, "x\nafter 0\n", "{}", done.err);
+            assert!(!done.err.contains("Stopped"), "{}", done.err);
+            assert!(sh.jobs.list().is_empty());
+        });
+    }
+
+    #[test]
+    fn a_stage_that_runs_only_shell_code_does_not_hold_back_a_stop() {
+        // A stage that never starts a program (`while read`, `read`, a command not found) must not keep the job
+        // from counting as stopped, or Ctrl+Z on `cat file | while read l; do :; done` would
+        // never bring the prompt back.
+        for line in [
+            "sh -c 'kill -STOP $$' | while read l; do :; done; echo after $?",
+            "sh -c 'kill -STOP $$' | read x; echo after $?",
+            "sh -c 'kill -STOP $$' | x=1; echo after $?",
+            // Ends without ever starting a program.
+            "sh -c 'kill -STOP $$' | nosuch-command-xyz 2>/dev/null; echo after $?",
+        ] {
+            guarded(true, move |sh| {
+                let done = run(sh, line);
+                assert_eq!(done.out, "after 147\n", "{line}: {}", done.err);
+                assert_eq!(done.err.matches("Stopped").count(), 1, "{}", done.err);
+                all_stopped(sh, 1);
+            });
+        }
     }
 
     #[test]

@@ -141,6 +141,92 @@ fn a_pipeline_and_a_subshell_stop_as_one_job() {
     });
 }
 
+/// A pipeline whose first program stops itself is not given up while the second is running:
+/// `cat` stays in front of the terminal and is still part of the job. (The race itself is made
+/// certain in a unit test, `a_job_is_not_stopped_before_every_stage_has_started_its_program`;
+/// this is what a user sees.)
+#[test]
+fn a_first_stage_that_stops_itself_does_not_take_the_job_away_from_the_second() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        let shell = term.shell_pid();
+        // The first program sends one line through the pipe and stops. The line is built by
+        // `sh`, so only `cat`'s output shows `ping-2` (the command line shows `$((1+1))`).
+        term.line("sh -c 'echo ping-$((1+1)); kill -STOP $$' | cat")?;
+        term.expect("ping-2", SHORT);
+        let end = Instant::now() + SHORT;
+        while term.in_session("sh").iter().all(|pid| state(*pid) != "T") && Instant::now() < end {
+            term.pump(Duration::from_millis(50));
+        }
+        term.pump(Duration::from_millis(500));
+        let cat = term.in_session("cat");
+        assert_eq!(cat.len(), 1, "{}", term.transcript());
+        assert!(
+            !term.transcript().contains("Stopped"),
+            "the shell gave the job up\n{}",
+            term.transcript()
+        );
+        // The job is still in front: the shell has not taken the terminal back.
+        let cat = u32::try_from(cat[0].as_raw()).expect("a pid");
+        assert_eq!(foreground_group(shell), process_group(cat));
+        assert_ne!(foreground_group(shell), process_group(shell));
+
+        // Ctrl+Z stops the whole job, once.
+        term.key(CTRL_Z)?;
+        term.expect("Stopped", SHORT);
+        term.sync("alive")?;
+        assert_eq!(term.transcript().matches("Stopped").count(), 1);
+        assert_eq!(foreground_group(shell), process_group(shell));
+        // The finished job is announced at a prompt, and only then does it leave the table
+        // (and its group leader, kept as a zombie until then, go away).
+        term.line("kill -9 %1")?;
+        term.repeat_until("echo gone-$((1+1))", "Killed")?;
+        term.expect_none("cat");
+        term.expect_none("sh");
+        term.quit()
+    });
+}
+
+/// A stage that only runs shell code never starts a program, and it must not keep the job from
+/// counting as stopped. If it did, Ctrl+Z on this line would never bring the prompt back (and a
+/// stopped `yes` does not die of Ctrl+C).
+#[test]
+fn ctrl_z_on_a_pipeline_into_a_shell_loop_brings_the_prompt_back() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        let shell = term.shell_pid();
+        term.line("yes | while read l; do :; done")?;
+        term.pump(Duration::from_millis(500));
+        assert_eq!(term.in_session("yes").len(), 1, "{}", term.transcript());
+        term.key(CTRL_Z)?;
+        term.expect("Stopped", SHORT);
+        // The prompt works: the shell answers (this is what hangs without the rule).
+        term.sync("alive")?;
+        assert_eq!(
+            term.transcript().matches("Stopped").count(),
+            1,
+            "{}",
+            term.transcript()
+        );
+        let yes = term.in_session("yes")[0];
+        assert_eq!(state(yes), "T");
+        assert_eq!(foreground_group(shell), process_group(shell));
+        term.line("jobs")?;
+        term.expect("yes | while read l; do :; done", SHORT);
+
+        // `fg` goes on, and Ctrl+C ends the loop and its program.
+        term.line("fg")?;
+        term.pump(Duration::from_millis(300));
+        assert_ne!(state(yes), "T");
+        term.key(3)?;
+        term.sync("after-int")?;
+        term.expect_none("yes");
+        term.line("jobs")?;
+        term.sync("empty")?;
+        term.quit()
+    });
+}
+
 /// The terminal settings of a job are kept when it stops and given back by `fg`: the shell has
 /// its own meanwhile.
 #[test]

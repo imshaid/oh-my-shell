@@ -124,6 +124,7 @@ impl Shell {
         for (index, (command, table)) in commands.iter().zip(tables).enumerate() {
             let mut stage = self.subshell();
             stage.job = Some(Arc::clone(job));
+            stage.task = index;
             let command = command.clone();
             let task = job.task(index);
             let spawned = thread::Builder::new()

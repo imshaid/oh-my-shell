@@ -21,11 +21,16 @@
 //! # State, stops and who waits
 //!
 //! The job keeps its own state: *running*, *stopped* or *finished*. It is stopped when it has
-//! programs and every one of them is stopped (the bash rule: `a | b` with only `a` stopped is
-//! still running). It is finished when every *task* is over. A task is one thread that runs shell
-//! code for the job: the stages of a pipeline, or the thread of a background job. Each holds a
-//! [`Task`] and reports its status with [`Task::done`]; a task that is dropped without it (a
-//! panic) counts as 134, so a job cannot stay running forever.
+//! programs, every one of them is stopped (the bash rule: `a | b` with only `a` stopped is
+//! still running) and every task has *settled*. A task settles when it starts a program, runs a
+//! command that is not a program (a builtin or a function: shell code pauses by itself while
+//! the job is stopped) or finishes. Before that it may be about to start a program, so
+//! `sh -c 'kill -STOP $$' | cat` is not stopped in the moment before `cat` is forked.
+//!
+//! It is finished when every *task* is over. A task is one thread that runs shell code for the
+//! job: the stages of a pipeline, or the thread of a background job. Each holds a [`Task`] and
+//! reports its status with [`Task::done`]; a task that is dropped without it (a panic) counts
+//! as 134, so a job cannot stay running forever.
 //!
 //! Nobody calls `waitpid(-1)`, which would steal the children of other threads. The thread
 //! that started a program waits for exactly that pid ([`Job::wait_or_stop`]) and writes what it
@@ -105,6 +110,10 @@ struct State {
     last: Option<Termination>,
     /// The status of each task, once it is over.
     results: Vec<Option<ExitStatus>>,
+    /// Which tasks have *settled*: started a program, run a command that is not a program, or
+    /// finished. A task that has not is still on its way to its first program, and a job with
+    /// such a task does not count as stopped (see `refresh`).
+    settled: Vec<bool>,
     /// The terminal settings the job had when it was stopped.
     modes: Option<Termios>,
 }
@@ -166,6 +175,7 @@ impl Job {
                 phase: Phase::Running,
                 last: None,
                 results: vec![None; tasks],
+                settled: vec![false; tasks],
                 modes: None,
             }),
         })
@@ -200,14 +210,18 @@ impl Job {
         self.bell.ring();
     }
 
-    /// The job is stopped when it has programs and all of them are stopped. It is no longer
-    /// stopped when one runs again. A finished job stays finished.
+    /// The job is stopped when it has programs, all of them are stopped, and every task has
+    /// settled. A task that has not may be about to start a program (`sh -c 'kill -STOP $$' |
+    /// cat` stops its first program before the second stage has reached `cat`), and bash keeps
+    /// `a | b` running while `b` runs. It is no longer stopped when one runs again. A finished
+    /// job stays finished.
     fn refresh(state: &mut State) {
         if matches!(state.phase, Phase::Finished(_)) {
             return;
         }
-        let all_stopped =
-            !state.live.is_empty() && state.live.iter().all(|pid| state.stopped.contains(pid));
+        let all_stopped = !state.live.is_empty()
+            && state.live.iter().all(|pid| state.stopped.contains(pid))
+            && state.settled.iter().all(|settled| *settled);
         state.phase = match (all_stopped, state.phase) {
             (true, Phase::Stopped(signal)) => Phase::Stopped(signal),
             (true, _) => Phase::Stopped(state.stop_signal),
@@ -219,6 +233,9 @@ impl Job {
         let mut state = self.state();
         if let Some(slot) = state.results.get_mut(index) {
             *slot = Some(status);
+        }
+        if let Some(slot) = state.settled.get_mut(index) {
+            *slot = true;
         }
         if state.results.iter().all(Option::is_some) {
             let results: Vec<ExitStatus> = state.results.iter().flatten().copied().collect();
@@ -235,8 +252,29 @@ impl Job {
             };
             state.phase = Phase::Finished(status);
         }
+        // This task may have been the only one that had not settled (it ended without ever
+        // starting a program, e.g. `nosuch`), which can make the job stopped.
+        Self::refresh(&mut state);
         drop(state);
         self.ring();
+    }
+
+    /// Task `index` is no longer on its way to a program: it runs a command that starts none
+    /// (a builtin, a function, an assignment). Shell code like that pauses by itself while the
+    /// job is stopped (`pause_while_stopped`), so it must not keep the job from counting as
+    /// stopped. Without this, `cat | while read l; do :; done` could never be stopped.
+    pub(crate) fn settle(&self, index: usize) {
+        let mut state = self.state();
+        let before = state.phase;
+        if let Some(slot) = state.settled.get_mut(index) {
+            *slot = true;
+        }
+        Self::refresh(&mut state);
+        let changed = state.phase != before;
+        drop(state);
+        if changed {
+            self.ring();
+        }
     }
 
     /// The bell this job rings.
@@ -308,8 +346,17 @@ impl Job {
     /// Records programs as started, without starting anything.
     #[cfg(test)]
     pub(crate) fn pretend_started(&self, pids: &[Pid]) {
+        self.pretend_started_by(0, pids);
+    }
+
+    /// Records programs as started by task `task`, without starting anything.
+    #[cfg(test)]
+    pub(crate) fn pretend_started_by(&self, task: usize, pids: &[Pid]) {
         let mut state = self.state();
         state.live.extend_from_slice(pids);
+        if let Some(slot) = state.settled.get_mut(task) {
+            *slot = true;
+        }
         Self::refresh(&mut state);
     }
 
@@ -389,7 +436,7 @@ impl Job {
         Ok(())
     }
 
-    /// Starts a program as a member of the job.
+    /// Starts a program as a member of the job, run by task number `task` (which settles).
     ///
     /// # Errors
     ///
@@ -399,6 +446,7 @@ impl Job {
         &self,
         request: &ExecRequest<'_>,
         plan: &mut FdPlan,
+        task: usize,
     ) -> Result<Member, SpawnFailure> {
         // Held until the program runs, so that members start one at a time.
         let mut state = self.state();
@@ -420,6 +468,9 @@ impl Job {
         }
         state.leader.get_or_insert(pid);
         state.live.push(pid);
+        if let Some(slot) = state.settled.get_mut(task) {
+            *slot = true;
+        }
         Self::refresh(&mut state);
         drop(state);
         self.ring();
@@ -537,6 +588,7 @@ mod tests {
 
     use super::*;
     use crate::jobtable::Jobs;
+    use crate::status::ExitStatus;
 
     #[test]
     fn shell_code_of_a_stopped_job_sleeps_until_it_runs_again() {
@@ -585,6 +637,33 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the shell code did not wake up");
         sleeper.join().unwrap();
+    }
+
+    #[test]
+    fn a_job_with_a_task_that_has_not_settled_is_not_stopped() {
+        let stopped_first = || {
+            let jobs = Jobs::new();
+            let job = Job::foreground(jobs.bell(), 2, false);
+            let first = Pid::from_raw(900_003);
+            job.pretend_started_by(0, &[first]);
+            job.pretend_stopped(first, nix::libc::SIGTSTP);
+            job
+        };
+        // Task 1 may still start a program: the one program that exists is stopped, and the
+        // job runs on.
+        let job = stopped_first();
+        assert_eq!(job.phase(), Phase::Running);
+        // It starts nothing (a builtin): now the job is stopped.
+        job.settle(1);
+        assert_eq!(job.phase(), Phase::Stopped(nix::libc::SIGTSTP));
+        // Or it ends without a program.
+        let job = stopped_first();
+        job.task(1).done(ExitStatus(0));
+        assert_eq!(job.phase(), Phase::Stopped(nix::libc::SIGTSTP));
+        // Or its program starts and runs: the job still runs.
+        let job = stopped_first();
+        job.pretend_started_by(1, &[Pid::from_raw(900_004)]);
+        assert_eq!(job.phase(), Phase::Running);
     }
 
     #[test]

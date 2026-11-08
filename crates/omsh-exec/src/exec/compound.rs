@@ -53,6 +53,7 @@ impl Shell {
         let job = Job::foreground(self.jobs.bell(), 1, false);
         let mut copy = self.subshell();
         copy.job = Some(Arc::clone(&job));
+        copy.task = 0;
         let list = list.clone();
         let table = io.clone();
         let task = job.task(0);

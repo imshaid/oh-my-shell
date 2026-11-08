@@ -7,8 +7,10 @@
 //! The steps for a stop:
 //!
 //! 1. Whoever waits for a program (a stage thread, or the main thread for a single command)
-//!    learns of the stop and writes it into the job. When every program of the job is stopped,
-//!    the job's phase becomes `Stopped` and its bell rings.
+//!    learns of the stop and writes it into the job. When every program of the job is stopped
+//!    and every task has settled (started a program, run a command that starts none, or
+//!    finished: a stage still on its way to its program keeps the job running), the job's
+//!    phase becomes `Stopped` and its bell rings.
 //! 2. The main shell notices (it was waiting on the bell, or it was the one that waited for the
 //!    single program), takes the terminal back with the shell's own terminal settings (the
 //!    job's are kept for `fg`), puts the job in the table and says so.

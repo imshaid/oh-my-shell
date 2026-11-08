@@ -313,6 +313,11 @@ impl Shell {
             .map(|name| self.classify(name, via_command.is_some()));
         let special =
             via_command.is_none() && matches!(target, Some(Target::Builtin(Class::Special)));
+        // Only a program can still be on its way to a fork. A builtin, a function or a bare
+        // assignment settles this stage now, before its redirections can block.
+        if !matches!(target, Some(Target::External)) {
+            self.settle_task();
+        }
 
         let redirected;
         let table = if redirects.is_empty() {
@@ -579,7 +584,7 @@ impl Shell {
         let mut plan = io.plan();
         let job = self.job_for_program();
         let result = match &job {
-            Some((job, true)) => match job.start(&program.request(), &mut plan) {
+            Some((job, true)) => match job.start(&program.request(), &mut plan, 0) {
                 Ok(member) => {
                     let task = job.task(0);
                     match job.wait_or_stop(&member) {
@@ -595,7 +600,7 @@ impl Shell {
                 Err(failure) => Err(failure),
             },
             Some((job, false)) => job
-                .start(&program.request(), &mut plan)
+                .start(&program.request(), &mut plan, self.task)
                 .map(|member| job.wait_until_end(&member)),
             None => spawn(&program.request(), &mut plan),
         };

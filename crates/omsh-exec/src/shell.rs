@@ -116,6 +116,9 @@ pub struct Shell {
     /// The job whose programs this shell (a pipeline stage, or something inside one) starts.
     /// They all join its process group, so Ctrl+C reaches them together.
     pub(crate) job: Option<Arc<Job>>,
+    /// The task of `job` this copy runs for (the index of its pipeline stage). A copy made
+    /// inside a stage keeps it, so what runs there settles the stage (see `Job::settle`).
+    pub(crate) task: usize,
     /// True in a `$(...)` that is not inside a job. Its programs stay in the shell's own
     /// group and in the foreground with it, as in bash: the substitution is part of the
     /// command that is being expanded.
@@ -200,6 +203,7 @@ impl Shell {
             loop_depth: 0,
             func_depth: 0,
             job: None,
+            task: 0,
             no_new_jobs: false,
             jobs: Jobs::new(),
             last_background: None,
@@ -277,6 +281,14 @@ impl Shell {
             copy.cwd_override = std::env::current_dir().ok();
         }
         copy
+    }
+
+    /// This copy is about to run a command that starts no program. Tell the job, so that it
+    /// can count as stopped while a program of another stage is.
+    pub(crate) fn settle_task(&self) {
+        if let Some(job) = &self.job {
+            job.settle(self.task);
+        }
     }
 
     /// True if the commands being run should stop: the user pressed Ctrl+C, or, for the shell
