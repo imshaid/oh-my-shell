@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use nix::sys::signal::Signal;
 use omsh_tests::procfs::{foreground_group, hup_is_ignored, process_group, state};
+use omsh_tests::skip::skip;
 use omsh_tests::{SHORT, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
@@ -260,7 +261,10 @@ fn a_stopped_job_keeps_its_own_terminal_settings() {
 #[test]
 fn exit_warns_about_stopped_jobs_once_and_then_hangs_them_up() {
     if hup_is_ignored() {
-        eprintln!("skipped: SIGHUP is ignored here (started under nohup?)");
+        skip(
+            "exit_warns_about_stopped_jobs_once_and_then_hangs_them_up",
+            "SIGHUP is ignored here (started under nohup?)",
+        );
         return;
     }
     pty_test(BIN, |ctx| {
@@ -293,7 +297,10 @@ fn exit_warns_about_stopped_jobs_once_and_then_hangs_them_up() {
 #[test]
 fn sighup_ends_the_shell_and_its_jobs() {
     if hup_is_ignored() {
-        eprintln!("skipped: SIGHUP is ignored here (started under nohup?)");
+        skip(
+            "sighup_ends_the_shell_and_its_jobs",
+            "SIGHUP is ignored here (started under nohup?)",
+        );
         return;
     }
     pty_test(BIN, |ctx| {
@@ -319,7 +326,10 @@ fn sighup_ends_the_shell_and_its_jobs() {
 #[test]
 fn disown_h_protects_a_job_from_the_hangup() {
     if hup_is_ignored() {
-        eprintln!("skipped: SIGHUP is ignored here (started under nohup?)");
+        skip(
+            "disown_h_protects_a_job_from_the_hangup",
+            "SIGHUP is ignored here (started under nohup?)",
+        );
         return;
     }
     pty_test(BIN, |ctx| {

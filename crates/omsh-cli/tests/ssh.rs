@@ -14,6 +14,7 @@
 //!
 //! The manual check with a real `sshd` is in `.private/PROGRESS.md` (S11).
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -23,6 +24,58 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_oh-my-shell");
+
+// --- Skipping -------------------------------------------------------------------------------
+//
+// A test that cannot run here must not look like a passing test on CI. Off CI it prints a note;
+// with `CI=true` it fails. The same code is in `crates/omsh-tests/src/skip.rs` (`omsh-cli`
+// cannot depend on that crate: the direction is `tests -> cli`). Keep the two in step.
+
+/// True for the value GitHub Actions gives the `CI` variable.
+fn is_ci(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|v| v == "true")
+}
+
+/// The test `test` cannot run because of `reason`: a panic on CI, otherwise a note. The note
+/// goes to the real standard error and not through `eprintln!`, because libtest captures that
+/// macro and drops the output of a passing test.
+fn skip(test: &str, reason: &str) {
+    let ci = is_ci(std::env::var_os("CI").as_deref());
+    decide(test, reason, ci, &mut io::stderr());
+}
+
+fn decide(test: &str, reason: &str, ci: bool, out: &mut dyn Write) {
+    assert!(
+        !ci,
+        "{test} cannot run: {reason}. CI must run every test; see .github/workflows/ci.yml"
+    );
+    let _ = out.write_all(format!("note: {test} SKIPPED: {reason}\n").as_bytes());
+}
+
+#[test]
+fn off_ci_a_skip_writes_one_note_and_returns() {
+    let mut out = Vec::new();
+    decide("some_test", "tool x is missing", false, &mut out);
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "note: some_test SKIPPED: tool x is missing\n"
+    );
+}
+
+#[test]
+#[should_panic(expected = "CI must run every test")]
+fn on_ci_a_skip_fails_the_test() {
+    decide("some_test", "tool x is missing", true, &mut Vec::new());
+}
+
+#[test]
+fn only_the_value_true_means_ci() {
+    assert!(is_ci(Some(OsStr::new("true"))));
+    assert!(!is_ci(None));
+    assert!(!is_ci(Some(OsStr::new("false"))));
+    assert!(!is_ci(Some(OsStr::new("1"))));
+    assert!(!is_ci(Some(OsStr::new(""))));
+}
 
 /// A scratch "home directory" of the pretend remote user.
 struct Home(PathBuf);
@@ -181,11 +234,12 @@ fn scp(home: &Home, legacy: bool, args: &[&str]) -> io::Result<Output> {
     command.output()
 }
 
-/// True if the tools this test needs exist; prints why when it does not.
-fn have_scp() -> bool {
+/// True if the tools this test needs exist. If not, `skip` is called: a note off CI, a failure
+/// on CI.
+fn have_scp(test: &str) -> bool {
     let found = find("scp").is_some() && find("timeout").is_some();
     if !found {
-        eprintln!("skipped: `scp` or `timeout` is not installed");
+        skip(test, "`scp` or `timeout` is not installed");
     }
     found
 }
@@ -214,7 +268,7 @@ fn same_tree(a: &Path, b: &Path) -> io::Result<()> {
 
 #[test]
 fn scp_legacy_protocol_uploads_and_downloads_through_the_shell() -> io::Result<()> {
-    if !have_scp() {
+    if !have_scp("scp_legacy_protocol_uploads_and_downloads_through_the_shell") {
         return Ok(());
     }
     let home = Home::new()?;
@@ -263,7 +317,7 @@ fn scp_legacy_protocol_uploads_and_downloads_through_the_shell() -> io::Result<(
 
 #[test]
 fn scp_with_a_single_file_and_a_space_in_its_name() -> io::Result<()> {
-    if !have_scp() {
+    if !have_scp("scp_with_a_single_file_and_a_space_in_its_name") {
         return Ok(());
     }
     let home = Home::new()?;
@@ -293,11 +347,15 @@ fn scp_with_a_single_file_and_a_space_in_its_name() -> io::Result<()> {
 
 #[test]
 fn scp_over_sftp_works_when_the_server_program_exists() -> io::Result<()> {
-    if !have_scp() {
+    let test = "scp_over_sftp_works_when_the_server_program_exists";
+    if !have_scp(test) {
         return Ok(());
     }
     if sftp_server().is_none() {
-        eprintln!("skipped: OpenSSH's `sftp-server` is not installed");
+        skip(
+            test,
+            "OpenSSH's `sftp-server` is not installed (looked in /usr/lib/openssh, /usr/lib/ssh, /usr/libexec/openssh, /usr/libexec)",
+        );
         return Ok(());
     }
     let home = Home::new()?;

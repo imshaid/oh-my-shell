@@ -24,10 +24,14 @@
 //! one the `oh-my-shell` binary calls. Cargo only passes a test the path of a binary of its own
 //! package, which is why it exists.
 //!
+//! A test that cannot run here (for example SIGHUP is ignored) calls [`skip::skip`]: a visible
+//! note locally, a failure when `CI=true`, so CI never passes without running it.
+//!
 //! Needs Linux, `/proc` and `setsid` from util-linux.
 
 pub mod procfs;
 pub mod session;
+pub mod skip;
 pub mod watchdog;
 
 pub use session::{Launch, SHORT, Session};

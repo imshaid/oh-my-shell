@@ -47,6 +47,16 @@ jobs:
       - name: Check the tools of the PTY tests
         # The PTY tests start the shell with `setsid -c` (util-linux) and read `/proc`.
         run: command -v setsid && test -r /proc/self/stat
+      - name: Check the tools of the ssh tests
+        # tests/ssh.rs fails on CI when a tool is missing (a skipped test would hide that it
+        # never ran), so install sftp-server if the runner image lacks it.
+        run: |
+          command -v scp && command -v timeout
+          if ! test -x /usr/lib/openssh/sftp-server; then
+            echo "sftp-server is missing; installing openssh-sftp-server"
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends openssh-sftp-server
+          fi
+          test -x /usr/lib/openssh/sftp-server
       - name: Run unit and conformance tests
         run: cargo test --workspace --exclude omsh-tests --locked
       - name: Run PTY tests
