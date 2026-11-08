@@ -44,5 +44,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
-      - name: Run tests
-        run: cargo test --workspace --locked
+      - name: Check the tools of the PTY tests
+        # The PTY tests start the shell with `setsid -c` (util-linux) and read `/proc`.
+        run: command -v setsid && test -r /proc/self/stat
+      - name: Run unit and conformance tests
+        run: cargo test --workspace --exclude omsh-tests --locked
+      - name: Run PTY tests
+        # Every test has its own limit (60 s); this step limit is the second line of defense.
+        timeout-minutes: 10
+        run: cargo test -p omsh-tests --locked

@@ -1926,7 +1926,7 @@ mod background {
     // ------------------------------------------------------------------ stopped jobs
     //
     // A program stops itself with `kill -STOP $$`; `kill -STOP 0` stops its whole group. (There
-    // is no terminal in a unit test, so no Ctrl+Z. The terminal part is in `jobs_pty.rs`.)
+    // is no terminal in a unit test, so no Ctrl+Z. The terminal part is in `omsh-tests`.)
 
     /// A file the test's programs write to, because a program that outlives `run` no longer
     /// writes to that call's captured output.
@@ -2075,11 +2075,17 @@ mod background {
     fn a_pipeline_stops_as_one_job_and_fg_finishes_it() {
         guarded(true, |sh| {
             let file = Scratch::new("pipeline");
+            // The first program stops only after the second has started (it waits for the
+            // marker). Otherwise the job is stopped for a moment with one program only, and the
+            // shell may give it up at that moment: see "Known gaps" of S09b.
+            let marker = Scratch::new("pipeline-started");
             let done = run(
                 sh,
                 &format!(
-                    "sh -c 'kill -STOP $$; echo one' | sh -c 'kill -STOP $$; cat > {}'",
-                    file.path()
+                    "sh -c 'while [ ! -e {m} ]; do :; done; kill -STOP $$; echo one' \
+                     | sh -c ': > {m}; kill -STOP $$; cat > {}'",
+                    file.path(),
+                    m = marker.path()
                 ),
             );
             assert_eq!(done.err.matches("Stopped").count(), 1, "{}", done.err);
@@ -2094,8 +2100,18 @@ mod background {
     #[test]
     fn a_job_is_not_stopped_while_one_of_its_programs_runs() {
         guarded(true, |sh| {
-            // Only the first program stops; the second runs until it is told to end.
-            let done = run(sh, "sh -c 'kill -STOP $$' | sleep 30 &\nsleep 0.3; jobs");
+            // Only the first program stops; the second runs until it is told to end. The first
+            // waits for a marker from the second, so that the second is part of the job when the
+            // stop is noticed (see the first test above and "Known gaps" of S09b).
+            let marker = Scratch::new("not-stopped-started");
+            let done = run(
+                sh,
+                &format!(
+                    "sh -c 'while [ ! -e {m} ]; do :; done; kill -STOP $$' \
+                     | sh -c ': > {m}; exec sleep 30' &\nsleep 0.3; jobs",
+                    m = marker.path()
+                ),
+            );
             assert!(done.out.contains("Running"), "{}", done.out);
             assert!(!done.out.contains("Stopped"), "{}", done.out);
         });

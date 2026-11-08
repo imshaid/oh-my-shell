@@ -305,7 +305,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "miette",
- "nix",
  "omsh-ai",
  "omsh-config",
  "omsh-editor",
@@ -361,6 +360,10 @@ dependencies = [
 [[package]]
 name = "omsh-tests"
 version = "0.1.0"
+dependencies = [
+ "nix",
+ "omsh-cli",
+]
 
 [[package]]
 name = "omsh-ui"

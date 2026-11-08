@@ -23,10 +23,5 @@ omsh-history.workspace = true
 omsh-safety.workspace = true
 omsh-ui.workspace = true
 
-[dev-dependencies]
-# Pseudo-terminals for the job control tests (`tests/jobs_pty.rs`). Same crate and version as
-# `omsh-exec`; the workspace entry already has the `term` feature.
-nix.workspace = true
-
 [lints]
 workspace = true

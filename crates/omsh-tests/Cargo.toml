@@ -7,5 +7,14 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[[bin]]
+name = "omsh-pty-shell"
+path = "src/bin/omsh-pty-shell.rs"
+
+[dependencies]
+# The shell under test. Its entry function is what the test binary calls.
+omsh-cli = { path = "../omsh-cli" }
+nix.workspace = true
+
 [lints]
 workspace = true

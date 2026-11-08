@@ -13,6 +13,7 @@ repository = "https://github.com/imshaid/oh-my-shell"
 #   cli    -> editor, exec, ui, ai, safety, history, config
 #   editor -> syntax, history, ui, config
 #   exec   -> syntax, config
+#   tests  -> cli (development only: the end-to-end tests run the shell's entry function)
 #   safety -> syntax
 #   ai     -> config
 #   ui     -> config
