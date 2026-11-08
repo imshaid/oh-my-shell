@@ -51,10 +51,11 @@ pub struct ExecRequest<'a> {
     /// The file creation mask to run with, if it is not the process's own (a subshell that
     /// used `umask`).
     pub umask: Option<u32>,
-    /// Bit `n` is set for each signal `n` that is ignored by a `trap`, or was ignored when the
-    /// shell started. The shell resets the signals it changes for itself (SIGINT, SIGQUIT,
+    /// Bit `n` is set for each signal `n` that the program must ignore: ignored by a `trap`, or
+    /// when the shell started, or (SIGINT and SIGQUIT) because the program is a background job
+    /// of a shell without job control. The shell resets the signals it changes for itself (SIGINT, SIGQUIT,
     /// SIGTERM, SIGTSTP, SIGTTIN, SIGTTOU and SIGPIPE) to their defaults for a program, except
-    /// for those: a signal that is ignored stays ignored in what the shell starts.
+    /// for those, which are set to ignore.
     pub ignored: u64,
     /// The process group to put the program in, if it is part of a job.
     pub group: Option<ChildGroup>,
@@ -216,9 +217,15 @@ unsafe fn become_program(prepared: &Prepared<'_>, plan: &mut FdPlan) -> i32 {
             libc::SIGTTOU,
             libc::SIGPIPE,
         ] {
-            if prepared.ignored & (1_u64 << signal) == 0 {
-                libc::signal(signal, libc::SIG_DFL);
-            }
+            // A signal in the mask is ignored in the program (it already is in the shell,
+            // except for a background job of a shell without job control, which is told to
+            // ignore Ctrl+C and Ctrl+\ here).
+            let handler = if prepared.ignored & (1_u64 << signal) == 0 {
+                libc::SIG_DFL
+            } else {
+                libc::SIG_IGN
+            };
+            libc::signal(signal, handler);
         }
         let mut none: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&raw mut none);
@@ -377,8 +384,9 @@ pub fn wait(child: Pid) -> Termination {
 pub(crate) enum Waited {
     /// It is over.
     Ended(Termination),
-    /// It was stopped (Ctrl+Z, `SIGSTOP`, or it read the terminal from the background).
-    Stopped,
+    /// It was stopped by this signal (Ctrl+Z, `SIGSTOP`, or `SIGTTIN` when it read the terminal
+    /// from the background).
+    Stopped(i32),
 }
 
 /// Waits until `child`, a member of a job, ends or stops.
@@ -401,14 +409,14 @@ pub(crate) fn wait_member(child: Pid, anchor: bool) -> Waited {
                 if let Some(ending) = Termination::from_wait(status) {
                     return Waited::Ended(ending);
                 }
-                if matches!(status, WaitStatus::Stopped(..)) {
+                if let WaitStatus::Stopped(_, signal) = status {
                     if anchor {
                         // `WNOWAIT` left the report of the stop in place; take it, or the
                         // next wait would see the same stop again.
                         let _ =
                             waitid(Id::Pid(child), WaitPidFlag::WSTOPPED | WaitPidFlag::WNOHANG);
                     }
-                    return Waited::Stopped;
+                    return Waited::Stopped(signal as i32);
                 }
                 // Continued: keep waiting.
             }

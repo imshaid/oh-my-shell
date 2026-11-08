@@ -49,8 +49,10 @@ impl Expander<'_> {
             "#" => Value::Scalar(shell.positional.len().to_string().into_bytes()),
             "?" => Value::Scalar(shell.status.code().to_string().into_bytes()),
             "$" => Value::Scalar(std::process::id().to_string().into_bytes()),
-            // There are no background jobs until S09.
-            "!" => Value::Unset,
+            // The first program of the last background job, if one started.
+            "!" => shell.last_background.map_or(Value::Unset, |pid| {
+                Value::Scalar(pid.to_string().into_bytes())
+            }),
             "-" => Value::Scalar(shell.options.dollar_dash(shell.interactive).into_bytes()),
             "0" => Value::Scalar(shell.name.clone()),
             digits if digits.bytes().all(|b| b.is_ascii_digit()) && !digits.is_empty() => digits

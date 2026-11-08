@@ -9,7 +9,6 @@ use super::{Flow, Unwind};
 use crate::expand::Expander;
 use crate::io::Io;
 use crate::shell::Shell;
-use crate::signals;
 use crate::status::ExitStatus;
 
 impl Shell {
@@ -64,7 +63,7 @@ impl Shell {
     fn loop_passes(&mut self, command: &LoopCommand, until: bool, io: &Io) -> Flow {
         let mut status = ExitStatus::SUCCESS;
         loop {
-            if signals::interrupted() {
+            if self.interrupted() {
                 return Err(Unwind::Interrupted);
             }
             let condition = self
@@ -109,7 +108,7 @@ impl Shell {
     fn for_passes(&mut self, command: &ForCommand, items: Vec<Vec<u8>>, io: &Io) -> Flow {
         let mut status = ExitStatus::SUCCESS;
         for item in items {
-            if signals::interrupted() {
+            if self.interrupted() {
                 return Err(Unwind::Interrupted);
             }
             if self.vars.set(&command.name, item).is_err() {

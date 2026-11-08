@@ -1159,10 +1159,6 @@ fn eval_reports_a_syntax_error_and_gives_2() {
     assert_eq!(d.out, "after\n");
     assert!(d.err.contains("eval"), "{}", d.err);
     assert_eq!(run(&mut shell(), "eval 'fi'").status, 2);
-    // Something that cannot run yet is refused in `eval` too.
-    let d = run(&mut shell(), "eval 'sleep 0 &'");
-    assert_eq!(d.status, 2);
-    assert!(d.err.contains("background jobs"), "{}", d.err);
 }
 
 #[test]
@@ -1549,5 +1545,423 @@ mod job_groups {
         assert_eq!(done.status, 0);
         assert!(!done.out.trim().is_empty(), "{}", done.err);
         assert_ne!(done.out.trim(), mine());
+    }
+}
+
+/// Background jobs (`cmd &`), `jobs`, `wait` and `kill`.
+///
+/// Every test here starts programs that outlive the line, or waits for them. A mistake must not
+/// hang the test run or leave processes behind (there is no PTY suite with timeouts until S10),
+/// so each test goes through [`guarded`]: the body runs on its own thread with a time limit, and
+/// whatever happens (success, a failed assertion, a timeout) every program of every job is
+/// killed and collected afterwards, and the test fails if one is left.
+mod background {
+    use std::any::Any;
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use nix::sys::signal::Signal;
+    use nix::unistd::Pid;
+
+    use super::*;
+    use crate::jobs::Phase;
+    use crate::jobtable::Jobs;
+
+    /// How long a test body may take. The slowest ones sleep for about a second.
+    const LIMIT: Duration = Duration::from_secs(20);
+
+    fn alive(pid: Pid) -> bool {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    /// Kills every program that the jobs started, waits for the job threads to collect them, and
+    /// panics if one is still there.
+    fn clean_up(jobs: &Jobs) {
+        let mut pids = Vec::new();
+        for view in jobs.list() {
+            pids.extend(view.job.leader());
+            pids.extend(view.job.live_pids());
+            // `SIGKILL` works on a stopped process; `SIGCONT` is for the shell's own sake.
+            let _ = view.job.signal(Signal::SIGKILL);
+            let _ = view.job.signal(Signal::SIGCONT);
+        }
+        // The thread of each job collects its programs and marks the job finished.
+        let end = Instant::now() + Duration::from_secs(5);
+        while jobs
+            .list()
+            .iter()
+            .any(|v| !matches!(v.phase, Phase::Finished(_)))
+            && Instant::now() < end
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        for view in jobs.list() {
+            jobs.remove(view.number);
+        }
+        // A leader stays a zombie until its job is dropped, which happens once the job's thread
+        // lets go of it.
+        let end = Instant::now() + Duration::from_secs(5);
+        while pids.iter().any(|pid| alive(*pid)) && Instant::now() < end {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let left: Vec<_> = pids.into_iter().filter(|pid| alive(*pid)).collect();
+        assert!(left.is_empty(), "programs were left behind: {left:?}");
+    }
+
+    /// Runs `body` on a thread with a time limit and cleans up after it.
+    fn guarded(job_control: bool, body: impl FnOnce(&mut Shell) + Send + 'static) {
+        let mut sh = shell();
+        sh.job_control = job_control;
+        let jobs = Arc::clone(&sh.jobs);
+        let (done, result) = mpsc::channel::<Result<(), Box<dyn Any + Send>>>();
+        let thread = thread::spawn(move || {
+            let outcome = catch_unwind(AssertUnwindSafe(|| body(&mut sh)));
+            let _ = done.send(outcome);
+        });
+        let outcome = result.recv_timeout(LIMIT);
+        clean_up(&jobs);
+        match outcome {
+            Ok(Ok(())) => thread.join().expect("the test thread ended"),
+            Ok(Err(panic)) => resume_unwind(panic),
+            Err(_) => panic!("the test did not finish in {LIMIT:?}"),
+        }
+    }
+
+    /// Calls `check` until it is true, for at most five seconds.
+    fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !check() {
+            assert!(Instant::now() < end, "{what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The process group of the program that runs `$!`.
+    const GROUP_OF_LAST: &str = "cut -d' ' -f5 /proc/$!/stat";
+
+    #[test]
+    fn the_shell_does_not_wait_for_a_job_that_ends_with_an_ampersand() {
+        guarded(false, |sh| {
+            let start = Instant::now();
+            let done = run(sh, "sleep 30 & echo started");
+            assert_eq!(done.out, "started\n");
+            assert_eq!(done.status, 0);
+            assert!(start.elapsed() < Duration::from_secs(10));
+        });
+    }
+
+    #[test]
+    fn wait_gives_the_status_of_the_job() {
+        guarded(false, |sh| {
+            assert_eq!(run(sh, "sh -c 'exit 3' & wait $!; echo $?").out, "3\n");
+            // Shell code only: nothing was started, so `$!` is empty and the job is named.
+            assert_eq!(run(sh, "{ exit 4; } & wait %1; echo $?").out, "4\n");
+            assert_eq!(run(sh, "{ true; } & wait %1; echo $?").out, "0\n");
+        });
+    }
+
+    #[test]
+    fn dollar_bang_is_the_first_program_of_the_last_job() {
+        guarded(false, |sh| {
+            assert_eq!(run(sh, "sleep 30 & cat /proc/$!/comm").out, "sleep\n");
+            // No program started: nothing to show, and no invented number.
+            assert_eq!(run(sh, "{ x=1; } & echo \"[$!]\"").out, "[]\n");
+        });
+    }
+
+    #[test]
+    fn jobs_lists_the_running_jobs_with_marks() {
+        guarded(false, |sh| {
+            let done = run(sh, "sleep 30 & sleep 31 & jobs");
+            assert_eq!(
+                done.out,
+                format!(
+                    "[1]-  {:<27}sleep 30 &\n[2]+  {:<27}sleep 31 &\n",
+                    "Running", "Running"
+                )
+            );
+            let done = run(sh, "jobs -p");
+            assert_eq!(done.out.lines().count(), 2);
+            assert!(
+                done.out.lines().all(|l| l.parse::<u32>().is_ok()),
+                "{}",
+                done.out
+            );
+            assert!(run(sh, "jobs -l").out.contains("Running"));
+            assert_eq!(run(sh, "jobs %2").out.lines().count(), 1);
+        });
+    }
+
+    #[test]
+    fn the_command_text_is_what_was_typed_without_the_ampersand() {
+        guarded(false, |sh| {
+            let done = run(sh, "echo  hi  &&  sleep 30   &\njobs");
+            assert!(
+                done.out.contains("echo  hi  &&  sleep 30 &"),
+                "{}",
+                done.out
+            );
+            // Inside a function the spans belong to another line: say nothing wrong.
+            let done = run(sh, "f() { sleep 31 & }; f; jobs %2");
+            assert!(done.out.contains("(background job)"), "{}", done.out);
+        });
+    }
+
+    #[test]
+    fn kill_ends_a_job_and_wait_reports_the_signal() {
+        guarded(true, |sh| {
+            assert_eq!(run(sh, "sleep 30 & kill %1; wait %1; echo $?").out, "143\n");
+        });
+        guarded(false, |sh| {
+            assert_eq!(
+                run(sh, "sleep 30 & kill -9 %1; wait %1; echo $?").out,
+                "137\n"
+            );
+            assert_eq!(
+                run(sh, "sleep 30 & kill -s KILL %1; wait %1; echo $?").out,
+                "137\n"
+            );
+        });
+    }
+
+    #[test]
+    fn kill_on_a_stopped_job_continues_it_so_that_it_can_end() {
+        for job_control in [true, false] {
+            guarded(job_control, |sh| {
+                run(sh, "sleep 30 & kill -STOP %1");
+                eventually("the job was not noted as stopped", || {
+                    run(sh, "jobs").out.contains("Stopped")
+                });
+                // `wait` does not hang on a stopped job. It says so, as bash does.
+                let done = run(sh, "wait %1; echo $?");
+                assert_eq!(done.out, "147\n");
+                assert!(done.err.contains("job 1 is stopped"), "{}", done.err);
+                // TERM alone would stay pending on a stopped process: the shell sends CONT.
+                let done = run(sh, "kill %1; wait %1; echo $?");
+                assert_eq!(done.out, "143\n", "{}", done.err);
+            });
+        }
+    }
+
+    #[test]
+    fn a_continued_job_is_running_again() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 & kill -STOP %1");
+            eventually("the job was not noted as stopped", || {
+                run(sh, "jobs").out.contains("Stopped")
+            });
+            run(sh, "kill -CONT %1");
+            assert!(run(sh, "jobs").out.contains("Running"));
+        });
+    }
+
+    #[test]
+    fn shell_code_without_a_program_is_stopped_by_kill() {
+        guarded(false, |sh| {
+            let done = run(sh, "while :; do :; done & kill %1; wait %1; echo $?");
+            assert_eq!(done.out, "143\n", "{}", done.err);
+        });
+    }
+
+    #[test]
+    fn compound_commands_lists_functions_and_pipelines_can_run_in_the_background() {
+        guarded(false, |sh| {
+            assert_eq!(run(sh, "{ echo a; echo b; } & wait").out, "a\nb\n");
+            assert_eq!(run(sh, "true && echo and-list & wait").out, "and-list\n");
+            assert_eq!(run(sh, "f() { echo in-f; }; f & wait").out, "in-f\n");
+            assert_eq!(run(sh, "echo hi | cat & wait").out, "hi\n");
+            assert_eq!(
+                run(sh, "for i in 1 2; do echo $i; done & wait").out,
+                "1\n2\n"
+            );
+            // Changes made in the job stay in the job: it is a subshell.
+            assert_eq!(run(sh, "x=1; { x=2; } & wait; echo $x").out, "1\n");
+        });
+    }
+
+    #[test]
+    fn plain_wait_waits_for_every_job() {
+        guarded(false, |sh| {
+            let start = Instant::now();
+            let done = run(sh, "sleep 0.3 & sleep 0.3 & wait; echo $?");
+            assert_eq!(done.out, "0\n");
+            assert!(start.elapsed() >= Duration::from_millis(250));
+            // Nothing left to tell about: `wait` has seen them end.
+            assert_eq!(run(sh, "jobs").out, "");
+        });
+    }
+
+    #[test]
+    fn exit_in_a_background_job_ends_that_job_and_not_the_shell() {
+        guarded(false, |sh| {
+            let done = run(sh, "{ exit 4; } & wait %1; echo $?");
+            assert!(!done.exited);
+            assert_eq!(done.out, "4\n");
+        });
+    }
+
+    #[test]
+    fn a_job_that_ends_is_reported_once_before_the_next_prompt() {
+        guarded(false, |sh| {
+            run(sh, "sh -c 'exit 3' &");
+            let told = Captured::new();
+            eventually("no notice", || {
+                sh.job_notices(&told.io);
+                !told.stderr().is_empty()
+            });
+            assert_eq!(
+                told.stderr(),
+                format!("[1]+  {:<27}sh -c 'exit 3'\n", "Exit 3")
+            );
+            sh.job_notices(&told.io);
+            assert_eq!(told.stderr().lines().count(), 1);
+            assert_eq!(run(sh, "jobs").out, "");
+        });
+    }
+
+    #[test]
+    fn a_killed_job_is_reported_with_the_signal() {
+        guarded(false, |sh| {
+            run(sh, "sleep 30 & kill %1");
+            let told = Captured::new();
+            eventually("no notice", || {
+                sh.job_notices(&told.io);
+                !told.stderr().is_empty()
+            });
+            assert_eq!(
+                told.stderr(),
+                format!("[1]+  {:<27}sleep 30\n", "Terminated")
+            );
+        });
+    }
+
+    #[test]
+    fn a_background_job_has_a_process_group_of_its_own_when_there_is_job_control() {
+        guarded(true, |sh| {
+            let done = run(sh, &format!("sleep 30 & echo $!; {GROUP_OF_LAST}"));
+            let lines: Vec<_> = done.out.lines().collect();
+            assert_eq!(lines.len(), 2, "{}", done.err);
+            // It leads its own group, which is not the shell's.
+            assert_eq!(lines[0], lines[1]);
+            assert_ne!(lines[1], nix::unistd::getpgrp().to_string());
+        });
+        guarded(false, |sh| {
+            let done = run(sh, &format!("sleep 30 & {GROUP_OF_LAST}"));
+            assert_eq!(done.out.trim(), nix::unistd::getpgrp().to_string());
+        });
+    }
+
+    #[test]
+    fn without_job_control_a_background_job_cannot_read_the_keyboard_or_be_interrupted() {
+        guarded(false, |sh| {
+            // Standard input is a pipe that never gets any data and is never closed.
+            let (reader, _writer) = nix::unistd::pipe().unwrap();
+            let mut captured = Captured::new();
+            captured.io.set(0, Arc::new(reader));
+            let result = sh.run_source("cat & wait %1; echo $?", true, &mut captured.io);
+            assert!(matches!(result, LineResult::Ran(_)));
+            assert_eq!(captured.stdout(), "0\n");
+
+            // Ctrl+C and Ctrl+\ are ignored by the program, and so is a signal sent to it.
+            let done = run(
+                sh,
+                "sh -c 'kill -INT $$; kill -QUIT $$; echo alive' & wait %1",
+            );
+            assert_eq!(done.out, "alive\n");
+        });
+    }
+
+    #[test]
+    fn eval_and_dot_can_start_background_jobs_and_show_their_text() {
+        guarded(false, |sh| {
+            let done = run(sh, "eval 'sleep 30 &'; jobs");
+            assert_eq!(done.status, 0, "{}", done.err);
+            // The text is the one `eval` ran, not a piece of the line that called it.
+            assert!(done.out.contains("sleep 30 &"), "{}", done.out);
+            // Plain `wait` waits for every job, so end the first one before.
+            assert_eq!(run(sh, "kill %1; eval 'echo ok & wait'").out, "ok\n");
+        });
+    }
+
+    #[test]
+    fn a_subshell_has_no_jobs() {
+        guarded(false, |sh| {
+            let done = run(sh, "sleep 30 & (jobs; wait; echo $?)");
+            assert_eq!(done.out, "0\n");
+            assert_eq!(run(sh, "jobs").out.lines().count(), 1);
+        });
+    }
+
+    #[test]
+    fn a_job_that_cannot_start_ends_with_127_and_does_not_hang_the_table() {
+        guarded(false, |sh| {
+            let done = run(sh, "/nonexistent/omsh & wait %1; echo $?");
+            assert_eq!(done.out, "127\n");
+        });
+    }
+
+    #[test]
+    fn errors_from_jobs_wait_and_kill() {
+        guarded(false, |sh| {
+            let done = run(sh, "kill %9");
+            assert_eq!(done.status, 1);
+            assert!(done.err.contains("kill: %9: no such job"), "{}", done.err);
+
+            let done = run(sh, "kill -s NOSUCH 1");
+            assert_eq!(done.status, 1);
+            assert!(done.err.contains("invalid signal"), "{}", done.err);
+
+            assert_eq!(run(sh, "kill").status, 2);
+            assert_eq!(run(sh, "kill abc").status, 1);
+
+            let done = run(sh, "wait %9");
+            assert_eq!(done.status, 127);
+            assert!(done.err.contains("no such job"), "{}", done.err);
+
+            let done = run(sh, "wait 999999");
+            assert_eq!(done.status, 127);
+            assert!(done.err.contains("not a child"), "{}", done.err);
+            assert_eq!(run(sh, "wait abc").status, 2);
+
+            assert_eq!(run(sh, "jobs %3").status, 1);
+            assert_eq!(run(sh, "jobs -z").status, 2);
+            // The same process ids work with `kill`: signal 0 only checks.
+            assert_eq!(run(sh, "kill -0 $$").status, 0);
+        });
+    }
+
+    #[test]
+    fn kill_lists_and_translates_signals() {
+        guarded(false, |sh| {
+            assert!(run(sh, "kill -l").out.starts_with("HUP INT QUIT"));
+            assert_eq!(run(sh, "kill -l 15").out, "TERM\n");
+            assert_eq!(run(sh, "kill -l 143").out, "TERM\n");
+            assert_eq!(run(sh, "kill -l TERM").out, "15\n");
+            assert_eq!(run(sh, "kill -l SIGKILL").out, "9\n");
+            assert_eq!(run(sh, "kill -l NOSUCH").status, 1);
+        });
+    }
+
+    #[test]
+    fn kill_sends_signals_to_plain_process_ids_too() {
+        guarded(false, |sh| {
+            let done = run(sh, "sleep 30 & kill $!; wait $!; echo $?");
+            assert_eq!(done.out, "143\n");
+        });
+    }
+
+    #[test]
+    fn a_background_job_is_not_stopped_by_the_ctrl_c_flag() {
+        // The flag is global; the shell code of a background job reads its own instead.
+        let bell = Jobs::new().bell();
+        let job = crate::jobs::Job::background(false, bell);
+        let mut sh = shell();
+        sh.job = Some(Arc::clone(&job));
+        assert!(!sh.interrupted());
+        job.signal(Signal::SIGTERM).unwrap();
+        assert!(sh.interrupted());
+        assert_eq!(job.cancelled_by(), Some(Signal::SIGTERM as i32));
     }
 }

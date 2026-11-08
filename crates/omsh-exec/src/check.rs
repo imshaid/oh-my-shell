@@ -1,10 +1,11 @@
 //! Checking a parsed line before anything in it runs.
 //!
-//! The parser accepts the whole language, but the executor does not run all of it yet (today
-//! only background jobs, `&`, are missing; S09 adds them). Running the first half of a line
-//! and then refusing the rest would be worse than refusing all of it, so the whole line
-//! (including every `$(...)`, function body and compound command inside it) is looked at
-//! first.
+//! The parser accepts the whole language, but the executor may not run all of it yet. Running
+//! the first half of a line and then refusing the rest would be worse than refusing all of it,
+//! so the whole line (including every `$(...)`, function body and compound command inside it)
+//! is looked at first. Today the executor runs everything the parser accepts (background jobs
+//! came with S09a), so nothing is refused; the check stays for the next gap, and its removal
+//! is a known gap in PROGRESS.md.
 
 use omsh_syntax::Span;
 use omsh_syntax::ast::{
@@ -21,6 +22,10 @@ pub struct NotYet {
 }
 
 impl NotYet {
+    #[expect(
+        dead_code,
+        reason = "nothing is refused today; the constructor is for the next unfinished construct"
+    )]
     pub(crate) const fn new(what: &'static str, span: Span) -> Self {
         Self { what, span }
     }
@@ -29,9 +34,6 @@ impl NotYet {
 /// Looks at every command in `list`, and in the lists inside its words and compound commands.
 pub(crate) fn check_list(list: &List) -> Result<(), NotYet> {
     for item in &list.items {
-        if item.background {
-            return Err(NotYet::new("background jobs", item.span));
-        }
         let and_or = &item.and_or;
         check_pipeline(&and_or.first)?;
         for part in &and_or.rest {

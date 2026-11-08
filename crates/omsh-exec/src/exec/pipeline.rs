@@ -22,12 +22,11 @@ use super::{Flow, Unwind};
 use crate::io::Io;
 use crate::jobs::Job;
 use crate::shell::Shell;
-use crate::signals;
 use crate::status::ExitStatus;
 
 /// The stack of a stage's thread. The main thread has 8 MiB; the stages get the same, so that
 /// the depth limit is safe on both. Memory that is not used is never mapped.
-const STAGE_STACK: usize = 8 * 1024 * 1024;
+pub(super) const STAGE_STACK: usize = 8 * 1024 * 1024;
 
 impl Shell {
     /// Runs the commands of a pipeline at the same time and waits for all of them. The
@@ -92,7 +91,7 @@ impl Shell {
         if let Some(job) = &own_job {
             job.finish();
         }
-        if signals::interrupted() {
+        if self.interrupted() {
             return Err(Unwind::Interrupted);
         }
         let mut status = statuses.last().copied().unwrap_or(ExitStatus::SUCCESS);

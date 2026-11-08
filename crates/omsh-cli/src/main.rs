@@ -14,7 +14,8 @@ use clap::Parser;
 /// An interactive Linux shell in early development. It runs the POSIX shell language
 /// (pipelines, redirections, `&&` and `||`, `if`, loops, `case`, functions, the usual
 /// expansions) with a few builtins. Each command runs in its own process group, so Ctrl+C
-/// stops the command and not the shell. It has no background jobs yet.
+/// stops the command and not the shell. A command that ends with `&` runs in the background
+/// (`jobs`, `wait` and `kill %n` work with it). `fg`, `bg` and stopped jobs are not there yet.
 #[derive(Debug, Parser)]
 #[command(name = "oh-my-shell", version)]
 struct Cli {}

@@ -42,7 +42,11 @@ impl Shell {
                 ));
                 return Ok(ExitStatus::USAGE);
             }
-            status = self.run_list(&list, io)?;
+            // The spans of this list index `expanded`, not the line that ran `eval` or `.`.
+            let saved = self.source.replace(std::sync::Arc::from(expanded.as_str()));
+            let result = self.run_list(&list, io);
+            self.source = saved;
+            status = result?;
             self.status = status;
         }
         Ok(status)

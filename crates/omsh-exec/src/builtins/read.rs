@@ -73,7 +73,7 @@ pub(super) fn read(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
         let _ = io.write_all(2, prompt);
     }
 
-    let (line, got_newline) = read_line(io, raw)?;
+    let (line, got_newline) = read_line(shell, io, raw)?;
     let ifs = shell.vars.get("IFS").unwrap_or(b" \t\n").to_vec();
     let mut assigned = Vec::new();
     if rest.is_empty() {
@@ -105,11 +105,11 @@ pub(super) fn read(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
 ///
 /// Unless `raw`, a backslash makes the next byte ordinary (it is marked as protected) and a
 /// backslash before a line ending joins the next line on.
-fn read_line(io: &Io, raw: bool) -> Result<(Vec<Char>, bool), Unwind> {
+fn read_line(shell: &Shell, io: &Io, raw: bool) -> Result<(Vec<Char>, bool), Unwind> {
     let mut line = Vec::new();
     let mut backslash = false;
     loop {
-        let Some(byte) = read_byte(io)? else {
+        let Some(byte) = read_byte(shell, io)? else {
             return Ok((line, false));
         };
         // dash ignores NUL bytes.
@@ -135,13 +135,13 @@ fn read_line(io: &Io, raw: bool) -> Result<(Vec<Char>, bool), Unwind> {
 }
 
 /// Reads one byte from descriptor 0, waiting in short steps so that Ctrl+C can interrupt.
-fn read_byte(io: &Io) -> Result<Option<u8>, Unwind> {
+fn read_byte(shell: &Shell, io: &Io) -> Result<Option<u8>, Unwind> {
     let Some(slot) = io.get(0) else {
         return Ok(None);
     };
     let mut byte = [0_u8; 1];
     loop {
-        if signals::interrupted() {
+        if shell.interrupted() {
             return Err(Unwind::Interrupted);
         }
         // A signal with a `trap` command ends the wait; the command runs after `read`.

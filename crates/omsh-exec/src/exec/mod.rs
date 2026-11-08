@@ -9,6 +9,7 @@
 //! function takes `return`, and the top of the line takes `exit`. A subshell, a pipeline stage
 //! and a `$(...)` are boundaries: nothing gets out of them but a status (see [`boundary`]).
 
+mod background;
 mod compound;
 mod pipeline;
 
@@ -108,11 +109,15 @@ impl Shell {
         // The files for the next command: `io`, changed by any `exec` so far.
         let mut local: Option<Io> = None;
         for item in &list.items {
-            if signals::interrupted() {
+            if self.interrupted() {
                 return Err(Unwind::Interrupted);
             }
             self.run_pending_traps(local.as_ref().unwrap_or(io))?;
-            status = self.run_and_or(&item.and_or, local.as_ref().unwrap_or(io))?;
+            status = if item.background {
+                self.run_background(item, local.as_ref().unwrap_or(io))?
+            } else {
+                self.run_and_or(&item.and_or, local.as_ref().unwrap_or(io))?
+            };
             self.follow_fd_changes(io, &mut local);
             self.run_pending_traps(local.as_ref().unwrap_or(io))?;
         }
@@ -287,7 +292,7 @@ impl Shell {
         self.cmdsub_status = None;
         let words = self.expand_words(&simple.words, io)?;
         // Ctrl+C during a `$(...)` leaves the words incomplete: do not run the command.
-        if signals::interrupted() {
+        if self.interrupted() {
             return Err(Unwind::Interrupted);
         }
         let (words, via_command) = self.strip_command(words);
@@ -449,9 +454,12 @@ impl Shell {
     fn call_function(&mut self, function: &FunctionDef, args: &[Vec<u8>], io: &Io) -> Flow {
         self.enter(io)?;
         let saved = std::mem::replace(&mut self.positional, args.to_vec());
+        // The spans in the body index the line that defined the function, not this one.
+        let saved_source = self.source.take();
         self.func_depth += 1;
         let result = self.run_command(&function.body, io);
         self.func_depth -= 1;
+        self.source = saved_source;
         self.positional = saved;
         self.depth -= 1;
         match result {
@@ -501,7 +509,9 @@ impl Shell {
             envp: self.vars.envp(&[]),
             cwd,
             umask: self.umask_override,
-            ignored: self.traps.ignored_mask() | signals::inherited_ignored(),
+            ignored: self.traps.ignored_mask()
+                | signals::inherited_ignored()
+                | self.job_ignored_signals(),
         })
     }
 
@@ -572,7 +582,11 @@ impl Shell {
                     ending,
                     Termination::Signaled { signal, .. } if signal == libc::SIGINT
                 );
-                if !self.job_control && signals::interrupted() && !died_of_it {
+                if !self.job_control
+                    && !self.in_background_job()
+                    && signals::interrupted()
+                    && !died_of_it
+                {
                     signals::clear_interrupt();
                 }
                 if let Some(line) = ending.describe(name) {

@@ -19,6 +19,8 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 
 use nix::errno::Errno;
+use nix::fcntl::{OFlag, open};
+use nix::sys::stat::Mode;
 
 /// An open file in a table. Several tables can hold the same file. It closes when the last
 /// one goes away. That is how the end of a pipe is closed: once no stage holds the write end,
@@ -63,6 +65,17 @@ impl Io {
     /// holds it.
     pub fn set(&mut self, fd: u32, slot: Slot) {
         self.slots.insert(fd, slot);
+    }
+
+    /// Makes descriptor 0 read from `/dev/null`, if that file can be opened.
+    pub fn null_stdin(&mut self) {
+        if let Ok(null) = open(
+            "/dev/null",
+            OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        ) {
+            self.set(0, Arc::new(null));
+        }
     }
 
     /// Closes `fd` for this command.

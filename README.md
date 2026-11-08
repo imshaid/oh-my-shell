@@ -10,8 +10,9 @@ and runs it: pipelines, redirections (including here-documents), `;` `&&` `||` `
 expansions: `~`, `$var` and `${var:-x}`, `$(...)`, `$((1+2))`, field splitting and globbing.
 The first builtins are there (`cd`, `pwd`, `export`, `unset`, `set --`, `shift`, `echo`,
 `eval`, `.`, `exit`, `return`, `break`, `continue`). In a terminal, each command runs in its own
-process group, so Ctrl+C stops the command and not the shell. Background jobs (`&`), `fg`/`bg`
-and stopped jobs are not there yet, and a line that needs a missing feature is refused whole.
+process group, so Ctrl+C stops the command and not the shell. A command that ends with `&` runs
+in the background, and `jobs`, `wait` and `kill %1` work with it. `fg`/`bg` and stopped foreground
+jobs (Ctrl+Z) are not there yet.
 Do not set it as your login shell.
 
 ## Build and run

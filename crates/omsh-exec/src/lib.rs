@@ -7,12 +7,13 @@
 //!
 //! Today it can run a whole line of the shell language with every kind of word expansion:
 //! pipelines, redirections, `&&` and `||`, compound commands, functions and the core builtins.
-//! [`Shell::run_source`] parses a line and runs it. Background jobs (S09) are still to come,
-//! and a line that needs them is refused whole by [`Shell::run`] before anything runs.
+//! [`Shell::run_source`] parses a line and runs it. A line that needs something not implemented
+//! yet is refused whole by [`Shell::run`] before anything runs (today nothing is refused).
 //!
 //! In an interactive shell each command is a *job*: a process group of its own that owns the
 //! terminal while it runs, so Ctrl+C stops the job and not the shell (see `jobs.rs` and
-//! `terminal.rs`).
+//! `terminal.rs`). A command that ends with `&` is a background job: it runs without the
+//! terminal and is listed in the job table (`jobtable.rs`), with `jobs`, `wait` and `kill`.
 
 mod alias;
 mod builtins;
@@ -21,6 +22,7 @@ mod exec;
 mod expand;
 mod io;
 mod jobs;
+mod jobtable;
 mod options;
 mod path;
 mod redirect;

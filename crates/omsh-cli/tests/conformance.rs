@@ -667,34 +667,30 @@ fn an_unfinished_line_at_the_end_of_input_is_an_error() -> io::Result<()> {
     Ok(())
 }
 
-/// A line that needs a feature that does not exist yet is refused as a whole: the commands
-/// before the unsupported one on the same line must not run either.
+/// A background job (S09a) runs while the shell goes on, and `wait` collects it.
 #[test]
-fn a_line_with_something_not_implemented_runs_nothing() -> io::Result<()> {
+fn a_background_job_runs_while_the_next_commands_go_on() -> io::Result<()> {
     let sandbox = Sandbox::new()?;
-    let out = sandbox.run(OMSH, b"touch marker; sleep 0 &\n")?;
-    assert!(
-        !sandbox.dir.join("marker").exists(),
-        "the first command ran"
+    let out = sandbox.run(
+        OMSH,
+        b"{ sleep 0.2; echo late; } &\necho first\nwait\necho second\n",
+    )?;
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "first\nlate\nsecond\n"
     );
-    assert!(out.stdout.is_empty());
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("background jobs cannot run yet"));
+    assert_eq!(out.status.code(), Some(0));
     Ok(())
 }
 
-/// Something this shell cannot run yet is refused wherever it is, also inside `$(...)`.
+/// A background job is a command like any other, also inside `$(...)`.
 #[test]
-fn something_not_implemented_inside_a_substitution_runs_nothing() -> io::Result<()> {
+fn a_background_job_inside_a_substitution_runs() -> io::Result<()> {
     let sandbox = Sandbox::new()?;
-    let out = sandbox.run(OMSH, b"touch marker; echo $(sleep 0 &)\n")?;
-    assert!(
-        !sandbox.dir.join("marker").exists(),
-        "the first command ran"
-    );
-    assert!(out.stdout.is_empty());
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("background jobs cannot run yet"));
+    let out = sandbox.run(OMSH, b"touch marker; echo $(echo hi & wait)\n")?;
+    assert!(sandbox.dir.join("marker").exists());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
+    assert_eq!(out.status.code(), Some(0));
     Ok(())
 }
 
@@ -1953,16 +1949,64 @@ fn a_program_inherits_no_stray_descriptors() -> io::Result<()> {
     Ok(())
 }
 
-/// The commands of a line that cannot run yet (a background job) are refused as a whole
-/// also when they are nested in a compound command or a function.
+/// A background job nested in a compound command runs as well.
 #[test]
-fn a_background_job_inside_a_compound_command_runs_nothing() -> io::Result<()> {
+fn a_background_job_inside_a_compound_command_runs() -> io::Result<()> {
     let sandbox = Sandbox::new()?;
-    let out = sandbox.run(OMSH, b"touch marker; if true; then sleep 0 & fi\n")?;
-    assert!(!sandbox.dir.join("marker").exists());
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("background jobs cannot run yet"));
+    let out = sandbox.run(OMSH, b"if true; then touch marker & wait; fi\n")?;
+    assert!(sandbox.dir.join("marker").exists());
+    assert_eq!(out.status.code(), Some(0));
     Ok(())
+}
+
+/// `wait` for a process that is not a child of the shell, or was already collected, gives 127
+/// and says so, as bash does. dash is silent, and for a pid it has already waited for it gives
+/// the old status again. Not compared with `/bin/sh` for that reason.
+#[test]
+fn waiting_for_a_pid_that_is_not_a_child_gives_127_and_a_message() -> io::Result<()> {
+    let sandbox = Sandbox::new()?;
+    let out = sandbox.run(OMSH, b"wait 99999\necho $?\n")?;
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "127\n");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a child of this shell"));
+
+    let out = sandbox.run(
+        OMSH,
+        b"sleep 0 & p=$!\nwait $p\necho $?\nwait $p\necho $?\n",
+    )?;
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n127\n");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not a child of this shell"));
+    Ok(())
+}
+
+/// Background jobs, `$!`, `wait` and `kill` (S09a). Only forms whose output does not depend on
+/// timing, and that dash reads the same way: dash's `jobs` listing is not compared. Each
+/// input waits for what it starts, so nothing outlives the test.
+#[test]
+fn background_jobs_behave_like_sh() -> io::Result<()> {
+    assert_all_same_in_fresh_directories(&[
+        "sleep 0 &\nwait\necho $?\n",
+        "sh -c 'exit 3' &\nwait $!\necho $?\n",
+        "sh -c 'exit 3' &\nwait\necho $?\n",
+        "sh -c 'exit 4' & sh -c 'exit 5' &\nwait $!\necho $?\n",
+        "{ sleep 0.1; echo a; } &\nwait\necho b\n",
+        "echo a & wait\necho b\n",
+        "sleep 5 &\nkill $!\nwait $!\necho $?\n",
+        "sleep 5 &\nkill -9 $!\nwait $!\necho $?\n",
+        "sleep 5 &\nkill -s TERM $!\nwait $!\necho $?\n",
+        // A background job does not read the script that follows it.
+        "cat &\nwait $!\necho $?\necho next\n",
+        // Ctrl+C and Ctrl+\\ are ignored by what a shell without job control puts in the background.
+        "sh -c 'kill -INT $$; echo alive' &\nwait\n",
+        "echo [$!]\n",
+        "x=1\n{ x=2; } &\nwait\necho $x\n",
+        "(sleep 0 &\nwait\necho in-sub)\necho out\n",
+        "sleep 0 | cat &\nwait\necho $?\n",
+        "sleep 0 && echo and-list &\nwait\n",
+        "f() { sleep 0; echo in-f; }\nf &\nwait\n",
+        "kill -l 15\nkill -l 9\n",
+        "kill -0 $$\necho $?\n",
+        "sleep 0 &\nwait\nwait\necho $?\n",
+    ])
 }
 
 /// Runs `shell` with standard input from `input` and the given signals ignored, as under

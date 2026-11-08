@@ -13,6 +13,7 @@ use crate::check::{NotYet, check_list};
 use crate::exec::Unwind;
 use crate::io::Io;
 use crate::jobs::Job;
+use crate::jobtable::Jobs;
 use crate::options::Options;
 use crate::path::PathCache;
 use crate::signals;
@@ -121,6 +122,13 @@ pub struct Shell {
     /// group and in the foreground with it, as in bash: the substitution is part of the
     /// command that is being expanded.
     pub(crate) no_new_jobs: bool,
+    /// The background jobs (`cmd &`). A copy of the shell starts with an empty table.
+    pub(crate) jobs: Arc<Jobs>,
+    /// `$!`: the process id of the first program of the last background job, if one started.
+    pub(crate) last_background: Option<u32>,
+    /// The text of the line being run, for the `jobs` listing. Spans in the tree index into
+    /// it. It is not set inside a function, whose spans index the line that defined it.
+    pub(crate) source: Option<Arc<str>>,
 }
 
 impl Default for Shell {
@@ -189,6 +197,9 @@ impl Shell {
             job_control: false,
             job: None,
             no_new_jobs: false,
+            jobs: Jobs::new(),
+            last_background: None,
+            source: None,
         }
     }
 
@@ -252,11 +263,32 @@ impl Shell {
         let mut copy = self.clone();
         copy.in_subshell = true;
         copy.fd_changes.clear();
+        // A subshell has no jobs of its own to list or wait for, as in bash.
+        copy.jobs = Jobs::new();
         copy.traps = self.traps.for_subshell();
         if copy.cwd_override.is_none() {
             copy.cwd_override = std::env::current_dir().ok();
         }
         copy
+    }
+
+    /// True if the commands being run should stop: the user pressed Ctrl+C, or, for the shell
+    /// code of a background job, someone sent it a signal with `kill`. A background job must
+    /// not read the Ctrl+C flag: Ctrl+C is meant for the foreground job.
+    pub(crate) fn interrupted(&self) -> bool {
+        match &self.job {
+            Some(job) if job.is_background() => job.is_cancelled(),
+            _ => signals::interrupted(),
+        }
+    }
+
+    /// Writes what happened to the background jobs since the last call: one line for each that
+    /// finished or stopped. Call it before showing a prompt. Each line is shown once, and a
+    /// finished job leaves the table.
+    pub fn job_notices(&self, io: &Io) {
+        for line in self.jobs.notices() {
+            io.say(line);
+        }
     }
 
     /// A path as the working directory of this shell sees it: a relative path is joined to
@@ -276,6 +308,7 @@ impl Shell {
     /// of `io`.
     pub fn run_source(&mut self, src: &str, at_end: bool, io: &mut Io) -> LineResult {
         let src = &*self.expand_aliases(src).into_owned();
+        self.source = Some(Arc::from(src));
         let list = match parse(src) {
             Ok(list) => list,
             Err(failure) => {
@@ -491,51 +524,5 @@ mod tests {
         let (result, _) = run(&mut sh, "fi");
         assert!(matches!(result, LineResult::Rejected(_)));
         assert_eq!(sh.last_status(), ExitStatus::USAGE);
-    }
-
-    #[test]
-    fn something_not_implemented_runs_nothing_at_all() {
-        let mut sh = shell();
-        // The first command would make `exit 9` end the shell if it ran.
-        let (result, _) = run(&mut sh, "exit 9; a &");
-        let LineResult::Rejected(report) = result else {
-            panic!("expected a rejection");
-        };
-        assert_eq!(report.message(), "background jobs cannot run yet");
-        assert_eq!(sh.last_status(), ExitStatus::USAGE);
-    }
-
-    #[test]
-    fn a_background_job_is_refused_wherever_it_is() {
-        for src in [
-            "a &",
-            "echo $(a &)",
-            "(a &)",
-            "{ a & }",
-            "if a; then b & fi",
-            "while a; do b & done",
-            "for i in 1; do b & done",
-            "case x in x) b & ;; esac",
-            "f() { a & }",
-            "echo >f$(a &)",
-            "cat <<EOF\n$(a &)\nEOF",
-            "a | b &",
-        ] {
-            let (result, _) = run(&mut shell(), src);
-            let LineResult::Rejected(report) = result else {
-                panic!("{src} should be rejected");
-            };
-            assert_eq!(report.message(), "background jobs cannot run yet", "{src}");
-        }
-    }
-
-    #[test]
-    fn the_report_points_at_the_unsupported_part() {
-        let (result, _) = run(&mut shell(), "echo ok; a &");
-        let LineResult::Rejected(report) = result else {
-            panic!("expected a rejection");
-        };
-        let span = report.span();
-        assert_eq!((span.start, span.end), (9, 12));
     }
 }

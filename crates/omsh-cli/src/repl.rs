@@ -70,6 +70,10 @@ fn run_on(mut input: impl Read, interactive: bool, job_control: bool, style: Sty
     let mut pending = String::new();
     loop {
         if interactive {
+            if pending.is_empty() {
+                // What happened to the background jobs since the last prompt.
+                shell.job_notices(&files);
+            }
             prompt(if pending.is_empty() {
                 PROMPT
             } else {
