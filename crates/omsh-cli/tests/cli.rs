@@ -1,10 +1,18 @@
 //! Runs the real `oh-my-shell` binary and checks what a user would see.
 
-use std::fs::OpenOptions;
+use std::ffi::OsString;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_oh-my-shell");
+
+/// Runs the shell's own interpreter on piped input; without it, piped input goes to `/bin/sh`.
+const OWN: &str = "--interpret-stdin";
 
 fn oh_my_shell(args: &[&str]) -> io::Result<Output> {
     Command::new(BINARY).args(args).output()
@@ -39,6 +47,7 @@ fn help_flag_prints_usage_and_options() -> io::Result<()> {
 /// Runs the shell with `input` on standard input.
 fn with_input(input: &[u8]) -> io::Result<Output> {
     let mut child = Command::new(BINARY)
+        .arg(OWN)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -79,6 +88,7 @@ fn unwritable_stderr_does_not_cause_a_panic() -> io::Result<()> {
     let stderr = OpenOptions::new().write(true).open("/dev/full")?;
 
     let mut child = Command::new(BINARY)
+        .arg(OWN)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(stderr)
@@ -101,5 +111,316 @@ fn unknown_flag_is_rejected_with_a_usage_error() -> io::Result<()> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--no-such-flag"));
     assert!(stderr.contains("Usage: oh-my-shell"));
+    Ok(())
+}
+
+// Invocation modes (S11, blueprint §8). `-c`, a script and piped input are run by `/bin/sh`.
+
+/// A scratch directory, removed at the end of the test.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> io::Result<Self> {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("modes-{}-{n}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The shell with a small fixed environment, `home` as `HOME` and `input` on standard input.
+fn run_in(home: &Path, args: &[OsString], input: &[u8]) -> io::Result<Output> {
+    let mut child = Command::new(BINARY)
+        .args(args)
+        .current_dir(home)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input);
+    }
+    child.wait_with_output()
+}
+
+fn args(list: &[&str]) -> Vec<OsString> {
+    list.iter().map(OsString::from).collect()
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn dash_c_runs_the_command_with_a_name_and_arguments() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let out = run_in(
+        home.path(),
+        &args(&["-c", "echo \"$0|$1|$2\"", "zero", "one", "two"]),
+        b"",
+    )?;
+
+    assert_eq!(stdout(&out), "zero|one|two\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
+fn dash_c_passes_the_exit_status_through() -> io::Result<()> {
+    let home = Scratch::new()?;
+    for (command, status) in [("exit 7", 7), ("nosuchcmd_omsh", 127), ("false", 1)] {
+        let out = run_in(home.path(), &args(&["-c", command]), b"")?;
+        assert_eq!(out.status.code(), Some(status), "{command}");
+    }
+    Ok(())
+}
+
+#[test]
+fn dash_c_without_a_command_is_a_usage_error() -> io::Result<()> {
+    let out = oh_my_shell(&["-c"])?;
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("-c"));
+    Ok(())
+}
+
+#[test]
+fn a_hyphen_after_the_command_is_an_argument_of_sh() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let out = run_in(home.path(), &args(&["-c", "echo $0 $1", "-x", "a"]), b"")?;
+
+    assert_eq!(stdout(&out), "-x a\n");
+    Ok(())
+}
+
+#[test]
+fn a_script_runs_with_its_arguments() -> io::Result<()> {
+    let home = Scratch::new()?;
+    fs::write(home.path().join("s.sh"), "echo \"$#:$1:$2\"\nexit 4\n")?;
+    let out = run_in(home.path(), &args(&["s.sh", "a", "b c"]), b"")?;
+
+    assert_eq!(stdout(&out), "2:a:b c\n");
+    assert_eq!(out.status.code(), Some(4));
+    Ok(())
+}
+
+#[test]
+fn piped_input_without_arguments_is_run_by_sh() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let out = run_in(home.path(), &[], b"echo piped-$0\nexit 3\n")?;
+
+    // `sh` is the name `/bin/sh` was started under: this shell handed the input over.
+    assert_eq!(stdout(&out), "piped-sh\n");
+    assert_eq!(out.status.code(), Some(3));
+    assert!(out.stderr.is_empty());
+    Ok(())
+}
+
+/// `-c` must replace the process and not start a second one: ssh, cron and editors look at the
+/// process they started.
+#[test]
+fn dash_c_replaces_the_process_with_bin_sh() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let child = Command::new(BINARY)
+        .args(["-c", "echo $$; readlink /proc/$$/exe"])
+        .current_dir(home.path())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pid = child.id();
+    let out = child.wait_with_output()?;
+
+    let text = stdout(&out);
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some(pid.to_string().as_str()));
+    let sh = fs::canonicalize("/bin/sh")?;
+    assert_eq!(lines.next(), Some(sh.to_string_lossy().as_ref()));
+    Ok(())
+}
+
+/// A nested shell must not change `SHLVL` when it only hands the work over.
+#[test]
+fn dash_c_leaves_shlvl_alone() -> io::Result<()> {
+    let out = Command::new(BINARY)
+        .args(["-c", "echo ${SHLVL-unset}"])
+        .env_clear()
+        .env("SHLVL", "5")
+        .output()?;
+
+    assert_eq!(stdout(&out), "5\n");
+    Ok(())
+}
+
+#[test]
+fn an_argument_that_is_not_utf8_reaches_the_command_unchanged() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let odd = OsString::from_vec(vec![b'a', 0xff, b'b']);
+    let out = run_in(
+        home.path(),
+        &[
+            OsString::from("-c"),
+            OsString::from("printf %s \"$1\""),
+            OsString::from("zero"),
+            odd,
+        ],
+        b"",
+    )?;
+
+    assert_eq!(out.stdout, [b'a', 0xff, b'b']);
+    Ok(())
+}
+
+/// Done-when: `-c` reads no config and writes nothing. A home directory with a broken
+/// `config.toml` and an `init.omsh` that would create a file must stay as it was, and stderr
+/// must stay empty, in all three ways of handing work to `/bin/sh`.
+#[test]
+fn the_handed_over_modes_read_no_configuration_and_touch_nothing() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let config = home.path().join(".config/oh-my-shell");
+    fs::create_dir_all(&config)?;
+    fs::write(config.join("config.toml"), "this is [not toml\n")?;
+    fs::write(
+        config.join("init.omsh"),
+        format!(
+            "touch {}/marker\nexport FROM_INIT=1\n",
+            home.path().display()
+        ),
+    )?;
+    fs::write(home.path().join("s.sh"), "echo ${FROM_INIT-none}\n")?;
+    let before = listing(home.path())?;
+
+    let by_c = run_in(home.path(), &args(&["-c", "echo ${FROM_INIT-none}"]), b"")?;
+    let by_script = run_in(home.path(), &args(&["s.sh"]), b"")?;
+    let by_pipe = run_in(home.path(), &[], b"echo ${FROM_INIT-none}\n")?;
+
+    for (what, out) in [("-c", by_c), ("script", by_script), ("pipe", by_pipe)] {
+        assert_eq!(stdout(&out), "none\n", "{what}");
+        assert!(out.stderr.is_empty(), "{what}: {:?}", out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{what}");
+    }
+    assert!(!home.path().join("marker").exists());
+    assert_eq!(listing(home.path())?, before);
+    Ok(())
+}
+
+/// Every path below `dir`, sorted, with its size.
+fn listing(dir: &Path) -> io::Result<Vec<(PathBuf, u64)>> {
+    let mut found = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(next) = todo.pop() {
+        for entry in fs::read_dir(&next)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                todo.push(entry.path());
+            }
+            found.push((entry.path(), meta.len()));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+#[test]
+fn a_login_shell_with_dash_c_reads_the_profile() -> io::Result<()> {
+    let home = Scratch::new()?;
+    fs::write(
+        home.path().join(".profile"),
+        "FROM_PROFILE=yes\nexport FROM_PROFILE\n",
+    )?;
+
+    let out = run_in(
+        home.path(),
+        &args(&["-lc", "echo ${FROM_PROFILE-missing}"]),
+        b"",
+    )?;
+    assert_eq!(stdout(&out), "yes\n");
+
+    // Without `-l` the profile is not read.
+    let plain = run_in(
+        home.path(),
+        &args(&["-c", "echo ${FROM_PROFILE-missing}"]),
+        b"",
+    )?;
+    assert_eq!(stdout(&plain), "missing\n");
+    Ok(())
+}
+
+/// How `sshd`, `login` and `su -` mark a login shell: a program name that starts with `-`.
+#[test]
+fn a_program_name_that_starts_with_a_hyphen_is_a_login() -> io::Result<()> {
+    let home = Scratch::new()?;
+    fs::write(
+        home.path().join(".profile"),
+        "FROM_PROFILE=yes\nexport FROM_PROFILE\n",
+    )?;
+    let out = Command::new(BINARY)
+        .arg0("-oh-my-shell")
+        .arg("-c")
+        .arg("echo ${FROM_PROFILE-missing}")
+        .current_dir(home.path())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home.path())
+        .output()?;
+
+    assert_eq!(stdout(&out), "yes\n");
+    Ok(())
+}
+
+#[test]
+fn dash_i_runs_the_shells_own_loop_on_piped_input() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let out = run_in(home.path(), &args(&["-i"]), b"echo own-$0\n")?;
+
+    // Our interpreter: the fixed name, and the prompt on stderr.
+    assert_eq!(stdout(&out), "own-oh-my-shell\n");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("$ "));
+    Ok(())
+}
+
+#[test]
+fn no_ai_is_accepted_in_every_mode() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let by_c = run_in(home.path(), &args(&["--no-ai", "-c", "echo c"]), b"")?;
+    let by_pipe = run_in(home.path(), &args(&["--no-ai"]), b"echo p\n")?;
+    let own = run_in(home.path(), &args(&["--no-ai", "-i"]), b"echo i\n")?;
+
+    assert_eq!(stdout(&by_c), "c\n");
+    assert_eq!(stdout(&by_pipe), "p\n");
+    assert_eq!(stdout(&own), "i\n");
+    Ok(())
+}
+
+#[test]
+fn the_hidden_switch_is_not_in_the_help() -> io::Result<()> {
+    let out = oh_my_shell(&["--help"])?;
+    let text = stdout(&out);
+
+    assert!(!text.contains("interpret-stdin"));
+    assert!(text.contains("--login"));
+    assert!(text.contains("--no-ai"));
     Ok(())
 }

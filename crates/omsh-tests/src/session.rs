@@ -10,7 +10,7 @@
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::AsFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -83,6 +83,26 @@ impl Launch {
         self
     }
 
+    /// Starts the program under the name `-oh-my-shell`, as `login`, `sshd` and `su -` start a
+    /// login shell. The program's argument zero is what the caller passed to `execvp`, so this
+    /// makes a symbolic link with that name in `dir`, puts `dir` first in `PATH` and runs the
+    /// link. `dir` must exist and stay until the session ends.
+    pub fn as_login(mut self, dir: &Path) -> io::Result<Self> {
+        let name = "-oh-my-shell";
+        let link = dir.join(name);
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(std::fs::canonicalize(&self.bin)?, &link)?;
+        let path = self
+            .env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map_or("/usr/bin:/bin", |(_, v)| v.as_str())
+            .to_owned();
+        self = self.env("PATH", &format!("{}:{path}", dir.display()));
+        self.bin = name.to_owned();
+        Ok(self)
+    }
+
     /// Sets (or replaces) an environment variable. The environment starts with only `PATH`,
     /// `HOME`, `LANG` and `TERM`.
     pub fn env(mut self, key: &str, value: &str) -> Self {
@@ -120,6 +140,10 @@ impl Launch {
                 "-c",
                 "\"$0\" \"$@\"; echo parent-saw-$?; read _ack; echo parent-read-ok",
             ]);
+        }
+        if self.bin.starts_with('-') && !self.under_sh {
+            // Otherwise `setsid` would read the program name as one of its own options.
+            command.arg("--");
         }
         command.arg(&self.bin).args(&self.args);
         command

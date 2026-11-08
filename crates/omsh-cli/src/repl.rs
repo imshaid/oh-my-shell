@@ -3,9 +3,11 @@
 //! This is a plain line reader for now: no editing, history or completion (S13 adds the
 //! editor). It reads standard input and runs what it finds.
 
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
 
 use omsh_exec::{
     ExitStatus, Io, LineResult, Outcome, Shell, hung_up, note_inherited_signals, release_terminal,
@@ -17,12 +19,26 @@ use crate::report::{self, Style};
 const PROMPT: &str = "$ ";
 const CONTINUATION_PROMPT: &str = "> ";
 
-/// Runs the shell on standard input until it ends, and returns the exit status.
-pub fn run() -> ExitStatus {
+/// How the shell was asked to run (see `choose` in `lib.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// A person is typing the commands: prompts, notices, Ctrl+C survival. Set for a
+    /// terminal and by `-i`.
+    pub interactive: bool,
+    /// A login shell: import the login environment before the first prompt.
+    pub login: bool,
+    /// `--no-ai`. The AI layer does not exist yet (S20), so nothing reads this.
+    pub no_ai: bool,
+}
+
+/// Runs the shell on standard input until it ends, and returns the exit status. `name` is the
+/// name the shell was started under, when `$0` should show it (a login shell: `-oh-my-shell`).
+pub fn run(options: Options, name: Option<&OsStr>) -> ExitStatus {
     // Before anything changes a signal setting: what was ignored at the start stays ignored.
     note_inherited_signals();
-    let interactive = io::stdin().is_terminal();
-    let job_control = if interactive {
+    let interactive = options.interactive;
+    // Job control needs a real terminal; `-i` on a pipe still prompts but has none.
+    let job_control = if interactive && io::stdin().is_terminal() {
         match start_interactive() {
             Ok(()) => true,
             Err(reason) => {
@@ -43,7 +59,7 @@ pub fn run() -> ExitStatus {
             return ExitStatus(1);
         }
     };
-    let status = run_on(input, interactive, job_control, Style::detect());
+    let status = run_on(input, options, job_control, name, Style::detect());
     // Give the terminal back to the program that started the shell.
     release_terminal();
     status
@@ -60,12 +76,26 @@ fn stdin_without_buffer() -> io::Result<File> {
     Ok(File::from(io::stdin().as_fd().try_clone_to_owned()?))
 }
 
-fn run_on(mut input: impl Read, interactive: bool, job_control: bool, style: Style) -> ExitStatus {
+fn run_on(
+    mut input: impl Read,
+    options: Options,
+    job_control: bool,
+    name: Option<&OsStr>,
+    style: Style,
+) -> ExitStatus {
+    let interactive = options.interactive;
     let mut shell = Shell::new();
     shell.set_interactive(interactive);
     shell.set_job_control(job_control);
+    if let Some(name) = name {
+        shell.set_name(name.as_bytes());
+    }
     // The files that commands start with: this process's standard input, output and error.
     let mut files = Io::process();
+    if options.login {
+        // The profile files are in `sh` syntax, so `/bin/sh` reads them (see `omsh-exec`).
+        shell.import_login_environment(&files);
+    }
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     loop {

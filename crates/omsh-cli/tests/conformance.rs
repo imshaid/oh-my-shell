@@ -17,6 +17,10 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const OMSH: &str = env!("CARGO_BIN_EXE_oh-my-shell");
+
+/// Piped input goes to `/bin/sh` unless this switch asks for the shell's own interpreter. These
+/// tests are about that interpreter, so every run of `OMSH` gets the switch.
+const OWN: &str = "--interpret-stdin";
 const TARGET_TMP: &str = env!("CARGO_TARGET_TMPDIR");
 
 /// A scratch directory with a few files to run, removed at the end of the test.
@@ -74,9 +78,12 @@ impl Sandbox {
     /// Runs `program` in the sandbox with a fixed environment and `input` on standard input.
     fn run(&self, program: &str, input: &[u8]) -> io::Result<Output> {
         let path = format!("{}:/usr/bin:/bin", self.dir.join("bin").display());
-        let mut child = Command::new("timeout")
-            .arg("10")
-            .arg(program)
+        let mut command = Command::new("timeout");
+        command.arg("10").arg(program);
+        if program == OMSH {
+            command.arg(OWN);
+        }
+        let mut child = command
             .current_dir(&self.dir)
             .env_clear()
             .env("PATH", path)
@@ -851,6 +858,7 @@ fn a_program_reads_the_input_that_follows_its_line() -> io::Result<()> {
     let out = Command::new("timeout")
         .arg("10")
         .arg(OMSH)
+        .arg(OWN)
         .current_dir(&sandbox.dir)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -2012,9 +2020,11 @@ fn background_jobs_behave_like_sh() -> io::Result<()> {
 /// Runs `shell` with standard input from `input` and the given signals ignored, as under
 /// `nohup` or a background `&`. A signal that is ignored when a program starts stays ignored.
 fn run_with_ignored(shell: &str, ignored: &str, input: &str) -> io::Result<Output> {
-    let script = format!("trap '' {ignored}; exec \"$0\"");
+    let script = format!("trap '' {ignored}; exec \"$0\" \"$@\"");
+    let own: &[&str] = if shell == OMSH { &[OWN] } else { &[] };
     let mut child = Command::new("/bin/sh")
         .args(["-c", &script, shell])
+        .args(own)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

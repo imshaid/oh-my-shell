@@ -243,6 +243,11 @@ impl Shell {
         }
     }
 
+    /// Sets `$0`: the name the shell was started under (`-oh-my-shell` for a login shell).
+    pub fn set_name(&mut self, name: &[u8]) {
+        self.name = name.to_vec();
+    }
+
     /// Says whether a person is typing the commands. This only changes what `$-` shows.
     pub const fn set_interactive(&mut self, interactive: bool) {
         self.interactive = interactive;

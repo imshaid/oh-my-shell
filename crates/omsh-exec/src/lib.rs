@@ -23,6 +23,7 @@ mod expand;
 mod io;
 mod jobs;
 mod jobtable;
+mod login;
 mod options;
 mod path;
 mod redirect;

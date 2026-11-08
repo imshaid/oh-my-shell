@@ -14,7 +14,12 @@ process group, so Ctrl+C stops the command and not the shell. A command that end
 in the background, and `jobs`, `wait` and `kill %1` work with it. Ctrl+Z stops the foreground
 job and keeps it in the job table; `fg` and `bg` continue it, `disown` forgets it, and `exit` warns
 once about stopped jobs.
-Do not set it as your login shell.
+How it is started decides what runs: `oh-my-shell -c 'cmd'`, `oh-my-shell script.sh` and input
+from a pipe are handed to `/bin/sh` at once (so `ssh host cmd` and `scp` work with it as a
+login shell), and only a terminal (or `-i`) gets the shell's own interpreter. `-l`, or a name that
+starts with `-`, makes a login shell that imports the environment from `/etc/profile` and
+`~/.profile` through `/bin/sh -l`. `--no-ai` is accepted and does nothing yet.
+Do not set it as your login shell yet.
 
 ## Build and run
 
