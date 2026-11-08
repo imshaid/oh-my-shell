@@ -35,8 +35,9 @@ fn a_broken_config_still_starts_with_the_defaults_and_a_clear_error() {
             "config.toml",
             "[ui]\nicons = \"unicode\"\nmotion = \"fast\"\n\n[history]\nsize = \"lots\"\n\n[editor\nmode = \"vi\"\n",
         )?;
-        // `start` waits for the first prompt: the shell did start.
-        let mut term = ctx.start()?;
+        // The plain reader (`dumb`): `start` waits for the first prompt, `$ `. The editor's own
+        // test of a broken file is in `editor.rs`.
+        let mut term = ctx.launch().dumb().start()?;
         let shown = term.transcript().to_owned();
         let name = file.display();
         assert!(

@@ -167,7 +167,10 @@ fn pipes_redirections_and_here_documents_work_at_the_prompt() {
 fn read_takes_a_line_from_the_keyboard() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("read word")?;
+        // Type `hello` only when `read` is waiting for it. Keys typed before that belong to the
+        // line editor (it reads what is already queued), not to the command.
+        term.line("printf 'ready>'; read word")?;
+        term.expect("ready>", SHORT);
         term.line("hello")?;
         term.line("echo r-$word")?;
         term.expect("r-hello", SHORT);

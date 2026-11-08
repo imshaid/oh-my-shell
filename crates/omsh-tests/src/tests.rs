@@ -152,3 +152,20 @@ fn the_settings_of_the_terminal_can_be_read() {
         Ok(())
     });
 }
+
+#[test]
+fn escape_sequences_are_stripped_and_positions_kept() {
+    use crate::session::strip_escapes;
+    let text = "a\x1b[31mb\x1b[0m \x1b7c\x1b[1;78H\x1b8é";
+    let (plain, origin) = strip_escapes(text);
+    assert_eq!(plain, "ab cé");
+    assert_eq!(plain.len(), origin.len());
+    // Each kept byte points back at itself in the original.
+    for (i, &at) in origin.iter().enumerate() {
+        assert_eq!(text.as_bytes()[at], plain.as_bytes()[i]);
+    }
+    assert_eq!(strip_escapes("no escapes").0, "no escapes");
+    // A sequence cut off at the end of the output does not panic.
+    assert_eq!(strip_escapes("x\x1b[3").0, "x");
+    assert_eq!(strip_escapes("x\x1b").0, "x");
+}

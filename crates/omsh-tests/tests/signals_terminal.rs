@@ -118,47 +118,86 @@ fn the_shell_and_each_job_have_their_own_group_and_the_terminal_follows() {
     });
 }
 
+/// Starts `sleep <seconds>`, waits until it runs, and returns the terminal's settings while it
+/// does. At the prompt the line editor holds the terminal in raw mode, so the settings the
+/// shell keeps between commands can only be seen while a command runs. Then it kills the
+/// `sleep` and waits for the prompt.
+fn settings_while_a_command_runs(term: &mut Session, seconds: u32) -> std::io::Result<Termios> {
+    term.line(&format!("sleep {seconds}"))?;
+    let end = std::time::Instant::now() + SHORT;
+    while term.in_session("sleep").is_empty() {
+        assert!(std::time::Instant::now() < end, "{}", term.transcript());
+        term.pump(Duration::from_millis(20));
+    }
+    let settings = term.termios()?;
+    for pid in term.in_session("sleep") {
+        kill(pid, Signal::SIGKILL)?;
+    }
+    term.sync(&format!("after-sleep-{seconds}"))?;
+    Ok(settings)
+}
+
 /// A full-screen program turns off line editing and echo. If it is killed it cannot put them
 /// back, so the shell does.
+///
+/// The settings are read while a plain `sleep` runs, before and after the damage. If the shell
+/// did not restore them, the line editor would save the damaged settings when it enters raw
+/// mode and put them back before the next command, and the second reading would show them.
 #[test]
 fn the_terminal_settings_come_back_after_a_killed_full_screen_program() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        let before: Termios = term.termios()?;
+        let before = settings_while_a_command_runs(&mut term, 31)?;
         assert!(
             before
                 .local_flags
-                .contains(LocalFlags::ICANON | LocalFlags::ECHO)
+                .contains(LocalFlags::ICANON | LocalFlags::ECHO),
+            "{}",
+            term.transcript()
         );
 
-        term.line("sh -c 'stty raw -echo; exec sleep 30'")?;
-        // Proof that the program really changed them.
+        term.line("sh -c 'stty raw -echo; exec sleep 32'")?;
+        // `sleep` replaces the `sh` after `stty` ran, so once it exists the damage is done.
+        // (The prompt is no proof: the line editor keeps the terminal raw there.)
         let end = std::time::Instant::now() + SHORT;
-        while term.termios()?.local_flags.contains(LocalFlags::ICANON) {
+        while term.in_session("sleep").is_empty() {
             assert!(std::time::Instant::now() < end, "{}", term.transcript());
             term.pump(Duration::from_millis(20));
         }
+        let damaged = term.termios()?;
+        assert!(
+            !damaged
+                .local_flags
+                .contains(LocalFlags::ICANON | LocalFlags::ECHO),
+            "{}",
+            term.transcript()
+        );
         let sleep = term.in_session("sleep");
         assert_eq!(sleep.len(), 1, "{}", term.transcript());
         kill(sleep[0], Signal::SIGKILL)?;
-
         term.sync("restored")?;
-        assert_eq!(term.termios()?, before, "{}", term.transcript());
+
+        let after = settings_while_a_command_runs(&mut term, 33)?;
+        assert_eq!(after, before, "{}", term.transcript());
         term.quit()
     });
 }
 
-/// A program that ends normally leaves the settings it chose: `stty -echo` still works.
+/// A program that ends normally leaves the settings it chose: `stty -echo` still works. (The
+/// line editor puts back the settings it found when it leaves raw mode, so this also checks
+/// that it does not undo `stty` with an older copy.)
 #[test]
 fn settings_chosen_by_a_program_that_ends_normally_are_kept() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
         term.line("stty -echo")?;
         term.sync("quiet")?;
-        assert!(!term.termios()?.local_flags.contains(LocalFlags::ECHO));
+        let quiet = settings_while_a_command_runs(&mut term, 34)?;
+        assert!(!quiet.local_flags.contains(LocalFlags::ECHO));
         term.line("stty echo")?;
         term.sync("loud")?;
-        assert!(term.termios()?.local_flags.contains(LocalFlags::ECHO));
+        let loud = settings_while_a_command_runs(&mut term, 35)?;
+        assert!(loud.local_flags.contains(LocalFlags::ECHO));
         term.quit()
     });
 }

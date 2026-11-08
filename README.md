@@ -25,6 +25,14 @@ commands in the shell's own language for aliases, exports and functions. The `XD
 respected. A mistake in `config.toml` never stops the shell: it is shown with its line and column, and
 the setting keeps its default. `--no-config` skips both files and writes nothing; it is the way back in
 when `init.omsh` is broken (an `exit` in it ends the shell).
+On a terminal that takes escape codes, lines are typed in a line editor: arrow keys, Home/End,
+Ctrl+A/E/K/W/U, Ctrl+R for history search, up and down to recall earlier commands of the session
+(a line that starts with a space is not remembered), and `editor.mode = "vi"` in `config.toml` for
+vi keys. Enter waits for an unfinished command (an open quote, `if` without `fi`, a trailing `\`,
+a here-document) and the next line becomes part of it. The prompt shows the directory, the git branch
+and a virtual environment on the left, and a failed status and a command that took over two seconds on
+the right (`[prompt]` in `config.toml` picks the pieces). With `TERM=dumb`, an empty `TERM`, or inside
+Emacs the shell reads plain lines instead. History is not saved between sessions yet.
 Do not set it as your login shell yet.
 
 ## Build and run

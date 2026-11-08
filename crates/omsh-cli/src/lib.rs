@@ -18,6 +18,10 @@
 //! The interactive shell reads `~/.config/oh-my-shell/config.toml` (created with comments on
 //! the first run) and runs `init.omsh` before the first prompt; `--no-config` skips both.
 //!
+//! At a terminal that takes escape codes (`TERM` set and not `dumb`, not inside Emacs, stdin and
+//! stderr both terminals) lines come from the editor of `omsh-editor`; otherwise from the plain
+//! line reader in `repl.rs`.
+//!
 //! `--interpret-stdin` is a hidden switch for the tests: it runs this shell's interpreter on
 //! piped input, which would otherwise go to `/bin/sh`.
 

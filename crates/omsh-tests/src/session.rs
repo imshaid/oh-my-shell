@@ -18,12 +18,17 @@ use std::time::{Duration, Instant};
 
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::pty::openpty;
+use nix::pty::{Winsize, openpty};
 use nix::sys::signal::{Signal, kill};
 use nix::sys::termios::{Termios, tcgetattr};
 use nix::unistd::{Pid, tcgetpgrp};
 
 use crate::procfs::{self, Member};
+
+/// Held from opening a terminal until the program is started and the descriptors are closed
+/// again, so that a program that another test starts at the same time cannot inherit this
+/// test's terminal.
+static START: Mutex<()> = Mutex::new(());
 
 /// How long to wait for something the shell should do at once.
 pub const SHORT: Duration = Duration::from_secs(10);
@@ -41,7 +46,22 @@ pub struct Launch {
     env: Vec<(String, String)>,
     cwd: Option<PathBuf>,
     registry: Option<Registry>,
+    answer_cursor_queries: bool,
 }
+
+/// The terminal asks where its cursor is with this; the answer is `ESC [ row ; column R`.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+/// What the test terminal answers. It does not draw anything, so the cursor is always "at the
+/// top left"; the editor only needs *an* answer.
+const CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
+
+/// The window of the test terminal. The editor lays the prompt out for it.
+const WINDOW: Winsize = Winsize {
+    ws_row: 24,
+    ws_col: 80,
+    ws_xpixel: 0,
+    ws_ypixel: 0,
+};
 
 impl Launch {
     pub fn new(bin: &str) -> Self {
@@ -53,11 +73,27 @@ impl Launch {
                 ("PATH".into(), "/usr/bin:/bin".into()),
                 ("HOME".into(), "/tmp".into()),
                 ("LANG".into(), "C".into()),
-                ("TERM".into(), "dumb".into()),
+                // A terminal that takes escape codes, so the shell uses its line editor. Colors
+                // are off to keep the transcript readable; a test that wants them removes this.
+                ("TERM".into(), "xterm-256color".into()),
+                ("NO_COLOR".into(), "1".into()),
             ],
             cwd: None,
             registry: None,
+            answer_cursor_queries: true,
         }
+    }
+
+    /// Starts with `TERM=dumb`: the shell uses its plain line reader, with no escape codes.
+    pub fn dumb(self) -> Self {
+        self.env("TERM", "dumb")
+    }
+
+    /// The terminal never answers the editor's "where is the cursor?" question, like a terminal
+    /// that does not support it.
+    pub fn no_cursor_replies(mut self) -> Self {
+        self.answer_cursor_queries = false;
+        self
     }
 
     pub(crate) fn registered(mut self, registry: Registry) -> Self {
@@ -103,6 +139,20 @@ impl Launch {
         Ok(self)
     }
 
+    /// Starts the program with `SIGHUP` ignored, as `nohup` does. (`sh` ignores it and then
+    /// replaces itself with the program, and an ignored signal stays ignored.)
+    pub fn with_hangup_ignored(mut self) -> Self {
+        let mut args = vec![
+            "-c".to_owned(),
+            "trap '' HUP; exec \"$0\" \"$@\"".to_owned(),
+            self.bin.clone(),
+        ];
+        args.append(&mut self.args);
+        self.args = args;
+        "sh".clone_into(&mut self.bin);
+        self
+    }
+
     /// Sets `HOME` to `dir`. The shell writes its first-run `config.toml` under the home
     /// directory, so a test must not use a real one.
     pub fn home(self, dir: &Path) -> Self {
@@ -110,7 +160,7 @@ impl Launch {
     }
 
     /// Sets (or replaces) an environment variable. The environment starts with only `PATH`,
-    /// `HOME`, `LANG` and `TERM`. The three `XDG_*_HOME` variables are not in it: unless a
+    /// `HOME`, `LANG`, `TERM` and `NO_COLOR`. The three `XDG_*_HOME` variables are not in it: unless a
     /// test sets them, they are made from `HOME` when the program starts, so the shell's
     /// files always land under the home the test chose.
     pub fn env(mut self, key: &str, value: &str) -> Self {
@@ -133,9 +183,13 @@ impl Launch {
 
     /// Starts the program and does not wait for anything: for programs that are not the shell.
     pub fn start_raw(self) -> io::Result<Session> {
-        let pty = openpty(None, None).map_err(io::Error::from)?;
+        let _starting = START.lock().unwrap_or_else(PoisonError::into_inner);
+        let pty = openpty(Some(&WINDOW), None).map_err(io::Error::from)?;
         // The program must not inherit the master side, or the terminal would never hang up.
+        // Nor may it inherit a second copy of the slave side: it gets the slave as 0, 1 and 2
+        // (the copies made below are close-on-exec, and `dup2` in the child clears that flag).
         fcntl(&pty.master, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(io::Error::from)?;
+        fcntl(&pty.slave, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).map_err(io::Error::from)?;
         // Only our side is non-blocking (it is a separate open file from the slave).
         fcntl(&pty.master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).map_err(io::Error::from)?;
 
@@ -190,6 +244,8 @@ impl Launch {
             under_sh: self.under_sh,
             transcript: String::new(),
             cursor: 0,
+            answer_cursor_queries: self.answer_cursor_queries,
+            scanned: 0,
         })
     }
 }
@@ -202,6 +258,9 @@ pub struct Session {
     transcript: String,
     /// Where the next search starts, so that old text cannot match.
     cursor: usize,
+    answer_cursor_queries: bool,
+    /// How much of the transcript has been searched for cursor queries.
+    scanned: usize,
 }
 
 impl Session {
@@ -262,9 +321,11 @@ impl Session {
             let mut fds = [PollFd::new(self.master.as_fd(), PollFlags::POLLIN)];
             if poll(&mut fds, step).is_ok_and(|n| n > 0) {
                 match self.master.read(&mut buffer) {
-                    Ok(n) if n > 0 => self
-                        .transcript
-                        .push_str(&String::from_utf8_lossy(&buffer[..n])),
+                    Ok(n) if n > 0 => {
+                        self.transcript
+                            .push_str(&String::from_utf8_lossy(&buffer[..n]));
+                        self.answer_cursor_queries();
+                    }
                     Err(e)
                         if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
                     // The other side hung up: nothing more will come. Poll would return at once
@@ -272,6 +333,46 @@ impl Session {
                     _ => thread::sleep(left.min(Duration::from_millis(10))),
                 }
             }
+        }
+    }
+
+    /// Answers each new "where is the cursor?" question in the output, as a terminal does.
+    fn answer_cursor_queries(&mut self) {
+        let bytes = self.transcript.as_bytes();
+        while let Some(at) = bytes[self.scanned..]
+            .windows(CURSOR_QUERY.len())
+            .position(|window| window == CURSOR_QUERY)
+        {
+            self.scanned += at + CURSOR_QUERY.len();
+            if self.answer_cursor_queries {
+                // Best effort: if the terminal is full, the question is asked again.
+                let _ = self.master.write(CURSOR_REPLY);
+            }
+        }
+        // A question may be cut in two reads: keep the last bytes for the next search.
+        self.scanned = self
+            .scanned
+            .max(bytes.len().saturating_sub(CURSOR_QUERY.len() - 1));
+    }
+
+    /// Like [`Session::expect`], but escape sequences in the output are ignored, so that a
+    /// prompt drawn in pieces (`~/dir ` + color change + `$ `) is found as the text the user
+    /// sees. The cursor moves to just after the match.
+    pub fn expect_plain(&mut self, needle: &str, limit: Duration) {
+        let end = Instant::now() + limit;
+        loop {
+            let (plain, origin) = strip_escapes(&self.transcript[self.cursor..]);
+            if let Some(at) = plain.find(needle) {
+                let last = at + needle.len() - 1;
+                self.cursor += origin[last] + 1;
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "never saw {needle:?} (ignoring escape sequences); the terminal showed:\n{}",
+                self.transcript
+            );
+            self.pump(Duration::from_millis(50));
         }
     }
 
@@ -300,10 +401,12 @@ impl Session {
         }
     }
 
-    /// Types `text` and a line ending.
+    /// Types `text` and presses Enter. The Enter key of a terminal sends a carriage return: a
+    /// terminal in line mode turns it into a line feed, and the line editor (raw mode) reads it
+    /// as Enter. This is what a person's keyboard does, so it is what the tests send.
     pub fn line(&mut self, text: &str) -> io::Result<()> {
         self.write_bytes(text.as_bytes())?;
-        self.write_bytes(b"\n")
+        self.write_bytes(b"\r")
     }
 
     /// Types one raw byte, such as Ctrl+C (3).
@@ -430,6 +533,16 @@ impl Session {
             .map_err(io::Error::from)
     }
 
+    /// Closes the terminal from the outside, as closing a terminal window or dropping an ssh
+    /// connection does: the kernel hangs up the session, and reading the terminal gives end of
+    /// input from then on. Afterwards the terminal shows nothing more and takes no input.
+    pub fn hang_up_terminal(&mut self) -> io::Result<()> {
+        // Replacing the file closes the master side of the pseudo-terminal (nothing else holds it:
+        // it is close-on-exec).
+        self.master = File::open("/dev/null")?;
+        Ok(())
+    }
+
     /// Sends a signal to the process that `setsid` started.
     pub fn signal_parent(&self, signal: Signal) -> io::Result<()> {
         kill(Pid::from_raw(self.shell.id() as i32), signal).map_err(io::Error::from)
@@ -447,4 +560,31 @@ impl Drop for Session {
         let _ = self.shell.kill();
         let _ = self.shell.wait();
     }
+}
+
+/// The text without escape sequences (`ESC [ ... final`, and `ESC` plus one character), and for
+/// each byte of it the position of that byte in `text`.
+pub fn strip_escapes(text: &str) -> (String, Vec<usize>) {
+    let mut plain = String::new();
+    let mut origin = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if c != '\x1b' {
+            plain.push(c);
+            origin.extend((0..c.len_utf8()).map(|k| at + k));
+            continue;
+        }
+        if chars.peek().is_some_and(|&(_, next)| next == '[') {
+            chars.next();
+            // Parameters and intermediates, then one final byte in `@`..=`~`.
+            for (_, c) in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            chars.next();
+        }
+    }
+    (plain, origin)
 }

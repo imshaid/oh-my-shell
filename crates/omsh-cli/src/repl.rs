@@ -1,18 +1,23 @@
 //! The read-run loop.
 //!
-//! This is a plain line reader for now: no editing, history or completion (S13 adds the
-//! editor). It reads standard input and runs what it finds.
+//! Lines come from one of two readers. When a person types at a terminal that takes escape
+//! codes, the line editor of `omsh-editor` reads them (S13a). Otherwise (a dumb terminal, Emacs'
+//! shell mode, `-i` on a pipe, a test that feeds a pipe) the plain reader takes a line from
+//! standard input, one byte at a time, with no editing.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use omsh_config::{Config, Paths};
+use omsh_editor::{Editor, PromptState, Read as Typed, working_directory};
 use omsh_exec::{
-    ExitStatus, Io, LineResult, Outcome, Shell, hung_up, note_inherited_signals, release_terminal,
-    start_interactive, wait_for_input,
+    ExitStatus, Io, LineResult, Outcome, Shell, hung_up, is_root, note_inherited_signals,
+    release_terminal, start_interactive, terminal_gone, wait_for_input,
 };
 
 use crate::report::{self, Style};
@@ -62,7 +67,9 @@ pub fn run(options: Options, name: Option<&OsStr>) -> ExitStatus {
             return ExitStatus(1);
         }
     };
-    let status = run_on(input, options, job_control, name);
+    // The editor needs a terminal to read from and one to draw on.
+    let terminals = io::stdin().is_terminal() && io::stderr().is_terminal();
+    let status = run_on(input, options, job_control, terminals, name);
     // Give the terminal back to the program that started the shell.
     release_terminal();
     status
@@ -79,10 +86,27 @@ fn stdin_without_buffer() -> io::Result<File> {
     Ok(File::from(io::stdin().as_fd().try_clone_to_owned()?))
 }
 
+/// What the reader brought back.
+enum Next {
+    /// A line, with its line ending.
+    Line(Vec<u8>),
+    /// The end of the input (Ctrl+D on an empty line, or the end of a file).
+    End,
+    /// Ctrl+C in the editor: drop what was typed.
+    Interrupted,
+    /// The terminal hung up.
+    HungUp,
+    /// The editor cannot work with this terminal.
+    EditorFailed(io::Error),
+    /// The plain reader failed.
+    ReadFailed(io::Error),
+}
+
 fn run_on(
     mut input: impl Read,
     options: Options,
     job_control: bool,
+    terminals: bool,
     name: Option<&OsStr>,
 ) -> ExitStatus {
     let interactive = options.interactive;
@@ -105,8 +129,11 @@ fn run_on(
         Err(status) => return finish(&mut shell, status, &files),
     };
     let style = Style::detect(config.ui.icons);
+    let mut editor = make_editor(&shell, &config, style, interactive && terminals);
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
+    // How long the last command took, for the prompt.
+    let mut took: Option<Duration> = None;
     loop {
         if interactive {
             if hung_up() {
@@ -116,19 +143,13 @@ fn run_on(
                 // What happened to the background jobs since the last prompt.
                 shell.job_notices(&files);
             }
-            prompt(if pending.is_empty() {
-                PROMPT
-            } else {
-                CONTINUATION_PROMPT
-            });
         }
-        // Wait in steps, so that a `SIGHUP` sent to an idle shell is noticed: a plain read
-        // would be restarted after the signal and never come back.
-        if interactive && !wait_for_input(io::stdin().as_fd()) {
-            return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files);
-        }
-        let at_end = match read_line(&mut input) {
-            Ok(Some(bytes)) => {
+        let next = match editor.as_mut() {
+            Some(editor) => read_edited(editor, &shell, &pending, took),
+            None => read_plain(&mut input, interactive, pending.is_empty()),
+        };
+        let at_end = match next {
+            Next::Line(bytes) => {
                 if append_utf8(&mut pending, bytes).is_err() {
                     say("oh-my-shell: the input is not valid UTF-8; the line was skipped");
                     pending.clear();
@@ -137,7 +158,7 @@ fn run_on(
                 }
                 false
             }
-            Ok(None) => {
+            Next::End => {
                 if pending.is_empty() {
                     // End of input with stopped jobs: the first time only warns.
                     if !shell.confirm_exit(&files) {
@@ -148,25 +169,127 @@ fn run_on(
                 }
                 true
             }
-            Err(error) => {
+            Next::Interrupted => {
+                // `$?` stays as it was, as with the plain reader (the terminal throws the
+                // half-typed line away there).
+                pending.clear();
+                continue;
+            }
+            Next::HungUp => return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files),
+            Next::EditorFailed(error) => {
+                say(&format!(
+                    "oh-my-shell: the line editor does not work with this terminal ({error}); \
+                     using plain input"
+                ));
+                editor = None;
+                continue;
+            }
+            Next::ReadFailed(error) => {
                 say(&format!("oh-my-shell: cannot read standard input: {error}"));
                 return ExitStatus(1);
             }
         };
 
+        let started = Instant::now();
         match shell.run_source(&pending, at_end, &mut files) {
             LineResult::Incomplete => {}
-            LineResult::Ran(Outcome::Continue(_)) => pending.clear(),
+            LineResult::Ran(Outcome::Continue(_)) => {
+                pending.clear();
+                took = Some(started.elapsed());
+            }
             LineResult::Ran(Outcome::Exit(status)) => return finish(&mut shell, status, &files),
             LineResult::Rejected(report) => {
                 report::show(&report, style);
                 pending.clear();
+                took = Some(started.elapsed());
             }
         }
         if at_end {
             let status = shell.last_status();
             return finish(&mut shell, status, &files);
         }
+    }
+}
+
+/// Whether to use the line editor: a terminal to read from and to draw on, a `TERM` that is
+/// set and not `dumb`, and not inside Emacs (whose shell mode cannot show escape codes; bash
+/// turns readline off there too).
+fn should_edit(terminals: bool, term: Option<&[u8]>, inside_emacs: Option<&[u8]>) -> bool {
+    terminals
+        && term.is_some_and(|term| !term.is_empty() && term != b"dumb")
+        && inside_emacs.is_none_or(<[u8]>::is_empty)
+}
+
+fn make_editor(shell: &Shell, config: &Config, style: Style, terminals: bool) -> Option<Editor> {
+    if !should_edit(terminals, shell.var("TERM"), shell.var("INSIDE_EMACS")) {
+        return None;
+    }
+    let Style::Graphical { color, unicode } = style else {
+        return None;
+    };
+    Some(Editor::new(config, unicode, color, hung_up, || {
+        terminal_gone(io::stdin())
+    }))
+}
+
+/// Everything the prompt shows, taken from the shell's own variables (not the process
+/// environment, which a `cd` or `export` does not change).
+fn prompt_state(shell: &Shell, took: Option<Duration>) -> PromptState {
+    let path = |name: &str| {
+        shell
+            .var(name)
+            .filter(|value| !value.is_empty())
+            .map(|value| PathBuf::from(OsStr::from_bytes(value)))
+    };
+    PromptState {
+        cwd: working_directory(shell.var("PWD")),
+        home: path("HOME"),
+        virtual_env: path("VIRTUAL_ENV"),
+        conda_env: shell
+            .var("CONDA_DEFAULT_ENV")
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .map(str::to_owned),
+        last_status: shell.last_status().0,
+        last_duration: took,
+        root: is_root(),
+    }
+}
+
+fn read_edited(editor: &mut Editor, shell: &Shell, pending: &str, took: Option<Duration>) -> Next {
+    let typed = if pending.is_empty() {
+        editor.read(&prompt_state(shell, took))
+    } else {
+        editor.read_more()
+    };
+    match typed {
+        Typed::Line(mut text) => {
+            text.push('\n');
+            Next::Line(text.into_bytes())
+        }
+        Typed::Interrupted => Next::Interrupted,
+        Typed::EndOfInput => Next::End,
+        Typed::HungUp => Next::HungUp,
+        Typed::Failed(error) => Next::EditorFailed(error),
+    }
+}
+
+fn read_plain(input: &mut impl Read, interactive: bool, first_line: bool) -> Next {
+    if interactive {
+        prompt(if first_line {
+            PROMPT
+        } else {
+            CONTINUATION_PROMPT
+        });
+        // Wait in steps, so that a `SIGHUP` sent to an idle shell is noticed: a plain read
+        // would be restarted after the signal and never come back.
+        if !wait_for_input(io::stdin().as_fd()) {
+            return Next::HungUp;
+        }
+    }
+    match read_line(input) {
+        Ok(Some(bytes)) => Next::Line(bytes),
+        Ok(None) => Next::End,
+        Err(error) => Next::ReadFailed(error),
     }
 }
 
@@ -254,6 +377,24 @@ fn say(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_editor_needs_terminals_and_a_capable_term() {
+        let xterm = Some(&b"xterm-256color"[..]);
+        assert!(should_edit(true, xterm, None));
+        assert!(!should_edit(false, xterm, None), "no terminal");
+        assert!(!should_edit(true, None, None), "TERM unset");
+        assert!(!should_edit(true, Some(b""), None), "TERM empty");
+        assert!(!should_edit(true, Some(b"dumb"), None), "TERM=dumb");
+    }
+
+    #[test]
+    fn the_editor_is_off_inside_emacs() {
+        let xterm = Some(&b"xterm"[..]);
+        assert!(!should_edit(true, xterm, Some(b"29.1,comint")));
+        assert!(!should_edit(true, xterm, Some(b"t")));
+        assert!(should_edit(true, xterm, Some(b"")), "empty means unset");
+    }
 
     #[test]
     fn a_line_ends_after_its_line_ending() {

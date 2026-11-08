@@ -238,6 +238,20 @@ pub(crate) fn reacquire_terminal() {
 /// How long [`wait_for_input`] sleeps before it looks at the hangup flag again.
 const INPUT_STEP: Duration = Duration::from_millis(100);
 
+/// True if the other end of `fd` is gone: the terminal was closed, or the pipe's writer. Reading
+/// such a terminal gives end of input for ever, so an editor that does not expect that spins.
+/// Asking does not read or wait.
+pub fn terminal_gone(fd: impl AsFd) -> bool {
+    // No events asked for: `poll` still reports a hangup, an error and a closed descriptor.
+    let mut fds = [PollFd::new(fd.as_fd(), PollFlags::empty())];
+    match poll(&mut fds, PollTimeout::ZERO) {
+        Ok(n) if n > 0 => fds[0].revents().is_some_and(|flags| {
+            flags.intersects(PollFlags::POLLHUP | PollFlags::POLLERR | PollFlags::POLLNVAL)
+        }),
+        _ => false,
+    }
+}
+
 /// Waits until `input` can be read, or the shell is hung up. Returns false on a hangup.
 ///
 /// A read that waits for the keyboard restarts after a signal, so a `SIGHUP` sent to an idle
@@ -254,5 +268,36 @@ pub fn wait_for_input(input: impl AsFd) -> bool {
             Ok(0) | Err(Errno::EINTR) => {}
             Ok(_) | Err(_) => return true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::unistd::{pipe, write};
+
+    #[test]
+    fn a_live_descriptor_is_not_gone_whether_or_not_it_has_data() {
+        let (read, write_end) = pipe().unwrap();
+        assert!(!terminal_gone(&read), "empty pipe, writer open");
+        write(&write_end, b"x").unwrap();
+        assert!(!terminal_gone(&read), "data waiting, writer open");
+    }
+
+    #[test]
+    fn a_descriptor_whose_other_end_closed_is_gone() {
+        let (read, write_end) = pipe().unwrap();
+        drop(write_end);
+        assert!(terminal_gone(&read));
+    }
+
+    #[test]
+    fn asking_does_not_consume_input() {
+        let (read, write_end) = pipe().unwrap();
+        write(&write_end, b"abc").unwrap();
+        drop(write_end);
+        assert!(terminal_gone(&read));
+        let mut buffer = [0_u8; 8];
+        assert_eq!(nix::unistd::read(&read, &mut buffer).unwrap(), 3);
     }
 }

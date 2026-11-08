@@ -33,6 +33,7 @@ mod spawn;
 mod status;
 mod terminal;
 mod traps;
+mod user;
 mod vars;
 
 pub use check::NotYet;
@@ -45,5 +46,6 @@ pub use signals::{
 };
 pub use spawn::{ChildGroup, ExecRequest, SpawnFailure, start, wait};
 pub use status::{ExitStatus, Termination};
-pub use terminal::{release_terminal, start_interactive, wait_for_input};
+pub use terminal::{release_terminal, start_interactive, terminal_gone, wait_for_input};
+pub use user::is_root;
 pub use vars::{ReadOnly, Variables};
