@@ -1434,3 +1434,120 @@ fn a_substitution_reads_the_standard_input_of_the_command() {
     assert_eq!(out("x=$(cat); echo \"[$x]\" <<EOF\nignored\nEOF"), "[]\n");
     assert_eq!(out("cat <<EOF\n$(echo inside)\nEOF"), "inside\n");
 }
+
+/// Process groups: with job control on, the programs of a pipeline form a process group of
+/// their own. There is no terminal in a test, so only the groups are visible, which is what
+/// matters for Ctrl+C: the terminal sends it to a whole group.
+mod job_groups {
+    use super::*;
+
+    /// Prints the process group of the program that runs it.
+    const GROUP: &str = "cut -d' ' -f5 /proc/self/stat";
+
+    fn jc_shell() -> Shell {
+        let mut sh = shell();
+        sh.job_control = true;
+        sh
+    }
+
+    fn mine() -> String {
+        nix::unistd::getpgrp().to_string()
+    }
+
+    fn groups(sh: &mut Shell, src: &str) -> Vec<String> {
+        let done = run(sh, src);
+        assert_eq!(done.status, 0, "{src}: {}", done.err);
+        done.out.lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn a_pipeline_is_one_group_that_is_not_the_shells() {
+        let found = groups(&mut jc_shell(), &format!("{GROUP} | {{ cat; {GROUP}; }}"));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0], found[1]);
+        assert_ne!(found[0], mine());
+    }
+
+    #[test]
+    fn a_group_outlives_its_leader() {
+        // The first program is over long before the second one starts. The group must still
+        // be there to join, and not be taken over by another process.
+        let found = groups(
+            &mut jc_shell(),
+            &format!("{GROUP} | {{ sleep 0.3; cat; {GROUP}; }}"),
+        );
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0], found[1]);
+        assert_ne!(found[0], mine());
+    }
+
+    #[test]
+    fn each_command_is_a_job_of_its_own() {
+        let found = groups(&mut jc_shell(), &format!("{GROUP}; {GROUP}"));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_ne!(found[0], found[1]);
+        assert!(found.iter().all(|g| *g != mine()), "{found:?}");
+    }
+
+    #[test]
+    fn the_programs_of_a_loop_body_are_separate_jobs() {
+        let found = groups(&mut jc_shell(), &format!("for i in 1 2; do {GROUP}; done"));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_ne!(found[0], found[1]);
+    }
+
+    #[test]
+    fn without_job_control_everything_stays_in_the_shells_group() {
+        let found = groups(&mut shell(), &format!("{GROUP}; {GROUP} | cat"));
+        assert_eq!(found, vec![mine(), mine()]);
+    }
+
+    #[test]
+    fn a_substitution_stays_in_the_shells_group() {
+        let found = groups(&mut jc_shell(), &format!("echo $({GROUP})"));
+        assert_eq!(found, vec![mine()]);
+    }
+
+    #[test]
+    fn a_substitution_inside_a_stage_joins_the_stage_job() {
+        let found = groups(
+            &mut jc_shell(),
+            &format!("{GROUP} | {{ cat; echo $({GROUP}); }}"),
+        );
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0], found[1]);
+        assert_ne!(found[0], mine());
+    }
+
+    #[test]
+    fn a_stopped_job_is_continued_with_a_note() {
+        let done = run(&mut jc_shell(), "sh -c 'kill -STOP $$; echo resumed'");
+        assert_eq!(done.out, "resumed\n");
+        assert_eq!(done.status, 0);
+        assert!(
+            done.err
+                .contains("stopped; job control comes in a later version"),
+            "{}",
+            done.err
+        );
+    }
+
+    #[test]
+    fn a_member_that_is_not_the_leader_can_be_stopped_too() {
+        let done = run(
+            &mut jc_shell(),
+            "sleep 0.2 | sh -c 'kill -STOP $$; echo resumed'",
+        );
+        assert_eq!(done.out, "resumed\n");
+        assert_eq!(done.status, 0);
+        assert_eq!(done.err.matches("stopped;").count(), 1, "{}", done.err);
+    }
+
+    #[test]
+    fn a_program_that_cannot_start_does_not_break_the_job() {
+        let done = run(&mut jc_shell(), &format!("/nonexistent/omsh | {GROUP}"));
+        assert_eq!(done.status, 0);
+        assert!(!done.out.trim().is_empty(), "{}", done.err);
+        assert_ne!(done.out.trim(), mine());
+    }
+}

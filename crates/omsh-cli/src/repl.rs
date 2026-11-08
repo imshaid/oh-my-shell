@@ -7,7 +7,10 @@ use std::fs::File;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 
-use omsh_exec::{ExitStatus, Io, LineResult, Outcome, Shell, catch_interrupts};
+use omsh_exec::{
+    ExitStatus, Io, LineResult, Outcome, Shell, note_inherited_signals, release_terminal,
+    start_interactive,
+};
 
 use crate::report::{self, Style};
 
@@ -16,18 +19,34 @@ const CONTINUATION_PROMPT: &str = "> ";
 
 /// Runs the shell on standard input until it ends, and returns the exit status.
 pub fn run() -> ExitStatus {
+    // Before anything changes a signal setting: what was ignored at the start stays ignored.
+    note_inherited_signals();
     let interactive = io::stdin().is_terminal();
-    if interactive {
-        catch_interrupts();
-    }
+    let job_control = if interactive {
+        match start_interactive() {
+            Ok(()) => true,
+            Err(reason) => {
+                say(&format!(
+                    "oh-my-shell: no job control in this shell: {reason}"
+                ));
+                false
+            }
+        }
+    } else {
+        false
+    };
     let input = match stdin_without_buffer() {
         Ok(file) => file,
         Err(error) => {
             say(&format!("oh-my-shell: cannot read standard input: {error}"));
+            release_terminal();
             return ExitStatus(1);
         }
     };
-    run_on(input, interactive, Style::detect())
+    let status = run_on(input, interactive, job_control, Style::detect());
+    // Give the terminal back to the program that started the shell.
+    release_terminal();
+    status
 }
 
 /// A second handle on file descriptor 0 that does not buffer.
@@ -41,9 +60,10 @@ fn stdin_without_buffer() -> io::Result<File> {
     Ok(File::from(io::stdin().as_fd().try_clone_to_owned()?))
 }
 
-fn run_on(mut input: impl Read, interactive: bool, style: Style) -> ExitStatus {
+fn run_on(mut input: impl Read, interactive: bool, job_control: bool, style: Style) -> ExitStatus {
     let mut shell = Shell::new();
     shell.set_interactive(interactive);
+    shell.set_job_control(job_control);
     // The files that commands start with: this process's standard input, output and error.
     let mut files = Io::process();
     // The lines read so far for the command being typed: more than one when it is unfinished.

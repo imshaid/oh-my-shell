@@ -352,6 +352,8 @@ impl Expander<'_> {
         let mut table = self.io.clone();
         table.set(1, Arc::new(writer));
         let mut copy = self.shell.subshell();
+        // Outside a job, the substitution's programs stay in the shell's own group.
+        copy.no_new_jobs = copy.job.is_none();
         let mut output = Vec::new();
         let status = thread::scope(|scope| {
             let drain = thread::Builder::new().spawn_scoped(scope, || {

@@ -20,12 +20,14 @@ use omsh_syntax::ast::{FunctionDef, Redirect, SimpleCommand, Word};
 use crate::builtins::{self, Class};
 use crate::expand::{ExpandError, Expander};
 use crate::io::Io;
+use crate::jobs::Job;
 use crate::path::{DEFAULT_PATH, Lookup};
 use crate::redirect::RedirectError;
 use crate::shell::Shell;
 use crate::signals;
 use crate::spawn::{ExecRequest, SpawnFailure, replace_process, run as spawn};
 use crate::status::{ExitStatus, Termination};
+use crate::terminal;
 use omsh_syntax::ast::{AndOr, AndOrOp, Command, CommandKind, List, Pipeline};
 
 use nix::errno::Errno;
@@ -499,7 +501,7 @@ impl Shell {
             envp: self.vars.envp(&[]),
             cwd,
             umask: self.umask_override,
-            ignored: self.traps.ignored_mask(),
+            ignored: self.traps.ignored_mask() | signals::inherited_ignored(),
         })
     }
 
@@ -507,7 +509,7 @@ impl Shell {
     /// descriptor 2 of `io`.
     fn run_external(&mut self, words: &[Vec<u8>], io: &Io) -> ExitStatus {
         match self.prepare_external(words, io) {
-            Ok(program) => run_program(&program, io),
+            Ok(program) => self.run_program(&program, io),
             Err(status) => status,
         }
     }
@@ -522,11 +524,71 @@ impl Shell {
             Err(status) => return Ok(status),
         };
         if self.in_subshell {
-            return Err(Unwind::Exit(run_program(&program, io)));
+            return Err(Unwind::Exit(self.run_program(&program, io)));
         }
         let mut plan = io.plan();
+        // The program takes the shell's place, so it must be in the group that owns the
+        // terminal when the shell started, or it would be stopped when it reads.
+        if self.job_control {
+            terminal::release_terminal();
+        }
         let errno = replace_process(&program.request(), &mut plan);
+        if self.job_control {
+            terminal::reacquire_terminal();
+        }
         Ok(report_exec_failure(&program.name, errno, io))
+    }
+
+    /// The job a program started now belongs to, and whether this call made it (and so must
+    /// finish it). None if the program stays in the shell's own group.
+    fn job_for_program(&self) -> Option<(Arc<Job>, bool)> {
+        if let Some(job) = &self.job {
+            return Some((Arc::clone(job), false));
+        }
+        (self.job_control && !self.no_new_jobs).then(|| (Job::foreground(), true))
+    }
+
+    /// Starts the program, waits for it, and reports how it ended.
+    fn run_program(&self, program: &Program, io: &Io) -> ExitStatus {
+        let name = &program.name;
+        let mut plan = io.plan();
+        let job = self.job_for_program();
+        let result = match &job {
+            Some((job, _)) => job
+                .start(&program.request(), &mut plan)
+                .map(|member| job.wait(&member, name, io)),
+            None => spawn(&program.request(), &mut plan),
+        };
+        if let Some((job, true)) = &job {
+            job.finish();
+        }
+        match result {
+            Ok(ending) => {
+                // Without job control the shell got the Ctrl+C too. A program that survived
+                // it dealt with it itself; one that died of it leaves the flag set, which
+                // stops the rest of the line, as in bash. With job control the shell never
+                // got it, and the flag is set only by a program that died of it.
+                let died_of_it = matches!(
+                    ending,
+                    Termination::Signaled { signal, .. } if signal == libc::SIGINT
+                );
+                if !self.job_control && signals::interrupted() && !died_of_it {
+                    signals::clear_interrupt();
+                }
+                if let Some(line) = ending.describe(name) {
+                    io.say(line);
+                }
+                ending.status()
+            }
+            Err(SpawnFailure::Exec(errno)) => report_exec_failure(name, errno, io),
+            Err(SpawnFailure::Fork(errno)) => {
+                io.say(format!(
+                    "oh-my-shell: cannot start {name}: {}",
+                    errno.desc()
+                ));
+                ExitStatus::NOT_EXECUTABLE
+            }
+        }
     }
 }
 
@@ -550,37 +612,7 @@ impl Program {
             cwd: self.cwd.as_deref(),
             umask: self.umask,
             ignored: self.ignored,
-        }
-    }
-}
-
-/// Starts the program, waits for it, and reports how it ended.
-fn run_program(program: &Program, io: &Io) -> ExitStatus {
-    let name = &program.name;
-    let mut plan = io.plan();
-    match spawn(&program.request(), &mut plan) {
-        Ok(ending) => {
-            // A program that survived Ctrl+C dealt with it itself. One that died of it
-            // leaves the flag set, which stops the rest of the line, as in bash.
-            let died_of_it = matches!(
-                ending,
-                Termination::Signaled { signal, .. } if signal == libc::SIGINT
-            );
-            if signals::interrupted() && !died_of_it {
-                signals::clear_interrupt();
-            }
-            if let Some(line) = ending.describe(name) {
-                io.say(line);
-            }
-            ending.status()
-        }
-        Err(SpawnFailure::Exec(errno)) => report_exec_failure(name, errno, io),
-        Err(SpawnFailure::Fork(errno)) => {
-            io.say(format!(
-                "oh-my-shell: cannot start {name}: {}",
-                errno.desc()
-            ));
-            ExitStatus::NOT_EXECUTABLE
+            group: None,
         }
     }
 }

@@ -20,6 +20,7 @@ use omsh_syntax::ast::Command;
 
 use super::{Flow, Unwind};
 use crate::io::Io;
+use crate::jobs::Job;
 use crate::shell::Shell;
 use crate::signals;
 use crate::status::ExitStatus;
@@ -50,12 +51,19 @@ impl Shell {
             tables.push(table);
         }
 
+        // One job for the whole pipeline: its programs share a process group. A pipeline
+        // inside a job or a `$(...)` has no job of its own.
+        let own_job =
+            (self.job_control && !self.no_new_jobs && self.job.is_none()).then(Job::foreground);
         let statuses: Vec<ExitStatus> = thread::scope(|scope| {
             let handles: Vec<_> = commands
                 .iter()
                 .zip(tables)
                 .map(|(command, table)| {
                     let mut stage = self.subshell();
+                    if let Some(job) = &own_job {
+                        stage.job = Some(Arc::clone(job));
+                    }
                     thread::Builder::new()
                         .stack_size(STAGE_STACK)
                         .spawn_scoped(scope, move || {
@@ -81,6 +89,9 @@ impl Shell {
                 })
                 .collect()
         });
+        if let Some(job) = &own_job {
+            job.finish();
+        }
         if signals::interrupted() {
             return Err(Unwind::Interrupted);
         }

@@ -9,9 +9,10 @@ and runs it: pipelines, redirections (including here-documents), `;` `&&` `||` `
 `{ }`, `if`, `while`, `until`, `for`, `case` and functions. Words get the usual POSIX
 expansions: `~`, `$var` and `${var:-x}`, `$(...)`, `$((1+2))`, field splitting and globbing.
 The first builtins are there (`cd`, `pwd`, `export`, `unset`, `set --`, `shift`, `echo`,
-`eval`, `.`, `exit`, `return`, `break`, `continue`). Background jobs (`&`), job control, aliases
-and `read` are not there yet, and a line that needs a missing feature is refused whole. Do not
-set it as your login shell.
+`eval`, `.`, `exit`, `return`, `break`, `continue`). In a terminal, each command runs in its own
+process group, so Ctrl+C stops the command and not the shell. Background jobs (`&`), `fg`/`bg`
+and stopped jobs are not there yet, and a line that needs a missing feature is refused whole.
+Do not set it as your login shell.
 
 ## Build and run
 

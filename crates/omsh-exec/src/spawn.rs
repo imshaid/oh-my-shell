@@ -19,8 +19,8 @@ use std::os::fd::{AsFd, AsRawFd, RawFd};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::libc;
-use nix::sys::wait::{WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Pid, fork, pipe2, read};
+use nix::sys::wait::{Id, WaitPidFlag, WaitStatus, waitid, waitpid};
+use nix::unistd::{ForkResult, Pid, fork, pipe2, read, setpgid};
 
 use crate::io::FdPlan;
 use crate::status::Termination;
@@ -28,7 +28,17 @@ use crate::status::Termination;
 /// The shell used to run a file that has no `#!` line, like other shells do.
 const SH: &CStr = c"/bin/sh";
 
+/// The process group a program joins, and whether it takes the terminal. See `jobs.rs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChildGroup {
+    /// The group to join. 0 means a new group with the program as its leader.
+    pub pgid: i32,
+    /// A descriptor of the terminal to give to the group, or -1 to leave the terminal alone.
+    pub tty: RawFd,
+}
+
 /// A program to start.
+#[derive(Clone, Copy)]
 pub struct ExecRequest<'a> {
     /// The file to run.
     pub path: &'a CStr,
@@ -41,10 +51,13 @@ pub struct ExecRequest<'a> {
     /// The file creation mask to run with, if it is not the process's own (a subshell that
     /// used `umask`).
     pub umask: Option<u32>,
-    /// Bit `n` is set for each signal `n` that a `trap` ignores. The shell resets SIGINT,
-    /// SIGQUIT and SIGPIPE to their defaults for a program, except for those: a signal that
-    /// is ignored stays ignored in what the shell starts.
+    /// Bit `n` is set for each signal `n` that is ignored by a `trap`, or was ignored when the
+    /// shell started. The shell resets the signals it changes for itself (SIGINT, SIGQUIT,
+    /// SIGTERM, SIGTSTP, SIGTTIN, SIGTTOU and SIGPIPE) to their defaults for a program, except
+    /// for those: a signal that is ignored stays ignored in what the shell starts.
     pub ignored: u64,
+    /// The process group to put the program in, if it is part of a job.
+    pub group: Option<ChildGroup>,
 }
 
 /// Why a program could not be run.
@@ -101,11 +114,18 @@ pub fn start(request: &ExecRequest<'_>, plan: &mut FdPlan) -> Result<Pid, SpawnF
                 cwd: request.cwd,
                 umask: request.umask,
                 ignored: request.ignored,
+                group: request.group,
             },
             report_fd,
             plan,
         ),
         ForkResult::Parent { child } => {
+            // The child does this too. Whoever gets there first wins, and the other call is
+            // harmless (it fails once the child has run `execve`, which we ignore). Doing it
+            // on both sides is what makes the group exist before anything uses it (§20.1).
+            if let Some(group) = request.group {
+                let _ = setpgid(child, Pid::from_raw(group.pgid));
+            }
             // Our copy of the write end must close, or the read below would never see the end.
             drop(report_write);
             match read_report(&report_read) {
@@ -147,6 +167,7 @@ struct Prepared<'a> {
     cwd: Option<&'a CStr>,
     umask: Option<u32>,
     ignored: u64,
+    group: Option<ChildGroup>,
 }
 
 /// The code that runs in the child. It never returns.
@@ -166,16 +187,35 @@ fn exec_child(prepared: &Prepared<'_>, report_fd: RawFd, plan: &mut FdPlan) -> !
 ///
 /// The caller must be the child after `fork`, or the shell replacing itself with `exec`. The
 /// pointers must stay valid. The calls made are `signal`, `sigemptyset`, `sigprocmask`,
-/// `dup2`, `fcntl`, `close`, `chdir`, `umask` and `execve`, all async-signal-safe, and the
+/// `dup2`, `fcntl`, `close`, `chdir`, `umask`, `setpgid`, `getpgrp`, `tcsetpgrp` and
+/// `execve`, all async-signal-safe, and the
 /// only memory written is the plan's scratch array, which already has its final size.
 unsafe fn become_program(prepared: &Prepared<'_>, plan: &mut FdPlan) -> i32 {
     // SAFETY: see the function's contract.
     unsafe {
-        // The shell ignores SIGINT, SIGQUIT and (through Rust's runtime) SIGPIPE. Ignored
-        // signals stay ignored across `execve`, so a program would not die on Ctrl+C or in
-        // `yes | head`. Give them back their default meaning. (The shell catches SIGINT; a
-        // caught signal is reset by `execve` anyway, but it must not run our handler first.)
-        for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGPIPE] {
+        // First the process group and the terminal, while SIGTTOU is still ignored: a process
+        // in the background group that calls `tcsetpgrp` would be stopped by it otherwise.
+        // This comes before the file descriptors, which may overwrite the terminal's number.
+        if let Some(group) = prepared.group {
+            libc::setpgid(0, group.pgid);
+            if group.tty >= 0 {
+                libc::tcsetpgrp(group.tty, libc::getpgrp());
+            }
+        }
+        // The shell ignores SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGTTIN, SIGTTOU and (through
+        // Rust's runtime) SIGPIPE. Ignored signals stay ignored across `execve`, so a program
+        // would not die on Ctrl+C or in `yes | head`, or could not be stopped. Give them back
+        // their default meaning. (The shell catches SIGINT; a caught signal is reset by
+        // `execve` anyway, but it must not run our handler first.)
+        for signal in [
+            libc::SIGINT,
+            libc::SIGQUIT,
+            libc::SIGTERM,
+            libc::SIGTSTP,
+            libc::SIGTTIN,
+            libc::SIGTTOU,
+            libc::SIGPIPE,
+        ] {
             if prepared.ignored & (1_u64 << signal) == 0 {
                 libc::signal(signal, libc::SIG_DFL);
             }
@@ -238,6 +278,7 @@ pub fn replace_process(request: &ExecRequest<'_>, plan: &mut FdPlan) -> Errno {
                 cwd: request.cwd,
                 umask: request.umask,
                 ignored: request.ignored,
+                group: request.group,
             },
             plan,
         )
@@ -331,6 +372,53 @@ pub fn wait(child: Pid) -> Termination {
     }
 }
 
+/// How a member of a job changed state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Waited {
+    /// It is over.
+    Ended(Termination),
+    /// It was stopped (Ctrl+Z, `SIGSTOP`, or it read the terminal from the background).
+    Stopped,
+}
+
+/// Waits until `child`, a member of a job, ends or stops.
+///
+/// With `anchor` set, an ending is only looked at (`WNOWAIT`): the process stays a zombie, so
+/// its pid stays in use and the group it leads keeps existing. Later members of the job may
+/// still have to join that group; see `jobs.rs`.
+pub(crate) fn wait_member(child: Pid, anchor: bool) -> Waited {
+    loop {
+        let result = if anchor {
+            waitid(
+                Id::Pid(child),
+                WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED | WaitPidFlag::WNOWAIT,
+            )
+        } else {
+            waitpid(child, Some(WaitPidFlag::WUNTRACED))
+        };
+        match result {
+            Ok(status) => {
+                if let Some(ending) = Termination::from_wait(status) {
+                    return Waited::Ended(ending);
+                }
+                if matches!(status, WaitStatus::Stopped(..)) {
+                    if anchor {
+                        // `WNOWAIT` left the report of the stop in place; take it, or the
+                        // next wait would see the same stop again.
+                        let _ =
+                            waitid(Id::Pid(child), WaitPidFlag::WSTOPPED | WaitPidFlag::WNOHANG);
+                    }
+                    return Waited::Stopped;
+                }
+                // Continued: keep waiting.
+            }
+            Err(Errno::EINTR) => {}
+            // The child is already gone (for example, reaped by someone else).
+            Err(_) => return Waited::Ended(Termination::Exited(255)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +447,7 @@ mod tests {
                 cwd: None,
                 umask: None,
                 ignored: 0,
+                group: None,
             },
             &mut plan,
         );
@@ -454,6 +543,7 @@ mod tests {
                 cwd: None,
                 umask: None,
                 ignored: 0,
+                group: None,
             },
             &mut plan,
         );
@@ -481,6 +571,7 @@ mod tests {
                 cwd: None,
                 umask: None,
                 ignored: 0,
+                group: None,
             },
             &mut plan,
         );
@@ -506,6 +597,7 @@ mod tests {
                 cwd: None,
                 umask: None,
                 ignored: 0,
+                group: None,
             },
             &mut plan,
         );
@@ -528,6 +620,7 @@ mod tests {
                 cwd: Some(c"/usr"),
                 umask: None,
                 ignored: 0,
+                group: None,
             },
             &mut plan,
         );
@@ -549,6 +642,7 @@ mod tests {
                 cwd: Some(c"/nonexistent-omsh-dir"),
                 umask: None,
                 ignored: 0,
+                group: None,
             },
             &mut plan,
         );
@@ -570,10 +664,130 @@ mod tests {
                 cwd: None,
                 umask: Some(0o027),
                 ignored: 0,
+                group: None,
             },
             &mut plan,
         );
         assert_eq!(ending, Ok(Termination::Exited(0)));
         assert_eq!(captured.stdout(), "0027\n");
+    }
+
+    /// The group of `/proc/self/stat` (field 5) as seen by the program, and the program's pid.
+    const PRINT_GROUP: &str = "cut -d' ' -f5 /proc/self/stat";
+
+    fn start_in(
+        argv: &[&str],
+        group: Option<ChildGroup>,
+        ignored: u64,
+        captured: &Captured,
+    ) -> Pid {
+        let path = CString::new("/bin/sh").unwrap();
+        let argv = cstrings(argv);
+        let envp = cstrings(&["PATH=/usr/bin:/bin"]);
+        let mut plan = captured.io.plan();
+        start(
+            &ExecRequest {
+                path: &path,
+                argv: &argv,
+                envp: &envp,
+                cwd: None,
+                umask: None,
+                ignored,
+                group,
+            },
+            &mut plan,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_program_with_group_zero_leads_a_group_of_its_own() {
+        let captured = Captured::new();
+        let child = start_in(
+            &["sh", "-c", PRINT_GROUP],
+            Some(ChildGroup { pgid: 0, tty: -1 }),
+            0,
+            &captured,
+        );
+        wait(child);
+        assert_eq!(captured.stdout(), format!("{}\n", child.as_raw()));
+        assert_ne!(child, nix::unistd::getpgrp());
+    }
+
+    #[test]
+    fn a_program_can_join_the_group_of_another() {
+        let captured = Captured::new();
+        let leader = start_in(
+            &["sh", "-c", "sleep 5"],
+            Some(ChildGroup { pgid: 0, tty: -1 }),
+            0,
+            &captured,
+        );
+        let member = start_in(
+            &["sh", "-c", PRINT_GROUP],
+            Some(ChildGroup {
+                pgid: leader.as_raw(),
+                tty: -1,
+            }),
+            0,
+            &captured,
+        );
+        wait(member);
+        let _ = nix::sys::signal::kill(leader, nix::sys::signal::Signal::SIGKILL);
+        wait(leader);
+        assert_eq!(captured.stdout(), format!("{}\n", leader.as_raw()));
+    }
+
+    #[test]
+    fn a_waiting_leader_stays_a_zombie_until_it_is_collected() {
+        let captured = Captured::new();
+        let leader = start_in(
+            &["sh", "-c", "exit 3"],
+            Some(ChildGroup { pgid: 0, tty: -1 }),
+            0,
+            &captured,
+        );
+        // Looked at, not collected: the pid is still in use and the group still exists.
+        assert_eq!(
+            wait_member(leader, true),
+            Waited::Ended(Termination::Exited(3))
+        );
+        assert_eq!(
+            wait_member(leader, true),
+            Waited::Ended(Termination::Exited(3))
+        );
+        let group = nix::sys::signal::killpg(leader, None);
+        assert!(group.is_ok(), "the group is gone: {group:?}");
+        assert_eq!(wait(leader), Termination::Exited(3));
+    }
+
+    /// The signals a program ignores, as the bit mask in `/proc/self/status`.
+    fn ignored_by_program(ignored: u64) -> u64 {
+        let captured = Captured::new();
+        let child = start_in(
+            &["sh", "-c", "grep SigIgn /proc/self/status"],
+            None,
+            ignored,
+            &captured,
+        );
+        wait(child);
+        let text = captured.stdout();
+        let hex = text.split_whitespace().last().unwrap_or("0");
+        u64::from_str_radix(hex, 16).unwrap()
+    }
+
+    #[test]
+    fn the_signals_the_shell_ignores_are_reset_for_a_program() {
+        use nix::sys::signal::{SigHandler, Signal, signal};
+        // SIGTTIN is the one signal no other test in this process looks at.
+        // SAFETY: `SigIgn` installs no handler.
+        let before = unsafe { signal(Signal::SIGTTIN, SigHandler::SigIgn) }.unwrap();
+        let bit = 1_u64 << (libc::SIGTTIN - 1);
+        let reset = ignored_by_program(0);
+        let kept = ignored_by_program(1_u64 << libc::SIGTTIN);
+        // SAFETY: puts back what was there before.
+        unsafe { signal(Signal::SIGTTIN, before) }.unwrap();
+        assert_eq!(reset & bit, 0, "SIGTTIN stayed ignored");
+        assert_eq!(kept & bit, bit, "an ignored signal was reset");
     }
 }

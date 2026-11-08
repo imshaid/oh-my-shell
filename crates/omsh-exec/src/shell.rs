@@ -12,6 +12,7 @@ use omsh_syntax::{SyntaxDiagnostic, parse};
 use crate::check::{NotYet, check_list};
 use crate::exec::Unwind;
 use crate::io::Io;
+use crate::jobs::Job;
 use crate::options::Options;
 use crate::path::PathCache;
 use crate::signals;
@@ -110,6 +111,16 @@ pub struct Shell {
     pub(crate) loop_depth: u32,
     /// How many functions and sourced files are being run inside each other.
     pub(crate) func_depth: u32,
+    /// True if each command runs in a process group of its own, with the terminal handed to
+    /// it. Only the interactive shell turns this on (see [`Shell::set_job_control`]).
+    pub(crate) job_control: bool,
+    /// The job whose programs this shell (a pipeline stage, or something inside one) starts.
+    /// They all join its process group, so Ctrl+C reaches them together.
+    pub(crate) job: Option<Arc<Job>>,
+    /// True in a `$(...)` that is not inside a job. Its programs stay in the shell's own
+    /// group and in the foreground with it, as in bash: the substitution is part of the
+    /// command that is being expanded.
+    pub(crate) no_new_jobs: bool,
 }
 
 impl Default for Shell {
@@ -175,6 +186,9 @@ impl Shell {
             depth: 0,
             loop_depth: 0,
             func_depth: 0,
+            job_control: false,
+            job: None,
+            no_new_jobs: false,
         }
     }
 
@@ -210,6 +224,14 @@ impl Shell {
     /// Says whether a person is typing the commands. This only changes what `$-` shows.
     pub const fn set_interactive(&mut self, interactive: bool) {
         self.interactive = interactive;
+    }
+
+    /// Turns job control on or off. With it on, every command the shell runs is a job: its
+    /// programs get a process group of their own, and the terminal while they run. Call it
+    /// after a successful [`crate::start_interactive`]. Without a terminal it still makes the
+    /// groups, which is what the tests use.
+    pub const fn set_job_control(&mut self, on: bool) {
+        self.job_control = on;
     }
 
     /// The status of the last command (`$?`).

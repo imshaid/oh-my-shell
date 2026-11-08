@@ -1964,3 +1964,58 @@ fn a_background_job_inside_a_compound_command_runs_nothing() -> io::Result<()> {
     assert!(String::from_utf8_lossy(&out.stderr).contains("background jobs cannot run yet"));
     Ok(())
 }
+
+/// Runs `shell` with standard input from `input` and the given signals ignored, as under
+/// `nohup` or a background `&`. A signal that is ignored when a program starts stays ignored.
+fn run_with_ignored(shell: &str, ignored: &str, input: &str) -> io::Result<Output> {
+    let script = format!("trap '' {ignored}; exec \"$0\"");
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", &script, shell])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    child.wait_with_output()
+}
+
+/// A signal that was ignored when the shell started stays ignored: the shell cannot trap it
+/// and the programs it starts inherit the setting (S08). The shell must not reset the signals
+/// it knows about for its programs without looking at this.
+#[test]
+fn signals_ignored_on_entry_stay_ignored() -> io::Result<()> {
+    for (ignored, input) in [
+        ("HUP", "trap 'echo caught' HUP\nkill -HUP $$\necho after\n"),
+        ("HUP", "sh -c 'kill -HUP $$; echo alive'\n"),
+        ("TERM", "sh -c 'kill -TERM $$; echo alive'\n"),
+        (
+            "INT QUIT",
+            "sh -c 'kill -INT $$; echo alive-int'\nsh -c 'kill -QUIT $$; echo alive-quit'\n",
+        ),
+        (
+            "USR1",
+            "trap 'echo caught' USR1\nkill -USR1 $$\necho after\n",
+        ),
+        // Not ignored on entry: the signal is still trapped, and the program still dies.
+        (
+            "HUP",
+            "trap 'echo caught' USR1\nkill -USR1 $$\nsh -c 'kill -TERM $$; echo not-alive'\necho end\n",
+        ),
+    ] {
+        let ours = run_with_ignored(OMSH, ignored, input)?;
+        let reference = run_with_ignored("/bin/sh", ignored, input)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ours.stdout),
+            String::from_utf8_lossy(&reference.stdout),
+            "stdout differs, ignored {ignored}, input {input:?}"
+        );
+        assert_eq!(
+            ours.status.code(),
+            reference.status.code(),
+            "status differs, ignored {ignored}, input {input:?}"
+        );
+    }
+    Ok(())
+}
