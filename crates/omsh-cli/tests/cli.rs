@@ -503,3 +503,16 @@ fn the_hidden_switch_is_not_in_the_help() -> io::Result<()> {
     assert!(text.contains("--no-ai"));
     Ok(())
 }
+
+/// The color wrappers are for the interactive shell only. The shell's own interpreter on a pipe
+/// (`--interpret-stdin`) is not interactive, so `ls` there is the program itself.
+#[test]
+fn the_color_wrappers_are_not_defined_outside_the_interactive_shell() -> io::Result<()> {
+    let output = with_input(b"type ls; type grep\n")?;
+
+    let shown = String::from_utf8_lossy(&output.stdout);
+    assert!(!shown.contains("shell function"), "{shown}");
+    assert!(shown.contains("ls is /"), "{shown}");
+    assert!(shown.contains("grep is /"), "{shown}");
+    Ok(())
+}

@@ -98,6 +98,8 @@ pub struct Shell {
     /// on the left of `&&` and `||`, and after `!`. It is a count and not a flag because these
     /// can be nested, and it reaches into functions called from there.
     pub(crate) errexit_off: u32,
+    /// Which program files take `--color=auto` (see `color.rs`). Shared by every copy.
+    pub(crate) color_probes: crate::color::ProbeCache,
     /// The working directory of a copy of the shell (a subshell, a pipeline stage, a
     /// `$(...)`), when it is not the process's. `cd` in a copy must not call `chdir`: the
     /// working directory belongs to the whole process, which other threads are using. A copy
@@ -197,6 +199,7 @@ impl Shell {
             path_override: None,
             options: Options::default(),
             errexit_off: 0,
+            color_probes: crate::color::ProbeCache::default(),
             cwd_override: None,
             in_subshell: false,
             depth: 0,

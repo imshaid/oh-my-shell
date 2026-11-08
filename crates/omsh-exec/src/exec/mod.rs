@@ -308,6 +308,14 @@ impl Shell {
             return Err(Unwind::Interrupted);
         }
         let (words, via_command) = self.strip_command(words);
+        // The color wrappers (see `color.rs`) run the program they wrap, skipping functions.
+        let (words, via_command) = if via_command.is_none()
+            && words.first().map(Vec::as_slice) == Some(crate::color::INTERNAL.as_bytes())
+        {
+            (self.colored_words(&words, io)?, Some(false))
+        } else {
+            (words, via_command)
+        };
         let target = words
             .first()
             .map(|name| self.classify(name, via_command.is_some()));

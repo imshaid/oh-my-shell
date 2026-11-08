@@ -18,6 +18,7 @@
 mod alias;
 mod builtins;
 mod check;
+mod color;
 mod exec;
 mod expand;
 mod io;

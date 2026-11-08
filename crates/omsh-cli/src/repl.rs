@@ -345,6 +345,11 @@ const MAX_CONFIG_LINES: usize = 10;
 /// `-c`, scripts and piped input never get here (they are handed to `/bin/sh` first), and
 /// neither does `--interpret-stdin`, which is not interactive.
 fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Config, ExitStatus> {
+    if options.interactive {
+        // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
+        // that the file can replace or remove the wrappers.
+        shell.define_color_wrappers(files);
+    }
     if !options.interactive || options.no_config {
         return Ok(Config::default());
     }

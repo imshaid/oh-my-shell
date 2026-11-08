@@ -37,6 +37,12 @@ red, an existing file or directory is underlined, quoted text is yellow, options
 terminal's own color. Only the 16 ANSI color names are used (never hex or 256 colors, never bold), so the colors
 follow whatever theme your terminal has. The prompt's symbol also turns ANSI red after a command that failed.
 `NO_COLOR` removes every color and keeps the attributes (bold, dim, underline).
+In the interactive shell `ls`, `grep`, `egrep`, `fgrep` and `diff` are small built-in functions that add
+`--color=auto` when the program accepts it (asked once per program, by running it), so output to a terminal is
+colored and a pipe is not. `NO_COLOR` (set to anything non-empty) turns it off at every call. The shell never sets
+`LS_COLORS`, `GREP_COLOR` or `GREP_COLORS`. To change them, put an alias (`alias grep='grep --color=never'`) or a
+function of the same name in `init.omsh`, or remove one with `unset -f ls`. `command ls` skips the wrapper. They
+exist in the interactive shell only (also with `--no-config`); `-c`, scripts and pipes go to `/bin/sh`.
 `[prompt]` in `config.toml` picks the pieces. With `TERM=dumb`, an empty `TERM`, or inside
 Emacs the shell reads plain lines instead. History is not saved between sessions yet.
 Do not set it as your login shell yet.

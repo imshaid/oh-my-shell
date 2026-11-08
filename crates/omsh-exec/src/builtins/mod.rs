@@ -49,7 +49,7 @@ pub(crate) fn classify(name: &[u8]) -> Option<Class> {
 /// True if `name` is a builtin of the shell.
 #[must_use]
 pub fn is_builtin(name: &str) -> bool {
-    classify(name.as_bytes()).is_some()
+    classify(name.as_bytes()).is_some() || name == crate::color::INTERNAL
 }
 
 /// Runs the builtin `name` with `args` (the words after the name). `name` must be one that
