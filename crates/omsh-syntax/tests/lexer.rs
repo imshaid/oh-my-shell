@@ -483,6 +483,7 @@ fn every_kind_is_covered() {
         "Operator",
         "Redirect",
         "IoNumber",
+        "Separator",
         "Comment",
         "SingleQuoted",
         "DoubleQuoted",
@@ -618,6 +619,25 @@ fn assert_invariants(src: &str) {
             "{span:?} is empty in {src:?}"
         );
         cursor = span.span.end;
+    }
+    for word in &highlighted.words {
+        assert_span_valid(src, word.span);
+        assert!(
+            word.span.start < word.span.end,
+            "{word:?} is empty in {src:?}"
+        );
+        assert!(
+            matches!(
+                word.kind,
+                HighlightKind::Command
+                    | HighlightKind::Keyword
+                    | HighlightKind::Argument
+                    | HighlightKind::Assignment
+                    | HighlightKind::IoNumber
+                    | HighlightKind::HereDocDelimiter
+            ),
+            "{word:?} has a kind that is not a word's in {src:?}"
+        );
     }
     // Every token except a line ending is colored from its first byte to its last.
     for token in &lexed.tokens {
@@ -863,4 +883,59 @@ proptest! {
     ) {
         assert_invariants(&src);
     }
+}
+
+/// The words the editor checks: each one whole, however many pieces it has.
+#[test]
+fn highlight_words_cover_whole_words() {
+    let words = |src: &str| -> Vec<(HighlightKind, String)> {
+        lex_for_highlight(src)
+            .words
+            .iter()
+            .map(|w| (w.kind, w.span.text(src).to_owned()))
+            .collect()
+    };
+    assert_eq!(
+        words("ls -l \"a b\"c$d"),
+        vec![
+            (HighlightKind::Command, "ls".to_owned()),
+            (HighlightKind::Argument, "-l".to_owned()),
+            (HighlightKind::Argument, "\"a b\"c$d".to_owned()),
+        ]
+    );
+    // A word inside `$(...)` ends first; the word that holds it comes after.
+    assert_eq!(
+        words("echo $(pwd)x"),
+        vec![
+            (HighlightKind::Command, "echo".to_owned()),
+            (HighlightKind::Command, "pwd".to_owned()),
+            (HighlightKind::Argument, "$(pwd)x".to_owned()),
+        ]
+    );
+    assert_eq!(
+        words("A=1 cmd"),
+        vec![
+            (HighlightKind::Assignment, "A=1".to_owned()),
+            (HighlightKind::Command, "cmd".to_owned()),
+        ]
+    );
+}
+
+/// `;`, `&` and `;;` end a command; `|`, `&&`, `||` and parentheses join or group.
+#[test]
+fn highlight_separates_command_ends_from_operators() {
+    let kinds = |src: &str| -> Vec<HighlightKind> {
+        lex_for_highlight(src)
+            .spans
+            .iter()
+            .filter(|s| matches!(s.kind, HighlightKind::Operator | HighlightKind::Separator))
+            .map(|s| s.kind)
+            .collect()
+    };
+    assert_eq!(kinds("a ; b & c"), vec![HighlightKind::Separator; 2]);
+    assert_eq!(kinds("a | b && c || d"), vec![HighlightKind::Operator; 3]);
+    assert_eq!(
+        kinds("case x in y) a;; esac"),
+        vec![HighlightKind::Operator, HighlightKind::Separator]
+    );
 }

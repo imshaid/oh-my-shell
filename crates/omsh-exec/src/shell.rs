@@ -249,6 +249,18 @@ impl Shell {
         self.vars.get(name)
     }
 
+    /// The names of the functions defined so far.
+    #[must_use]
+    pub fn function_names(&self) -> Vec<String> {
+        self.functions.keys().cloned().collect()
+    }
+
+    /// The names of the aliases defined so far.
+    #[must_use]
+    pub fn alias_names(&self) -> Vec<String> {
+        self.aliases.keys().cloned().collect()
+    }
+
     /// Sets `$0`: the name the shell was started under (`-oh-my-shell` for a login shell).
     pub fn set_name(&mut self, name: &[u8]) {
         self.name = name.to_vec();

@@ -15,7 +15,7 @@ mod span;
 mod token;
 
 pub use diagnostic::SyntaxDiagnostic;
-pub use highlight::{HighlightKind, HighlightSpan, Highlighted, lex_for_highlight};
+pub use highlight::{HighlightKind, HighlightSpan, HighlightWord, Highlighted, lex_for_highlight};
 pub use lex::lex;
 pub use parser::{
     Expected, ParseError, ParseErrorKind, ParseFailure, Parsed, Unsupported, parse, parse_tolerant,

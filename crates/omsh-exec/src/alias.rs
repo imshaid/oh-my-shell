@@ -69,7 +69,10 @@ fn expand_text(
         // word: the `$(:)` of `$(:)ll`, the quotes of `"x"ll`.
         let joined_to_before = index > 0
             && spans[index - 1].span.end == start
-            && spans[index - 1].kind != HighlightKind::Operator
+            && !matches!(
+                spans[index - 1].kind,
+                HighlightKind::Operator | HighlightKind::Separator
+            )
             // The `$(` that opens a substitution is no part of the word inside it.
             && bytes[start - 1] != b'(';
         if joined_to_before || !whole_word(bytes, end, bytes.len()) {
@@ -165,6 +168,20 @@ mod tests {
             expand(&[("ll", "ls -l")], "if ll; then ll; fi"),
             "if ls -l; then ls -l; fi"
         );
+    }
+
+    /// `;` and `&` have their own highlight kind (S14a), apart from `|` and `&&`. A word that
+    /// touches one of them is still a new command, not a part of the word before it.
+    #[test]
+    fn a_command_right_after_a_separator_is_replaced() {
+        let a = [("ll", "ls -l")];
+        assert_eq!(expand(&a, "echo a;ll"), "echo a;ls -l");
+        assert_eq!(expand(&a, "echo a&ll"), "echo a&ls -l");
+        assert_eq!(
+            expand(&a, "case x in x) ll;;esac"),
+            "case x in x) ls -l;;esac"
+        );
+        assert_eq!(expand(&a, "a|ll&&ll"), "a|ls -l&&ls -l");
     }
 
     #[test]

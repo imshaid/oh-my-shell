@@ -36,10 +36,11 @@ mod traps;
 mod user;
 mod vars;
 
+pub use builtins::is_builtin;
 pub use check::NotYet;
 pub use io::{FdPlan, Io, Slot};
 pub use omsh_syntax::{Span, SyntaxDiagnostic};
-pub use path::{DEFAULT_PATH, Lookup, PathCache};
+pub use path::{DEFAULT_PATH, Lookup, PathCache, find_program};
 pub use shell::{LineResult, Outcome, Shell};
 pub use signals::{
     clear_interrupt, enter_interactive, hung_up, interrupted, note_inherited_signals,

@@ -88,26 +88,52 @@ impl PathCache {
             }
             self.found.remove(name);
         }
-        let mut denied = None;
-        for dir in path_value.split(|&b| b == b':') {
-            // An empty entry means the current directory.
-            let name_path = Path::new(OsStr::from_bytes(name));
-            let candidate = if dir.is_empty() {
-                Path::new(".").join(name_path)
-            } else {
-                Path::new(OsStr::from_bytes(dir)).join(name_path)
-            };
-            let real = under(base, &candidate);
-            if is_executable_file(&real) {
-                self.found.insert(name.to_vec(), candidate.clone());
-                return Lookup::Found(candidate);
-            }
-            if denied.is_none() && is_regular_file(&real) {
-                denied = Some(candidate);
-            }
+        let result = search(name, path_value, base);
+        if let Lookup::Found(found) = &result {
+            self.found.insert(name.to_vec(), found.clone());
         }
-        denied.map_or(Lookup::NotFound, Lookup::Denied)
+        result
     }
+}
+
+/// Searches the directories of `path_value` in order for the command `name` (which has no `/`).
+fn search(name: &[u8], path_value: &[u8], base: Option<&Path>) -> Lookup {
+    let mut denied = None;
+    for dir in path_value.split(|&b| b == b':') {
+        // An empty entry means the current directory.
+        let name_path = Path::new(OsStr::from_bytes(name));
+        let candidate = if dir.is_empty() {
+            Path::new(".").join(name_path)
+        } else {
+            Path::new(OsStr::from_bytes(dir)).join(name_path)
+        };
+        let real = under(base, &candidate);
+        if is_executable_file(&real) {
+            return Lookup::Found(candidate);
+        }
+        if denied.is_none() && is_regular_file(&real) {
+            denied = Some(candidate);
+        }
+    }
+    denied.map_or(Lookup::NotFound, Lookup::Denied)
+}
+
+/// True if running `name` would start a program: an executable regular file, found in
+/// `path_value` or, for a name with a `/`, at that path (relative to `base` when there is one).
+///
+/// This is the question the editor asks to color a command name. It uses no cache and changes
+/// nothing, so it can run on any thread; the caller remembers the answer for as long as it is
+/// good. A file that exists but may not be executed is `false`, as the shell would say
+/// "permission denied".
+#[must_use]
+pub fn find_program(name: &[u8], path_value: &[u8], base: Option<&Path>) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if name.contains(&b'/') {
+        return is_executable_file(&under(base, Path::new(OsStr::from_bytes(name))));
+    }
+    matches!(search(name, path_value, base), Lookup::Found(_))
 }
 
 /// `path` as seen from `base`: a relative path is joined to it.
@@ -300,5 +326,54 @@ mod tests {
         cache.lookup(b"tool", a.as_str().as_bytes(), None);
         cache.clear();
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn find_program_says_whether_a_command_would_start_a_program() {
+        let (a, b) = (TempDir::new(), TempDir::new());
+        a.file("plain", 0o644);
+        b.file("tool", 0o755);
+        let path = format!("{}:{}", a.as_str(), b.as_str());
+        let path = path.as_bytes();
+        assert!(find_program(b"tool", path, None));
+        assert!(!find_program(b"plain", path, None), "not executable");
+        assert!(!find_program(b"nosuch", path, None));
+        assert!(!find_program(b"", path, None));
+        // The search does not remember anything: a program installed later is found.
+        let late = b.file("late", 0o755);
+        assert!(find_program(b"late", path, None));
+        fs::remove_file(late).unwrap();
+        assert!(
+            !find_program(b"late", path, None),
+            "a deleted program is gone"
+        );
+    }
+
+    #[test]
+    fn find_program_checks_a_name_with_a_slash_where_it_points() {
+        let a = TempDir::new();
+        let tool = a.file("tool", 0o755);
+        let plain = a.file("plain", 0o644);
+        assert!(find_program(tool.as_os_str().as_bytes(), b"", None));
+        assert!(!find_program(plain.as_os_str().as_bytes(), b"", None));
+        assert!(
+            !find_program(a.as_str().as_bytes(), b"", None),
+            "a directory"
+        );
+        // Relative to the directory of a copy of the shell.
+        assert!(find_program(b"./tool", b"", Some(&a.0)));
+        assert!(!find_program(b"./nosuch", b"", Some(&a.0)));
+    }
+
+    #[test]
+    fn find_program_and_the_cache_agree() {
+        let a = TempDir::new();
+        a.file("tool", 0o755);
+        let path = a.as_str().as_bytes();
+        let cached = matches!(
+            PathCache::new().lookup(b"tool", path, None),
+            Lookup::Found(_)
+        );
+        assert_eq!(cached, find_program(b"tool", path, None));
     }
 }

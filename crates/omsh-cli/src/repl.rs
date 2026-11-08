@@ -5,6 +5,7 @@
 //! shell mode, `-i` on a pipe, a test that feeds a pipe) the plain reader takes a line from
 //! standard input, one byte at a time, with no editing.
 
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
@@ -14,11 +15,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use omsh_config::{Config, Paths};
-use omsh_editor::{Editor, PromptState, Read as Typed, working_directory};
+use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, working_directory};
 use omsh_exec::{
-    ExitStatus, Io, LineResult, Outcome, Shell, hung_up, is_root, note_inherited_signals,
-    release_terminal, start_interactive, terminal_gone, wait_for_input,
+    DEFAULT_PATH, ExitStatus, Io, LineResult, Outcome, Shell, find_program, hung_up, is_builtin,
+    is_root, note_inherited_signals, release_terminal, start_interactive, terminal_gone,
+    wait_for_input,
 };
+use omsh_ui::Theme;
 
 use crate::report::{self, Style};
 
@@ -227,9 +230,44 @@ fn make_editor(shell: &Shell, config: &Config, style: Style, terminals: bool) ->
     let Style::Graphical { color, unicode } = style else {
         return None;
     };
-    Some(Editor::new(config, unicode, color, hung_up, || {
-        terminal_gone(io::stdin())
-    }))
+    Some(Editor::new(
+        config,
+        &Theme::default(),
+        unicode,
+        color,
+        hung_up,
+        || terminal_gone(io::stdin()),
+    ))
+}
+
+/// What the shell can run, as it is when a prompt is drawn. The editor asks it to color command
+/// names (red when nothing would run). It is a copy, so the editor's thread needs no access to
+/// the shell, and a change made by the next command shows at the next prompt.
+struct ShellCommands {
+    functions: HashSet<String>,
+    aliases: HashSet<String>,
+    path: Vec<u8>,
+}
+
+impl ShellCommands {
+    fn of(shell: &Shell) -> Self {
+        Self {
+            functions: shell.function_names().into_iter().collect(),
+            aliases: shell.alias_names().into_iter().collect(),
+            path: shell
+                .var("PATH")
+                .map_or_else(|| DEFAULT_PATH.as_bytes().to_vec(), <[u8]>::to_vec),
+        }
+    }
+}
+
+impl CommandLookup for ShellCommands {
+    fn is_command(&self, name: &str) -> bool {
+        self.functions.contains(name)
+            || self.aliases.contains(name)
+            || is_builtin(name)
+            || find_program(name.as_bytes(), &self.path, None)
+    }
 }
 
 /// Everything the prompt shows, taken from the shell's own variables (not the process
@@ -257,7 +295,10 @@ fn prompt_state(shell: &Shell, took: Option<Duration>) -> PromptState {
 
 fn read_edited(editor: &mut Editor, shell: &Shell, pending: &str, took: Option<Duration>) -> Next {
     let typed = if pending.is_empty() {
-        editor.read(&prompt_state(shell, took))
+        editor.read(
+            &prompt_state(shell, took),
+            Box::new(ShellCommands::of(shell)),
+        )
     } else {
         editor.read_more()
     };

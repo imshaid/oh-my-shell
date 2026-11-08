@@ -41,7 +41,8 @@ expression: render_highlight(lines)
 
 "a |& b"
   Command "a"
-  Operator "|&"
+  Operator "|"
+  Separator "&"
   Command "b"
 
 "((1))"

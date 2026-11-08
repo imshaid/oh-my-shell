@@ -9,7 +9,7 @@ expression: render_highlight(lines)
 
 "a;b"
   Command "a"
-  Operator ";"
+  Separator ";"
   Command "b"
 
 "a && b || c"
@@ -21,11 +21,11 @@ expression: render_highlight(lines)
 
 "a &"
   Command "a"
-  Operator "&"
+  Separator "&"
 
 "a&b"
   Command "a"
-  Operator "&"
+  Separator "&"
   Command "b"
 
 "! a"
@@ -38,19 +38,19 @@ expression: render_highlight(lines)
 "(a; b)"
   Operator "("
   Command "a"
-  Operator ";"
+  Separator ";"
   Command "b"
   Operator ")"
 
 "{ a; }"
   Keyword "{"
   Command "a"
-  Operator ";"
+  Separator ";"
   Keyword "}"
 
 "{a; }"
   Command "{a"
-  Operator ";"
+  Separator ";"
   Keyword "}"
 
 "a }"
@@ -64,7 +64,7 @@ expression: render_highlight(lines)
   Argument "a"
   Operator ")"
   Command "b"
-  Operator ";;"
+  Separator ";;"
   Keyword "esac"
 
 "a &\\\n& b"

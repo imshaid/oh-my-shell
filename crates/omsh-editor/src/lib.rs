@@ -14,20 +14,23 @@
 //! helper thread and waits for it in short steps; if the terminal is gone it gives up on that
 //! thread and returns [`Read::HungUp`], so that the shell can end properly.
 
+mod highlight;
 mod prompt;
 mod segments;
 mod validator;
 
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
 use omsh_config::{Config, EditMode as ConfigMode};
-use reedline::{Emacs, FileBackedHistory, Highlighter, Reedline, Signal, StyledText, Vi};
+use omsh_ui::{Role, Theme};
+use reedline::{Emacs, FileBackedHistory, Reedline, Signal, Vi};
 
+pub use highlight::{CommandLookup, ShellHighlighter};
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
 pub use validator::is_incomplete;
@@ -69,24 +72,16 @@ pub struct Editor {
     /// a hang-up or a failure of that thread.
     engine: Option<Reedline>,
     look: Look,
+    /// What the highlighter knows about the system; renewed for each prompt.
+    context: Arc<Mutex<highlight::Context>>,
     /// Asked while waiting: has the terminal gone away?
     terminal_gone: Box<dyn Fn() -> bool + Send>,
 }
 
-/// A line is no highlighting yet; S14 brings the real one.
-struct NoHighlight;
-
-impl Highlighter for NoHighlight {
-    fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
-        let mut text = StyledText::new();
-        text.push((Default::default(), line.to_owned()));
-        text
-    }
-}
-
 impl Editor {
     /// Builds the editor from the configuration. `unicode` and `color` say what the terminal
-    /// takes.
+    /// takes. `theme` is the look of the command line; without `color` its colors are dropped
+    /// and only the attributes (underline, dim, reverse) stay.
     ///
     /// Two questions are asked once in a while while the editor waits. `hang_up`: was the shell
     /// told to hang up (`SIGHUP`)? The editor then ends the line it is reading cleanly, which
@@ -96,6 +91,7 @@ impl Editor {
     #[must_use]
     pub fn new(
         config: &Config,
+        theme: &Theme,
         unicode: bool,
         color: bool,
         hang_up: impl Fn() -> bool + Send + 'static,
@@ -108,12 +104,22 @@ impl Editor {
             right: names(&config.prompt.right),
         };
 
+        let theme = if color {
+            theme.clone()
+        } else {
+            theme.without_color()
+        };
+        let context = Arc::new(Mutex::new(highlight::Context::new()));
         let flag = Arc::new(AtomicBool::new(false));
         let raise = Arc::clone(&flag);
         let capacity =
             SESSION_HISTORY.min(usize::try_from(config.history.size).unwrap_or(usize::MAX));
         let mut engine = Reedline::create()
-            .with_highlighter(Box::new(NoHighlight))
+            .with_highlighter(Box::new(highlight::ShellHighlighter::new(
+                theme.clone(),
+                Arc::clone(&context),
+            )))
+            .with_visual_selection_style(highlight::to_style(theme.get(Role::Selection)))
             .with_validator(Box::new(validator::ShellValidator))
             .with_break_signal(flag)
             .with_idle_callback(Box::new(move || {
@@ -141,12 +147,18 @@ impl Editor {
         Self {
             engine: Some(engine),
             look,
+            context,
             terminal_gone: Box::new(terminal_gone),
         }
     }
 
-    /// Shows the prompt and waits for a command.
-    pub fn read(&mut self, state: &PromptState) -> Read {
+    /// Shows the prompt and waits for a command. `lookup` answers which command names exist, for
+    /// the colors; what it and the file system said earlier is forgotten first.
+    pub fn read(&mut self, state: &PromptState, lookup: Box<dyn CommandLookup>) -> Read {
+        self.context
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reset(lookup, state.cwd.clone(), state.home.clone());
         let prompt = ShellPrompt::new(&self.look, state, segments::now);
         self.read_with(prompt)
     }
@@ -243,10 +255,10 @@ mod tests {
     #[test]
     fn the_editor_can_be_built_in_both_modes() {
         let mut config = Config::default();
-        let _ = Editor::new(&config, true, true, || false, || false);
+        let _ = Editor::new(&config, &Theme::default(), true, true, || false, || false);
         config.editor.mode = ConfigMode::Vi;
         config.prompt.transient = true;
-        let _ = Editor::new(&config, false, false, || false, || false);
+        let _ = Editor::new(&config, &Theme::default(), false, false, || false, || false);
     }
 
     #[test]
@@ -270,11 +282,5 @@ mod tests {
             classify(Err(io::Error::other("no"))),
             Read::Failed(_)
         ));
-    }
-
-    #[test]
-    fn no_highlight_keeps_the_text() {
-        let styled = NoHighlight.highlight("echo hi", 0);
-        assert_eq!(styled.raw_string(), "echo hi");
     }
 }

@@ -9,11 +9,16 @@ repository.workspace = true
 [dependencies]
 chrono.workspace = true
 crossterm.workspace = true
+nu-ansi-term.workspace = true
 omsh-config.workspace = true
 omsh-history.workspace = true
 omsh-syntax.workspace = true
 omsh-ui.workspace = true
 reedline.workspace = true
+
+[[bench]]
+name = "keystroke"
+harness = false
 
 [lints]
 workspace = true

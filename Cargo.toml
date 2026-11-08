@@ -53,6 +53,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Terminal control used by the editor crate, to put the terminal back in line mode when the
 # editor's thread is abandoned or dies. reedline depends on it already, with the same version.
 crossterm = { version = "0.29", default-features = false }
+# Colors and text styles for the editor's highlighter (S14a): reedline draws with this crate's
+# `Style` and does not re-export it. reedline depends on it already (0.50.3, MIT, nushell), so
+# it adds no crate to the tree.
+nu-ansi-term = { version = "0.50", default-features = false }
 # Line editor (S13a). Default features are off: `sqlite`, `system_clipboard` and
 # `external_printer` are not used (history is our own store in S13b; job notices are printed
 # before the prompt, not above the line being typed).

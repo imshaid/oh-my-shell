@@ -5,7 +5,7 @@
 
 use crate::scanner::{Close, Leaf, Open, Sink, WordClass, scan_range};
 use crate::span::Span;
-use crate::token::{LexError, TokenKind};
+use crate::token::{LexError, Op, TokenKind};
 
 /// The roles a piece of the command line can have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -18,8 +18,10 @@ pub enum HighlightKind {
     Argument,
     /// `FOO=` in front of a command.
     Assignment,
-    /// `|`, `&&`, `;`, `(` and the like.
+    /// `|`, `&&`, `||`, `(` and `)`.
     Operator,
+    /// `;`, `&` and `;;`: what ends a command.
+    Separator,
     /// `>`, `2>&`, `<<` and the like.
     Redirect,
     /// The digits in `2>file`.
@@ -54,11 +56,28 @@ pub struct HighlightSpan {
     pub span: Span,
 }
 
+/// One whole word, as the editor needs it to check the command name or the file it names.
+///
+/// A word may hold several spans of different kinds (`"a"b$c`), so its extent cannot be
+/// guessed from the spans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HighlightWord {
+    /// [`HighlightKind::Command`], [`HighlightKind::Keyword`], [`HighlightKind::Argument`],
+    /// [`HighlightKind::Assignment`], [`HighlightKind::IoNumber`] or
+    /// [`HighlightKind::HereDocDelimiter`]: the word's role as a whole.
+    pub kind: HighlightKind,
+    /// From the first to one past the last byte of the word.
+    pub span: Span,
+}
+
 /// The result of [`lex_for_highlight`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Highlighted {
     /// Spans in source order, never overlapping. Blanks between tokens have no span.
     pub spans: Vec<HighlightSpan>,
+    /// Every word, in the order in which they end (a word inside `$(...)` comes before the
+    /// word that holds it).
+    pub words: Vec<HighlightWord>,
     /// Problems, so that the editor can mark them on top of the spans.
     pub errors: Vec<LexError>,
 }
@@ -79,6 +98,7 @@ pub fn lex_for_highlight(src: &str) -> Highlighted {
                 span: piece.span,
             })
             .collect(),
+        words: sink.words,
         errors: sink.errors,
     }
 }
@@ -96,11 +116,14 @@ struct Frame {
     kind: Option<HighlightKind>,
     /// The number of pieces when the construct opened.
     first_piece: usize,
+    /// Where the construct starts.
+    start: usize,
 }
 
 #[derive(Default)]
 struct PaintSink {
     pieces: Vec<Piece>,
+    words: Vec<HighlightWord>,
     errors: Vec<LexError>,
     frames: Vec<Frame>,
     /// Everything before this position has been painted or skipped.
@@ -177,6 +200,7 @@ impl Sink for PaintSink {
         self.advance_to(span.start);
         let paint_kind = match kind {
             TokenKind::Op(op) if op.is_redirect() => HighlightKind::Redirect,
+            TokenKind::Op(Op::Semi | Op::DoubleSemi | Op::Amp) => HighlightKind::Separator,
             TokenKind::Op(_) => HighlightKind::Operator,
             TokenKind::Comment => HighlightKind::Comment,
             // A line ending has no color of its own. Leaving the cursor before it lets
@@ -200,6 +224,7 @@ impl Sink for PaintSink {
         self.frames.push(Frame {
             kind,
             first_piece: self.pieces.len(),
+            start,
         });
     }
 
@@ -243,6 +268,14 @@ impl Sink for PaintSink {
                 WordClass::HereDocDelimiter => HighlightKind::HereDocDelimiter,
             };
             let assignment = assignment_name.filter(|_| class == WordClass::Assignment);
+            self.words.push(HighlightWord {
+                kind: if assignment.is_some() {
+                    HighlightKind::Assignment
+                } else {
+                    kind
+                },
+                span: Span::new(frame.start, end),
+            });
             self.finish_word(frame.first_piece, kind, assignment);
         }
     }

@@ -31,8 +31,12 @@ Ctrl+A/E/K/W/U, Ctrl+R for history search, up and down to recall earlier command
 vi keys. Enter waits for an unfinished command (an open quote, `if` without `fi`, a trailing `\`,
 a here-document) and the next line becomes part of it. The prompt has two lines, like fish: a header with the directory (bold) and the git branch and virtual
 environment (dim), a failed status and a command that took over two seconds at the right edge (dim), and below it
-the symbol where you type. No color is forced: everything uses the terminal's own colors, and the one exception is
-the symbol turning ANSI red after a command that failed. `NO_COLOR` removes that red and keeps bold and dim.
+the symbol where you type. The text you type is colored as you type it, like fish: a command that does not exist is
+red, an existing file or directory is underlined, quoted text is yellow, options and arguments are cyan, `|`, `&&`,
+`||` and redirections are cyan, `;` and `&` are green, and a comment is dim red. A command that exists keeps the
+terminal's own color. Only the 16 ANSI color names are used (never hex or 256 colors, never bold), so the colors
+follow whatever theme your terminal has. The prompt's symbol also turns ANSI red after a command that failed.
+`NO_COLOR` removes every color and keeps the attributes (bold, dim, underline).
 `[prompt]` in `config.toml` picks the pieces. With `TERM=dumb`, an empty `TERM`, or inside
 Emacs the shell reads plain lines instead. History is not saved between sessions yet.
 Do not set it as your login shell yet.
