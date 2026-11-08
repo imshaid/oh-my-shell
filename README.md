@@ -19,6 +19,12 @@ from a pipe are handed to `/bin/sh` at once (so `ssh host cmd` and `scp` work wi
 login shell), and only a terminal (or `-i`) gets the shell's own interpreter. `-l`, or a name that
 starts with `-`, makes a login shell that imports the environment from `/etc/profile` and
 `~/.profile` through `/bin/sh -l`. `--no-ai` is accepted and does nothing yet.
+The interactive shell reads `~/.config/oh-my-shell/config.toml` (created, with every setting listed
+and commented out, the first time it starts) and then runs `~/.config/oh-my-shell/init.omsh`, a file of
+commands in the shell's own language for aliases, exports and functions. The `XDG_*` variables are
+respected. A mistake in `config.toml` never stops the shell: it is shown with its line and column, and
+the setting keeps its default. `--no-config` skips both files and writes nothing; it is the way back in
+when `init.omsh` is broken (an `exit` in it ends the shell).
 Do not set it as your login shell yet.
 
 ## Build and run

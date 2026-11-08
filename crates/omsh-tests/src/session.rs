@@ -103,8 +103,16 @@ impl Launch {
         Ok(self)
     }
 
+    /// Sets `HOME` to `dir`. The shell writes its first-run `config.toml` under the home
+    /// directory, so a test must not use a real one.
+    pub fn home(self, dir: &Path) -> Self {
+        self.env("HOME", &dir.to_string_lossy())
+    }
+
     /// Sets (or replaces) an environment variable. The environment starts with only `PATH`,
-    /// `HOME`, `LANG` and `TERM`.
+    /// `HOME`, `LANG` and `TERM`. The three `XDG_*_HOME` variables are not in it: unless a
+    /// test sets them, they are made from `HOME` when the program starts, so the shell's
+    /// files always land under the home the test chose.
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.env.retain(|(k, _)| k != key);
         self.env.push((key.to_owned(), value.to_owned()));
@@ -146,9 +154,21 @@ impl Launch {
             command.arg("--");
         }
         command.arg(&self.bin).args(&self.args);
+        let mut env = self.env.clone();
+        if let Some((_, home)) = env.iter().find(|(k, _)| k == "HOME").cloned() {
+            for (name, under_home) in [
+                ("XDG_CONFIG_HOME", ".config"),
+                ("XDG_DATA_HOME", ".local/share"),
+                ("XDG_STATE_HOME", ".local/state"),
+            ] {
+                if !env.iter().any(|(k, _)| k == name) {
+                    env.push((name.to_owned(), format!("{home}/{under_home}")));
+                }
+            }
+        }
         command
             .env_clear()
-            .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::from(pty.slave.try_clone()?))
             .stdout(Stdio::from(pty.slave.try_clone()?))
             .stderr(Stdio::from(pty.slave));

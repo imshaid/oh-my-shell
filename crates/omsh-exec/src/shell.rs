@@ -243,6 +243,12 @@ impl Shell {
         }
     }
 
+    /// The value of a shell variable, if it is set.
+    #[must_use]
+    pub fn var(&self, name: &str) -> Option<&[u8]> {
+        self.vars.get(name)
+    }
+
     /// Sets `$0`: the name the shell was started under (`-oh-my-shell` for a login shell).
     pub fn set_name(&mut self, name: &[u8]) {
         self.name = name.to_vec();

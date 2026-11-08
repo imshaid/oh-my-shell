@@ -7,8 +7,11 @@
 //! same trade-off as `guarded()` in the unit tests of `omsh-exec`.
 
 use std::any::Any;
+use std::fs;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -27,12 +30,22 @@ pub const WHOLE_TEST: Duration = Duration::from_secs(60);
 pub struct Ctx {
     bin: &'static str,
     sessions: Registry,
+    home: PathBuf,
 }
 
 impl Ctx {
-    /// A launch of the program under test, which the watchdog will clean up after.
+    /// A launch of the program under test, which the watchdog will clean up after. Its `HOME`
+    /// is [`Ctx::home`], so the files the shell writes there belong to this test alone.
     pub fn launch(&self) -> Launch {
-        Launch::new(self.bin).registered(Arc::clone(&self.sessions))
+        Launch::new(self.bin)
+            .registered(Arc::clone(&self.sessions))
+            .home(&self.home)
+    }
+
+    /// The home directory of this test: empty at the start, removed at the end. Put
+    /// `.config/oh-my-shell/config.toml` or `init.omsh` here before starting the shell.
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// The program under test, started with the usual environment, at its first prompt.
@@ -56,9 +69,12 @@ pub fn pty_test_within(
     body: impl FnOnce(&Ctx) -> io::Result<()> + Send + 'static,
 ) {
     let sessions: Registry = Arc::new(Mutex::new(Vec::new()));
+    let home = HomeDir::new()
+        .unwrap_or_else(|error| panic!("cannot make the home directory of the test: {error}"));
     let ctx = Ctx {
         bin,
         sessions: Arc::clone(&sessions),
+        home: home.0.clone(),
     };
     let (done, result) = mpsc::channel::<Result<io::Result<()>, Box<dyn Any + Send>>>();
     let thread = thread::spawn(move || {
@@ -76,6 +92,30 @@ pub fn pty_test_within(
         Ok(Ok(Err(error))) => panic!("the test returned an error: {error}"),
         Ok(Err(panic)) => resume_unwind(panic),
         Err(_) => panic!("the test did not finish in {limit:?} (its processes were killed)"),
+    }
+}
+
+/// The home directory of one test, removed when the test function ends (also when it panics,
+/// which is after the processes were killed).
+struct HomeDir(PathBuf);
+
+impl HomeDir {
+    fn new() -> io::Result<Self> {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "omsh-pty-home-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for HomeDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

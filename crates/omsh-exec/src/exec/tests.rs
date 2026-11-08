@@ -1197,6 +1197,134 @@ fn dot_searches_the_path_for_a_name_without_a_slash() {
 }
 
 #[test]
+fn a_syntax_error_in_a_sourced_file_has_a_line_and_a_column() {
+    let dir = Dir::new();
+    fs::write(
+        dir.path().join("bad.sh"),
+        "echo one\n\nif true; then\n  echo x\nfi fi\n",
+    )
+    .unwrap();
+    let mut sh = dir.shell();
+    let d = run(&mut sh, ". ./bad.sh; echo $?");
+    assert_eq!(d.out, "one\n2\n", "what ran before the mistake stays done");
+    assert!(d.err.contains("./bad.sh:5:4: "), "{}", d.err);
+    // `eval` has no file and says no place.
+    let d = run(&mut sh, "eval 'echo a\nfi'");
+    assert!(d.err.contains("oh-my-shell: eval: "), "{}", d.err);
+}
+
+// ------------------------------------------------------------------ the startup file
+
+/// Runs a startup file and returns what it printed, and what the shell was told to do.
+fn startup(sh: &mut Shell, path: &Path) -> (Done, Outcome) {
+    let mut captured = Captured::new();
+    let outcome = sh.run_startup_file(path, &mut captured.io);
+    let done = Done {
+        out: captured.stdout(),
+        err: captured.stderr(),
+        status: sh.last_status().code(),
+        exited: matches!(outcome, Outcome::Exit(_)),
+    };
+    (done, outcome)
+}
+
+#[test]
+fn the_startup_file_defines_what_the_next_lines_use() {
+    let dir = Dir::new();
+    let file = dir.path().join("init.omsh");
+    fs::write(
+        &file,
+        "alias ll='echo long'\ngreet() { echo hello $1; }\nexport KEPT=yes\nPLAIN=1\n",
+    )
+    .unwrap();
+    let mut sh = dir.shell();
+    let (done, _) = startup(&mut sh, &file);
+    assert_eq!((done.out.as_str(), done.err.as_str()), ("", ""));
+    let d = run(&mut sh, "ll; greet world; echo $KEPT $PLAIN");
+    assert_eq!(d.out, "long\nhello world\nyes 1\n");
+    assert!(sh.vars.is_exported("KEPT"));
+}
+
+#[test]
+fn a_missing_startup_file_is_silent_and_changes_nothing() {
+    let dir = Dir::new();
+    let mut sh = dir.shell();
+    let (done, outcome) = startup(&mut sh, &dir.path().join("init.omsh"));
+    assert_eq!((done.out.as_str(), done.err.as_str()), ("", ""));
+    assert!(matches!(outcome, Outcome::Continue(_)));
+}
+
+#[test]
+fn the_status_after_the_startup_file_is_zero() {
+    let dir = Dir::new();
+    let file = dir.path().join("init.omsh");
+    fs::write(&file, "false\n").unwrap();
+    let mut sh = dir.shell();
+    let (done, _) = startup(&mut sh, &file);
+    assert_eq!(done.status, 0);
+    assert_eq!(run(&mut sh, "echo $?").out, "0\n");
+}
+
+#[test]
+fn return_ends_the_startup_file() {
+    let dir = Dir::new();
+    let file = dir.path().join("init.omsh");
+    fs::write(&file, "before=1\nreturn\nafter=1\n").unwrap();
+    let mut sh = dir.shell();
+    let (done, outcome) = startup(&mut sh, &file);
+    assert_eq!(done.err, "");
+    assert!(matches!(outcome, Outcome::Continue(_)));
+    assert_eq!(
+        run(&mut sh, "echo ${before-unset} ${after-unset}").out,
+        "1 unset\n"
+    );
+}
+
+#[test]
+fn exit_in_the_startup_file_ends_the_shell() {
+    let dir = Dir::new();
+    let file = dir.path().join("init.omsh");
+    fs::write(&file, "echo hi\nexit 7\necho never\n").unwrap();
+    let (done, outcome) = startup(&mut dir.shell(), &file);
+    assert_eq!(done.out, "hi\n");
+    assert!(matches!(outcome, Outcome::Exit(s) if s.code() == 7));
+}
+
+#[test]
+fn a_mistake_in_the_startup_file_has_a_place_and_the_shell_goes_on() {
+    let dir = Dir::new();
+    let file = dir.path().join("init.omsh");
+    fs::write(&file, "ok=1\nexport GOOD=yes\nif then\nnever=1\n").unwrap();
+    let mut sh = dir.shell();
+    let (done, outcome) = startup(&mut sh, &file);
+    assert!(matches!(outcome, Outcome::Continue(_)));
+    let wanted = format!("{}:3:", file.display());
+    assert!(done.err.contains(&wanted), "{}", done.err);
+    assert_eq!(
+        run(&mut sh, "echo $ok $GOOD ${never-unset}").out,
+        "1 yes unset\n",
+        "what ran before the mistake stays, what comes after does not run"
+    );
+}
+
+#[test]
+fn a_startup_file_that_cannot_be_used_gives_one_line() {
+    let dir = Dir::new();
+    let mut sh = dir.shell();
+    let file = dir.path().join("init.omsh");
+    fs::write(&file, b"echo \xff\n").unwrap();
+    let (done, _) = startup(&mut sh, &file);
+    assert!(done.err.contains("not valid UTF-8"), "{}", done.err);
+    assert_eq!(done.err.lines().count(), 1);
+
+    // A directory.
+    fs::remove_file(&file).unwrap();
+    fs::create_dir(&file).unwrap();
+    let (done, _) = startup(&mut sh, &file);
+    assert_eq!(done.err.lines().count(), 1, "{}", done.err);
+}
+
+#[test]
 fn a_builtin_that_cannot_write_says_so() {
     let d = run(&mut shell(), "echo hi > /dev/full");
     assert_eq!(d.status, 1);

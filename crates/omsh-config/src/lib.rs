@@ -1,3 +1,23 @@
-//! Configuration schema, loading, validation and XDG paths.
+//! Configuration schema, loading, validation and XDG paths (blueprint §9).
 //!
-//! Not implemented yet: this crate only holds its place in the workspace.
+//! - [`Paths`] works out the directories from `XDG_*_HOME` and `HOME`.
+//! - [`Config`] is the typed configuration with the defaults of the blueprint.
+//! - [`load`] reads `config.toml`, writes the commented first-run file when there is none, and
+//!   never fails: a wrong setting keeps its default and is returned as a [`Problem`] with its
+//!   line and column.
+//! - [`parse`] does the same for a text, which is what the tests use.
+//!
+//! This crate depends on no other crate of the workspace.
+
+mod first_run;
+mod load;
+mod paths;
+mod schema;
+
+pub use first_run::{TEMPLATE, create as write_if_missing};
+pub use load::{Loaded, Parsed, Problem, Severity, load, parse};
+pub use paths::Paths;
+pub use schema::{
+    Ai, AiContext, AiLanguage, Channel, Config, ConfirmLevel, EditMode, Editor, History, Icons,
+    Motion, PROMPT_SEGMENTS, Prompt, Provider, SECTIONS, Safety, Ui, Update,
+};

@@ -4,6 +4,7 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 
 use miette::{Diagnostic, GraphicalReportHandler, GraphicalTheme, NarratableReportHandler};
+use omsh_config::Icons;
 
 /// How reports are drawn, chosen once from what stderr is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,16 +21,32 @@ pub enum Style {
 }
 
 impl Style {
-    /// Picks a style for stderr as it is now.
+    /// Picks a style for stderr as it is now. `icons` is the `ui.icons` setting: `ascii` and
+    /// `unicode` decide the box characters; `auto` looks at the locale and the terminal.
     #[must_use]
-    pub fn detect() -> Self {
-        if !io::stderr().is_terminal() {
+    pub fn detect(icons: Icons) -> Self {
+        let dumb = env::var("TERM").is_ok_and(|term| term == "dumb");
+        Self::choose(
+            io::stderr().is_terminal(),
+            dumb,
+            env_set("NO_COLOR"),
+            locale_is_utf8(),
+            icons,
+        )
+    }
+
+    /// The choice itself, from the facts, so that it can be tested.
+    fn choose(terminal: bool, dumb: bool, no_color: bool, utf8: bool, icons: Icons) -> Self {
+        if !terminal {
             return Self::Plain;
         }
-        let dumb = env::var("TERM").is_ok_and(|term| term == "dumb");
         Self::Graphical {
-            color: !dumb && !env_set("NO_COLOR"),
-            unicode: !dumb && locale_is_utf8(),
+            color: !dumb && !no_color,
+            unicode: match icons {
+                Icons::Unicode => true,
+                Icons::Ascii => false,
+                Icons::Auto => !dumb && utf8,
+            },
         }
     }
 }
@@ -93,6 +110,51 @@ mod tests {
             span: Span::new(0, 5),
         }
         .to_diagnostic("a | b")
+    }
+
+    #[test]
+    fn the_icons_setting_decides_the_box_characters() {
+        let graphical = |unicode| Style::Graphical {
+            color: true,
+            unicode,
+        };
+        // `ascii` wins over a UTF-8 locale, `unicode` over a dumb terminal.
+        assert_eq!(
+            Style::choose(true, false, false, true, Icons::Ascii),
+            graphical(false)
+        );
+        assert_eq!(
+            Style::choose(true, false, false, false, Icons::Unicode),
+            graphical(true)
+        );
+        // `auto` follows the locale and the terminal.
+        assert_eq!(
+            Style::choose(true, false, false, true, Icons::Auto),
+            graphical(true)
+        );
+        assert_eq!(
+            Style::choose(true, false, false, false, Icons::Auto),
+            graphical(false)
+        );
+        assert_eq!(
+            Style::choose(true, true, false, true, Icons::Auto),
+            Style::Graphical {
+                color: false,
+                unicode: false
+            }
+        );
+        // `NO_COLOR` takes the colors only, and a pipe gets plain sentences whatever is set.
+        assert_eq!(
+            Style::choose(true, false, true, true, Icons::Unicode),
+            Style::Graphical {
+                color: false,
+                unicode: true
+            }
+        );
+        assert_eq!(
+            Style::choose(false, false, false, true, Icons::Unicode),
+            Style::Plain
+        );
     }
 
     #[test]

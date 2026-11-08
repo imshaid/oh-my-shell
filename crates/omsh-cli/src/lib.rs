@@ -15,6 +15,9 @@
 //! | no operands, input is a terminal, or `-i` | this shell's own interactive loop |
 //! | `-l`, or `argv[0]` starts with `-` | a login shell: the environment is imported first |
 //!
+//! The interactive shell reads `~/.config/oh-my-shell/config.toml` (created with comments on
+//! the first run) and runs `init.omsh` before the first prompt; `--no-config` skips both.
+//!
 //! `--interpret-stdin` is a hidden switch for the tests: it runs this shell's interpreter on
 //! piped input, which would otherwise go to `/bin/sh`.
 
@@ -38,6 +41,9 @@ use clap::Parser;
 ///
 /// `-c`, scripts and input from a pipe are run by `/bin/sh` itself, so tools like ssh and scp
 /// can use this as a login shell.
+///
+/// The interactive shell reads ~/.config/oh-my-shell/config.toml (created with comments on the
+/// first run) and runs init.omsh from the same directory before the first prompt.
 #[derive(Debug, Default, Parser)]
 #[command(name = "oh-my-shell", version)]
 #[allow(
@@ -57,6 +63,10 @@ struct Cli {
     /// Turn off the AI layer for this session.
     #[arg(long)]
     no_ai: bool,
+    /// Read neither `config.toml` nor `init.omsh`, and write nothing. The way back in when a
+    /// startup file is broken.
+    #[arg(long)]
+    no_config: bool,
     /// Run this shell's own interpreter on standard input instead of `/bin/sh`.
     #[arg(long, hide = true)]
     interpret_stdin: bool,
@@ -96,6 +106,7 @@ fn choose(cli: &Cli, started_as_login: bool, stdin_is_terminal: bool) -> Mode {
             interactive,
             login,
             no_ai: cli.no_ai,
+            no_config: cli.no_config,
         })
     };
     if cli.interpret_stdin {
@@ -162,6 +173,7 @@ mod tests {
             interactive,
             login,
             no_ai,
+            no_config: false,
         })
     }
 
@@ -248,6 +260,24 @@ mod tests {
         assert_eq!(
             mode(&["--no-ai"], false, true),
             own_shell(true, false, true)
+        );
+    }
+
+    #[test]
+    fn no_config_is_remembered_for_the_interactive_shell() {
+        assert_eq!(
+            mode(&["--no-config"], false, true),
+            Mode::Repl(repl::Options {
+                interactive: true,
+                login: false,
+                no_ai: false,
+                no_config: true,
+            })
+        );
+        // It changes nothing about what goes to `/bin/sh`.
+        assert_eq!(
+            mode(&["--no-config", "-c", "true"], false, false),
+            Mode::Sh(vec![os("-c"), os("true")])
         );
     }
 

@@ -401,6 +401,85 @@ fn dash_i_runs_the_shells_own_loop_on_piped_input() -> io::Result<()> {
     Ok(())
 }
 
+// Configuration (S12). Only the shell's own loop reads `config.toml` and `init.omsh`: here
+// that is `-i` on a pipe. The terminal side is tested in `omsh-tests/tests/config.rs`.
+
+fn write_config(home: &Path, name: &str, text: &str) -> io::Result<PathBuf> {
+    let dir = home.join(".config/oh-my-shell");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join(name);
+    fs::write(&file, text)?;
+    Ok(file)
+}
+
+#[test]
+fn dash_i_runs_the_startup_file_and_reports_a_broken_configuration() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let config = write_config(home.path(), "config.toml", "[ui]\nmotion = \"fast\"\n")?;
+    write_config(
+        home.path(),
+        "init.omsh",
+        "echo from-init\nalias hi='echo aliased'\n",
+    )?;
+    let out = run_in(home.path(), &args(&["-i"]), b"hi\necho $?\n")?;
+
+    assert_eq!(stdout(&out), "from-init\naliased\n0\n");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(&format!(
+            "oh-my-shell: {}:2:10: ui.motion must be",
+            config.display()
+        )),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn dash_i_writes_the_first_run_file_without_a_word() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let out = run_in(home.path(), &args(&["-i"]), b"true\n")?;
+
+    let file = home.path().join(".config/oh-my-shell/config.toml");
+    assert!(fs::read_to_string(file)?.starts_with("# Oh My Shell configuration"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("config"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn the_modes_that_are_not_the_interactive_shell_read_no_configuration() -> io::Result<()> {
+    let home = Scratch::new()?;
+    let init = "echo from-init\n";
+    let config = "[ui\n";
+    write_config(home.path(), "init.omsh", init)?;
+    write_config(home.path(), "config.toml", config)?;
+    // The hidden switch is this shell's interpreter on a pipe, which is not interactive.
+    let piped = run_in(home.path(), &args(&["--interpret-stdin"]), b"echo x\n")?;
+    assert_eq!(stdout(&piped), "x\n");
+    assert!(piped.stderr.is_empty());
+    // `--no-config` turns the interactive shell's reading off.
+    let off = run_in(home.path(), &args(&["-i", "--no-config"]), b"echo y\n")?;
+    assert_eq!(stdout(&off), "y\n");
+    assert!(!String::from_utf8_lossy(&off.stderr).contains("config"));
+    // Neither touched the files.
+    let dir = home.path().join(".config/oh-my-shell");
+    assert_eq!(fs::read_to_string(dir.join("init.omsh"))?, init);
+    assert_eq!(fs::read_to_string(dir.join("config.toml"))?, config);
+    assert_eq!(fs::read_dir(dir)?.count(), 2);
+    Ok(())
+}
+
+#[test]
+fn without_any_configuration_the_modes_that_do_not_read_it_create_nothing() -> io::Result<()> {
+    let home = Scratch::new()?;
+    run_in(home.path(), &args(&["--interpret-stdin"]), b"true\n")?;
+    run_in(home.path(), &args(&["-i", "--no-config"]), b"true\n")?;
+    assert!(!home.path().join(".config").exists());
+    assert!(!home.path().join(".local").exists());
+    Ok(())
+}
+
 #[test]
 fn no_ai_is_accepted_in_every_mode() -> io::Result<()> {
     let home = Scratch::new()?;

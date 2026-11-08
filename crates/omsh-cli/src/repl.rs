@@ -3,12 +3,13 @@
 //! This is a plain line reader for now: no editing, history or completion (S13 adds the
 //! editor). It reads standard input and runs what it finds.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
+use omsh_config::{Config, Paths};
 use omsh_exec::{
     ExitStatus, Io, LineResult, Outcome, Shell, hung_up, note_inherited_signals, release_terminal,
     start_interactive, wait_for_input,
@@ -29,6 +30,8 @@ pub struct Options {
     pub login: bool,
     /// `--no-ai`. The AI layer does not exist yet (S20), so nothing reads this.
     pub no_ai: bool,
+    /// `--no-config`: read neither `config.toml` nor `init.omsh`, and write nothing.
+    pub no_config: bool,
 }
 
 /// Runs the shell on standard input until it ends, and returns the exit status. `name` is the
@@ -59,7 +62,7 @@ pub fn run(options: Options, name: Option<&OsStr>) -> ExitStatus {
             return ExitStatus(1);
         }
     };
-    let status = run_on(input, options, job_control, name, Style::detect());
+    let status = run_on(input, options, job_control, name);
     // Give the terminal back to the program that started the shell.
     release_terminal();
     status
@@ -81,7 +84,6 @@ fn run_on(
     options: Options,
     job_control: bool,
     name: Option<&OsStr>,
-    style: Style,
 ) -> ExitStatus {
     let interactive = options.interactive;
     let mut shell = Shell::new();
@@ -96,6 +98,13 @@ fn run_on(
         // The profile files are in `sh` syntax, so `/bin/sh` reads them (see `omsh-exec`).
         shell.import_login_environment(&files);
     }
+    // After the login environment, so that a profile may set `XDG_CONFIG_HOME`.
+    let config = match start_up(&mut shell, &mut files, options) {
+        Ok(config) => config,
+        // `exit` in the startup file.
+        Err(status) => return finish(&mut shell, status, &files),
+    };
+    let style = Style::detect(config.ui.icons);
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     loop {
@@ -159,6 +168,38 @@ fn run_on(
             return finish(&mut shell, status, &files);
         }
     }
+}
+
+/// How many lines of problems with `config.toml` are shown before "... and N more".
+const MAX_CONFIG_LINES: usize = 10;
+
+/// Reads `config.toml` (writing the commented first-run file if there is none) and runs
+/// `init.omsh`, for a shell that a person types at. Nothing here stops the shell: whatever is
+/// wrong is shown as a line each and the defaults stay. `Err` carries the status of an `exit`
+/// in `init.omsh`.
+///
+/// `-c`, scripts and piped input never get here (they are handed to `/bin/sh` first), and
+/// neither does `--interpret-stdin`, which is not interactive.
+fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Config, ExitStatus> {
+    if !options.interactive || options.no_config {
+        return Ok(Config::default());
+    }
+    // The shell's own variables, which include what the login profile exported.
+    let paths = Paths::from_lookup(|name| {
+        shell
+            .var(name)
+            .map(|value| OsString::from_vec(value.to_vec()))
+    });
+    let loaded = omsh_config::load(&paths);
+    for line in loaded.report(MAX_CONFIG_LINES) {
+        say(&format!("oh-my-shell: {line}"));
+    }
+    if let Some(init) = paths.init_file()
+        && let Outcome::Exit(status) = shell.run_startup_file(&init, files)
+    {
+        return Err(status);
+    }
+    Ok(loaded.config)
 }
 
 /// The status of a shell that was hung up: 128 + `SIGHUP`.
