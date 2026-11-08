@@ -29,9 +29,11 @@ On a terminal that takes escape codes, lines are typed in a line editor: arrow k
 Ctrl+A/E/K/W/U, Ctrl+R for history search, up and down to recall earlier commands of the session
 (a line that starts with a space is not remembered), and `editor.mode = "vi"` in `config.toml` for
 vi keys. Enter waits for an unfinished command (an open quote, `if` without `fi`, a trailing `\`,
-a here-document) and the next line becomes part of it. The prompt shows the directory, the git branch
-and a virtual environment on the left, and a failed status and a command that took over two seconds on
-the right (`[prompt]` in `config.toml` picks the pieces). With `TERM=dumb`, an empty `TERM`, or inside
+a here-document) and the next line becomes part of it. The prompt has two lines, like fish: a header with the directory (bold) and the git branch and virtual
+environment (dim), a failed status and a command that took over two seconds at the right edge (dim), and below it
+the symbol where you type. No color is forced: everything uses the terminal's own colors, and the one exception is
+the symbol turning ANSI red after a command that failed. `NO_COLOR` removes that red and keeps bold and dim.
+`[prompt]` in `config.toml` picks the pieces. With `TERM=dumb`, an empty `TERM`, or inside
 Emacs the shell reads plain lines instead. History is not saved between sessions yet.
 Do not set it as your login shell yet.
 

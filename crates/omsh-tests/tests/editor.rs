@@ -420,29 +420,79 @@ fn the_right_prompt_shows_the_status_and_a_long_duration() {
     });
 }
 
-/// The directory is in the prompt, with `~` for the home directory and the git branch.
+/// The prompt has two lines: the header (directory with `~` for the home directory, then the git
+/// branch) and, below it, the symbol where the typing happens.
 #[test]
-fn the_prompt_shows_the_directory_and_the_git_branch() {
+fn the_prompt_is_a_header_line_and_a_symbol_line() {
     pty_test(BIN, |ctx| {
         let repo = ctx.home().join("proj");
         fs::create_dir_all(repo.join(".git"))?;
         fs::write(repo.join(".git/HEAD"), "ref: refs/heads/topic-x\n")?;
         let mut term = ctx.launch().cwd(&repo).start_raw()?;
-        term.expect_plain("~/proj (topic-x) $ ", SHORT);
+        term.expect_plain("~/proj (topic-x)\r\n$ ", SHORT);
         term.line("cd /")?;
-        term.expect_plain("/ $ ", SHORT);
+        term.expect_plain("/\r\n$ ", SHORT);
         term.quit()
     });
 }
 
-/// `NO_COLOR` is unset: the prompt has colors.
+/// True if the output sets a foreground or background color (30-38, 40-48, 90-97, 100-107), as
+/// opposed to bold, dim, reset or the terminal's default color (39, 49).
+fn sets_a_color(shown: &str) -> bool {
+    let mut rest = shown;
+    while let Some(at) = rest.find("\x1b[") {
+        rest = &rest[at + 2..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == ';'))
+            .unwrap_or(0);
+        let colored = rest[..end]
+            .split(';')
+            .filter_map(|code| code.parse::<u16>().ok())
+            .any(|code| matches!(code, 30..=38 | 40..=48 | 90..=97 | 100..=107));
+        if colored {
+            return true;
+        }
+    }
+    false
+}
+
+/// No color is forced. After a success the prompt sets no color at all, only bold (the
+/// directory) and dim (the rest of the header). After a failure the symbol is ANSI red
+/// (`ESC[31m`, the terminal's own red) and nothing else is colored.
 #[test]
-fn colors_are_used_unless_no_color_is_set() {
+fn the_symbol_is_red_only_after_a_failure_and_nothing_else_is_colored() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.launch().env("NO_COLOR", "").start_raw()?;
-        term.expect("\x1b[32m$ \x1b[0m", SHORT);
+        term.expect("$ ", SHORT);
+        assert!(!sets_a_color(term.transcript()), "{:?}", term.transcript());
+        assert!(
+            term.transcript().contains("\x1b[1m"),
+            "the directory is bold"
+        );
         term.line("false")?;
         term.expect("\x1b[31m$ \x1b[0m", SHORT);
+        // The red is on the symbol alone: the dim status (`x 1`) next to it has none.
+        term.expect("\x1b[2mx 1\x1b[0m", SHORT);
+        let shown = term.transcript().replace("\x1b[31m$ \x1b[0m", "");
+        assert!(!sets_a_color(&shown), "{shown:?}");
+        // A success takes the red away again.
+        term.line("true")?;
+        term.expect("$ ", SHORT);
+        term.quit()
+    });
+}
+
+/// `NO_COLOR` removes the red and keeps bold and dim, which are not colors.
+#[test]
+fn no_color_keeps_bold_and_dim() {
+    pty_test(BIN, |ctx| {
+        // The harness sets NO_COLOR=1 by default.
+        let mut term = ctx.start()?;
+        term.line("false")?;
+        term.expect("\x1b[2mx 1\x1b[0m", SHORT);
+        term.sync("again")?;
+        assert!(term.transcript().contains("\x1b[1m"), "bold stays");
+        assert!(!sets_a_color(term.transcript()), "{:?}", term.transcript());
         term.quit()
     });
 }
@@ -479,10 +529,10 @@ fn prompt_settings_come_from_the_configuration() {
         let mut term = ctx.launch().cwd("/").start_raw()?;
         // No directory segment: the line starts with the indicator.
         term.expect_plain("$ ", SHORT);
+        let (plain, _) = omsh_tests::session::strip_escapes(term.transcript());
         assert!(
-            !term.transcript().contains("/ $ "),
-            "the cwd segment was configured away\n{}",
-            term.transcript()
+            !plain.contains("/\r\n"),
+            "the cwd segment was configured away, so there is no header line\n{plain}"
         );
         term.sync("configured")?;
         term.quit()
