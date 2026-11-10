@@ -2311,6 +2311,64 @@ mod background {
     }
 
     #[test]
+    fn a_job_is_not_stopped_by_a_program_that_was_continued_from_outside() {
+        guarded(true, |sh| {
+            // The first program stops, then something else continues it (`kill -CONT` from
+            // another shell). Nobody tells the job. The first program then ends only after the
+            // second stage is over, so the job sees `cat` end while the first program is still
+            // recorded as stopped: every live program "stopped", yet nothing is. The shell must
+            // ask the kernel and let the job run to its end, not give it up as stopped (status
+            // 147). This is the CI flake of
+            // `a_job_is_not_stopped_before_every_stage_has_started_its_program`, made certain.
+            let pid_file = Scratch::new("cont-pid");
+            let fifo = Scratch::new("cont-fifo");
+            let done_file = Scratch::new("cont-done");
+            nix::unistd::mkfifo(&fifo.0, nix::sys::stat::Mode::S_IRWXU).expect("mkfifo");
+            let pid_path = pid_file.0.clone();
+            let fifo_path = fifo.0.clone();
+            let helper = thread::spawn(move || {
+                let mut pid = 0;
+                eventually("the first program did not stop", || {
+                    pid = std::fs::read_to_string(&pid_path)
+                        .ok()
+                        .and_then(|text| text.trim().parse().ok())
+                        .unwrap_or(0);
+                    pid != 0 && process_state(pid) == Some('T')
+                });
+                // Let the job record the stop first.
+                thread::sleep(Duration::from_millis(200));
+                nix::sys::signal::kill(Pid::from_raw(pid), Signal::SIGCONT).expect("SIGCONT");
+                eventually("the first program did not continue", || {
+                    process_state(pid) != Some('T')
+                });
+                let mut writer = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&fifo_path)
+                    .expect("open the fifo");
+                std::io::Write::write_all(&mut writer, b"x\n").expect("write");
+            });
+            // The first program waits for the second stage to be over, and then stays alive
+            // for a while, so the stale record is the only thing that can make the job stopped.
+            let done = run(
+                sh,
+                &format!(
+                    "sh -c 'echo $$ > {pid}; kill -STOP $$; \
+                     while [ ! -e {d} ]; do sleep 0.01; done; sleep 0.5' \
+                     | {{ cat < {fifo}; : > {d}; }}; echo after $?",
+                    pid = pid_file.path(),
+                    fifo = fifo.path(),
+                    d = done_file.path()
+                ),
+            );
+            helper.join().expect("the helper thread ended");
+            assert_eq!(done.out, "x\nafter 0\n", "{}", done.err);
+            assert!(!done.err.contains("Stopped"), "{}", done.err);
+            assert!(sh.jobs.list().is_empty());
+        });
+    }
+
+    #[test]
     fn a_stage_that_runs_only_shell_code_does_not_hold_back_a_stop() {
         // A stage that never starts a program (`while read`, `read`, a command not found) must not keep the job
         // from counting as stopped, or Ctrl+Z on `cat file | while read l; do :; done` would

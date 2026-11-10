@@ -27,6 +27,13 @@
 //! the job is stopped) or finishes. Before that it may be about to start a program, so
 //! `sh -c 'kill -STOP $$' | cat` is not stopped in the moment before `cat` is forked.
 //!
+//! The record of a stop can go stale: a program continued from outside (`kill -CONT` from
+//! another shell) is not reported by the waits, which look only for an end or a stop. So before
+//! the job counts as stopped, each recorded stop is checked with the kernel
+//! ([`spawn::still_stopped`], a look that takes nothing). Otherwise a pipeline whose first
+//! program was continued, and whose other stages have already ended, would be given up as
+//! stopped while its first program has not yet been seen to exit.
+//!
 //! It is finished when every *task* is over. A task is one thread that runs shell code for the
 //! job: the stages of a pipeline, or the thread of a background job. Each holds a [`Task`] and
 //! reports its status with [`Task::done`]; a task that is dropped without it (a panic) counts
@@ -116,6 +123,9 @@ struct State {
     settled: Vec<bool>,
     /// The terminal settings the job had when it was stopped.
     modes: Option<Termios>,
+    /// Pids made up by tests (no process behind them), whose stops the kernel cannot confirm.
+    #[cfg(test)]
+    pretend: Vec<Pid>,
 }
 
 /// A program of a job that has started.
@@ -177,6 +187,8 @@ impl Job {
                 results: vec![None; tasks],
                 settled: vec![false; tasks],
                 modes: None,
+                #[cfg(test)]
+                pretend: Vec::new(),
             }),
         })
     }
@@ -219,14 +231,41 @@ impl Job {
         if matches!(state.phase, Phase::Finished(_)) {
             return;
         }
-        let all_stopped = !state.live.is_empty()
+        let mut all_stopped = !state.live.is_empty()
             && state.live.iter().all(|pid| state.stopped.contains(pid))
             && state.settled.iter().all(|settled| *settled);
+        if all_stopped {
+            // The record of a stop can be stale: a program continued from outside is not
+            // reported by the waits, and its waiter may not have seen it end yet. Ask the
+            // kernel before the job counts as stopped, or a pipeline that was continued and
+            // ran on would be given up by the shell as stopped.
+            let gone: Vec<Pid> = state
+                .stopped
+                .iter()
+                .copied()
+                .filter(|pid| !Self::kernel_says_stopped(state, *pid))
+                .collect();
+            if !gone.is_empty() {
+                state.stopped.retain(|pid| !gone.contains(pid));
+                all_stopped = false;
+            }
+        }
         state.phase = match (all_stopped, state.phase) {
             (true, Phase::Stopped(signal)) => Phase::Stopped(signal),
             (true, _) => Phase::Stopped(state.stop_signal),
             (false, _) => Phase::Running,
         };
+    }
+
+    /// True if `pid` is really stopped, as far as the kernel says. In tests, pids made up with
+    /// `pretend_started_by` have no process behind them, so their record is trusted.
+    fn kernel_says_stopped(state: &State, pid: Pid) -> bool {
+        #[cfg(test)]
+        if state.pretend.contains(&pid) {
+            return true;
+        }
+        let _ = state;
+        spawn::still_stopped(pid)
     }
 
     fn set_result(&self, index: usize, status: ExitStatus) {
@@ -354,6 +393,7 @@ impl Job {
     pub(crate) fn pretend_started_by(&self, task: usize, pids: &[Pid]) {
         let mut state = self.state();
         state.live.extend_from_slice(pids);
+        state.pretend.extend_from_slice(pids);
         if let Some(slot) = state.settled.get_mut(task) {
             *slot = true;
         }

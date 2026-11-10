@@ -427,6 +427,36 @@ pub(crate) fn wait_member(child: Pid, anchor: bool) -> Waited {
     }
 }
 
+/// Asks the kernel whether `pid`, a member of a job, is still stopped. A job's record of a stop
+/// can be out of date: a program continued from outside (`kill -CONT`, a test, another shell)
+/// is never reported by the waits above, which look only for an end or a stop.
+///
+/// It only looks (`WNOHANG | WNOWAIT`) and takes nothing, so the thread that waits for `pid`
+/// sees what it would have seen anyway. That relies on one rule: **no wait in the shell uses
+/// `WCONTINUED`**, so a continue stays pending in the kernel until the next stop or the end. A
+/// future waiter that takes it must do so while holding the job's lock.
+///
+/// A program that has ended (reported and not yet taken, or already taken by its waiter) is
+/// not stopped. When the question cannot be answered the record is trusted.
+pub(crate) fn still_stopped(pid: Pid) -> bool {
+    loop {
+        let result = waitid(
+            Id::Pid(pid),
+            WaitPidFlag::WEXITED
+                | WaitPidFlag::WCONTINUED
+                | WaitPidFlag::WNOHANG
+                | WaitPidFlag::WNOWAIT,
+        );
+        return match result {
+            Ok(WaitStatus::StillAlive) => true,
+            Ok(_) => false,
+            Err(Errno::ECHILD) => false,
+            Err(Errno::EINTR) => continue,
+            Err(_) => true,
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,5 +827,49 @@ mod tests {
         unsafe { signal(Signal::SIGTTIN, before) }.unwrap();
         assert_eq!(reset & bit, 0, "SIGTTIN stayed ignored");
         assert_eq!(kept & bit, bit, "an ignored signal was reset");
+    }
+
+    /// Waits until `check` is true (up to 5 s).
+    fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !check() {
+            assert!(std::time::Instant::now() < end, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn still_stopped_follows_the_kernel_not_the_record() {
+        use nix::sys::signal::{Signal, kill};
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start sleep");
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap());
+        // Stop it and take the report of the stop, as a waiter does.
+        kill(pid, Signal::SIGSTOP).unwrap();
+        let stop = waitid(Id::Pid(pid), WaitPidFlag::WSTOPPED);
+        assert!(matches!(stop, Ok(WaitStatus::Stopped(..))), "{stop:?}");
+        assert!(still_stopped(pid), "a stopped program");
+        // Asking takes nothing: still stopped the second time.
+        assert!(still_stopped(pid), "asking must not change the answer");
+        // Continued from outside: no waiter hears of it, but the answer changes.
+        kill(pid, Signal::SIGCONT).unwrap();
+        eventually("a continued program counted as stopped", || {
+            !still_stopped(pid)
+        });
+        // Stopped again: the continue is no longer pending.
+        kill(pid, Signal::SIGSTOP).unwrap();
+        eventually("a program stopped again did not count as stopped", || {
+            still_stopped(pid)
+        });
+        // Ended and not yet collected (a zombie), as the leader of a group is kept.
+        kill(pid, Signal::SIGKILL).unwrap();
+        eventually("an ended program counted as stopped", || {
+            !still_stopped(pid)
+        });
+        // Collected: there is no such child any more.
+        child.wait().unwrap();
+        assert!(!still_stopped(pid), "a collected program");
     }
 }
