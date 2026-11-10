@@ -24,7 +24,16 @@ pub(crate) fn cook_delimiter(raw: &str) -> (String, bool) {
     while let Some(c) = chars.next() {
         match c {
             '\\' => match chars.next() {
-                Some('\n') | None => {}
+                // A line continuation joins the two lines.
+                Some('\n') => {}
+                // A backslash at the very end of the input has nothing to join or to quote
+                // and stays in the text, as `bash` and `dash` read it (`bash` says: wanted
+                // `\`). It happens only in a backtick body that ends right there. The word
+                // parser reads the same backslash as `Escaped('\\')`, so it counts as quoted.
+                None => {
+                    quoted = true;
+                    out.push('\\');
+                }
                 Some(next) => {
                     quoted = true;
                     out.push(next);

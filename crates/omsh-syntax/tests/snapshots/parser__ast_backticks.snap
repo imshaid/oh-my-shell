@@ -273,6 +273,30 @@ expression: render_lines(lines)
               word "a\\\nb"
                 literal "ab" at "a\\\nb"
 
+"echo `echo a<<\\\\`"
+  item "echo `echo a<<\\\\`"
+    simple "echo `echo a<<\\\\`"
+      word "echo"
+      word "`echo a<<\\\\`"
+        command-sub "`echo a<<\\\\`"
+          item "echo a<<\\\\"
+            simple "echo a<<\\\\"
+              word "echo"
+              word "a"
+              here-doc "<<\\\\" delimiter="\\" quoted
+                body ""
+
+"`cat <<\\\\`"
+  item "`cat <<\\\\`"
+    simple "`cat <<\\\\`"
+      word "`cat <<\\\\`"
+        command-sub "`cat <<\\\\`"
+          item "cat <<\\\\"
+            simple "cat <<\\\\"
+              word "cat"
+              here-doc "<<\\\\" delimiter="\\" quoted
+                body ""
+
 "`a 'b\\\nc'`"
   item "`a 'b\\\nc'`"
     simple "`a 'b\\\nc'`"

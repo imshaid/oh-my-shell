@@ -356,6 +356,10 @@ const BACKTICKS: &[&str] = &[
     "\"${x:-`a \\\"b\\\"`}\"",
     "$((`a \\\"b\\\"`))",
     "`a\\\nb`",
+    // A backslash that ends the body is the delimiter, as `bash` and `dash` read it. It used
+    // to be dropped, which left an empty delimiter that cannot be written as text.
+    "echo `echo a<<\\\\`",
+    "`cat <<\\\\`",
     "`a 'b\\\nc'`",
     "`é \\$x বাংলা`",
     "A=`b`",
