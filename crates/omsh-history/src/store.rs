@@ -10,9 +10,11 @@
 //! another shell is writing to therefore cannot hold up a command.
 //!
 //! **Settling.** [`Store::settle`] waits, for a limited time, until the thread has written
-//! everything that was queued. The shell does that before a prompt and before a query, so the
-//! command that just ran is always there; the limit keeps a stuck database from freezing the
-//! prompt.
+//! everything that was queued. Whoever needs to see what was just written (the `history`
+//! listing, the Up arrow) settles first, so the command that just ran is always there; the
+//! limit keeps a stuck database from freezing the shell. The prompt itself never waits: a
+//! person (or a program) may type ahead the moment a command ends, and a keystroke that
+//! arrives before the editor is reading can be lost.
 //!
 //! **In memory.** [`Store::in_memory`] keeps the history in memory only (`--no-config`, or no
 //! usable data directory). There is one connection then, shared by the thread and the readers.
@@ -33,6 +35,11 @@ use rusqlite::types::Value;
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, Transaction, TransactionBehavior, params, params_from_iter,
 };
+
+/// How long the shell waits for the writer when it needs to see what it has just written (a
+/// listing, the Up arrow). Usually well under a millisecond; the limit is for a database that
+/// another shell holds.
+pub const SETTLE: Duration = Duration::from_millis(250);
 
 /// The version of the tables, kept in SQLite's `user_version`.
 const SCHEMA_VERSION: i64 = 1;

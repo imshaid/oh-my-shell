@@ -154,9 +154,9 @@ fn run_on(
             if pending.is_empty() {
                 // What happened to the background jobs since the last prompt.
                 shell.job_notices(&files);
-                // The command that just ran is in the history before the prompt is shown,
-                // so that the Up arrow finds it.
-                if let Some(problem) = history.and_then(History::settle) {
+                // Nothing waits for the writer here: a line typed ahead while the prompt is
+                // late can be lost (see `omsh-history`).
+                if let Some(problem) = history.and_then(History::problem) {
                     say(&format!("oh-my-shell: {problem}"));
                 }
             }

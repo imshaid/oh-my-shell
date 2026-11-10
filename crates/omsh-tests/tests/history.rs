@@ -394,15 +394,25 @@ fn a_history_file_that_cannot_be_used_is_reported_once() {
     pty_test(BIN, |ctx| {
         // A directory where the file should be.
         fs::create_dir_all(database(ctx))?;
-        let mut term = ctx.launch().start_raw()?;
-        term.expect("oh-my-shell: history is kept in memory only: ", SHORT);
-        term.expect("history.db: not a regular file", SHORT);
+        let mut term = ctx.start()?;
         term.line("echo still-$((1+1))")?;
         term.expect("still-2", SHORT);
+        // The file is opened by the writer's thread, so the news comes at the first prompt or
+        // a later one, whichever the thread is ready for. Listing waits for the writer, so by
+        // the prompt after it the news has been given.
+        term.line("history -n 1")?;
+        term.sync("listed")?;
+        let shown = term.transcript();
+        assert!(
+            shown.contains("oh-my-shell: history is kept in memory only: ")
+                && shown.contains("history.db: not a regular file"),
+            "{shown}"
+        );
+        // Up still works: it brings back the last command, `echo listed-$((1+1))`.
         term.write_bytes(UP)?;
         term.write_bytes(b"\r")?;
         term.sync("again")?;
-        assert_eq!(term.transcript().matches("still-2").count(), 2);
+        assert_eq!(term.transcript().matches("listed-2").count(), 2);
         assert_eq!(
             term.transcript().matches("kept in memory only").count(),
             1,

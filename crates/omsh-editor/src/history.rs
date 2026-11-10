@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use chrono::DateTime;
-use omsh_history::{Entry, Filter, Query, Store};
+use omsh_history::{Entry, Filter, Query, SETTLE, Store};
 use reedline::{
     CommandLineSearch, History, HistoryItem, HistoryItemId, HistorySessionId, ReedlineError,
     ReedlineErrorVariants, Result, SearchDirection, SearchQuery,
@@ -126,17 +126,22 @@ impl History for DbHistory {
     }
 
     fn load(&self, id: HistoryItemId) -> Result<HistoryItem> {
+        self.store.settle(SETTLE);
         self.store.get(id.0).map(to_item).ok_or(ReedlineError(
             ReedlineErrorVariants::OtherHistoryError("no such entry"),
         ))
     }
 
     fn count(&self, query: SearchQuery) -> Result<i64> {
+        self.store.settle(SETTLE);
         let count = self.store.count(&to_query(&query)?);
         Ok(i64::try_from(count).unwrap_or(i64::MAX))
     }
 
     fn search(&self, query: SearchQuery) -> Result<Vec<HistoryItem>> {
+        // The command that just ran may still be on its way to the file. The wait is here
+        // and not before the prompt, where it would delay the editor.
+        self.store.settle(SETTLE);
         Ok(self
             .store
             .query(&to_query(&query)?)

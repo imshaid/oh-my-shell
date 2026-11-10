@@ -13,4 +13,4 @@ pub mod secrets;
 mod store;
 
 pub use filter::Filter;
-pub use store::{Entry, Query, Store, Token, now_ms};
+pub use store::{Entry, Query, SETTLE, Store, Token, now_ms};

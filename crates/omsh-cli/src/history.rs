@@ -13,14 +13,10 @@ use std::time::Duration;
 
 use chrono::{Local, TimeZone};
 use omsh_exec::{BuiltinOutput, HistoryCommand};
-use omsh_history::{Entry, Filter, Query, Store, Token, now_ms};
+use omsh_history::{Entry, Filter, Query, SETTLE, Store, Token, now_ms};
 
 /// How many commands plain `history` shows on a terminal.
 const ON_A_TERMINAL: u32 = 100;
-
-/// How long the shell waits for the writer before a prompt or a listing. Usually it takes
-/// well under a millisecond; the limit is for a database that another shell holds.
-pub const SETTLE: Duration = Duration::from_millis(250);
 
 /// How long the shell waits for the last writes when it ends.
 const CLOSE: Duration = Duration::from_secs(1);
@@ -55,9 +51,9 @@ impl History {
             .then(|| self.store.start(command, cwd))
     }
 
-    /// Waits a moment for what is queued, and gives back what there is to tell the user.
-    pub fn settle(&self) -> Option<String> {
-        self.store.settle(SETTLE);
+    /// What there is to tell the user about the history (it is kept in memory only, a write
+    /// was lost), once. This does not wait for the writer: the prompt must not be late.
+    pub fn problem(&self) -> Option<String> {
         self.store.take_problem()
     }
 

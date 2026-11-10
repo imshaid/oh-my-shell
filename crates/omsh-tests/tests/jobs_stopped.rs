@@ -336,6 +336,10 @@ fn disown_h_protects_a_job_from_the_hangup() {
         let mut term = ctx.start()?;
         term.line("sleep 100 &")?;
         term.expect("[1] ", SHORT);
+        // The notice comes before the prompt. Two lines typed before the prompt is up reach
+        // the editor together, and it runs only the first (see the S13a note on type-ahead):
+        // wait for the prompt, so that `disown -h` is read alone.
+        term.expect("$ ", SHORT);
         term.line("disown -h")?;
         term.sync("ready")?;
         term.signal_parent(Signal::SIGHUP)?;
