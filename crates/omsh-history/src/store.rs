@@ -37,9 +37,11 @@ use rusqlite::{
 };
 
 /// How long the shell waits for the writer when it needs to see what it has just written (a
-/// listing, the Up arrow). Usually well under a millisecond; the limit is for a database that
-/// another shell holds.
-pub const SETTLE: Duration = Duration::from_millis(250);
+/// listing, the Up arrow). Usually well under a millisecond. The limit is for a database that
+/// is slow to open (a new file on a slow disk: several syncs) or that another shell holds; it
+/// is as long as the writer itself keeps trying to open it, so that a shell that is not
+/// held up for ever never answers from a database it has not opened yet.
+pub const SETTLE: Duration = WRITE_PATIENCE;
 
 /// The version of the tables, kept in SQLite's `user_version`.
 const SCHEMA_VERSION: i64 = 1;

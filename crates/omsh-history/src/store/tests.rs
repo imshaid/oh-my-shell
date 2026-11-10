@@ -679,6 +679,31 @@ fn timing_of_queries_on_a_hundred_thousand_commands() {
     }
 }
 
+/// A database that is slow to open (another process holds it for a while) is waited for by
+/// whoever needs to read, and then read. (CI found this: on a slow disk the first Up arrow
+/// came back empty, because the reader gave up after 250 ms.)
+#[test]
+fn readers_wait_for_a_database_that_is_still_opening() {
+    let scratch = Scratch::new();
+    {
+        let store = Store::open(&scratch.db(), 100);
+        record(&store, "before", "/", 0);
+        assert!(store.close(PATIENT));
+    }
+    let holder = Connection::open(scratch.db()).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let release = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(600));
+        holder.execute_batch("COMMIT").unwrap();
+    });
+    let store = Store::open(&scratch.db(), 100);
+    // Longer than the 250 ms this used to be.
+    assert!(store.settle(SETTLE), "the open was still going on");
+    assert_eq!(commands(&store.query(&Query::default())), ["before"]);
+    assert_eq!(store.take_problem(), None);
+    release.join().unwrap();
+}
+
 #[test]
 fn closing_writes_what_is_queued_and_leaves_one_file() {
     let scratch = Scratch::new();
