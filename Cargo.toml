@@ -61,6 +61,10 @@ nu-ansi-term = { version = "0.50", default-features = false }
 # `external_printer` are not used (history is our own store in S13b; job notices are printed
 # before the prompt, not above the line being typed).
 reedline = { version = "0.52", default-features = false }
+# SQLite for the command history (S13b). `bundled` compiles SQLite into the binary, so the
+# shell does not depend on the system's library. Default features are off: the statement cache
+# (`hashlink`) is not used.
+rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
 # Test-only. Its `colors` feature is left out: it only colors the diff shown when a
 # snapshot test fails.
 insta = { version = "1.49", default-features = false }

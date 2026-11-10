@@ -12,17 +12,20 @@ use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omsh_config::{Config, Paths};
-use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, working_directory};
+use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, Recall, working_directory};
 use omsh_exec::{
-    DEFAULT_PATH, ExitStatus, Io, LineResult, Outcome, Shell, find_program, hung_up, is_builtin,
-    is_root, note_inherited_signals, release_terminal, start_interactive, terminal_gone,
-    wait_for_input,
+    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, LineResult, Outcome, Shell, find_program,
+    hung_up, is_builtin, is_root, note_inherited_signals, release_terminal, start_interactive,
+    terminal_gone, wait_for_input,
 };
+use omsh_history::{Filter, Store};
 use omsh_ui::Theme;
 
+use crate::history::History;
 use crate::report::{self, Style};
 
 const PROMPT: &str = "$ ";
@@ -38,7 +41,8 @@ pub struct Options {
     pub login: bool,
     /// `--no-ai`. The AI layer does not exist yet (S20), so nothing reads this.
     pub no_ai: bool,
-    /// `--no-config`: read neither `config.toml` nor `init.omsh`, and write nothing.
+    /// `--no-config`: read neither `config.toml` nor `init.omsh`, and write nothing (history
+    /// is then kept in memory).
     pub no_config: bool,
 }
 
@@ -126,13 +130,18 @@ fn run_on(
         shell.import_login_environment(&files);
     }
     // After the login environment, so that a profile may set `XDG_CONFIG_HOME`.
-    let config = match start_up(&mut shell, &mut files, options) {
-        Ok(config) => config,
+    let (config, history) = match start_up(&mut shell, &mut files, options) {
+        Ok(started) => started,
         // `exit` in the startup file.
-        Err(status) => return finish(&mut shell, status, &files),
+        Err(status) => return finish(&mut shell, status, &files, None),
     };
+    let history = history.as_ref();
+    if let Some(history) = history {
+        shell.set_history(Arc::new(history.clone()) as Arc<dyn HistoryCommand>);
+    }
     let style = Style::detect(config.ui.icons);
-    let mut editor = make_editor(&shell, &config, style, interactive && terminals);
+    let mut editor = history
+        .and_then(|history| make_editor(&shell, &config, style, interactive && terminals, history));
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     // How long the last command took, for the prompt.
@@ -140,11 +149,16 @@ fn run_on(
     loop {
         if interactive {
             if hung_up() {
-                return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files);
+                return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files, history);
             }
             if pending.is_empty() {
                 // What happened to the background jobs since the last prompt.
                 shell.job_notices(&files);
+                // The command that just ran is in the history before the prompt is shown,
+                // so that the Up arrow finds it.
+                if let Some(problem) = history.and_then(History::settle) {
+                    say(&format!("oh-my-shell: {problem}"));
+                }
             }
         }
         let next = match editor.as_mut() {
@@ -168,7 +182,7 @@ fn run_on(
                         continue;
                     }
                     let status = shell.last_status();
-                    return finish(&mut shell, status, &files);
+                    return finish(&mut shell, status, &files, history);
                 }
                 true
             }
@@ -178,7 +192,9 @@ fn run_on(
                 pending.clear();
                 continue;
             }
-            Next::HungUp => return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files),
+            Next::HungUp => {
+                return finish(&mut shell, ExitStatus(HANGUP_STATUS), &files, history);
+            }
             Next::EditorFailed(error) => {
                 say(&format!(
                     "oh-my-shell: the line editor does not work with this terminal ({error}); \
@@ -193,14 +209,38 @@ fn run_on(
             }
         };
 
+        // Noted when it starts, so that a command the shell does not come back from (`exit`,
+        // a crash) is in the history too; the status and the duration follow when it ends.
+        let noted = history.and_then(|history| {
+            let token = history.begin(&pending, &directory(&shell))?;
+            Some((history, token))
+        });
         let started = Instant::now();
-        match shell.run_source(&pending, at_end, &mut files) {
+        let result = shell.run_source(&pending, at_end, &mut files);
+        if let Some((history, token)) = noted {
+            match &result {
+                // Nothing ran: the rest of the command is still to come.
+                LineResult::Incomplete => history.store.cancel(token),
+                LineResult::Ran(Outcome::Exit(status)) => {
+                    history
+                        .store
+                        .finish(token, i32::from(status.0), started.elapsed());
+                }
+                LineResult::Ran(Outcome::Continue(_)) | LineResult::Rejected(_) => {
+                    let status = i32::from(shell.last_status().0);
+                    history.store.finish(token, status, started.elapsed());
+                }
+            }
+        }
+        match result {
             LineResult::Incomplete => {}
             LineResult::Ran(Outcome::Continue(_)) => {
                 pending.clear();
                 took = Some(started.elapsed());
             }
-            LineResult::Ran(Outcome::Exit(status)) => return finish(&mut shell, status, &files),
+            LineResult::Ran(Outcome::Exit(status)) => {
+                return finish(&mut shell, status, &files, history);
+            }
             LineResult::Rejected(report) => {
                 report::show(&report, style);
                 pending.clear();
@@ -209,7 +249,7 @@ fn run_on(
         }
         if at_end {
             let status = shell.last_status();
-            return finish(&mut shell, status, &files);
+            return finish(&mut shell, status, &files, history);
         }
     }
 }
@@ -223,7 +263,21 @@ fn should_edit(terminals: bool, term: Option<&[u8]>, inside_emacs: Option<&[u8]>
         && inside_emacs.is_none_or(<[u8]>::is_empty)
 }
 
-fn make_editor(shell: &Shell, config: &Config, style: Style, terminals: bool) -> Option<Editor> {
+/// The shell's working directory as history keeps it: text. A name that is not UTF-8 is
+/// stored with replacement characters.
+fn directory(shell: &Shell) -> String {
+    working_directory(shell.var("PWD"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn make_editor(
+    shell: &Shell,
+    config: &Config,
+    style: Style,
+    terminals: bool,
+    history: &History,
+) -> Option<Editor> {
     if !should_edit(terminals, shell.var("TERM"), shell.var("INSIDE_EMACS")) {
         return None;
     }
@@ -235,6 +289,10 @@ fn make_editor(shell: &Shell, config: &Config, style: Style, terminals: bool) ->
         &Theme::default(),
         unicode,
         color,
+        Recall {
+            store: history.store.clone(),
+            filter: history.filter.clone(),
+        },
         hung_up,
         || terminal_gone(io::stdin()),
     ))
@@ -342,16 +400,29 @@ const MAX_CONFIG_LINES: usize = 10;
 /// wrong is shown as a line each and the defaults stay. `Err` carries the status of an `exit`
 /// in `init.omsh`.
 ///
+/// It also opens the history of such a shell: in `history.db` under the data directory, or in
+/// memory under `--no-config` (which writes nothing) and when there is no data directory.
+///
 /// `-c`, scripts and piped input never get here (they are handed to `/bin/sh` first), and
 /// neither does `--interpret-stdin`, which is not interactive.
-fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Config, ExitStatus> {
-    if options.interactive {
-        // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
-        // that the file can replace or remove the wrappers.
-        shell.define_color_wrappers(files);
+fn start_up(
+    shell: &mut Shell,
+    files: &mut Io,
+    options: Options,
+) -> Result<(Config, Option<History>), ExitStatus> {
+    if !options.interactive {
+        return Ok((Config::default(), None));
     }
-    if !options.interactive || options.no_config {
-        return Ok(Config::default());
+    // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
+    // that the file can replace or remove the wrappers.
+    shell.define_color_wrappers(files);
+    if options.no_config {
+        let config = Config::default();
+        let history = History {
+            store: Store::in_memory(),
+            filter: Filter::new(&config.history.ignore),
+        };
+        return Ok((config, Some(history)));
     }
     // The shell's own variables, which include what the login profile exported.
     let paths = Paths::from_lookup(|name| {
@@ -368,17 +439,40 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Confi
     {
         return Err(status);
     }
-    Ok(loaded.config)
+    let config = loaded.config;
+    // After `init.omsh`: what the startup file runs is not typed by anyone and is not
+    // history. The file is opened by the store's own thread, so the prompt does not wait.
+    let store = match paths.data_dir() {
+        Some(dir) => Store::open(&dir.join(HISTORY_FILE), config.history.size),
+        None => Store::in_memory(),
+    };
+    let history = History {
+        store,
+        filter: Filter::new(&config.history.ignore),
+    };
+    Ok((config, Some(history)))
 }
+
+/// The name of the history database in the data directory.
+const HISTORY_FILE: &str = "history.db";
 
 /// The status of a shell that was hung up: 128 + `SIGHUP`.
 const HANGUP_STATUS: u8 = 129;
 
 /// The shell ends: its `EXIT` trap runs, then its jobs are dealt with (stopped ones are told to
-/// hang up, since no one could continue them any more).
-fn finish(shell: &mut Shell, status: ExitStatus, files: &Io) -> ExitStatus {
+/// hang up, since no one could continue them any more). Last, the history gets a moment to
+/// write what is still queued.
+fn finish(
+    shell: &mut Shell,
+    status: ExitStatus,
+    files: &Io,
+    history: Option<&History>,
+) -> ExitStatus {
     let status = shell.run_exit_trap(status, files);
     shell.end_session();
+    if let Some(history) = history {
+        history.close();
+    }
     status
 }
 

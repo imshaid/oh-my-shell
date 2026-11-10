@@ -2699,3 +2699,121 @@ mod background {
         assert_eq!(job.cancelled_by(), Some(Signal::SIGTERM as i32));
     }
 }
+
+mod history {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{BuiltinOutput, HistoryCommand};
+
+    /// Answers with what it was asked, and remembers it.
+    #[derive(Default)]
+    struct Recorder {
+        calls: Mutex<Vec<(Vec<String>, String, bool)>>,
+    }
+
+    impl HistoryCommand for Recorder {
+        fn run(&self, args: &[Vec<u8>], cwd: &[u8], to_terminal: bool) -> BuiltinOutput {
+            let args: Vec<String> = args
+                .iter()
+                .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                .collect();
+            let cwd = String::from_utf8_lossy(cwd).into_owned();
+            self.calls
+                .lock()
+                .unwrap()
+                .push((args.clone(), cwd, to_terminal));
+            if args.first().is_some_and(|arg| arg == "bad") {
+                return BuiltinOutput {
+                    out: Vec::new(),
+                    err: b"history: bad: no such thing\n".to_vec(),
+                    status: 2,
+                };
+            }
+            BuiltinOutput {
+                out: format!("asked {}\nsecond line\n", args.join(",")).into_bytes(),
+                err: Vec::new(),
+                status: 0,
+            }
+        }
+    }
+
+    fn shell_with_history() -> (Shell, Arc<Recorder>) {
+        let recorder = Arc::new(Recorder::default());
+        let mut sh = shell();
+        sh.set_history(Arc::clone(&recorder) as Arc<dyn HistoryCommand>);
+        (sh, recorder)
+    }
+
+    #[test]
+    fn without_a_history_the_builtin_says_so() {
+        let done = run(&mut shell(), "history");
+        assert_eq!(done.status, 1);
+        assert_eq!(done.out, "");
+        assert_eq!(
+            done.err,
+            "oh-my-shell: history: not available in this shell\n"
+        );
+    }
+
+    #[test]
+    fn the_builtin_passes_its_words_and_the_directory_on() {
+        let (mut sh, recorder) = shell_with_history();
+        let dir = Dir::new();
+        let done = run(
+            &mut sh,
+            &format!("cd {}; history --here search 'a b'", dir.path().display()),
+        );
+        assert_eq!(done.status, 0);
+        assert_eq!(done.out, "asked --here,search,a b\nsecond line\n");
+        assert_eq!(done.err, "");
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, dir.path().display().to_string());
+        // The test's output is captured in a file, which is not a terminal.
+        assert!(!calls[0].2);
+    }
+
+    #[test]
+    fn an_error_goes_to_standard_error_with_its_status() {
+        let (mut sh, _) = shell_with_history();
+        let done = run(&mut sh, "history bad; echo status $?");
+        assert_eq!(done.out, "status 2\n");
+        assert_eq!(done.err, "history: bad: no such thing\n");
+        let quiet = run(&mut sh, "history bad 2>/dev/null");
+        assert_eq!((quiet.status, quiet.err.as_str()), (2, ""));
+    }
+
+    #[test]
+    fn the_builtin_works_in_pipelines_substitutions_and_redirections() {
+        let (mut sh, recorder) = shell_with_history();
+        assert_eq!(
+            run(&mut sh, "history a | /usr/bin/head -n 1").out,
+            "asked a\n"
+        );
+        assert_eq!(
+            run(&mut sh, "x=$(history b); echo \"[$x]\"").out,
+            "[asked b\nsecond line]\n"
+        );
+        assert_eq!(run(&mut sh, "history c >/dev/null").out, "");
+        // Copies of the shell share the one history.
+        assert_eq!(recorder.calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn history_is_a_regular_builtin() {
+        let (mut sh, recorder) = shell_with_history();
+        assert_eq!(
+            run(&mut sh, "type history").out,
+            "history is a shell builtin\n"
+        );
+        assert!(crate::is_builtin("history"));
+        // A function of the same name comes first, as for every regular builtin.
+        let done = run(
+            &mut sh,
+            "history() { echo mine; }; history; command history z",
+        );
+        assert_eq!(done.out, "mine\nasked z\nsecond line\n");
+        assert_eq!(recorder.calls.lock().unwrap().len(), 1);
+    }
+}

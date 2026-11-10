@@ -37,7 +37,7 @@ mod traps;
 mod user;
 mod vars;
 
-pub use builtins::is_builtin;
+pub use builtins::{BuiltinOutput, HistoryCommand, is_builtin};
 pub use check::NotYet;
 pub use io::{FdPlan, Io, Slot};
 pub use omsh_syntax::{Span, SyntaxDiagnostic};

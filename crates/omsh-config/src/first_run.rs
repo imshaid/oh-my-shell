@@ -55,10 +55,11 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #transient = false
 
 #[history]
-# How many commands to keep. (not used yet)
+# How many commands to keep. Older ones are removed when a shell starts.
 #size = 100000
-# Lines that match one of these patterns are not stored. Lines that look like they hold a
-# secret are never stored, whatever this says. (not used yet)
+# Lines that match one of these patterns are not stored: `*` stands for any text, `?` for one
+# character, and a pattern has to match the whole line (" *" is a line that starts with a
+# space). Lines that look like they hold a secret are never stored, whatever this says.
 #ignore = [" *"]
 
 #[safety]

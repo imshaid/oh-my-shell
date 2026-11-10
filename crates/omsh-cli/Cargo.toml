@@ -11,6 +11,8 @@ name = "oh-my-shell"
 path = "src/main.rs"
 
 [dependencies]
+# Local date and time in the `history` listing. Already in the tree through the editor.
+chrono.workspace = true
 clap.workspace = true
 # `fancy-no-syscall` brings the graphical report renderer without the crates that probe the
 # terminal; the shell does that itself, in `report.rs`.

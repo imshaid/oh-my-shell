@@ -15,6 +15,7 @@
 //! thread and returns [`Read::HungUp`], so that the shell can end properly.
 
 mod highlight;
+mod history;
 mod prompt;
 mod segments;
 mod validator;
@@ -27,17 +28,14 @@ use std::thread;
 use std::time::Duration;
 
 use omsh_config::{Config, EditMode as ConfigMode};
+use omsh_history::{Filter, Store};
 use omsh_ui::{Role, Theme};
-use reedline::{Emacs, FileBackedHistory, Reedline, Signal, Vi};
+use reedline::{Emacs, Reedline, Signal, Vi};
 
 pub use highlight::{CommandLookup, ShellHighlighter};
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
 pub use validator::is_incomplete;
-
-/// How many commands the up arrow can reach in one session (S13b replaces this with the
-/// database).
-const SESSION_HISTORY: usize = 1000;
 
 /// How often a waiting shell looks at the hang-up flag and at the terminal. The same step as the
 /// plain reader's.
@@ -66,6 +64,14 @@ pub enum Read {
     Failed(io::Error),
 }
 
+/// What the editor can bring back: the history, and the rule for the lines that are not
+/// stored in it (those can be recalled once, right after they ran).
+#[derive(Clone, Debug)]
+pub struct Recall {
+    pub store: Store,
+    pub filter: Filter,
+}
+
 /// The line editor.
 pub struct Editor {
     /// The engine is lent to the editor's thread while a line is read. It is gone for good after
@@ -81,7 +87,8 @@ pub struct Editor {
 impl Editor {
     /// Builds the editor from the configuration. `unicode` and `color` say what the terminal
     /// takes. `theme` is the look of the command line; without `color` its colors are dropped
-    /// and only the attributes (underline, dim, reverse) stay.
+    /// and only the attributes (underline, dim, reverse) stay. `recall` is what the Up arrow
+    /// and the history search show.
     ///
     /// Two questions are asked once in a while while the editor waits. `hang_up`: was the shell
     /// told to hang up (`SIGHUP`)? The editor then ends the line it is reading cleanly, which
@@ -94,6 +101,7 @@ impl Editor {
         theme: &Theme,
         unicode: bool,
         color: bool,
+        recall: Recall,
         hang_up: impl Fn() -> bool + Send + 'static,
         terminal_gone: impl Fn() -> bool + Send + 'static,
     ) -> Self {
@@ -112,8 +120,10 @@ impl Editor {
         let context = Arc::new(Mutex::new(highlight::Context::new()));
         let flag = Arc::new(AtomicBool::new(false));
         let raise = Arc::clone(&flag);
-        let capacity =
-            SESSION_HISTORY.min(usize::try_from(config.history.size).unwrap_or(usize::MAX));
+        let history = history::DbHistory::new(recall.store, recall.filter);
+        // With a session, Up shows this shell's commands and what was stored before it
+        // started, not what another open shell runs meanwhile.
+        let session = history.session_id();
         let mut engine = Reedline::create()
             .with_highlighter(Box::new(highlight::ShellHighlighter::new(
                 theme.clone(),
@@ -127,15 +137,9 @@ impl Editor {
                     raise.store(true, Ordering::Relaxed);
                 }
             }))
-            .with_poll_interval(IDLE_STEP);
-        // `new` only fails for a capacity that cannot be addressed; ours is at most 1000.
-        if let Ok(history) = FileBackedHistory::new(capacity) {
-            engine = engine.with_history(Box::new(history));
-        }
-        // The default rule `" *"` (a line that starts with a space is not remembered). S13b
-        // reads the whole `[history] ignore` list.
-        let ignores_space = config.history.ignore.iter().any(|pattern| pattern == " *");
-        engine = engine.with_history_exclusion_prefix(ignores_space.then(|| " ".to_owned()));
+            .with_poll_interval(IDLE_STEP)
+            .with_history(Box::new(history))
+            .with_history_session_id(Some(session));
         engine = match config.editor.mode {
             ConfigMode::Emacs => engine.with_edit_mode(Box::new(Emacs::default())),
             ConfigMode::Vi => engine.with_edit_mode(Box::new(Vi::default())),
@@ -179,6 +183,9 @@ impl Editor {
             .stack_size(EDITOR_STACK)
             .spawn(move || {
                 let answer = engine.read_line(&prompt);
+                // A line that is not stored is reported to the editor as a failed save (see
+                // `history.rs`); nobody needs to hear of it.
+                let _ = engine.take_history_save_error();
                 // The receiver is gone if the shell gave up on this thread.
                 let _ = send.send((engine, answer));
             });
@@ -255,10 +262,32 @@ mod tests {
     #[test]
     fn the_editor_can_be_built_in_both_modes() {
         let mut config = Config::default();
-        let _ = Editor::new(&config, &Theme::default(), true, true, || false, || false);
+        let _ = Editor::new(
+            &config,
+            &Theme::default(),
+            true,
+            true,
+            Recall {
+                store: Store::in_memory(),
+                filter: Filter::default(),
+            },
+            || false,
+            || false,
+        );
         config.editor.mode = ConfigMode::Vi;
         config.prompt.transient = true;
-        let _ = Editor::new(&config, &Theme::default(), false, false, || false, || false);
+        let _ = Editor::new(
+            &config,
+            &Theme::default(),
+            false,
+            false,
+            Recall {
+                store: Store::in_memory(),
+                filter: Filter::default(),
+            },
+            || false,
+            || false,
+        );
     }
 
     #[test]

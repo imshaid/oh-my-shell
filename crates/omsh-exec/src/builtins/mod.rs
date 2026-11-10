@@ -10,6 +10,7 @@ mod cd;
 mod echo;
 mod exec;
 mod flow;
+mod history;
 mod jobs;
 mod lookup;
 mod printf;
@@ -21,6 +22,9 @@ mod umask;
 mod variables;
 
 use nix::errno::Errno;
+
+pub(crate) use history::HistoryHook;
+pub use history::{BuiltinOutput, HistoryCommand};
 
 use crate::exec::{Flow, Unwind};
 use crate::io::Io;
@@ -40,8 +44,8 @@ pub(crate) fn classify(name: &[u8]) -> Option<Class> {
         b":" | b"." | b"break" | b"continue" | b"eval" | b"exec" | b"exit" | b"export"
         | b"return" | b"readonly" | b"set" | b"shift" | b"trap" | b"unset" => Class::Special,
         b"[" | b"alias" | b"bg" | b"cd" | b"echo" | b"command" | b"disown" | b"false" | b"fg"
-        | b"hash" | b"jobs" | b"kill" | b"printf" | b"pwd" | b"read" | b"source" | b"test"
-        | b"true" | b"type" | b"umask" | b"unalias" | b"wait" => Class::Regular,
+        | b"hash" | b"history" | b"jobs" | b"kill" | b"printf" | b"pwd" | b"read" | b"source"
+        | b"test" | b"true" | b"type" | b"umask" | b"unalias" | b"wait" => Class::Regular,
         _ => return None,
     })
 }
@@ -75,6 +79,7 @@ pub(crate) fn run(shell: &mut Shell, name: &[u8], args: &[Vec<u8>], io: &Io) -> 
         b"command" => lookup::command(shell, args, io),
         b"hash" => lookup::hash(shell, args, io),
         b"umask" => umask::umask(shell, args, io),
+        b"history" => history::history(shell, args, io),
         b"jobs" => jobs::jobs(shell, args, io),
         b"wait" => jobs::wait(shell, args, io),
         b"fg" => jobs::fg(shell, args, io),
