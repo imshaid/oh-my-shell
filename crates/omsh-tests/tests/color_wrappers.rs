@@ -28,6 +28,8 @@ fn colored(ctx: &Ctx) -> io::Result<Session> {
 
 /// Runs `command`, then a marker, and returns what the terminal showed in between.
 fn output_of(term: &mut Session, command: &str) -> io::Result<String> {
+    // Wait for the prompt first, so that the mark is taken after the previous command's output.
+    term.prompt();
     let mark = term.transcript().len();
     term.line(&format!("{command}; echo end-$((1+1))"))?;
     term.expect("end-2", SHORT);
@@ -78,10 +80,10 @@ fn no_color_turns_the_wrappers_off_at_every_call() {
         let shown = output_of(&mut term, "NO_COLOR=1 grep y f")?;
         assert!(!shown.contains(GREP_MATCH), "{shown:?}");
         // Exported later in the session, and taken away again.
-        term.line("export NO_COLOR=1")?;
+        term.command("export NO_COLOR=1")?;
         let shown = output_of(&mut term, "ls -d /")?;
         assert!(!shown.contains(LS_DIRECTORY), "{shown:?}");
-        term.line("unset NO_COLOR")?;
+        term.command("unset NO_COLOR")?;
         let shown = output_of(&mut term, "ls -d /")?;
         assert!(shown.contains(LS_DIRECTORY), "{shown:?}");
         term.quit()

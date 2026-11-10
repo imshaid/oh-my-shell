@@ -123,7 +123,7 @@ fn the_shell_and_each_job_have_their_own_group_and_the_terminal_follows() {
 /// shell keeps between commands can only be seen while a command runs. Then it kills the
 /// `sleep` and waits for the prompt.
 fn settings_while_a_command_runs(term: &mut Session, seconds: u32) -> std::io::Result<Termios> {
-    term.line(&format!("sleep {seconds}"))?;
+    term.command(&format!("sleep {seconds}"))?;
     let end = std::time::Instant::now() + SHORT;
     while term.in_session("sleep").is_empty() {
         assert!(std::time::Instant::now() < end, "{}", term.transcript());
@@ -190,11 +190,11 @@ fn the_terminal_settings_come_back_after_a_killed_full_screen_program() {
 fn settings_chosen_by_a_program_that_ends_normally_are_kept() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("stty -echo")?;
+        term.command("stty -echo")?;
         term.sync("quiet")?;
         let quiet = settings_while_a_command_runs(&mut term, 34)?;
         assert!(!quiet.local_flags.contains(LocalFlags::ECHO));
-        term.line("stty echo")?;
+        term.command("stty echo")?;
         term.sync("loud")?;
         let loud = settings_while_a_command_runs(&mut term, 35)?;
         assert!(loud.local_flags.contains(LocalFlags::ECHO));

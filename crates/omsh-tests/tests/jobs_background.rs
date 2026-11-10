@@ -35,12 +35,12 @@ fn kill_ends_a_background_job_that_the_terminal_stopped() {
 fn ctrl_c_stops_the_foreground_job_and_not_the_background_ones() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("sleep 30 &")?;
+        term.command("sleep 30 &")?;
         term.expect("[1] ", SHORT);
-        term.line("while :; do :; done &")?;
+        term.command("while :; do :; done &")?;
         term.expect("[2]", SHORT);
 
-        term.line("sleep 20")?;
+        term.command("sleep 20")?;
         // Give `sleep 20` time to start, then press Ctrl+C.
         term.pump(Duration::from_millis(400));
         term.key(3)?;
@@ -51,7 +51,7 @@ fn ctrl_c_stops_the_foreground_job_and_not_the_background_ones() {
         // ... and both background jobs are still running, also after the loop had time to notice
         // a flag that it should not have seen.
         term.pump(Duration::from_millis(400));
-        term.line("jobs")?;
+        term.command("jobs")?;
         term.expect("sleep 30 &", SHORT);
         term.expect("while :; do :; done &", SHORT);
         assert!(
@@ -68,12 +68,12 @@ fn ctrl_c_stops_the_foreground_job_and_not_the_background_ones() {
         // A background job that dies of `SIGINT` sent by `kill` is not a Ctrl+C: the commands
         // after it on the same line still run. (If its death set the Ctrl+C flag, `echo` would
         // be skipped.)
-        term.line("kill -INT %1; wait %1; echo after-$((1+1))")?;
+        term.command("kill -INT %1; wait %1; echo after-$((1+1))")?;
         term.expect("after-2", SHORT);
 
         // The terminal is still owned by the shell: `kill` and `wait` work.
-        term.line("kill %2")?;
-        term.line("wait")?;
+        term.command("kill %2")?;
+        term.command("wait")?;
         term.sync("waited")?;
         term.quit()
     });

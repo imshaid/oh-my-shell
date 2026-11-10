@@ -39,7 +39,7 @@ fn holds(bytes: &[u8], text: &str) -> bool {
 /// Runs `command`, whose output is one number, and returns it. `tag` names the answer and
 /// must be new in this terminal: the first answer with that name is the one that is read.
 fn number(term: &mut Session, tag: &str, command: &str) -> io::Result<u32> {
-    term.line(&format!("echo {tag}=$({command})="))?;
+    term.command(&format!("echo {tag}=$({command})="))?;
     let needle = format!("{tag}=");
     let end = std::time::Instant::now() + SHORT;
     loop {
@@ -77,9 +77,9 @@ fn count(term: &mut Session, tag: &str, options: &str, pattern: &str) -> io::Res
 fn history_survives_a_restart() {
     pty_test(BIN, |ctx| {
         let mut first = ctx.start()?;
-        first.line("echo early-$((1+1))")?;
+        first.command("echo early-$((1+1))")?;
         first.expect("early-2", SHORT);
-        first.line("sh -c 'exit 3'")?;
+        first.command("sh -c 'exit 3'")?;
         first.sync("first-done")?;
         first.quit()?;
         assert!(database(ctx).is_file());
@@ -106,8 +106,8 @@ fn shells_that_run_at_the_same_time_share_the_history() {
         let mut a = ctx.start()?;
         let mut b = ctx.start()?;
         for n in 0..EACH {
-            a.line(&format!(": from-a-{n}"))?;
-            b.line(&format!(": from-b-{n}"))?;
+            a.command(&format!(": from-a-{n}"))?;
+            b.command(&format!(": from-b-{n}"))?;
         }
         a.sync("a-done")?;
         b.sync("b-done")?;
@@ -126,6 +126,7 @@ fn shells_that_run_at_the_same_time_share_the_history() {
         assert_eq!(count(&mut c, "both", "", "from-[ab]-")?, 2 * EACH);
         assert_eq!(count(&mut c, "of-a", "--all", "from-[a]-")?, EACH);
         // A shell that started later sees what the others ran before.
+        c.prompt();
         c.write_bytes(b": from-b-2")?;
         c.write_bytes(UP)?;
         c.write_bytes(b"\r")?;
@@ -144,11 +145,11 @@ fn the_builtin_filters_and_deletes() {
         let sub = ctx.home().join("sub");
         fs::create_dir(&sub)?;
         let mut term = ctx.start()?;
-        term.line(&format!("cd {}", sub.display()))?;
-        term.line(": in-sub-one")?;
-        term.line("sh -c 'exit 4' in-sub-two")?;
-        term.line(&format!("cd {}", ctx.home().display()))?;
-        term.line(": at-home")?;
+        term.command(&format!("cd {}", sub.display()))?;
+        term.command(": in-sub-one")?;
+        term.command("sh -c 'exit 4' in-sub-two")?;
+        term.command(&format!("cd {}", ctx.home().display()))?;
+        term.command(": at-home")?;
         term.sync("ready")?;
 
         assert_eq!(count(&mut term, "all", "", "in-[s]ub")?, 2);
@@ -167,22 +168,22 @@ fn the_builtin_filters_and_deletes() {
         assert_eq!(count(&mut term, "two", "-n 2", ".")?, 2);
 
         // Two seconds later they are older than one second.
-        term.line("sleep 2")?;
+        term.command("sleep 2")?;
         assert_eq!(count(&mut term, "old", "--since 1s", "in-[s]ub")?, 0);
         assert_eq!(count(&mut term, "new", "--since 1s", "[s]leep 2")?, 0);
         assert_eq!(count(&mut term, "newer", "--since 1m", "[s]leep 2")?, 1);
 
-        term.line(&format!("cd {}", sub.display()))?;
+        term.command(&format!("cd {}", sub.display()))?;
         assert_eq!(count(&mut term, "here", "--here", "in-[s]ub")?, 2);
         assert_eq!(count(&mut term, "both", "--here --failed", "in-[s]ub")?, 1);
 
-        term.line("history delete $(history | grep 'in-[s]ub-one' | awk '{print $1}')")?;
+        term.command("history delete $(history | grep 'in-[s]ub-one' | awk '{print $1}')")?;
         assert_eq!(count(&mut term, "gone", "", "  : in-[s]ub-one$")?, 0);
         assert_eq!(count(&mut term, "left", "", "in-[s]ub-two$")?, 1);
-        term.line("history delete 99999; echo status-$?")?;
+        term.command("history delete 99999; echo status-$?")?;
         term.expect("history: delete: 99999: no such entry", SHORT);
         term.expect("status-1", SHORT);
-        term.line("history --wrong; echo status-$?")?;
+        term.command("history --wrong; echo status-$?")?;
         term.expect("history: --wrong: unknown option", SHORT);
         term.expect("usage: history", SHORT);
         term.expect("status-2", SHORT);
@@ -197,7 +198,7 @@ fn a_terminal_gets_the_newest_hundred_and_a_pipe_everything() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
         for n in 1..=105 {
-            term.line(&format!(": w{n}"))?;
+            term.command(&format!(": w{n}"))?;
         }
         term.sync("typed")?;
 
@@ -205,7 +206,7 @@ fn a_terminal_gets_the_newest_hundred_and_a_pipe_everything() {
         // the prompt after one.
         let listed = |shown: &str, n: u32| shown.contains(&format!("  : w{n}\r\n"));
         let from = term.transcript().len();
-        term.line("history")?;
+        term.command("history")?;
         term.sync("listed")?;
         let shown = term.transcript()[from..].to_owned();
         // 100 entries: `history` itself, the `echo typed`, and `: w105` back to `: w8`.
@@ -238,11 +239,11 @@ fn a_terminal_gets_the_newest_hundred_and_a_pipe_everything() {
         assert!(entries.iter().all(|line| !line.contains('\x1b')), "{shown}");
 
         let from = term.transcript().len();
-        term.line("history --all")?;
+        term.command("history --all")?;
         term.sync("listed-all")?;
         assert!(listed(&term.transcript()[from..], 1));
         let from = term.transcript().len();
-        term.line("history -n 4")?;
+        term.command("history -n 4")?;
         term.sync("listed-four")?;
         let shown = term.transcript()[from..].to_owned();
         // `history -n 4`, the sync, `history --all`, and the sync before it.
@@ -251,7 +252,7 @@ fn a_terminal_gets_the_newest_hundred_and_a_pipe_everything() {
         assert_eq!(count(&mut term, "piped", "", "  : w[0-9]*$")?, 105);
         assert_eq!(count(&mut term, "limited", "-n 3", ".")?, 3);
         let listing = ctx.home().join("listing.txt");
-        term.line(&format!("history > {}", listing.display()))?;
+        term.command(&format!("history > {}", listing.display()))?;
         term.sync("to-file")?;
         let file = fs::read_to_string(&listing).unwrap_or_default();
         assert!(
@@ -268,11 +269,12 @@ fn a_terminal_gets_the_newest_hundred_and_a_pipe_everything() {
 fn a_secret_is_not_stored_but_can_be_recalled_once() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("echo kept-$((1+1))")?;
+        term.command("echo kept-$((1+1))")?;
         term.expect("kept-2", SHORT);
-        term.line("DEMO_TOKEN=tok-abc-123 sh -c 'echo ran-$((1+1))'")?;
+        term.command("DEMO_TOKEN=tok-abc-123 sh -c 'echo ran-$((1+1))'")?;
         term.expect("ran-2", SHORT);
         // Once, to fix a typing mistake.
+        term.prompt();
         term.write_bytes(UP)?;
         term.write_bytes(b"\r")?;
         term.sync("again")?;
@@ -308,10 +310,10 @@ fn the_ignore_patterns_come_from_the_configuration() {
             "[history]\nignore = [\"*private*\", \"fg\"]\n",
         )?;
         let mut term = ctx.start()?;
-        term.line(": this-is-private-stuff")?;
-        term.line(": this-is-public-stuff")?;
+        term.command(": this-is-private-stuff")?;
+        term.command(": this-is-public-stuff")?;
         // The default pattern was replaced, so a leading space is stored now.
-        term.line(" : with-a-space")?;
+        term.command(" : with-a-space")?;
         term.sync("typed")?;
         assert_eq!(count(&mut term, "hidden", "", "this-is-[p]rivate")?, 0);
         assert_eq!(count(&mut term, "shown", "", "this-is-[p]ublic")?, 1);
@@ -325,8 +327,9 @@ fn the_ignore_patterns_come_from_the_configuration() {
 fn no_config_keeps_the_history_in_memory() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.launch().arg("--no-config").start()?;
-        term.line("echo once-$((1+1))")?;
+        term.command("echo once-$((1+1))")?;
         term.expect("once-2", SHORT);
+        term.prompt();
         term.write_bytes(UP)?;
         term.write_bytes(b"\r")?;
         term.sync("again")?;
@@ -395,12 +398,12 @@ fn a_history_file_that_cannot_be_used_is_reported_once() {
         // A directory where the file should be.
         fs::create_dir_all(database(ctx))?;
         let mut term = ctx.start()?;
-        term.line("echo still-$((1+1))")?;
+        term.command("echo still-$((1+1))")?;
         term.expect("still-2", SHORT);
         // The file is opened by the writer's thread, so the news comes at the first prompt or
         // a later one, whichever the thread is ready for. Listing waits for the writer, so by
         // the prompt after it the news has been given.
-        term.line("history -n 1")?;
+        term.command("history -n 1")?;
         term.sync("listed")?;
         let shown = term.transcript();
         assert!(
@@ -437,7 +440,7 @@ fn the_startup_file_is_not_history() {
         term.sync("typed")?;
         assert_eq!(count(&mut term, "startup", "", "from-the-[s]tartup")?, 0);
         assert_eq!(count(&mut term, "typed", "", "echo [t]yped-")?, 1);
-        term.line("type history")?;
+        term.command("type history")?;
         term.expect("history is a shell builtin", SHORT);
         term.quit()
     });

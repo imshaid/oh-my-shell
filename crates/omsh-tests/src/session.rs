@@ -246,6 +246,7 @@ impl Launch {
             cursor: 0,
             answer_cursor_queries: self.answer_cursor_queries,
             scanned: 0,
+            submitted: None,
         })
     }
 }
@@ -261,6 +262,16 @@ pub struct Session {
     answer_cursor_queries: bool,
     /// How much of the transcript has been searched for cursor queries.
     scanned: usize,
+    /// The last line that was submitted (Enter was typed), if any.
+    submitted: Option<Submitted>,
+}
+
+/// A line that was submitted: how much the terminal had shown by then, and its text if the
+/// harness typed it (a recalled line has none).
+#[derive(Clone, Debug)]
+struct Submitted {
+    length: usize,
+    text: Option<String>,
 }
 
 impl Session {
@@ -406,7 +417,11 @@ impl Session {
     /// as Enter. This is what a person's keyboard does, so it is what the tests send.
     pub fn line(&mut self, text: &str) -> io::Result<()> {
         self.write_bytes(text.as_bytes())?;
-        self.write_bytes(b"\r")
+        self.write_bytes(b"\r")?;
+        if let Some(submitted) = &mut self.submitted {
+            submitted.text = Some(text.to_owned());
+        }
+        Ok(())
     }
 
     /// Types one raw byte, such as Ctrl+C (3).
@@ -435,14 +450,75 @@ impl Session {
                 Err(e) => return Err(e),
             }
         }
+        if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+            self.submitted = Some(Submitted {
+                length: self.transcript.len(),
+                text: None,
+            });
+        }
         Ok(())
+    }
+
+    /// True if the shell is back at its prompt after the last line that was submitted.
+    ///
+    /// Seen from the text on the screen (escape sequences, and what is drawn away from the
+    /// cursor, taken out; see `without_side_drawing`): the submitted line has
+    /// been shown, and what the terminal showed last is the prompt `$ ` with nothing typed
+    /// after it. The first part matters: a prompt that is drawn again before the keys are
+    /// processed (the editor does that once it has the cursor position) is not the next one.
+    fn prompt_is_up(&self) -> bool {
+        // Before any line is submitted, the first prompt is all there is to wait for.
+        let (from, text) = match &self.submitted {
+            Some(submitted) => (submitted.length, submitted.text.as_deref()),
+            None => (0, Some("")),
+        };
+        let tail = &self.transcript[from..];
+        let plain_of = |text: &str| strip_escapes(&without_side_drawing(text)).0;
+        let shown = match text {
+            Some(text) => plain_of(tail).contains(text),
+            None => plain_of(tail).contains('\n'),
+        };
+        shown && last_paint_is_the_empty_prompt(tail, &plain_of)
+    }
+
+    /// Waits until the shell is back at its prompt after the last line that was typed.
+    ///
+    /// Use it between two lines typed to the shell. A line that is typed before the prompt is
+    /// up is read by the editor together with the next one, and only the first of two lines
+    /// that arrive together is run. That is a known limit of the editor (bracketed paste, S14b,
+    /// is what helps a person who pastes). Without this call a test passes only while the
+    /// shell is quick. It needs the main prompt, `$ `: not the continuation prompt, and not a
+    /// program that is still running.
+    pub fn prompt(&mut self) {
+        let end = Instant::now() + SHORT;
+        while !self.prompt_is_up() {
+            assert!(
+                Instant::now() < end,
+                "never saw the prompt after the last line; the terminal showed:\n{}",
+                self.transcript
+            );
+            self.pump(Duration::from_millis(20));
+        }
+    }
+
+    /// Types a command to the shell: waits for the prompt (see [`Session::prompt`]), then types
+    /// the line. Use it for every command typed to the shell; [`Session::line`] is for input to
+    /// a program that is running, for the lines of an unfinished command, and for typing ahead
+    /// on purpose.
+    pub fn command(&mut self, text: &str) -> io::Result<()> {
+        self.prompt();
+        self.line(text)
     }
 
     /// Runs `echo <tag>-$((1+1))` and waits for its output `<tag>-2`. The echoed command line
     /// holds `$((1+1))` and not `2`, so only the output matches.
+    ///
+    /// It waits for the prompt before it types, and again after the output, so that no line is
+    /// typed ahead of the prompt (see [`Session::prompt`]).
     pub fn sync(&mut self, tag: &str) -> io::Result<()> {
-        self.line(&format!("echo {tag}-$((1+1))"))?;
+        self.command(&format!("echo {tag}-$((1+1))"))?;
         self.expect(&format!("{tag}-2"), SHORT);
+        self.prompt();
         Ok(())
     }
 
@@ -560,6 +636,39 @@ impl Drop for Session {
         let _ = self.shell.kill();
         let _ = self.shell.wait();
     }
+}
+
+/// True if the last thing the editor painted is the prompt with nothing typed after it, whatever
+/// was printed since (a job's message can arrive after the prompt). The editor hides the cursor
+/// (`ESC [ ? 25 l`) when it starts a paint and shows it (`ESC [ ? 25 h`) when it is done; a
+/// reader that paints nothing (the plain one) is judged by the end of the output.
+fn last_paint_is_the_empty_prompt(output: &str, plain_of: &dyn Fn(&str) -> String) -> bool {
+    const HIDE: &str = "\x1b[?25l";
+    const SHOW: &str = "\x1b[?25h";
+    let Some(start) = output.rfind(HIDE) else {
+        return plain_of(output).ends_with("$ ");
+    };
+    output[start..]
+        .find(SHOW)
+        .is_some_and(|end| plain_of(&output[start..start + end]).ends_with("$ "))
+}
+
+/// The output without what the editor draws away from the cursor: it saves the cursor
+/// position (`ESC 7`), draws somewhere else (the right side of the prompt: the status of the last
+/// command) and goes back (`ESC 8`). That text is not part of the line the user types in.
+fn without_side_drawing(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("\x1b7") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("\x1b8") {
+            Some(end) => rest = &rest[start + end + 2..],
+            // Drawn only in part so far: the rest is not output that can be read yet.
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The text without escape sequences (`ESC [ ... final`, and `ESC` plus one character), and for

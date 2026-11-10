@@ -237,7 +237,7 @@ fn ctrl_d_warns_about_stopped_jobs_once() {
     }
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("sleep 30")?;
+        term.command("sleep 30")?;
         term.pump(Duration::from_millis(400));
         term.key(CTRL_Z)?;
         term.expect("Stopped", SHORT);
@@ -245,6 +245,8 @@ fn ctrl_d_warns_about_stopped_jobs_once() {
         term.key(CTRL_D)?;
         term.expect("There are stopped jobs.", SHORT);
         assert!(!term.has_exited()?);
+        // The key must not come before the prompt: the editor would not be reading it.
+        term.expect("$ ", SHORT);
         term.key(CTRL_D)?;
         term.wait_exit(SHORT);
         term.expect_none("sleep");
@@ -369,7 +371,7 @@ fn the_terminal_is_in_line_mode_again_after_the_shell_ends() {
             let mut term = ctx.launch().under_sh().start()?;
             term.sync("one")?;
             if ending == "exit" {
-                term.line("exit")?;
+                term.command("exit")?;
             } else {
                 term.key(CTRL_D)?;
             }

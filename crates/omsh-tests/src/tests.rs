@@ -169,3 +169,46 @@ fn escape_sequences_are_stripped_and_positions_kept() {
     assert_eq!(strip_escapes("x\x1b[3").0, "x");
     assert_eq!(strip_escapes("x\x1b").0, "x");
 }
+
+/// A program that prints `$ `, then for each line it reads waits 0.4 s, prints a result line and
+/// prints `$ ` again, as a shell does.
+const SLOW_PROMPTER: &str =
+    "printf '$ '; while read l; do sleep 0.4; printf 'result-%s\\n$ ' \"$l\"; done";
+
+#[test]
+fn prompt_returns_at_once_at_the_first_prompt_and_waits_for_the_next_one() {
+    pty_test("/bin/sh", |ctx| {
+        let mut term = ctx.launch().arg("-c").arg(SLOW_PROMPTER).start_raw()?;
+        term.prompt();
+        term.line("one")?;
+        let typed = Instant::now();
+        term.prompt();
+        assert!(
+            typed.elapsed() >= Duration::from_millis(300),
+            "prompt() came back before the command ended: {:?}",
+            typed.elapsed()
+        );
+        assert!(term.transcript().ends_with("result-one\r\n$ "));
+        // The line that is typed to a command waits for the prompt too.
+        term.command("two")?;
+        term.command("three")?;
+        term.prompt();
+        for line in ["result-one", "result-two", "result-three"] {
+            assert!(term.transcript().contains(line), "{}", term.transcript());
+        }
+        term.key(4)?;
+        Ok(())
+    });
+}
+
+#[test]
+fn prompt_panics_at_the_limit_when_no_prompt_comes() {
+    pty_test("/bin/sh", |ctx| {
+        let mut term = ctx.launch().arg("-c").arg("cat").start_raw()?;
+        term.line("typed-to-cat")?;
+        let outcome = catch_unwind(AssertUnwindSafe(|| term.prompt()));
+        let panic = outcome.expect_err("prompt should have panicked");
+        assert!(message(&panic).contains("never saw the prompt"));
+        Ok(())
+    });
+}

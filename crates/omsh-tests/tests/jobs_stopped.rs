@@ -75,13 +75,13 @@ fn ctrl_z_stops_the_job_and_fg_and_bg_continue_it() {
 fn ctrl_c_ends_a_job_that_was_continued_with_fg() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("sleep 30")?;
+        term.command("sleep 30")?;
         term.pump(Duration::from_millis(400));
         term.key(CTRL_Z)?;
         term.expect("Stopped", SHORT);
         term.sync("alive")?;
         // Ctrl+C also ends the rest of the line, as it does for a job that never stopped.
-        term.line("fg; echo printed-$((1+1))")?;
+        term.command("fg; echo printed-$((1+1))")?;
         term.pump(Duration::from_millis(300));
         term.key(3)?;
         term.sync("after-int")?;
@@ -91,7 +91,7 @@ fn ctrl_c_ends_a_job_that_was_continued_with_fg() {
             term.transcript()
         );
         term.expect_none("sleep");
-        term.line("jobs")?;
+        term.command("jobs")?;
         term.sync("empty")?;
         assert!(!term.recent(40).contains("sleep"));
         term.quit()
@@ -103,7 +103,7 @@ fn ctrl_c_ends_a_job_that_was_continued_with_fg() {
 fn a_pipeline_and_a_subshell_stop_as_one_job() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("sleep 30 | cat")?;
+        term.command("sleep 30 | cat")?;
         term.pump(Duration::from_millis(500));
         term.key(CTRL_Z)?;
         term.expect("Stopped", SHORT);
@@ -116,9 +116,9 @@ fn a_pipeline_and_a_subshell_stop_as_one_job() {
             term.pump(Duration::from_millis(50));
         }
         assert_eq!((state(sleep), state(cat)), ("T".to_owned(), "T".to_owned()));
-        term.line("jobs")?;
+        term.command("jobs")?;
         term.expect("sleep 30 | cat", SHORT);
-        term.line("fg")?;
+        term.command("fg")?;
         term.pump(Duration::from_millis(300));
         term.key(3)?;
         term.sync("two")?;
@@ -126,16 +126,16 @@ fn a_pipeline_and_a_subshell_stop_as_one_job() {
         term.expect_none("cat");
 
         // `( ... )` is one job too; `fg` goes on inside it.
-        term.line("( sleep 30; echo subshell-finished )")?;
+        term.command("( sleep 30; echo subshell-finished )")?;
         term.pump(Duration::from_millis(500));
         term.key(CTRL_Z)?;
         term.expect("Stopped", SHORT);
         term.sync("three")?;
-        term.line("jobs")?;
+        term.command("jobs")?;
         term.expect("( sleep 30; echo subshell-finished )", SHORT);
-        term.line("kill -CONT %1")?;
-        term.line("kill %1")?;
-        term.line("wait %1")?;
+        term.command("kill -CONT %1")?;
+        term.command("kill %1")?;
+        term.command("wait %1")?;
         term.sync("four")?;
         term.expect_none("sleep");
         term.quit()
@@ -196,7 +196,7 @@ fn ctrl_z_on_a_pipeline_into_a_shell_loop_brings_the_prompt_back() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
         let shell = term.shell_pid();
-        term.line("yes | while read l; do :; done")?;
+        term.command("yes | while read l; do :; done")?;
         term.pump(Duration::from_millis(500));
         assert_eq!(term.in_session("yes").len(), 1, "{}", term.transcript());
         term.key(CTRL_Z)?;
@@ -212,17 +212,17 @@ fn ctrl_z_on_a_pipeline_into_a_shell_loop_brings_the_prompt_back() {
         let yes = term.in_session("yes")[0];
         assert_eq!(state(yes), "T");
         assert_eq!(foreground_group(shell), process_group(shell));
-        term.line("jobs")?;
+        term.command("jobs")?;
         term.expect("yes | while read l; do :; done", SHORT);
 
         // `fg` goes on, and Ctrl+C ends the loop and its program.
-        term.line("fg")?;
+        term.command("fg")?;
         term.pump(Duration::from_millis(300));
         assert_ne!(state(yes), "T");
         term.key(3)?;
         term.sync("after-int")?;
         term.expect_none("yes");
-        term.line("jobs")?;
+        term.command("jobs")?;
         term.sync("empty")?;
         term.quit()
     });
@@ -239,19 +239,19 @@ fn a_stopped_job_keeps_its_own_terminal_settings() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
         // The job turns echo off, stops itself, and reports the flag when it is continued.
-        term.line(&format!(
+        term.command(&format!(
             "sh -c 'stty -echo; kill -STOP $$; {ECHO_FLAG}; sleep 0.2'"
         ))?;
         term.expect("Stopped", SHORT);
         term.expect("$ ", SHORT);
         // At the prompt the shell's own settings are back: echo is on.
-        term.line(ECHO_FLAG)?;
+        term.command(ECHO_FLAG)?;
         term.expect("flag=echo", SHORT);
         // `fg` gives the job its settings back: it sees echo off.
-        term.line("fg")?;
+        term.command("fg")?;
         term.expect("flag=-echo", SHORT);
         term.sync("done")?;
-        term.line("stty echo")?;
+        term.command("stty echo")?;
         term.quit()
     });
 }
@@ -269,22 +269,24 @@ fn exit_warns_about_stopped_jobs_once_and_then_hangs_them_up() {
     }
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("sleep 30")?;
+        term.command("sleep 30")?;
         term.pump(Duration::from_millis(400));
         term.key(CTRL_Z)?;
         term.expect("Stopped", SHORT);
         term.sync("ready")?;
 
-        term.line("exit")?;
+        term.command("exit")?;
         term.expect("There are stopped jobs.", SHORT);
         assert!(!term.has_exited()?, "the shell ended");
         assert_eq!(term.in_session("sleep").len(), 1);
 
         // Anything else in between brings the warning back.
         term.sync("between")?;
-        term.line("exit")?;
+        term.command("exit")?;
         term.expect("There are stopped jobs.", SHORT);
-        // End of input (Ctrl+D) at an empty prompt is the same attempt again.
+        // End of input (Ctrl+D) at an empty prompt is the same attempt again. Typed once the
+        // prompt is up: the editor is not reading before that.
+        term.expect("$ ", SHORT);
         term.key(4)?;
         term.wait_exit(SHORT);
         term.expect_none("sleep");

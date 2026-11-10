@@ -96,22 +96,22 @@ fn a_program_killed_by_a_signal_is_reported_and_gives_128_plus_the_signal() {
 fn cd_export_and_variables_last_from_one_line_to_the_next() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("cd /usr")?;
-        term.line("echo here-$(pwd)")?;
+        term.command("cd /usr")?;
+        term.command("echo here-$(pwd)")?;
         term.expect("here-/usr", SHORT);
         // A program sees the change too: its working directory is the real one, not the
         // shell's idea of it.
-        term.line("sh -c 'echo phys-$(pwd -P)'")?;
+        term.command("sh -c 'echo phys-$(pwd -P)'")?;
         term.expect("phys-/usr", SHORT);
 
-        term.line("export FOO_OMSH=bar")?;
-        term.line("BAZ_OMSH=1")?;
-        term.line("sh -c 'echo exported-$FOO_OMSH'")?;
+        term.command("export FOO_OMSH=bar")?;
+        term.command("BAZ_OMSH=1")?;
+        term.command("sh -c 'echo exported-$FOO_OMSH'")?;
         term.expect("exported-bar", SHORT);
         // A variable that is not exported is the shell's own; the line ends right after "-".
-        term.line("sh -c 'echo private-$BAZ_OMSH'")?;
+        term.command("sh -c 'echo private-$BAZ_OMSH'")?;
         term.expect("private-\r\n", SHORT);
-        term.line("echo shell-$BAZ_OMSH")?;
+        term.command("echo shell-$BAZ_OMSH")?;
         term.expect("shell-1", SHORT);
         term.quit()
     });
@@ -121,11 +121,11 @@ fn cd_export_and_variables_last_from_one_line_to_the_next() {
 fn an_alias_lasts_from_one_line_to_the_next() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
-        term.line("alias hi='echo al-$((1+1))'")?;
-        term.line("hi")?;
+        term.command("alias hi='echo al-$((1+1))'")?;
+        term.command("hi")?;
         term.expect("al-2", SHORT);
-        term.line("unalias hi")?;
-        term.line("hi")?;
+        term.command("unalias hi")?;
+        term.command("hi")?;
         term.expect("hi: not found", SHORT);
         term.quit()
     });
@@ -137,11 +137,11 @@ fn pipes_redirections_and_here_documents_work_at_the_prompt() {
     let cwd = dir.path().to_owned();
     pty_test(BIN, move |ctx| {
         let mut term = ctx.launch().cwd(&cwd).start()?;
-        term.line("echo pipe-$((1+1)) | tr a-z A-Z")?;
+        term.command("echo pipe-$((1+1)) | tr a-z A-Z")?;
         term.expect("PIPE-2", SHORT);
 
-        term.line("echo red-$((1+1)) > out.txt")?;
-        term.line("cat out.txt")?;
+        term.command("echo red-$((1+1)) > out.txt")?;
+        term.command("cat out.txt")?;
         term.expect("red-2", SHORT);
         assert_eq!(
             fs::read_to_string(cwd.join("out.txt"))?,
@@ -151,7 +151,7 @@ fn pipes_redirections_and_here_documents_work_at_the_prompt() {
         );
 
         // The unfinished command gets the continuation prompt.
-        term.line("cat <<EOF")?;
+        term.command("cat <<EOF")?;
         term.expect("> ", SHORT);
         term.line("here-$((1+1))")?;
         term.expect("> ", SHORT);
