@@ -9,13 +9,17 @@
 //!
 //! This crate depends on no other crate of the workspace.
 
+mod ai_state;
+mod edit;
 mod first_run;
 mod load;
 mod paths;
 mod schema;
 
+pub use ai_state::AiState;
+pub use edit::{AiChoice, EditError, Edited, set_ai};
 pub use first_run::{TEMPLATE, create as write_if_missing};
-pub use load::{Loaded, Parsed, Problem, Severity, load, parse};
+pub use load::{Loaded, Parsed, Problem, Severity, check_url, load, parse};
 pub use paths::Paths;
 pub use schema::{
     Ai, AiContext, AiLanguage, Channel, Config, ConfirmLevel, EditMode, Editor, History, Icons,

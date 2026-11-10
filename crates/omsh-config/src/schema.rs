@@ -181,6 +181,55 @@ pub enum Provider {
     OpenAiCompatible,
 }
 
+impl Provider {
+    /// Every provider, in the order the setup wizard lists them.
+    pub const ALL: [Self; 5] = [
+        Self::Ollama,
+        Self::Anthropic,
+        Self::OpenAi,
+        Self::Gemini,
+        Self::OpenAiCompatible,
+    ];
+
+    /// The name used in `config.toml` (`provider = "..."`) and as the name of the key's entry
+    /// in the keyring (`oh-my-shell/<name>`, blueprint §9).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ollama => "ollama",
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+            Self::Gemini => "gemini",
+            Self::OpenAiCompatible => "openai-compatible",
+        }
+    }
+
+    /// A name for people: "Anthropic", "OpenAI-compatible server", ...
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ollama => "Ollama (local)",
+            Self::Anthropic => "Anthropic",
+            Self::OpenAi => "OpenAI",
+            Self::Gemini => "Google Gemini",
+            Self::OpenAiCompatible => "OpenAI-compatible server",
+        }
+    }
+
+    /// Whether this provider needs an API key. Ollama runs locally and has none; a server that
+    /// only speaks the OpenAI protocol may or may not ask for one, so it is optional there.
+    #[must_use]
+    pub const fn key_is_required(self) -> bool {
+        matches!(self, Self::Anthropic | Self::OpenAi | Self::Gemini)
+    }
+
+    /// Whether the key is used at all (Ollama has none).
+    #[must_use]
+    pub const fn takes_a_key(self) -> bool {
+        !matches!(self, Self::Ollama)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AiLanguage {
     /// Answer in the language of the request.

@@ -18,13 +18,14 @@ use std::time::{Duration, Instant};
 use omsh_config::{Config, Paths};
 use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, Recall, working_directory};
 use omsh_exec::{
-    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, LineResult, Outcome, Shell, find_program,
-    hung_up, is_builtin, is_root, note_inherited_signals, release_terminal, start_interactive,
-    terminal_gone, wait_for_input,
+    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, LineResult, OmshCommand, Outcome, Shell,
+    find_program, hung_up, is_builtin, is_root, note_inherited_signals, release_terminal,
+    start_interactive, terminal_gone, wait_for_input,
 };
 use omsh_history::{Filter, Store};
 use omsh_ui::Theme;
 
+use crate::ai;
 use crate::history::History;
 use crate::report::{self, Style};
 
@@ -39,7 +40,7 @@ pub struct Options {
     pub interactive: bool,
     /// A login shell: import the login environment before the first prompt.
     pub login: bool,
-    /// `--no-ai`. The AI layer does not exist yet (S20), so nothing reads this.
+    /// `--no-ai`: the AI layer is off for this session. It wins over `[ai] enabled`.
     pub no_ai: bool,
     /// `--no-config`: read neither `config.toml` nor `init.omsh`, and write nothing (history
     /// is then kept in memory).
@@ -416,20 +417,21 @@ fn start_up(
     // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
     // that the file can replace or remove the wrappers.
     shell.define_color_wrappers(files);
-    if options.no_config {
-        let config = Config::default();
-        let history = History {
-            store: Store::in_memory(),
-            filter: Filter::new(&config.history.ignore),
-        };
-        return Ok((config, Some(history)));
-    }
     // The shell's own variables, which include what the login profile exported.
     let paths = Paths::from_lookup(|name| {
         shell
             .var(name)
             .map(|value| OsString::from_vec(value.to_vec()))
     });
+    if options.no_config {
+        let config = Config::default();
+        install_omsh(shell, &config, &paths, options);
+        let history = History {
+            store: Store::in_memory(),
+            filter: Filter::new(&config.history.ignore),
+        };
+        return Ok((config, Some(history)));
+    }
     let loaded = omsh_config::load(&paths);
     for line in loaded.report(MAX_CONFIG_LINES) {
         say(&format!("oh-my-shell: {line}"));
@@ -440,6 +442,7 @@ fn start_up(
         return Err(status);
     }
     let config = loaded.config;
+    install_omsh(shell, &config, &paths, options);
     // After `init.omsh`: what the startup file runs is not typed by anyone and is not
     // history. The file is opened by the store's own thread, so the prompt does not wait.
     let store = match paths.data_dir() {
@@ -451,6 +454,15 @@ fn start_up(
         filter: Filter::new(&config.history.ignore),
     };
     Ok((config, Some(history)))
+}
+
+/// Gives the shell its `omsh` builtin (`omsh ai setup` and friends, S20). This only stores the
+/// settings: the keyring, the TLS setup and the runtime are created when a person types an
+/// `omsh ai` command, never here.
+fn install_omsh(shell: &mut Shell, config: &Config, paths: &Paths, options: Options) {
+    let env = ai::Environment::system(paths, options.no_config);
+    shell
+        .set_omsh(Arc::new(ai::AiSession::new(config, options.no_ai, env)) as Arc<dyn OmshCommand>);
 }
 
 /// The name of the history database in the data directory.

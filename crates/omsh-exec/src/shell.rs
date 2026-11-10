@@ -102,6 +102,8 @@ pub struct Shell {
     pub(crate) color_probes: crate::color::ProbeCache,
     /// What the `history` builtin runs (see `builtins/history.rs`). Shared by every copy.
     pub(crate) history: crate::builtins::HistoryHook,
+    /// What the `omsh` builtin runs (see `builtins/omsh.rs`). Shared by every copy.
+    pub(crate) omsh: crate::builtins::OmshHook,
     /// The working directory of a copy of the shell (a subshell, a pipeline stage, a
     /// `$(...)`), when it is not the process's. `cd` in a copy must not call `chdir`: the
     /// working directory belongs to the whole process, which other threads are using. A copy
@@ -203,6 +205,7 @@ impl Shell {
             errexit_off: 0,
             color_probes: crate::color::ProbeCache::default(),
             history: crate::builtins::HistoryHook::default(),
+            omsh: crate::builtins::OmshHook::default(),
             cwd_override: None,
             in_subshell: false,
             depth: 0,

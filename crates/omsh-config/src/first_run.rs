@@ -73,18 +73,23 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #blast_radius_max_ms = 300
 
 #[ai]
-# The AI layer is off until you set up a provider. API keys are never kept in this file:
-# they go in the system keyring. (not used yet)
+# The AI layer is off until you set up a provider. Type `omsh ai setup` at the prompt: it asks
+# a few questions, checks them with one small request, and writes provider, model and
+# base_url below. API keys are never kept in this file: they go in the system keyring, or in
+# a file only you can read when there is no keyring. `--no-ai` turns the layer off for one
+# session, whatever this says.
 #enabled = true
 # "ollama", "anthropic", "openai", "gemini" or "openai-compatible".
 # provider = "ollama"
 # model = "llama3.2"
-# Address of an OpenAI-compatible server. It must not contain a user name or password.
+# Address of an OpenAI-compatible server, or of an Ollama on another computer. It must not
+# contain a user name or password. A key is sent only to https:// addresses and to this
+# computer (localhost, 127.0.0.1, ::1).
 # base_url = "http://localhost:11434"
-# "auto" (the language of the request), "en" or "bn".
+# "auto" (the language of the request), "en" or "bn". (not used yet)
 #language = "auto"
 
-# What may be sent along with a request. Each item can be turned off.
+# What may be sent along with a request. Each item can be turned off. (not used yet)
 #[ai.context]
 #os = true
 #cwd = true

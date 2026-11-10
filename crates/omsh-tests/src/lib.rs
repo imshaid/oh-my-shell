@@ -29,6 +29,7 @@
 //!
 //! Needs Linux, `/proc` and `setsid` from util-linux.
 
+pub mod fakehttp;
 pub mod procfs;
 pub mod session;
 pub mod skip;

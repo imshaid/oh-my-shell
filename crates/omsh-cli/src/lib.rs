@@ -25,6 +25,7 @@
 //! `--interpret-stdin` is a hidden switch for the tests: it runs this shell's interpreter on
 //! piped input, which would otherwise go to `/bin/sh`.
 
+mod ai;
 mod handoff;
 mod history;
 mod repl;

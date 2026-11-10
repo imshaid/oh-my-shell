@@ -2817,3 +2817,153 @@ mod history {
         assert_eq!(recorder.calls.lock().unwrap().len(), 1);
     }
 }
+
+mod omsh {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{OmshCommand, ReadError, Terminal};
+
+    /// A command that does what its first word says, and remembers its words.
+    #[derive(Default)]
+    struct Recorder {
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl OmshCommand for Recorder {
+        fn run(&self, args: &[Vec<u8>], terminal: &mut dyn Terminal) -> u8 {
+            let words: Vec<String> = args
+                .iter()
+                .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                .collect();
+            self.calls.lock().unwrap().push(words.clone());
+            let mut line = Vec::new();
+            match words.first().map(String::as_str) {
+                Some("say") => {
+                    terminal.out("to-out\n");
+                    terminal.err("to-err\n");
+                    0
+                }
+                Some(which @ ("ask" | "secret")) => {
+                    let hidden = which == "secret";
+                    match terminal.read_line("Q? ", hidden, &mut line) {
+                        Ok(()) => {
+                            terminal.out(&format!("got:{}\n", String::from_utf8_lossy(&line)))
+                        }
+                        Err(ReadError::EndOfInput) => terminal.out("end of input\n"),
+                        Err(other) => terminal.out(&format!("failed:{other:?}\n")),
+                    }
+                    0
+                }
+                Some("terminal") => {
+                    terminal.out(&format!("{}\n", terminal.input_is_terminal()));
+                    0
+                }
+                Some("seven") => 7,
+                _ => 0,
+            }
+        }
+    }
+
+    fn shell_with_omsh() -> (Shell, Arc<Recorder>) {
+        let recorder = Arc::new(Recorder::default());
+        let mut sh = shell();
+        sh.set_omsh(Arc::clone(&recorder) as Arc<dyn OmshCommand>);
+        (sh, recorder)
+    }
+
+    #[test]
+    fn without_a_command_the_builtin_says_so() {
+        let done = run(&mut shell(), "omsh ai status");
+        assert_eq!(done.status, 1);
+        assert_eq!(done.err, "oh-my-shell: omsh: not available in this shell\n");
+    }
+
+    #[test]
+    fn it_is_a_builtin_that_a_program_of_the_same_name_does_not_replace() {
+        assert!(crate::is_builtin("omsh"));
+        let (mut sh, _) = shell_with_omsh();
+        let done = run(&mut sh, "type omsh");
+        assert!(done.out.contains("builtin"), "{}", done.out);
+    }
+
+    #[test]
+    fn the_words_and_the_status_pass_through() {
+        let (mut sh, recorder) = shell_with_omsh();
+        let done = run(
+            &mut sh,
+            "omsh ai 'two words' x; echo status $?; omsh seven; echo status $?",
+        );
+        assert_eq!(done.out, "status 0\nstatus 7\n");
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls[0], ["ai", "two words", "x"]);
+    }
+
+    #[test]
+    fn output_and_messages_use_the_right_descriptors() {
+        let (mut sh, _) = shell_with_omsh();
+        let done = run(&mut sh, "omsh say");
+        assert_eq!(
+            (done.out.as_str(), done.err.as_str()),
+            ("to-out\n", "to-err\n")
+        );
+        let quiet = run(&mut sh, "omsh say 2>/dev/null | cat");
+        assert_eq!((quiet.out.as_str(), quiet.err.as_str()), ("to-out\n", ""));
+    }
+
+    #[test]
+    fn a_line_is_read_from_standard_input_and_nothing_more() {
+        let (mut sh, _) = shell_with_omsh();
+        let done = run(
+            &mut sh,
+            "{ omsh ask; cat; } <<'EOF'\nfirst\nsecond\nthird\nEOF",
+        );
+        assert_eq!(done.out, "got:first\nsecond\nthird\n");
+        assert_eq!(done.err, "Q? ");
+    }
+
+    #[test]
+    fn a_last_line_without_a_line_ending_counts() {
+        let (mut sh, _) = shell_with_omsh();
+        let done = run(&mut sh, "printf abc | omsh ask");
+        assert_eq!(done.out, "got:abc\n");
+    }
+
+    #[test]
+    fn the_end_of_the_input_is_reported() {
+        let (mut sh, _) = shell_with_omsh();
+        assert_eq!(run(&mut sh, "omsh ask </dev/null").out, "end of input\n");
+        assert_eq!(run(&mut sh, "printf '' | omsh ask").out, "end of input\n");
+    }
+
+    #[test]
+    fn an_empty_line_is_an_empty_answer_and_not_the_end() {
+        let (mut sh, _) = shell_with_omsh();
+        assert_eq!(run(&mut sh, "printf '\\n' | omsh ask").out, "got:\n");
+    }
+
+    #[test]
+    fn a_hidden_read_from_a_pipe_prints_no_extra_line() {
+        let (mut sh, _) = shell_with_omsh();
+        let done = run(&mut sh, "printf 'sekret\\n' | omsh secret");
+        assert_eq!(done.out, "got:sekret\n");
+        // Only the prompt: with no terminal there was no echo to turn off and no line to end.
+        assert_eq!(done.err, "Q? ");
+    }
+
+    #[test]
+    fn standard_input_is_not_a_terminal_in_a_test() {
+        let (mut sh, _) = shell_with_omsh();
+        assert_eq!(run(&mut sh, "omsh terminal </dev/null").out, "false\n");
+    }
+
+    #[test]
+    fn it_works_in_a_substitution_and_a_function() {
+        let (mut sh, _) = shell_with_omsh();
+        let done = run(
+            &mut sh,
+            "f() { omsh say 2>/dev/null; }; x=$(f); echo \"[$x]\"",
+        );
+        assert_eq!(done.out, "[to-out]\n");
+    }
+}

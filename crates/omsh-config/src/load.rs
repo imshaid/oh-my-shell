@@ -29,7 +29,7 @@ const MAX_BYTES: u64 = 1024 * 1024;
 
 /// `O_NONBLOCK` on Linux. Opening a FIFO for reading with it returns at once, so that a
 /// `config.toml` that is a FIFO is refused instead of hanging the shell at startup.
-const O_NONBLOCK: i32 = 0o4000;
+pub(crate) const O_NONBLOCK: i32 = 0o4000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -751,7 +751,9 @@ fn read_ai(r: &mut Reader<'_>, table: &DeTable<'_>, ai: &mut Ai) {
 }
 
 /// An `http://` or `https://` address without credentials (§14.1: nothing secret in this file).
-fn check_url(url: &str) -> Result<(), &'static str> {
+///
+/// The error is a phrase that continues "ai.base_url ...", and never repeats the text.
+pub fn check_url(url: &str) -> Result<(), &'static str> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))

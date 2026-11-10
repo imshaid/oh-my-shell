@@ -57,6 +57,16 @@ jobs:
             sudo apt-get update && sudo apt-get install -y --no-install-recommends openssh-sftp-server
           fi
           test -x /usr/lib/openssh/sftp-server
+      - name: Check the tools of the offline test
+        # omsh-tests/tests/offline.rs runs the shell under `strace -f` to prove that a session
+        # without AI makes no network socket, and uses bash for its positive control. It fails
+        # on CI when a tool is missing (a skipped test would hide that it never ran).
+        run: |
+          if ! command -v strace; then
+            echo "strace is missing; installing it"
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+          fi
+          command -v strace && command -v bash
       - name: Run unit and conformance tests
         run: cargo test --workspace --exclude omsh-tests --locked
       - name: Run PTY tests

@@ -65,6 +65,28 @@ reedline = { version = "0.52", default-features = false }
 # shell does not depend on the system's library. Default features are off: the statement cache
 # (`hashlink`) is not used.
 rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
+# AI layer (S20), all in `omsh-ai` only. Nothing here starts before the first AI request.
+# genai is the client for the five providers (§13.3). Its default features are off: they
+# turn on `aws-lc-rs` (a large C build) and the system proxy settings. TLS is rustls with the
+# `ring` provider, chosen below.
+genai = { version = "0.7", default-features = false }
+# genai's HTTP client. Not used directly: this entry only turns on TLS (`rustls-no-provider`:
+# rustls with the platform's certificate verifier and no crypto provider of its own, so that
+# `aws-lc-rs` stays out). The provider is installed by `omsh-ai` at the first request.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+# The crypto provider for rustls: `ring` only. Default features off drops `aws-lc-rs`.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# One small runtime, built at the first AI request (`current_thread`, no worker threads).
+tokio = { version = "1.54", default-features = false, features = ["net", "rt", "sync", "time"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+# Credential stores (D7). keyring 4's own docs tell applications to link `keyring-core` and
+# the store they want, not the `keyring` crate.
+keyring-core = "1.0"
+zbus-secret-service-keyring-store = { version = "1.0", features = ["crypto-rust"] }
+# Wipes a key from memory when it is dropped.
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+# Edits `config.toml` and keeps its comments (the wizard writes the `[ai]` keys).
+toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
 # Test-only. Its `colors` feature is left out: it only colors the diff shown when a
 # snapshot test fails.
 insta = { version = "1.49", default-features = false }
