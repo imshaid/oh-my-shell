@@ -13,3 +13,4 @@ cc 30809d5680bfa031dbe78792fe4aeb0dc0729e1228c37eeac6f6911f389ffc40 # shrinks to
 cc 857693a7107bee3b9cab7b32d49b1be2761a0348328f5a2906d244890fdf9f93 # shrinks to src = "echo a`<<EOF\necho a\\\\`"
 cc d263f1df5ebd9cbeb0a85d52806e414b3bf615aaeed34c42dfce567bcb17d34d # shrinks to src = "echo `echo a<<\\\\`"
 cc aaddd666159feedd75a5f6ff65d4b7ee63a102daa48a09447db48f4ce030392c # shrinks to src = "`<<\"'\"`"
+cc 0383e8a8415659dfbf4e3d6912d347bca77c79f35db085d118e16d95ed0f0b80 # shrinks to src = "echo `w<< -hile echo 'a\\\nb'`"

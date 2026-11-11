@@ -434,6 +434,11 @@ impl Printer {
                     name.clone()
                 };
                 self.out.push_str("<<");
+                // `<<-x` is the operator `<<-` with the delimiter `x`, not `<<` with `-x`. A
+                // blank keeps the delimiter whole. (A quoted delimiter starts with a quote.)
+                if delimiter.starts_with('-') {
+                    self.out.push(' ');
+                }
                 self.out.push_str(&delimiter);
                 self.pending.push(format!("{}{name}\n", body.out));
             }
@@ -598,6 +603,47 @@ fn a_single_quote_in_a_quoted_here_document_delimiter_is_printed_so_that_it_pars
         "cat <<\\'\nbody\n'\n",
         "cat <<\"'\"\nbody\n'\n",
         "cat <<'a b'\nbody\na b\n",
+    ] {
+        let list = parse(src).unwrap_or_else(|failure| panic!("{src:?} gave {failure:?}"));
+        let printed = print_tree(&list);
+        assert_same_behavior(src, &printed, &dir);
+        let again = parse(&printed)
+            .unwrap_or_else(|failure| panic!("{src:?} printed as {printed:?} gave {failure:?}"));
+        assert_eq!(print_tree(&again), printed, "{src:?} is not stable");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A here-document delimiter that starts with `-`. The tree keeps the delimiter text, so the
+/// printer wrote `<<` and the text, and `<<-hile` is the other operator: `<<-` (strip tabs) with
+/// the delimiter `hile`. The shell then never finds a line equal to `hile`. The fix is a blank
+/// after `<<`, as in the source (`<< -hile`). Quoting the delimiter would be wrong: it would stop
+/// the body from being expanded. Found by the round-trip proptest on 100,000 cases (the first
+/// input was ``echo `w<< -hile echo 'a\` + line feed + `b'` ``).
+#[test]
+fn a_here_document_delimiter_that_starts_with_a_dash_is_printed_so_that_it_parses() {
+    let dir = scratch_dir("dash");
+    // Parse, print, parse again, print again: the same text. These are inside backticks, where
+    // a body can end with the input, and so the printed text does not need a body.
+    for src in [
+        "`cat << -x`",
+        "echo `w<< -hile echo 'a\\\nb'`",
+        "`cat << -`",
+    ] {
+        let list = parse(src).unwrap_or_else(|failure| panic!("{src:?} gave {failure:?}"));
+        let printed = print_tree(&list);
+        let again = parse(&printed)
+            .unwrap_or_else(|failure| panic!("{src:?} printed as {printed:?} gave {failure:?}"));
+        assert_eq!(print_tree(&again), printed, "{src:?} is not stable");
+    }
+    // `/bin/sh` runs the source and the printed text: an unquoted delimiter keeps expanding its
+    // body, a quoted one does not, and the delimiter is not `x` (as `<<-x` would make it).
+    for src in [
+        "cat << -x\n$((1+1)) body\n-x\necho after\n",
+        "cat << -\nbody\n-\necho after\n",
+        "cat << '-x'\n$((1+1)) body\n-x\necho after\n",
+        "cat <<- x\n\t$((1+1)) body\n\tx\necho after\n",
+        "cat << --dd\n$((1+1)) one\n--dd\ncat << -dd\ntwo\n-dd\n",
     ] {
         let list = parse(src).unwrap_or_else(|failure| panic!("{src:?} gave {failure:?}"));
         let printed = print_tree(&list);
