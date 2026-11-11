@@ -143,7 +143,10 @@ fn the_file_is_private_and_in_wal_mode() {
     assert_eq!(pragma(&scratch.db(), "user_version"), "1");
     let connection = Connection::open(scratch.db()).unwrap();
     let indexes: Vec<String> = connection
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name")
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'history' \
+             ORDER BY name",
+        )
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()
@@ -873,4 +876,211 @@ fn stores_opened_at_the_same_moment_on_a_new_file_all_use_the_file() {
             );
         }
     }
+}
+
+/// A store with the commands run in order, each with its folder and status.
+fn hinted(rows: &[(&str, &str, i32)]) -> Store {
+    let store = Store::in_memory();
+    for (command, cwd, status) in rows {
+        record(&store, command, cwd, *status);
+    }
+    assert!(store.settle(PATIENT));
+    store
+}
+
+#[test]
+fn a_hint_is_the_rest_of_a_longer_command_that_starts_with_the_text() {
+    let store = hinted(&[("git status", "/a", 0), ("ls", "/a", 0)]);
+    let now = now_ms();
+    assert_eq!(
+        store.hint("git s", "/a", now).as_deref(),
+        Some("git status")
+    );
+    assert_eq!(
+        store.hint("git status", "/a", now),
+        None,
+        "nothing is left to add"
+    );
+    assert_eq!(store.hint("", "/a", now), None);
+    assert_eq!(store.hint("tig", "/a", now), None);
+    assert_eq!(
+        store.hint("it s", "/a", now),
+        None,
+        "a prefix, not a substring"
+    );
+}
+
+#[test]
+fn a_command_from_this_folder_beats_a_newer_one_from_another() {
+    let store = hinted(&[
+        ("make test", "/here", 0),
+        ("make build", "/elsewhere", 0),
+        ("make build", "/elsewhere", 0),
+    ]);
+    let now = now_ms();
+    assert_eq!(
+        store.hint("make", "/here", now).as_deref(),
+        Some("make test")
+    );
+    assert_eq!(
+        store.hint("make", "/elsewhere", now).as_deref(),
+        Some("make build")
+    );
+    // A folder where neither ran: the score decides (two uses beat one).
+    assert_eq!(
+        store.hint("make", "/new", now).as_deref(),
+        Some("make build")
+    );
+}
+
+#[test]
+fn frequency_counts_and_a_tie_goes_to_the_newest() {
+    let store = hinted(&[
+        ("cargo build", "/p", 0),
+        ("cargo build", "/p", 0),
+        ("cargo test", "/p", 0),
+        ("cargo run", "/p", 0),
+        ("cargo test", "/p", 0),
+    ]);
+    let now = now_ms();
+    // build x2, test x2, run x1: test is the newest of the two that tie.
+    assert_eq!(
+        store.hint("cargo", "/p", now).as_deref(),
+        Some("cargo test")
+    );
+}
+
+#[test]
+fn old_uses_count_less_than_recent_ones() {
+    let store = hinted(&[
+        ("job old", "/p", 0),
+        ("job old", "/p", 0),
+        ("job new", "/p", 0),
+    ]);
+    // Two weeks later every use is "old" (0.25 each): two uses still win.
+    let later = now_ms() + 14 * DAY_MS;
+    assert_eq!(store.hint("job", "/p", later).as_deref(), Some("job old"));
+    // Just after: 3 uses worth 4 each, same order. Add a fresh one and it must win by recency
+    // only when the counts are equal.
+    let store = hinted(&[("job old", "/p", 0), ("job new", "/p", 0)]);
+    let now = now_ms();
+    assert_eq!(store.hint("job", "/p", now).as_deref(), Some("job new"));
+}
+
+#[test]
+fn hints_leave_out_several_line_commands_and_mistyped_names() {
+    // The mistyped name is the newest, so only the rule can keep it out.
+    let store = hinted(&[
+        ("echo one\necho two", "/p", 0),
+        ("git status", "/p", 0),
+        ("gti status", "/p", 127),
+    ]);
+    let now = now_ms();
+    assert_eq!(store.hint("echo", "/p", now), None);
+    assert_eq!(store.hint("g", "/p", now).as_deref(), Some("git status"));
+    // A command that has not ended (no status yet) can be suggested.
+    let token = store.start("sleep 100", "/p");
+    let _ = token;
+    assert!(store.settle(PATIENT));
+    assert_eq!(store.hint("sle", "/p", now).as_deref(), Some("sleep 100"));
+}
+
+#[test]
+fn hints_see_what_other_shells_ran_and_only_the_newest_rows() {
+    let scratch = Scratch::new();
+    let other = Store::open(&scratch.db(), 1000);
+    record(&other, "deploy prod", "/p", 0);
+    assert!(other.settle(PATIENT));
+    let mine = Store::open(&scratch.db(), 1000);
+    assert!(mine.settle(PATIENT));
+    assert_eq!(
+        mine.hint("dep", "/p", now_ms()).as_deref(),
+        Some("deploy prod"),
+        "another shell's command"
+    );
+    drop(mine);
+    drop(other);
+}
+
+#[test]
+fn the_hint_window_is_a_count_of_rows_from_the_newest() {
+    let store = Store::in_memory();
+    record(&store, "ancient command", "/p", 0);
+    assert!(store.settle(PATIENT));
+    {
+        // Fill the window with other rows in one statement.
+        let guard = lock(&store.inner.shared.reader);
+        let connection = guard.as_ref().unwrap();
+        connection
+            .execute(
+                "INSERT INTO history (command, cwd, started_at, session_id, host) \
+                 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) \
+                 SELECT 'filler', '/p', 0, 1, 'h' FROM n",
+                [HINT_WINDOW],
+            )
+            .unwrap();
+    }
+    assert_eq!(store.hint("anc", "/p", now_ms()), None);
+    assert_eq!(
+        store.hint("fill", "/p", now_ms()).as_deref(),
+        Some("filler")
+    );
+}
+
+#[test]
+fn a_visit_is_counted_and_dated() {
+    let store = Store::in_memory();
+    let before = now_ms();
+    store.visit("/a");
+    store.visit("/a");
+    store.visit("/b");
+    assert!(store.settle(PATIENT));
+    let mut dirs = store.directories();
+    dirs.sort_by(|x, y| x.path.cmp(&y.path));
+    assert_eq!(dirs.len(), 2);
+    assert_eq!((dirs[0].path.as_str(), dirs[0].visits), ("/a", 2));
+    assert_eq!((dirs[1].path.as_str(), dirs[1].visits), ("/b", 1));
+    assert!(dirs[0].last_ms >= before && dirs[0].last_ms <= now_ms());
+}
+
+#[test]
+fn visited_folders_survive_a_restart_and_only_the_newest_thousand_are_kept() {
+    let scratch = Scratch::new();
+    {
+        let store = Store::open(&scratch.db(), 1000);
+        assert!(store.settle(PATIENT));
+        store.visit("/first");
+        assert!(store.settle(PATIENT));
+        // Later by at least a millisecond, so that the order is not a tie.
+        std::thread::sleep(Duration::from_millis(5));
+        // Enough later visits to push "/first" out of the thousand.
+        for n in 0..DIRS_KEPT {
+            store.visit(&format!("/d{n}"));
+        }
+        assert!(store.close(PATIENT));
+    }
+    let store = Store::open(&scratch.db(), 1000);
+    assert!(store.settle(PATIENT));
+    let dirs = store.directories();
+    assert_eq!(dirs.len(), usize::try_from(DIRS_KEPT).unwrap());
+    assert!(dirs.iter().all(|dir| dir.path != "/first"));
+    assert!(dirs.iter().any(|dir| dir.path == "/d0"));
+}
+
+#[test]
+fn a_version_one_file_without_dirs_gets_the_table_and_keeps_its_version() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.db().parent().unwrap()).unwrap();
+    {
+        // A file as S13b to S25 made it: the history table, version 1, no `dirs`.
+        let connection = Connection::open(scratch.db()).unwrap();
+        connection.execute_batch(CREATE).unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+    }
+    let store = Store::open(&scratch.db(), 1000);
+    store.visit("/x");
+    assert!(store.settle(PATIENT));
+    assert_eq!(store.directories().len(), 1);
+    assert!(store.close(PATIENT));
+    assert_eq!(pragma(&scratch.db(), "user_version"), "1");
 }

@@ -208,7 +208,9 @@ fn a_terminal_gets_the_newest_hundred_and_a_pipe_everything() {
         let from = term.transcript().len();
         term.command("history")?;
         term.sync("listed")?;
-        let shown = term.transcript()[from..].to_owned();
+        // The editor turns bracketed paste off (`ESC [ ? 2004 l`) just before a command's output
+        // starts (S14b); that mark is not part of the listing.
+        let shown = term.transcript()[from..].replace("\x1b[?2004l", "");
         // 100 entries: `history` itself, the `echo typed`, and `: w105` back to `: w8`.
         assert!(listed(&shown, 105) && listed(&shown, 8), "{shown}");
         assert!(!listed(&shown, 7) && !listed(&shown, 1), "{shown}");

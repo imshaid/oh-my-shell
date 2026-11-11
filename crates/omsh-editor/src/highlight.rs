@@ -11,7 +11,7 @@
 //! Both questions are answered by [`Context`], which remembers each answer until the next
 //! prompt, so typing a long line asks the file system about each distinct word only once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use nu_ansi_term::{Color, Style};
 use omsh_syntax::{HighlightKind, HighlightWord, Trigger, lex_for_highlight, trigger};
 use omsh_ui::{AnsiColor, Role, RoleStyle, Theme};
-use reedline::{Highlighter, StyledText};
+use reedline::{AbbrExpandContext, Highlighter, StyledText};
 
 /// What the editor asks the shell about command names. The shell passes one in for each prompt
 /// (see `Editor::read`), so this crate does not depend on the executor.
@@ -36,6 +36,9 @@ pub(crate) struct Context {
     home: Option<PathBuf>,
     commands: HashMap<String, bool>,
     paths: HashMap<PathBuf, bool>,
+    /// The names of the abbreviations (`[editor.abbreviations]`). A name in command position
+    /// is not red: it becomes a command when the space is typed. Kept across prompts.
+    abbreviations: HashSet<String>,
 }
 
 impl Context {
@@ -46,7 +49,12 @@ impl Context {
             home: None,
             commands: HashMap::new(),
             paths: HashMap::new(),
+            abbreviations: HashSet::new(),
         }
+    }
+
+    pub(crate) fn set_abbreviations(&mut self, names: HashSet<String>) {
+        self.abbreviations = names;
     }
 
     /// Starts a new prompt: new facts, and every remembered answer is forgotten. That is how a
@@ -87,6 +95,9 @@ impl Context {
         };
         if name.is_empty() {
             return false;
+        }
+        if self.abbreviations.contains(&name) {
+            return true;
         }
         if let Some(known) = self.commands.get(&name) {
             return *known;
@@ -288,6 +299,28 @@ impl Highlighter for ShellHighlighter {
             pieces.push(plain(at + 1));
         }
         render(line, &pieces)
+    }
+
+    /// An abbreviation is expanded only where a command name stands (after `|`, `&&`, `||`,
+    /// `;`, `(` or a keyword such as `if`), and only when the word is plain text: not quoted,
+    /// escaped or holding an expansion. `at` is where the word starts. Never in a request to
+    /// the AI (`? ...`), and in `cmd | ? question` only in the command part.
+    fn should_expand_abbr(&self, line: &str, at: usize, _context: AbbrExpandContext) -> bool {
+        let code = match trigger(line) {
+            None => line,
+            Some(Trigger::Pipe { at: pipe, .. }) => &line[..pipe],
+            Some(_) => return false,
+        };
+        if at >= code.len() {
+            return false;
+        }
+        lex_for_highlight(code).words.iter().any(|word| {
+            word.kind == HighlightKind::Command
+                && word.span.start == at
+                && code
+                    .get(word.span.start..word.span.end)
+                    .is_some_and(|text| literal_value(text).as_deref() == Some(text))
+        })
     }
 }
 

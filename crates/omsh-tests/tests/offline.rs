@@ -110,9 +110,19 @@ fn session_of_ordinary_work(term: &mut Session, ctx: &Ctx) -> io::Result<()> {
         "? history yesterday",
         "? history",
         "omsh ai status",
+        // S14b: the visited-directory memory and its jump.
+        "cd /",
+        "j repo",
+        "j -",
     ] {
         term.command(command)?;
     }
+    // S14b: a hint is looked for as soon as something is typed, and a paste waits in the line.
+    term.prompt();
+    term.write_bytes(b"echo hel")?;
+    term.pump(Duration::from_millis(200));
+    term.write_bytes(b"\x15\x1b[200~echo pasted-$((1+1))\n\x1b[201~\r")?;
+    term.expect("pasted-2", SHORT);
     // Alt+? with a failure to explain, and the AI not set up.
     term.command("false")?;
     term.prompt();

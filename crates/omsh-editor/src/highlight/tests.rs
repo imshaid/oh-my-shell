@@ -550,3 +550,70 @@ fn a_pipe_trigger_after_blanks_is_cut_at_the_right_place() {
     assert_eq!(joined, line);
     assert_eq!(s.codes_of(line, "|"), vec![CYAN]);
 }
+
+/// Whether the word that starts at `at` in `line` would be replaced by an abbreviation.
+fn expands(line: &str, at: usize) -> bool {
+    let s = setup();
+    s.highlighter
+        .should_expand_abbr(line, at, AbbrExpandContext::WordAbbreviation)
+}
+
+#[test]
+fn an_abbreviation_is_expanded_in_command_position_only() {
+    assert!(expands("gco", 0));
+    assert!(expands("gco ", 0));
+    assert!(expands("FOO=1 gco", 6), "after an assignment");
+    for (line, at) in [
+        ("ls | gco", 5),
+        ("ls && gco", 6),
+        ("ls || gco", 6),
+        ("ls; gco", 4),
+        ("(gco", 1),
+        ("{ gco", 2),
+        ("if gco", 3),
+        ("while gco", 6),
+        ("echo $(gco", 7),
+    ] {
+        assert!(expands(line, at), "{line:?} at {at}");
+    }
+    for (line, at) in [
+        ("echo gco", 5),
+        ("ls -l gco", 6),
+        ("ls > gco", 5),
+        ("ls | grep gco", 10),
+    ] {
+        assert!(!expands(line, at), "{line:?} at {at}");
+    }
+}
+
+#[test]
+fn a_quoted_or_expanded_word_is_not_an_abbreviation() {
+    assert!(!expands("'gco'", 0));
+    assert!(!expands("\"gco\"", 0));
+    assert!(!expands("g\\co", 0));
+    assert!(!expands("$gco", 0));
+}
+
+#[test]
+fn a_request_to_the_ai_never_expands_and_a_pipe_question_neither() {
+    assert!(!expands("? gco", 2));
+    assert!(!expands("?? gco", 3));
+    // Natural language can hold what the lexer takes for a command position.
+    assert!(!expands("? list the files; gco", 19));
+    assert!(!expands("?? ls | gco", 8));
+    assert!(expands("gco | ? what", 0), "the command part counts");
+    assert!(!expands("ls | ? gco", 7), "the question does not");
+}
+
+#[test]
+fn an_abbreviation_name_in_command_position_is_not_red() {
+    let s = setup();
+    assert_eq!(s.codes_of("gco", "gco"), vec![RED]);
+    s.context
+        .lock()
+        .unwrap()
+        .set_abbreviations(["gco".to_owned()].into_iter().collect());
+    assert_eq!(s.codes_of("gco", "gco"), Vec::<u8>::new());
+    // Not a command anywhere else, but nothing is colored for an argument anyway.
+    assert_eq!(s.codes_of("nosuch", "nosuch"), vec![RED]);
+}

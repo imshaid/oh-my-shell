@@ -38,8 +38,8 @@ mod user;
 mod vars;
 
 pub use builtins::{
-    BuiltinOutput, HistoryCommand, JournalCommand, Key, OmshCommand, ReadError, TRASH, Terminal,
-    is_builtin,
+    BuiltinOutput, HistoryCommand, JournalCommand, JumpCommand, Key, OmshCommand, ReadError, TRASH,
+    Terminal, is_builtin,
 };
 pub use check::NotYet;
 pub use expand::glob;

@@ -6,10 +6,14 @@
 //! - [`Filter`] decides which lines are stored: not the ones that match a `[history] ignore`
 //!   pattern, and never one that looks like it holds a secret (the rules are in `omsh-secrets`).
 //!
+//! - [`Store::hint`] answers the editor's hints and [`rank`] orders the folders for `j`.
+//!
 //! This crate depends on `omsh-secrets` only.
 
 mod filter;
+mod jump;
 mod store;
 
 pub use filter::Filter;
-pub use store::{Entry, Query, SETTLE, Store, Token, now_ms};
+pub use jump::rank;
+pub use store::{Dir, Entry, HINT_WINDOW, Query, SETTLE, Store, Token, now_ms};

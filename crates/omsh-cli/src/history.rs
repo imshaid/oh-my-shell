@@ -12,8 +12,8 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use chrono::{Local, TimeZone};
-use omsh_exec::{BuiltinOutput, HistoryCommand};
-use omsh_history::{Entry, Filter, Query, SETTLE, Store, Token, now_ms};
+use omsh_exec::{BuiltinOutput, HistoryCommand, JumpCommand};
+use omsh_history::{Entry, Filter, Query, SETTLE, Store, Token, now_ms, rank};
 
 /// How many commands plain `history` shows on a terminal.
 const ON_A_TERMINAL: u32 = 100;
@@ -251,6 +251,15 @@ fn failure(message: &str, status: u8) -> BuiltinOutput {
         out: Vec::new(),
         err: format!("oh-my-shell: history: {message}\n").into_bytes(),
         status,
+    }
+}
+
+/// `j`: the visited folders that match, best first. The visits that were just noted are
+/// written first, so that a folder entered a moment ago can be found.
+impl JumpCommand for History {
+    fn candidates(&self, words: &[String]) -> Vec<String> {
+        self.store.settle(SETTLE);
+        rank(&self.store.directories(), words, now_ms())
     }
 }
 

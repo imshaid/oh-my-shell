@@ -15,11 +15,14 @@
 //! thread and returns [`Read::HungUp`], so that the shell can end properly.
 
 mod highlight;
+mod hint;
 mod history;
+mod paste;
 mod prompt;
 mod segments;
 mod validator;
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -37,6 +40,7 @@ use reedline::{
 };
 
 pub use highlight::{CommandLookup, ShellHighlighter};
+pub use hint::{HintReset, HintSource, ShellHinter};
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
 pub use validator::is_incomplete;
@@ -87,6 +91,8 @@ pub struct Editor {
     look: Look,
     /// What the highlighter knows about the system; renewed for each prompt.
     context: Arc<Mutex<highlight::Context>>,
+    /// What the hinter knows about the prompt; renewed for each prompt.
+    hints: Arc<Mutex<hint::HintState>>,
     /// Asked while waiting: has the terminal gone away?
     terminal_gone: Box<dyn Fn() -> bool + Send>,
 }
@@ -124,9 +130,20 @@ impl Editor {
         } else {
             theme.without_color()
         };
-        let context = Arc::new(Mutex::new(highlight::Context::new()));
+        let mut facts = highlight::Context::new();
+        facts.set_abbreviations(
+            config
+                .editor
+                .abbreviations
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+        );
+        let context = Arc::new(Mutex::new(facts));
+        let hints = Arc::new(Mutex::new(hint::HintState::default()));
         let flag = Arc::new(AtomicBool::new(false));
         let raise = Arc::clone(&flag);
+        let hint_source = recall.store.clone();
         let history = history::DbHistory::new(recall.store, recall.filter);
         // With a session, Up shows this shell's commands and what was stored before it
         // started, not what another open shell runs meanwhile.
@@ -146,12 +163,23 @@ impl Editor {
             }))
             .with_poll_interval(IDLE_STEP)
             .with_history(Box::new(history))
-            .with_history_session_id(Some(session));
+            .with_history_session_id(Some(session))
+            // A paste is inserted into the line, not run line by line (see `paste.rs`).
+            .use_bracketed_paste(true)
+            .with_abbreviations(abbreviations(&config.editor.abbreviations));
+        if config.editor.hints {
+            let style = highlight::to_style(theme.get(Role::Autosuggestion));
+            engine = engine.with_hinter(Box::new(ShellHinter::new(
+                Box::new(hint_source),
+                Arc::clone(&hints),
+                style,
+            )));
+        }
         engine = match config.editor.mode {
             ConfigMode::Emacs => {
                 let mut keys = default_emacs_keybindings();
                 bind_explain(&mut keys);
-                engine.with_edit_mode(Box::new(Emacs::new(keys)))
+                engine.with_edit_mode(Box::new(paste::PasteMode::new(Box::new(Emacs::new(keys)))))
             }
             ConfigMode::Vi => {
                 let mut insert = default_vi_insert_keybindings();
@@ -160,7 +188,9 @@ impl Editor {
                 let mut visual = default_vi_visual_keybindings();
                 bind_explain(&mut normal);
                 bind_explain(&mut visual);
-                engine.with_edit_mode(Box::new(Vi::new(insert, normal, visual)))
+                engine.with_edit_mode(Box::new(paste::PasteMode::new(Box::new(Vi::new(
+                    insert, normal, visual,
+                )))))
             }
         };
         if config.prompt.transient {
@@ -171,6 +201,7 @@ impl Editor {
             engine: Some(engine),
             look,
             context,
+            hints,
             terminal_gone: Box::new(terminal_gone),
         }
     }
@@ -182,6 +213,11 @@ impl Editor {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .reset(lookup, state.cwd.clone(), state.home.clone());
+        // The folder as history stores it (text), so that "run here" matches.
+        self.hints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reset(state.cwd.to_string_lossy().into_owned());
         let prompt = ShellPrompt::new(&self.look, state, segments::now);
         self.read_with(prompt)
     }
@@ -275,6 +311,13 @@ fn classify(answer: io::Result<Signal>) -> Read {
         Err(error) if error.raw_os_error() == Some(EIO) => Read::HungUp,
         Err(error) => Read::Failed(error),
     }
+}
+
+fn abbreviations(configured: &BTreeMap<String, String>) -> HashMap<String, String> {
+    configured
+        .iter()
+        .map(|(name, text)| (name.clone(), text.clone()))
+        .collect()
 }
 
 fn names(configured: &[String]) -> Vec<Segment> {

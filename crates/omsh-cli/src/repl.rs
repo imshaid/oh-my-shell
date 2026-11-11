@@ -18,9 +18,10 @@ use std::time::{Duration, Instant};
 use omsh_config::{Config, Paths};
 use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, Recall, working_directory};
 use omsh_exec::{
-    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, JournalCommand, LineResult, OmshCommand, Outcome,
-    Shell, Trigger, find_program, hung_up, is_builtin, is_root, note_inherited_signals,
-    release_terminal, start_interactive, terminal_gone, trigger, wait_for_input,
+    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, JournalCommand, JumpCommand, LineResult,
+    OmshCommand, Outcome, Shell, Trigger, find_program, hung_up, is_builtin, is_root,
+    note_inherited_signals, release_terminal, start_interactive, terminal_gone, trigger,
+    wait_for_input,
 };
 use omsh_history::{Filter, Store};
 use omsh_ui::Theme;
@@ -149,6 +150,7 @@ fn run_on(
     let history = history.as_ref();
     if let Some(history) = history {
         shell.set_history(Arc::new(history.clone()) as Arc<dyn HistoryCommand>);
+        shell.set_jump(Arc::new(history.clone()) as Arc<dyn JumpCommand>);
     }
     let style = Style::detect(config.ui.icons);
     let mut editor = history
@@ -240,6 +242,7 @@ fn run_on(
             Some((history, token))
         });
         let started = Instant::now();
+        let folder = history.map(|_| directory(&shell));
         // A typed line is looked at by the safety analyzer first (S16). Other input (`-c`
         // scripts, a pipe) is run as written: the person is not there to answer.
         let result = if interactive {
@@ -284,6 +287,13 @@ fn run_on(
                     let status = i32::from(shell.last_status().0);
                     history.store.finish(token, status, started.elapsed());
                 }
+            }
+        }
+        // A line that changed the folder (`cd`, `j`, a sourced file): `j` remembers the new one.
+        if let (Some(history), Some(before)) = (history, folder) {
+            let after = directory(&shell);
+            if after != before {
+                history.store.visit(&after);
             }
         }
         // A typed line that ended (not a `?` request: its steps are noted when they run).

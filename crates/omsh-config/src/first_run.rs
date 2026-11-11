@@ -36,25 +36,28 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #icons = "auto"
 
 #[editor]
-# "emacs" or "vi". (not used yet)
+# "emacs" or "vi".
 #mode = "emacs"
-# Suggest the rest of a command from history as you type. (not used yet)
+# Suggest the rest of a command from history as you type, in gray. Press Right or End to
+# take all of it, Alt+F to take one word. Commands run in the current directory come first.
 #hints = true
 
-# Abbreviations: a word followed by a space becomes its text. (not used yet)
+# Abbreviations: a word that stands where a command name goes, followed by a space (or Enter),
+# becomes its text. The history keeps the long form. Not expanded in arguments or in quotes.
 #[editor.abbreviations]
 # gco = "git checkout"
 # gst = "git status"
 
 #[prompt]
 # Segments of the prompt, in order. The segments are: cwd, git, venv, status, duration, time.
-# (not used yet)
 #left = ["cwd", "git", "venv"]
 #right = ["status", "duration"]
-# Collapse old prompts to a short one. (not used yet)
+# Collapse old prompts to a short one.
 #transient = false
 
 #[history]
+# The shell also remembers the directories you change into: `j words` jumps to the best match
+# (`j proj`, `j me proj src`), `j -` goes back.
 # How many commands to keep. Older ones are removed when a shell starts.
 #size = 100000
 # Lines that match one of these patterns are not stored: `*` stands for any text, `?` for one

@@ -73,6 +73,29 @@ const CREATE: &str = "
     CREATE INDEX IF NOT EXISTS history_started_at ON history (started_at);
 ";
 
+/// A hint looks only at this many of the newest rows, so that its cost has a ceiling whatever
+/// the typed text is (blueprint §16: a keystroke is under 5 ms).
+pub const HINT_WINDOW: i64 = 20_000;
+
+/// How many visited folders `j` remembers. The least recently visited are removed when a shell
+/// starts.
+const DIRS_KEPT: i64 = 1_000;
+
+/// The table of visited folders (used by `j`). It is created next to the history table when it
+/// is missing and does not change `user_version`: it only adds a table, so builds that do not
+/// know it still open the file.
+const CREATE_DIRS: &str = "
+    CREATE TABLE IF NOT EXISTS dirs (
+        path    TEXT    PRIMARY KEY,
+        visits  INTEGER NOT NULL,
+        last_ms INTEGER NOT NULL
+    );
+";
+
+const HOUR_MS: i64 = 3_600_000;
+const DAY_MS: i64 = 24 * HOUR_MS;
+const WEEK_MS: i64 = 7 * DAY_MS;
+
 const COLUMNS: &str = "id, command, cwd, exit_status, started_at, duration_ms, session_id, host";
 
 /// One stored command.
@@ -90,6 +113,16 @@ pub struct Entry {
     /// The shell that ran it.
     pub session: i64,
     pub host: String,
+}
+
+/// A folder the shell has been in, for `j`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dir {
+    pub path: String,
+    /// How many times the shell changed into it.
+    pub visits: i64,
+    /// The last time, in milliseconds since 1970 (UTC).
+    pub last_ms: i64,
 }
 
 /// What to look for. The default finds everything, oldest first.
@@ -148,6 +181,11 @@ enum Message {
         duration_ms: i64,
     },
     Cancel(Token),
+    /// The shell changed into this folder.
+    Visit {
+        path: String,
+        at_ms: i64,
+    },
     Delete {
         ids: Vec<i64>,
         /// For each id, whether an entry was removed.
@@ -344,6 +382,78 @@ impl Store {
         // The thread is gone only if it could not be started or it panicked; history is then
         // simply not kept.
         let _ = self.inner.sender.send(message);
+    }
+
+    /// Notes that the shell is now in the folder `path` (for `j`).
+    pub fn visit(&self, path: &str) {
+        self.send(Message::Visit {
+            path: path.to_owned(),
+            at_ms: now_ms(),
+        });
+    }
+
+    /// Every remembered folder, in no particular order. Empty if the database cannot be read.
+    #[must_use]
+    pub fn directories(&self) -> Vec<Dir> {
+        let guard = lock(&self.inner.shared.reader);
+        let Some(connection) = guard.as_ref() else {
+            return Vec::new();
+        };
+        let read = || -> rusqlite::Result<Vec<Dir>> {
+            let mut statement = connection.prepare("SELECT path, visits, last_ms FROM dirs")?;
+            let rows = statement.query_map([], |row| {
+                Ok(Dir {
+                    path: row.get(0)?,
+                    visits: row.get(1)?,
+                    last_ms: row.get(2)?,
+                })
+            })?;
+            rows.collect()
+        };
+        read().unwrap_or_default()
+    }
+
+    /// The command to suggest for the typed text `prefix` (fish-style hint), or none.
+    ///
+    /// Looks at the newest [`HINT_WINDOW`] rows of every shell. A command that starts with
+    /// `prefix` and is longer than it is a candidate, unless it has several lines or ended
+    /// with status 127 (a mistyped name). The best candidate is one that was run in `cwd`;
+    /// among those, the one with the best score for how often and how recently it ran (4 for
+    /// each use in the last hour, 2 in the last day, 1 in the last week, 0.25 before), then the
+    /// newest. `now_ms` is a parameter so that tests can fix the time.
+    #[must_use]
+    pub fn hint(&self, prefix: &str, cwd: &str, now_ms: i64) -> Option<String> {
+        if prefix.is_empty() {
+            return None;
+        }
+        let guard = lock(&self.inner.shared.reader);
+        let connection = guard.as_ref()?;
+        let values = [
+            Value::Integer(HINT_WINDOW),
+            Value::Text(prefix.to_owned()),
+            Value::Text(prefix.to_owned()),
+            Value::Text(cwd.to_owned()),
+            Value::Integer(now_ms.saturating_sub(HOUR_MS)),
+            Value::Integer(now_ms.saturating_sub(DAY_MS)),
+            Value::Integer(now_ms.saturating_sub(WEEK_MS)),
+        ];
+        connection
+            .query_row(
+                "SELECT command FROM history \
+                 WHERE id > (SELECT max(id) FROM history) - ? \
+                   AND instr(command, ?) = 1 AND command <> ? \
+                   AND instr(command, char(10)) = 0 \
+                   AND (exit_status IS NULL OR exit_status <> 127) \
+                 GROUP BY command \
+                 ORDER BY max(cwd = ?) DESC, \
+                   sum(CASE WHEN started_at >= ? THEN 4.0 WHEN started_at >= ? THEN 2.0 \
+                            WHEN started_at >= ? THEN 1.0 ELSE 0.25 END) DESC, \
+                   max(id) DESC \
+                 LIMIT 1",
+                params_from_iter(values.iter()),
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
     }
 
     /// The entries that fit `query`. Empty if the database cannot be read right now: history
@@ -600,6 +710,14 @@ impl Writer {
                             transaction.execute("DELETE FROM history WHERE id = ?", [row])?;
                         }
                     }
+                    Message::Visit { path, at_ms } => {
+                        transaction.execute(
+                            "INSERT INTO dirs (path, visits, last_ms) VALUES (?, 1, ?) \
+                             ON CONFLICT(path) DO UPDATE SET visits = visits + 1, \
+                             last_ms = excluded.last_ms",
+                            params![path, at_ms],
+                        )?;
+                    }
                     Message::Delete { ids, reply } => {
                         let mut removed = Vec::with_capacity(ids.len());
                         for id in ids {
@@ -733,6 +851,17 @@ fn prepare(connection: &Connection) -> Result<(), Failure> {
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;
     }
+    // Added after version 1 shipped, without a new version (see `CREATE_DIRS`).
+    let has_dirs: bool = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'dirs')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_dirs {
+        let transaction = begin(connection)?;
+        transaction.execute_batch(CREATE_DIRS)?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -742,6 +871,11 @@ fn prune(connection: &Connection, size: u32) -> rusqlite::Result<()> {
         "DELETE FROM history WHERE id <= \
          (SELECT id FROM history ORDER BY id DESC LIMIT 1 OFFSET ?)",
         [i64::from(size)],
+    )?;
+    connection.execute(
+        "DELETE FROM dirs WHERE path NOT IN \
+         (SELECT path FROM dirs ORDER BY last_ms DESC LIMIT ?)",
+        [DIRS_KEPT],
     )?;
     Ok(())
 }

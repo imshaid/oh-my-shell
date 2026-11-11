@@ -3085,3 +3085,136 @@ mod journal {
         assert!(sh.rewrite(&prepared, &[Span::new(0, 4)], "(").is_none());
     }
 }
+
+mod jump {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::JumpCommand;
+
+    /// Answers with a fixed list and remembers the words it was asked about.
+    struct Fake {
+        paths: Vec<String>,
+        asked: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl JumpCommand for Fake {
+        fn candidates(&self, words: &[String]) -> Vec<String> {
+            self.asked.lock().unwrap().push(words.to_vec());
+            self.paths.clone()
+        }
+    }
+
+    fn with(dir: &Dir, paths: Vec<String>) -> (Shell, Arc<Fake>) {
+        let fake = Arc::new(Fake {
+            paths,
+            asked: Mutex::new(Vec::new()),
+        });
+        let mut sh = dir.shell();
+        sh.set_jump(Arc::clone(&fake) as Arc<dyn JumpCommand>);
+        (sh, fake)
+    }
+
+    fn text(path: &Path) -> String {
+        path.display().to_string()
+    }
+
+    #[test]
+    fn without_a_jump_the_builtin_says_so() {
+        let done = run(&mut shell(), "j anything");
+        assert_eq!(done.status, 1);
+        assert_eq!(done.err, "oh-my-shell: j: not available in this shell\n");
+    }
+
+    #[test]
+    fn j_changes_into_the_best_folder_and_prints_nothing() {
+        let dir = Dir::new();
+        let target = text(&dir.path().join("sub"));
+        let (mut sh, fake) = with(&dir, vec![target.clone()]);
+        let done = run(&mut sh, "j su; echo $PWD; echo $OLDPWD");
+        assert_eq!(done.status, 0);
+        assert_eq!(done.out, format!("{target}\n{}\n", text(dir.path())));
+        assert_eq!(done.err, "");
+        assert_eq!(fake.asked.lock().unwrap()[0], ["su"]);
+    }
+
+    #[test]
+    fn all_the_words_are_passed_on_and_dash_dash_is_allowed() {
+        let dir = Dir::new();
+        let (mut sh, fake) = with(&dir, vec![text(&dir.path().join("sub"))]);
+        assert_eq!(run(&mut sh, "j proj src").status, 0);
+        assert_eq!(run(&mut sh, "cd ..; j -- -odd name").status, 0);
+        let asked = fake.asked.lock().unwrap();
+        assert_eq!(asked[0], ["proj", "src"]);
+        assert_eq!(asked[1], ["-odd", "name"]);
+    }
+
+    #[test]
+    fn the_folder_the_shell_is_in_and_folders_that_are_gone_are_skipped() {
+        let dir = Dir::new();
+        let sub = text(&dir.path().join("sub"));
+        let (mut sh, _) = with(
+            &dir,
+            vec![
+                text(dir.path()),
+                text(&dir.path().join("gone")),
+                text(&dir.path().join("a.txt")),
+                sub.clone(),
+            ],
+        );
+        let done = run(&mut sh, "j x; echo $PWD");
+        assert_eq!(done.status, 0);
+        assert_eq!(done.out, format!("{sub}\n"));
+    }
+
+    #[test]
+    fn no_match_is_status_1_with_the_words_in_the_message() {
+        let dir = Dir::new();
+        let (mut sh, _) = with(&dir, vec![text(dir.path())]);
+        let done = run(&mut sh, "j nope more; echo $PWD");
+        assert_eq!(done.status, 0, "echo ran after it");
+        let failed = run(&mut sh, "j nope more");
+        assert_eq!(failed.status, 1);
+        assert_eq!(
+            failed.err,
+            "oh-my-shell: j: no visited directory matches: nope more\n"
+        );
+        assert_eq!(
+            run(&mut sh, "j nope; echo $PWD").out,
+            format!("{}\n", text(dir.path()))
+        );
+    }
+
+    #[test]
+    fn no_words_or_an_unknown_option_is_a_usage_error_and_asks_nothing() {
+        let dir = Dir::new();
+        let (mut sh, fake) = with(&dir, vec![text(&dir.path().join("sub"))]);
+        for line in ["j", "j -x", "j --"] {
+            let done = run(&mut sh, line);
+            assert_eq!(done.status, 2, "{line}");
+            assert!(done.err.contains("usage: j"), "{line}: {}", done.err);
+        }
+        assert!(fake.asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn j_dash_goes_back_like_cd_dash_and_asks_nothing() {
+        let dir = Dir::new();
+        let (mut sh, fake) = with(&dir, vec![text(&dir.path().join("sub"))]);
+        run(&mut sh, "j s");
+        let back = run(&mut sh, "j -; echo $PWD");
+        assert_eq!(back.status, 0);
+        // `cd -` prints the folder, and then the echo does.
+        assert_eq!(back.out, format!("{0}\n{0}\n", text(dir.path())));
+        assert_eq!(fake.asked.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_function_named_j_comes_first() {
+        let dir = Dir::new();
+        let (mut sh, fake) = with(&dir, vec![text(&dir.path().join("sub"))]);
+        let done = run(&mut sh, "j() { echo mine; }; j x");
+        assert_eq!(done.out, "mine\n");
+        assert!(fake.asked.lock().unwrap().is_empty());
+    }
+}
