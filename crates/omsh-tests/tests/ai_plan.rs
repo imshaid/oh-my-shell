@@ -101,7 +101,7 @@ fn chat_requests(server: &Server) -> Vec<String> {
         .collect()
 }
 
-const PANEL_KEYS: &str = "[Enter] run  [e] edit  [v] view context  [Esc] cancel";
+const PANEL_KEYS: &str = "[Enter] run  [e] edit  [c] chat  [v] view context  [Esc] cancel";
 
 #[test]
 fn a_plan_waits_for_enter_and_only_then_runs() {
@@ -544,6 +544,79 @@ fn the_limits_in_config_toml_reach_the_plan_panel() {
         term.write_bytes(ESCAPE)?;
         term.expect_plain("cancelled; nothing ran", SHORT);
         assert_eq!(fs::read_dir(&big)?.count(), 10);
+        Ok(())
+    });
+}
+
+#[test]
+fn chat_sends_a_follow_up_and_enter_runs_the_new_plan() {
+    pty_test(BIN, |ctx| {
+        let first = plan(&[("First", "echo one > one", "low")]);
+        let second = plan(&[("Second", "echo two > two", "low")]);
+        // The last answer repeats, so a third request would get the second plan again.
+        let server = Server::start_answering(Duration::ZERO, false, &[&first, &second])?;
+        configure(ctx, &server)?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("? make a marker")?;
+        term.expect_plain("First", SHORT);
+        term.expect(PANEL_KEYS, SHORT);
+        term.write_bytes(b"c")?;
+        term.expect_plain("chat> ", SHORT);
+        term.line("call it two")?;
+        term.expect_plain("after 1 chat turn", SHORT);
+        term.expect_plain("Second", SHORT);
+        assert!(
+            !ctx.home().join("one").exists() && !ctx.home().join("two").exists(),
+            "nothing may run before Enter"
+        );
+        term.write_bytes(ENTER)?;
+        term.expect("plan done (1 step)", SHORT);
+        term.prompt();
+        assert!(ctx.home().join("two").exists());
+        assert!(
+            !ctx.home().join("one").exists(),
+            "the old plan must not run"
+        );
+
+        // The server saw two requests; the second carries the first plan and the message.
+        let requests = chat_requests(&server);
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(requests[1].contains("echo one"), "{}", requests[1]);
+        assert!(requests[1].contains("call it two"), "{}", requests[1]);
+        assert!(!requests[0].contains("call it two"));
+
+        // The follow-up is not a command: it is not in the history, the step that ran is.
+        let mark = term.transcript().len();
+        term.command("history --all")?;
+        term.expect("echo two > two", SHORT);
+        term.sync("end")?;
+        let listing = &term.transcript()[mark..];
+        assert!(!listing.contains("call it two"), "{listing}");
+        Ok(())
+    });
+}
+
+#[test]
+fn ctrl_c_at_the_chat_line_goes_back_to_the_panel() {
+    pty_test(BIN, |ctx| {
+        let answer = plan(&[("First", "echo one > one", "low")]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure(ctx, &server)?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("? make a marker")?;
+        term.expect(PANEL_KEYS, SHORT);
+        term.write_bytes(b"c")?;
+        term.expect_plain("chat> ", SHORT);
+        term.write_bytes(&[CTRL_C])?;
+        // The panel is asked again, the old plan is still there, and no second request left.
+        term.expect(PANEL_KEYS, SHORT);
+        term.write_bytes(ENTER)?;
+        term.expect("plan done (1 step)", SHORT);
+        term.prompt();
+        assert!(ctx.home().join("one").exists());
+        assert_eq!(chat_requests(&server).len(), 1);
         Ok(())
     });
 }

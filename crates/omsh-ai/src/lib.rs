@@ -19,6 +19,7 @@
 //!   rules of `omsh-secrets` and applies the `[ai.context]` switches.
 
 mod context;
+mod conversation;
 mod destination;
 mod error;
 mod genai_provider;
@@ -33,6 +34,9 @@ pub mod fake;
 pub mod runtime;
 
 pub use context::{Gathered, GitState, PlanContext, RECENT_COMMANDS, RecentCommand};
+pub use conversation::{
+    Conversation, MAX_FOLLOW_UP_CHARS, SOFT_TURN_LIMIT, follow_up_hides_secret,
+};
 pub use destination::{key_may_go_to, server_of};
 pub use error::{ErrorKind, ProviderError};
 pub use genai_provider::{GenaiProvider, Settings, map_error};

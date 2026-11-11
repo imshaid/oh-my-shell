@@ -142,6 +142,10 @@ struct Ran {
     line_prompts: Vec<String>,
     /// What the shell remembered as recent commands when the flow ended.
     recent: Vec<omsh_ai::RecentCommand>,
+    /// How many providers were made (one for each request), and how many were still alive
+    /// when the flow ended (none may be).
+    connects: u32,
+    alive: usize,
 }
 
 impl Ran {
@@ -192,8 +196,16 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
     }
     let mut edits: VecDeque<Edited> = setup.edits.into();
     let mut edit = |_: &str| edits.pop_front().unwrap_or(Edited::Cancelled);
+    let connects = Arc::new(AtomicU32::new(0));
     let plan_setup = PlanSetup {
-        provider: Box::new(Arc::clone(&fake)),
+        connect: Box::new({
+            let fake = Arc::clone(&fake);
+            let connects = Arc::clone(&connects);
+            move || {
+                connects.fetch_add(1, Ordering::Relaxed);
+                Ok(Box::new(Arc::clone(&fake)) as Box<dyn Provider>)
+            }
+        }),
         settings: Settings {
             kind: Kind::Ollama,
             model: "test-model".to_owned(),
@@ -227,6 +239,9 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
         key_prompts: state.key_prompts,
         line_prompts: state.line_prompts,
         recent: recent.items(),
+        connects: connects.load(Ordering::Relaxed),
+        // The test's own handle is one; every provider that was made and not dropped adds one.
+        alive: Arc::strong_count(&fake) - 1,
     }
 }
 
@@ -255,7 +270,7 @@ fn a_plan_of_one_harmless_step_still_waits_for_enter() {
     assert!(ran.err.contains("cancelled; nothing ran"), "{}", ran.err);
     assert_eq!(
         ran.key_prompts,
-        ["[Enter] run  [e] edit  [v] view context  [Esc] cancel "]
+        ["[Enter] run  [e] edit  [c] chat  [v] view context  [Esc] cancel "]
     );
     // Enter: it ran.
     let ran = go(
@@ -566,6 +581,8 @@ fn every_step_that_ran_is_in_the_history() {
         ]
     );
 }
+
+mod chat;
 
 // -- asking ---------------------------------------------------------------------------------
 

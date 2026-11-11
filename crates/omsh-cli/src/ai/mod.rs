@@ -22,7 +22,7 @@ mod setup;
 mod tests;
 
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use omsh_ai::{
@@ -33,7 +33,7 @@ use omsh_config::{Ai, AiState, Config, Paths, Provider as Kind};
 use omsh_exec::{OmshCommand, Terminal};
 
 /// Builds the provider for some settings and a key. Replaced in tests, which have no network.
-pub type MakeProvider = Box<
+pub type MakeProvider = Arc<
     dyn Fn(&Settings, Option<&Secret>) -> Result<Box<dyn Provider>, ProviderError> + Send + Sync,
 >;
 
@@ -54,7 +54,7 @@ impl Environment {
         Self {
             keys: Keys::system(paths.config_dir().map(|dir| dir.join("credentials"))),
             config_file: if no_config { None } else { paths.config_file() },
-            make_provider: Box::new(|settings, key| {
+            make_provider: Arc::new(|settings, key| {
                 GenaiProvider::new(settings, key).map(|p| Box::new(p) as Box<dyn Provider>)
             }),
         }
@@ -159,10 +159,12 @@ impl AiSession {
         }
         let settings = inner.settings().ok_or("AI is not set up".to_owned())?;
         let key = inner.stored_key(settings.kind)?;
-        let provider = (inner.env.make_provider)(&settings, key.as_ref())
-            .map_err(|error| error.one_line(settings.kind))?;
+        // A provider (and with it a connection) is made for each request and dropped when the
+        // request ends, so that no socket stays open while a panel waits for a key (S20 rule).
+        let make = Arc::clone(&inner.env.make_provider);
+        let own = settings.clone();
         Ok(plan::PlanSetup {
-            provider,
+            connect: Box::new(move || make(&own, key.as_ref())),
             settings,
             language: inner.ai.language,
             context: inner.ai.context.clone(),

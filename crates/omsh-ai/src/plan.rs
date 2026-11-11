@@ -157,7 +157,7 @@ impl Plan {
 }
 
 /// The text from the first `{` to the last `}`.
-fn extract_object(answer: &str) -> Option<&str> {
+pub(crate) fn extract_object(answer: &str) -> Option<&str> {
     let start = answer.find('{')?;
     let end = answer.rfind('}')?;
     (start < end).then(|| &answer[start..=end])

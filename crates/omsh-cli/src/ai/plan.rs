@@ -29,9 +29,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use omsh_ai::{
-    ChatRequest, ErrorKind, Gathered, GitState, ModelRisk, Plan, PlanContext, PlanError,
-    PlanRequest, Policy, Provider, ProviderError, Role, Settings, collect_text_counting,
-    hides_secret, plan_request, retry_request, runtime,
+    ChatRequest, Conversation, ErrorKind, Gathered, GitState, ModelRisk, Plan, PlanContext,
+    PlanError, PlanRequest, Policy, Provider, ProviderError, Role, SOFT_TURN_LIMIT, Settings,
+    collect_text_counting, follow_up_hides_secret, hides_secret, plan_request, retry_request,
+    runtime,
 };
 use omsh_config::{AiContext, AiLanguage, ConfirmLevel};
 use omsh_editor::Head;
@@ -61,13 +62,21 @@ const INTERRUPTED: u8 = 130;
 pub const USAGE: &str =
     "usage: ? <what you want done>   (example: ? show the 5 biggest files here)\n";
 
-const KEYS: &str = "[Enter] run  [e] edit  [v] view context  [Esc] cancel ";
+const KEYS: &str = "[Enter] run  [e] edit  [c] chat  [v] view context  [Esc] cancel ";
+
+/// What the line for a follow-up message asks.
+const CHAT_PROMPT: &str = "chat> ";
 
 // -- what the REPL hands over ---------------------------------------------------------------
 
-/// A provider that is ready to be asked, with the settings that decide what is sent.
+/// Makes a provider for one request. Each request (the first plan, each chat turn) gets a new
+/// one that is dropped when the request ends, so no connection stays open while the panel
+/// waits for a key.
+pub type Connect = Box<dyn FnMut() -> Result<Box<dyn Provider>, ProviderError>>;
+
+/// A provider that can be asked, with the settings that decide what is sent.
 pub struct PlanSetup {
-    pub provider: Box<dyn Provider>,
+    pub connect: Connect,
     pub settings: Settings,
     pub language: AiLanguage,
     pub context: AiContext,
@@ -334,7 +343,7 @@ async fn attempts<T>(
     received: &AtomicUsize,
     tries: &AtomicUsize,
     sent: &RefCell<Option<Sent>>,
-) -> Result<T, Failure> {
+) -> Result<(T, String), Failure> {
     let policy = Policy::standard();
     let mut request = first.clone();
     let mut first_answer_chars = None;
@@ -355,7 +364,7 @@ async fn attempts<T>(
             };
         match check(&answer) {
             Ok(value) => {
-                outcome = Ok(value);
+                outcome = Ok((value, answer));
                 break;
             }
             Err(error) if attempt == 1 => {
@@ -377,7 +386,7 @@ fn ask(
     check: &dyn Fn(&str) -> Result<Checked, PlanError>,
     label: &str,
     terminal: &mut dyn Terminal,
-) -> (Result<Checked, Failure>, Option<Sent>) {
+) -> (Result<(Checked, String), Failure>, Option<Sent>) {
     let received = AtomicUsize::new(0);
     let tries = AtomicUsize::new(1);
     let sent = RefCell::new(None);
@@ -455,13 +464,24 @@ fn panel(
     steps: &[Reviewed],
     blast: BlastLimits,
     journal: bool,
+    turns: usize,
 ) -> String {
+    let after = match turns {
+        0 => String::new(),
+        1 => ", after 1 chat turn".to_owned(),
+        n => format!(", after {n} chat turns"),
+    };
     let mut out = format!(
-        "oh-my-shell: plan from {} ({}):\n  {}\n",
+        "oh-my-shell: plan from {} ({}{after}):\n  {}\n",
         settings.kind.label(),
         settings.model,
         shorten(summary)
     );
+    if turns >= SOFT_TURN_LIMIT {
+        out.push_str(&format!(
+            "  (chat turn {turns}: if only a command needs changing, [e] edit may be quicker)\n"
+        ));
+    }
     for (index, step) in steps.iter().enumerate() {
         let rating = step.rating();
         let note = if step.edited {
@@ -481,7 +501,9 @@ fn panel(
         if step.text.trim_end() != step.command.trim_end() {
             block(&mut out, "     runs as: ", "       ", &step.text);
         }
-        if !step.explanation.trim().is_empty() {
+        if step.edited {
+            out.push_str("     (your edit; the model's explanation was for its own command)\n");
+        } else if !step.explanation.trim().is_empty() {
             block(&mut out, "     ", "     ", &step.explanation);
         }
         if step.needs_root {
@@ -575,8 +597,9 @@ fn displayable(text: &str) -> String {
 }
 
 /// Exactly what went to the model (`[v]`, §13.5): the instructions with the context lines, and
-/// the request. After a second try, the refused first answer was sent back too; its own text is
-/// not printed again (it is the model's, and it may hold escape codes).
+/// every message of the conversation in order. The model's own earlier plans were sent back too;
+/// their text is not printed again (it is the model's, and it may hold escape codes). After a
+/// second try, the refused answer was sent back as well, with a message saying what was wrong.
 fn sent_view(sent: &Sent, settings: &Settings) -> String {
     let request = &sent.request;
     let mut out = format!(
@@ -584,27 +607,47 @@ fn sent_view(sent: &Sent, settings: &Settings) -> String {
         settings.kind.label(),
         settings.model
     );
-    for line in displayable(request.system.as_deref().unwrap_or_default()).lines() {
-        out.push_str("  | ");
-        out.push_str(line);
-        out.push('\n');
-    }
-    let mut user_messages = request.messages.iter().filter(|m| m.role == Role::User);
-    out.push_str("\nrequest:\n");
-    for line in displayable(user_messages.next().map_or("", |m| m.text.as_str())).lines() {
-        out.push_str("  | ");
-        out.push_str(line);
-        out.push('\n');
+    let quote = |out: &mut String, text: &str| {
+        for line in displayable(text).lines() {
+            out.push_str("  | ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    };
+    quote(&mut out, request.system.as_deref().unwrap_or_default());
+    // On a second try the last two messages are the refused answer and the reason.
+    let kept = request
+        .messages
+        .len()
+        .saturating_sub(if sent.first_answer_chars.is_some() {
+            2
+        } else {
+            0
+        });
+    for (index, message) in request.messages[..kept].iter().enumerate() {
+        match (message.role, index) {
+            (Role::User, 0) => {
+                out.push_str("\nrequest:\n");
+                quote(&mut out, &message.text);
+            }
+            (Role::User, _) => {
+                out.push_str("\nyour message:\n");
+                quote(&mut out, &message.text);
+            }
+            (Role::Assistant, _) => out.push_str(&format!(
+                "\nthe model's earlier plan ({} characters) was sent back\n",
+                message.text.chars().count()
+            )),
+        }
     }
     if let Some(chars) = sent.first_answer_chars {
         out.push_str(&format!(
             "\nsecond try: the model's first answer ({chars} characters) was sent back, with:\n"
         ));
-        for line in displayable(user_messages.next().map_or("", |m| m.text.as_str())).lines() {
-            out.push_str("  | ");
-            out.push_str(line);
-            out.push('\n');
-        }
+        quote(
+            &mut out,
+            request.messages.last().map_or("", |m| m.text.as_str()),
+        );
     }
     out.push_str("\nsecrets are replaced by [MASKED] before anything is sent; no file contents or command output are sent\n\n");
     out
@@ -617,15 +660,18 @@ enum Choice {
     Run,
     /// Change the command of this step (0-based).
     Edit(usize),
+    /// Send a follow-up message and get a new plan.
+    Chat,
     Cancel(u8),
 }
 
-/// Waits for a key on the panel. Only Enter (or `y`) runs; `e` edits; `v` shows what was sent
-/// and goes on waiting; Esc, `n` and `q` cancel; any other key is ignored.
+/// Waits for a key on the panel. Only Enter (or `y`) runs; `e` edits; `c` chats; `v` shows what
+/// was sent and goes on waiting; Esc, `n` and `q` cancel; any other key is ignored.
 fn choose(terminal: &mut dyn Terminal, steps: usize, view: &str) -> Choice {
     loop {
         match terminal.read_key(KEYS) {
             Ok(Key::Enter | Key::Char('y' | 'Y')) => return Choice::Run,
+            Ok(Key::Char('c' | 'C')) => return Choice::Chat,
             Ok(Key::Char('v' | 'V')) => terminal.err(view),
             Ok(Key::Char('e' | 'E')) => {
                 if steps == 1 {
@@ -658,22 +704,50 @@ fn say(env: &mut PlanEnv<'_>, text: &str) {
     env.tty.open(env.shell, env.files).err(text);
 }
 
+/// A provider for the next request, or the one line that says why there is none.
+fn provider_for(
+    connect: &mut Connect,
+    kind: omsh_config::Provider,
+) -> Result<Box<dyn Provider>, String> {
+    connect().map_err(|error| error.one_line(kind))
+}
+
+/// Why a request ended without a usable plan, as one line.
+fn failure_line(failure: &Failure, kind: omsh_config::Provider) -> String {
+    match failure {
+        Failure::Provider(error) if error.kind == ErrorKind::Cancelled => "cancelled".to_owned(),
+        Failure::Provider(error) => error.one_line(kind),
+        Failure::Invalid(error) => format!("couldn't make a plan: {error}"),
+    }
+}
+
 /// Handles a `? request` line. Returns what the REPL does next, like running a line.
 pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult {
+    let PlanSetup {
+        mut connect,
+        settings,
+        language,
+        context: allowed,
+    } = setup;
+    let kind = settings.kind;
     if request.trim().is_empty() {
         say(&mut env, USAGE);
         return finish(env.shell, USAGE_STATUS);
     }
+    let provider = match provider_for(&mut connect, kind) {
+        Ok(provider) => provider,
+        Err(line) => {
+            say(&mut env, &format!("oh-my-shell: ?: {line}\n"));
+            return finish(env.shell, FAILED);
+        }
+    };
 
     // -- ask
-    let context = PlanContext::build(
-        gather(env.shell, &setup.context, env.recent),
-        &setup.context,
-    );
+    let context = PlanContext::build(gather(env.shell, &allowed, env.recent), &allowed);
     let plan_asked = PlanRequest {
         request,
         context: &context,
-        language: setup.language,
+        language,
     };
     if hides_secret(&plan_asked) {
         say(
@@ -682,54 +756,40 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         );
     }
     let first = plan_request(&plan_asked);
-    let label = format!(
-        "Asking {} ({})",
-        setup.settings.kind.label(),
-        setup.settings.model
-    );
+    let label = format!("Asking {} ({})", kind.label(), settings.model);
     let checker = env.shell.clone();
-    let check = |answer: &str| -> Result<Checked, PlanError> {
-        let plan = Plan::parse(answer)?;
-        let steps = review_plan(&checker, &plan)?;
-        Ok(Checked {
-            summary: plan.summary,
-            steps,
-        })
-    };
+    let check = |answer: &str| check_answer(&checker, answer);
     let (outcome, sent) = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        ask(setup.provider, &first, &check, &label, &mut *terminal)
+        ask(provider, &first, &check, &label, &mut *terminal)
     };
     // What `[v]` shows: the request that was really sent last (a second try, if there was one).
-    let view = sent_view(
+    let mut view = sent_view(
         &sent.unwrap_or(Sent {
-            request: first,
+            request: first.clone(),
             first_answer_chars: None,
         }),
-        &setup.settings,
+        &settings,
     );
-    let kind = setup.settings.kind;
+    let mut conversation = Conversation::new(&first);
     let Checked { summary, mut steps } = match outcome {
-        Ok(checked) => checked,
+        Ok((checked, answer)) => {
+            conversation.accept(&first, &answer);
+            checked
+        }
         Err(Failure::Provider(error)) if error.kind == ErrorKind::Cancelled => {
             say(&mut env, "\noh-my-shell: cancelled; nothing ran\n");
             return finish(env.shell, INTERRUPTED);
         }
-        Err(Failure::Provider(error)) => {
+        Err(failure) => {
             say(
                 &mut env,
-                &format!("oh-my-shell: ?: {}\n", error.one_line(kind)),
-            );
-            return finish(env.shell, FAILED);
-        }
-        Err(Failure::Invalid(error)) => {
-            say(
-                &mut env,
-                &format!("oh-my-shell: ?: couldn't make a plan: {error}\n"),
+                &format!("oh-my-shell: ?: {}\n", failure_line(&failure, kind)),
             );
             return finish(env.shell, FAILED);
         }
     };
+    let mut summary = summary;
 
     // -- count what the destructive steps would touch, then show it and wait for a key
     for step in &mut steps {
@@ -737,7 +797,14 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     }
     loop {
         let journal = env.undo.is_some() && env.shell.has_journal();
-        let text = panel(&summary, &setup.settings, &steps, env.blast, journal);
+        let text = panel(
+            &summary,
+            &settings,
+            &steps,
+            env.blast,
+            journal,
+            conversation.turns(),
+        );
         let choice = {
             let mut terminal = env.tty.open(env.shell, env.files);
             terminal.err(&text);
@@ -753,6 +820,19 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
                 return finish(env.shell, status);
             }
             Choice::Edit(index) => edit_step(&mut env, &mut steps, index),
+            Choice::Chat => {
+                if let Some(new) = chat_turn(
+                    &mut env,
+                    &mut connect,
+                    &settings,
+                    &mut conversation,
+                    &steps,
+                    &mut view,
+                ) {
+                    summary = new.summary;
+                    steps = new.steps;
+                }
+            }
         }
     }
 
@@ -797,6 +877,114 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     }
 
     execute(&mut env, &steps)
+}
+
+/// Reads a model's answer as a plan whose every command parses in this shell.
+fn check_answer(shell: &Shell, answer: &str) -> Result<Checked, PlanError> {
+    let plan = Plan::parse(answer)?;
+    let steps = review_plan(shell, &plan)?;
+    Ok(Checked {
+        summary: plan.summary,
+        steps,
+    })
+}
+
+/// One round of `[c] chat`: reads a message, asks the model for a new plan with the whole
+/// conversation, and returns the new plan (counted, ready to show). Anything that goes wrong
+/// (nothing typed, Ctrl+C, no answer, a plan that is no good) says so in one line and returns
+/// `None`: the plan on the screen stays as it was.
+fn chat_turn(
+    env: &mut PlanEnv<'_>,
+    connect: &mut Connect,
+    settings: &Settings,
+    conversation: &mut Conversation,
+    steps: &[Reviewed],
+    view: &mut String,
+) -> Option<Checked> {
+    let kind = settings.kind;
+    let text = {
+        let mut line = Vec::new();
+        let mut terminal = env.tty.open(env.shell, env.files);
+        match terminal.read_line(CHAT_PROMPT, false, &mut line) {
+            Ok(()) => String::from_utf8_lossy(&line).into_owned(),
+            Err(ReadError::Interrupted) => {
+                terminal.err("\n");
+                omsh_exec::clear_interrupt();
+                return None;
+            }
+            Err(_) => return None,
+        }
+    };
+    // Commands the person changed by hand: the model must not undo them.
+    let edits: Vec<(usize, String)> = steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step.edited)
+        .map(|(index, step)| (index + 1, step.command.clone()))
+        .collect();
+    let follow_up = match conversation.follow_up(&text, &edits) {
+        Ok(request) => request,
+        Err(_) if text.trim().is_empty() => return None,
+        Err(why) => {
+            say(
+                env,
+                &format!("oh-my-shell: ?: chat: {why}; nothing was sent\n"),
+            );
+            return None;
+        }
+    };
+    if follow_up_hides_secret(&text, &edits) {
+        say(
+            env,
+            "oh-my-shell: a secret in your message was hidden before sending\n",
+        );
+    }
+    let fail = |env: &mut PlanEnv<'_>, line: &str| {
+        say(
+            env,
+            &format!("oh-my-shell: ?: chat: {line}; the previous plan is unchanged\n"),
+        );
+    };
+    let provider = match provider_for(connect, kind) {
+        Ok(provider) => provider,
+        Err(line) => {
+            fail(env, &line);
+            return None;
+        }
+    };
+    let label = format!(
+        "Asking {} ({}), chat turn {}",
+        kind.label(),
+        settings.model,
+        conversation.turns() + 1
+    );
+    let checker = env.shell.clone();
+    let check = |answer: &str| check_answer(&checker, answer);
+    let (outcome, sent) = {
+        let mut terminal = env.tty.open(env.shell, env.files);
+        ask(provider, &follow_up, &check, &label, &mut *terminal)
+    };
+    // `[v]` shows what was sent last, even if the answer was no good.
+    if let Some(sent) = sent {
+        *view = sent_view(&sent, settings);
+    }
+    match outcome {
+        Ok((mut checked, answer)) => {
+            conversation.accept(&follow_up, &answer);
+            for step in &mut checked.steps {
+                count_step(step, env.confirm, env.blast);
+            }
+            Some(checked)
+        }
+        Err(failure) => {
+            if matches!(&failure, Failure::Provider(error) if error.kind == ErrorKind::Cancelled) {
+                omsh_exec::clear_interrupt();
+                say(env, "\n");
+            }
+            fail(env, &failure_line(&failure, kind));
+            None
+        }
+    }
 }
 
 /// Changes the command of one step, if the person gives a usable new one.

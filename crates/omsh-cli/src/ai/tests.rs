@@ -195,7 +195,7 @@ impl Setup {
         let env = Environment {
             keys,
             config_file: (!self.no_config).then(|| config_file.clone()),
-            make_provider: Box::new(move |settings, key| {
+            make_provider: Arc::new(move |settings, key| {
                 let made = Made {
                     kind: settings.kind,
                     model: settings.model.clone(),
@@ -805,7 +805,7 @@ fn a_stored_key_is_not_sent_to_a_plain_http_address_by_test() {
                 Box::new(CredentialsFile::new(world.credentials_file())),
             ),
             config_file: None,
-            make_provider: Box::new(|settings, key| {
+            make_provider: Arc::new(|settings, key| {
                 omsh_ai::GenaiProvider::new(settings, key).map(|p| Box::new(p) as Box<dyn Provider>)
             }),
         },
