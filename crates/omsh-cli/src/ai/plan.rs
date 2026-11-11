@@ -35,14 +35,17 @@ use omsh_ai::{
 };
 use omsh_config::{AiContext, AiLanguage, ConfirmLevel};
 use omsh_editor::Head;
-use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, Terminal};
+use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, TRASH, Terminal};
 use omsh_safety::blast::Radius;
+use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level};
 
 use super::recent::Recent;
 use crate::confirm::{self, Decision, StartDir};
 use crate::history::History;
 use crate::radius::{self, BlastLimits};
+use crate::undo::Undo;
+use crate::undo::watch::Watch;
 
 /// How many lines of a command, and of an explanation, the panel shows, and how wide.
 const SHOWN_LINES: usize = 5;
@@ -110,6 +113,8 @@ pub struct PlanEnv<'a> {
     pub blast: BlastLimits,
     /// Draw ✓ and ✗ (otherwise `ok` and `failed`).
     pub unicode: bool,
+    /// The trash and the undo journal. Without it (`--no-config`) an `rm` deletes for good.
+    pub undo: Option<&'a Undo>,
     /// Changes the text of a command in the line editor.
     pub edit: &'a mut dyn FnMut(&str) -> Edited,
 }
@@ -444,7 +449,13 @@ fn block(out: &mut String, first: &str, indent: &str, text: &str) {
     }
 }
 
-fn panel(summary: &str, settings: &Settings, steps: &[Reviewed], blast: BlastLimits) -> String {
+fn panel(
+    summary: &str,
+    settings: &Settings,
+    steps: &[Reviewed],
+    blast: BlastLimits,
+    journal: bool,
+) -> String {
     let mut out = format!(
         "oh-my-shell: plan from {} ({}):\n  {}\n",
         settings.kind.label(),
@@ -502,9 +513,56 @@ fn panel(summary: &str, settings: &Settings, steps: &[Reviewed], blast: BlastLim
         if counted && index > 0 {
             out.push_str("       (counted now, before the steps above have run)\n");
         }
+        undo_lines(&mut out, &step.analysis, journal);
     }
     out.push('\n');
     out
+}
+
+/// What `undo` can and cannot do for a step: which of its `rm`s go through the trash, and
+/// which `mkdir`, `mv` and redirections are followed.
+fn undo_lines(out: &mut String, analysis: &Analysis, journal: bool) {
+    let mut trashed = false;
+    for site in &analysis.deletes {
+        match (&site.trashable, journal) {
+            (Ok(()), true) => trashed = true,
+            (Ok(()), false) => {}
+            (Err(why), _) => {
+                out.push_str(&format!(
+                    "     - deletes for good, not through the trash: {}\n",
+                    why.text()
+                ));
+            }
+        }
+    }
+    if !journal && analysis.deletes.iter().any(|site| site.trashable.is_ok()) {
+        out.push_str("     - deletes for good: the trash is not available in this shell\n");
+    }
+    if trashed {
+        out.push_str("     rm goes to the trash; undo can bring it back\n");
+    }
+    let mut followed = Vec::new();
+    for change in &analysis.changes {
+        match (&change.skip, journal) {
+            (Some(why), _) => {
+                out.push_str(&format!("     - not undoable: {} ({why})\n", change.what()))
+            }
+            (None, true) => match change.targets.iter().find(|target| target.unknown) {
+                Some(target) => out.push_str(&format!(
+                    "     - not undoable: {} ({} is only known when the step runs)\n",
+                    change.what(),
+                    target.src
+                )),
+                None => followed.push(change.what()),
+            },
+            (None, false) => {}
+        }
+    }
+    followed.sort_unstable();
+    followed.dedup();
+    if !followed.is_empty() {
+        out.push_str(&format!("     undo can reverse: {}\n", followed.join(", ")));
+    }
 }
 
 // -- what was sent --------------------------------------------------------------------------
@@ -678,7 +736,8 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         count_step(step, env.confirm, env.blast);
     }
     loop {
-        let text = panel(&summary, &setup.settings, &steps, env.blast);
+        let journal = env.undo.is_some() && env.shell.has_journal();
+        let text = panel(&summary, &setup.settings, &steps, env.blast, journal);
         let choice = {
             let mut terminal = env.tty.open(env.shell, env.files);
             terminal.err(&text);
@@ -836,6 +895,36 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             }
         }
 
+        // The trash and the journal (S18): `rm` becomes a move to the trash, and the files that
+        // `mkdir`, `mv` and redirections touch are looked at before and after.
+        let (prepared, watch) = match env.undo.filter(|_| env.shell.has_journal()) {
+            Some(undo) => {
+                undo.begin_line(&step.command, Origin::Plan);
+                let cwd = std::path::PathBuf::from(crate::repl::directory(env.shell));
+                let watch =
+                    (!fresh.changes.is_empty()).then(|| Watch::before(undo, &fresh.changes, &cwd));
+                let names = confirm::trashable_names(&fresh);
+                let prepared = if names.is_empty() {
+                    prepared
+                } else {
+                    match env.shell.rewrite(&prepared, &names, TRASH) {
+                        Some(rewritten) => rewritten,
+                        None => {
+                            // Not expected. Never run the delete for good instead.
+                            let _ = undo.end_line();
+                            say(
+                                env,
+                                &format!("  {failed}: could not prepare the move to the trash\n"),
+                            );
+                            return stopped(env, number, total, ExitStatus::USAGE.0);
+                        }
+                    }
+                };
+                (prepared, watch.map(|watch| (watch, cwd)))
+            }
+            None => (prepared, None),
+        };
+
         let noted = env.history.and_then(|history| {
             let token = history.begin(&step.command, &crate::repl::directory(env.shell))?;
             Some((history, token))
@@ -848,6 +937,23 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
                 _ => i32::from(env.shell.last_status().0),
             };
             history.store.finish(token, status, started.elapsed());
+        }
+        if let Some(undo) = env.undo.filter(|_| env.shell.has_journal()) {
+            let mut lines = Vec::new();
+            if let Some((watch, cwd)) = watch {
+                lines.extend(watch.after(undo, &cwd));
+            }
+            if let Some(summary) = undo.end_line() {
+                lines.push(
+                    summary
+                        .line()
+                        .trim_start_matches("oh-my-shell: ")
+                        .to_owned(),
+                );
+            }
+            for line in lines {
+                say(env, &format!("  {line}\n"));
+            }
         }
         last = match result {
             LineResult::Ran(Outcome::Exit(status)) => {

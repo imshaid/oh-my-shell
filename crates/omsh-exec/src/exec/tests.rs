@@ -2967,3 +2967,121 @@ mod omsh {
         assert_eq!(done.out, "[to-out]\n");
     }
 }
+
+mod journal {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{JournalCommand, Terminal};
+
+    #[derive(Default)]
+    struct Recorder {
+        calls: Mutex<Vec<(String, Vec<String>, String)>>,
+    }
+
+    impl Recorder {
+        fn note(&self, which: &str, args: &[Vec<u8>], cwd: &[u8]) {
+            self.calls.lock().unwrap().push((
+                which.to_owned(),
+                args.iter()
+                    .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                    .collect(),
+                String::from_utf8_lossy(cwd).into_owned(),
+            ));
+        }
+    }
+
+    impl JournalCommand for Recorder {
+        fn trash(&self, args: &[Vec<u8>], cwd: &[u8], terminal: &mut dyn Terminal) -> u8 {
+            self.note("trash", args, cwd);
+            terminal.out("trashed\n");
+            3
+        }
+
+        fn undo(&self, args: &[Vec<u8>], cwd: &[u8], terminal: &mut dyn Terminal) -> u8 {
+            self.note("undo", args, cwd);
+            terminal.err("undone\n");
+            0
+        }
+    }
+
+    fn shell_with_journal() -> (Shell, Arc<Recorder>) {
+        let recorder = Arc::new(Recorder::default());
+        let mut sh = shell();
+        sh.set_journal(Arc::clone(&recorder) as Arc<dyn JournalCommand>);
+        (sh, recorder)
+    }
+
+    #[test]
+    fn without_a_journal_the_trash_deletes_nothing_and_never_falls_back_to_rm() {
+        let dir = std::env::temp_dir().join(format!("omsh-nojournal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("keep");
+        std::fs::write(&file, "x").unwrap();
+        let mut sh = shell();
+        assert!(!sh.has_journal());
+        let done = run(&mut sh, &format!("__omsh_trash -f {}", file.display()));
+        assert_eq!(done.status, 1);
+        assert!(done.err.contains("nothing was deleted"), "{}", done.err);
+        assert!(file.exists());
+        let done = run(&mut sh, "undo");
+        assert_eq!(done.status, 1);
+        assert_eq!(done.err, "oh-my-shell: undo: not available in this shell\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_words_the_cwd_and_the_status_pass_through() {
+        let (mut sh, recorder) = shell_with_journal();
+        assert!(sh.has_journal());
+        let done = run(
+            &mut sh,
+            "__omsh_trash -rf 'two words' *.nomatch; echo $?; undo --list",
+        );
+        assert_eq!(done.out, "trashed\n3\n");
+        assert_eq!(done.err, "undone\n");
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "trash");
+        assert_eq!(calls[0].1, ["-rf", "two words", "*.nomatch"]);
+        assert_eq!(calls[1].0, "undo");
+        assert_eq!(calls[1].1, ["--list"]);
+        assert!(calls[0].2.starts_with('/'), "{}", calls[0].2);
+    }
+
+    #[test]
+    fn both_are_builtins_and_a_function_of_the_same_name_still_wins() {
+        assert!(crate::is_builtin("undo"));
+        assert!(crate::is_builtin(crate::TRASH));
+        let (mut sh, recorder) = shell_with_journal();
+        let done = run(&mut sh, "undo() { echo mine; }; undo; command undo");
+        assert_eq!(done.out, "mine\n");
+        assert_eq!(recorder.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rewrite_replaces_exactly_the_given_words_and_parses_again() {
+        use omsh_syntax::Span;
+        let mut sh = shell();
+        let line = "echo rm; rm -rf a && /bin/rm b # rm";
+        let prepared = sh.prepare(line, true).unwrap();
+        let first = line.find("; rm").unwrap() + 2;
+        let second = line.find("/bin/rm").unwrap();
+        let spans = [
+            Span::new(second, second + "/bin/rm".len()),
+            Span::new(first, first + 2),
+        ];
+        let new = sh.rewrite(&prepared, &spans, "__omsh_trash").unwrap();
+        assert_eq!(
+            new.text(),
+            "echo rm; __omsh_trash -rf a && __omsh_trash b # rm"
+        );
+        // Spans that overlap, or reach past the text, are refused.
+        assert!(sh.rewrite(&prepared, &[Span::new(0, 99)], "x").is_none());
+        assert!(
+            sh.rewrite(&prepared, &[Span::new(5, 9), Span::new(7, 10)], "x")
+                .is_none()
+        );
+        // A result that does not parse is refused.
+        assert!(sh.rewrite(&prepared, &[Span::new(0, 4)], "(").is_none());
+    }
+}

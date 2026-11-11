@@ -167,12 +167,17 @@ struct Setup {
     confirm: Option<ConfirmLevel>,
     /// The limits of the blast-radius count; the defaults when not set.
     blast: Option<BlastLimits>,
+    /// The trash and the journal; none when not set (as under `--no-config`).
+    undo: Option<Arc<Undo>>,
 }
 
 fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
     let fake = Arc::new(fake);
     let mut shell = Shell::new();
     let mut files = Io::process();
+    if let Some(undo) = &setup.undo {
+        shell.set_journal(Arc::clone(undo) as Arc<dyn omsh_exec::JournalCommand>);
+    }
     for alias in &setup.aliases {
         shell.run_source(alias, true, &mut files);
     }
@@ -209,6 +214,7 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             confirm: setup.confirm.unwrap_or(ConfirmLevel::Dangerous),
             blast: setup.blast.unwrap_or(TEST_LIMITS),
             unicode: false,
+            undo: setup.undo.as_deref(),
             edit: &mut edit,
         },
     );
@@ -404,6 +410,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         confirm: ConfirmLevel::Dangerous,
         blast: TEST_LIMITS,
         unicode: false,
+        undo: None,
         edit: &mut edit,
     };
     let result = execute(&mut env, &[step, marker]);
@@ -1524,6 +1531,7 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         confirm: ConfirmLevel::Dangerous,
         blast: TEST_LIMITS,
         unicode: false,
+        undo: None,
         edit: &mut edit,
     };
     let result = execute(&mut env, &[step]);
@@ -1543,4 +1551,226 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         state.err
     );
     assert!(dir.has("a/f0"), "the answer was no");
+}
+
+// -- the trash and the undo journal (S18) ---------------------------------------------------
+
+mod trash {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn mode(path: &str) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn with_trash() -> (Arc<Undo>, Dir) {
+        let data = Dir::new();
+        (Undo::new(data.0.join("data")), data)
+    }
+
+    #[test]
+    fn an_ai_delete_goes_to_the_trash_is_journaled_and_can_be_undone() {
+        let work = Dir::new();
+        let (undo, _data) = with_trash();
+        let victim = work.file("victim");
+        fs::create_dir_all(format!("{victim}/inner")).unwrap();
+        fs::write(format!("{victim}/inner/f"), "precious").unwrap();
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(
+            format!("{victim}/inner/f"),
+            fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        let answer = json(&[("Remove it", &format!("rm -rf {victim}"), "high")]);
+        let ran = go(
+            says(&answer),
+            "remove the victim",
+            Setup {
+                keys: vec![enter()],
+                lines: vec![Ok("y".to_owned())],
+                undo: Some(Arc::clone(&undo)),
+                ..Setup::default()
+            },
+        );
+        assert_eq!(ran.status(), 0, "{}", ran.err);
+        assert!(!work.has("victim"), "the folder is gone from its place");
+        assert!(
+            ran.err
+                .contains("rm goes to the trash; undo can bring it back"),
+            "{}",
+            ran.err
+        );
+        assert!(
+            ran.err
+                .contains("moved 1 item to the trash; \"undo\" brings it back (#1)"),
+            "{}",
+            ran.err
+        );
+        // It is in the trash, whole, and the journal knows.
+        let journal = undo.journal().unwrap();
+        let action = journal.latest_undoable().unwrap();
+        assert_eq!(action.command, format!("rm -rf {victim}"));
+        assert_eq!(action.origin, omsh_safety::journal::Origin::Plan);
+        assert_eq!(action.items, 1);
+        let report = journal.undo(action.id, &|| false).unwrap();
+        assert_eq!(report.failed, 0, "{:?}", report.lines);
+        assert_eq!(mode(&victim), 0o750);
+        assert_eq!(mode(&format!("{victim}/inner/f")), 0o640);
+        assert_eq!(
+            fs::read_to_string(format!("{victim}/inner/f")).unwrap(),
+            "precious"
+        );
+    }
+
+    #[test]
+    fn a_delete_that_cannot_go_to_the_trash_is_said_to_be_for_good() {
+        let work = Dir::new();
+        let (undo, _data) = with_trash();
+        fs::write(work.file("keep"), "x").unwrap();
+        let answer = json(&[(
+            "Remove it",
+            &format!("command rm -f {}", work.file("keep")),
+            "medium",
+        )]);
+        let ran = go(
+            says(&answer),
+            "remove",
+            Setup {
+                keys: vec![Ok(Key::Escape)],
+                undo: Some(undo),
+                ..Setup::default()
+            },
+        );
+        assert!(
+            ran.err.contains(
+                "deletes for good, not through the trash: it runs through sudo or another program"
+            ),
+            "{}",
+            ran.err
+        );
+        assert!(work.has("keep"), "cancelled: nothing ran");
+    }
+
+    #[test]
+    fn without_a_trash_the_panel_says_the_delete_is_for_good() {
+        let work = Dir::new();
+        fs::write(work.file("gone"), "x").unwrap();
+        let answer = json(&[("Remove", &format!("rm {}", work.file("gone")), "low")]);
+        let ran = go(
+            says(&answer),
+            "remove",
+            Setup {
+                keys: vec![enter()],
+                ..Setup::default()
+            },
+        );
+        assert!(
+            ran.err
+                .contains("deletes for good: the trash is not available in this shell"),
+            "{}",
+            ran.err
+        );
+        assert!(!work.has("gone"), "a plain rm ran");
+    }
+
+    #[test]
+    fn mkdir_mv_and_writes_of_a_step_are_followed_and_undone() {
+        let work = Dir::new();
+        let (undo, _data) = with_trash();
+        fs::write(work.file("a.txt"), "a").unwrap();
+        fs::write(work.file("cfg"), "old").unwrap();
+        fs::set_permissions(work.file("cfg"), fs::Permissions::from_mode(0o640)).unwrap();
+        let command = format!(
+            "mkdir {out} && mv {a} {out}/ && echo new > {cfg}",
+            out = work.file("out"),
+            a = work.file("a.txt"),
+            cfg = work.file("cfg")
+        );
+        let answer = json(&[("Reorganize", &command, "low")]);
+        let ran = go(
+            says(&answer),
+            "reorganize",
+            Setup {
+                keys: vec![enter()],
+                undo: Some(Arc::clone(&undo)),
+                ..Setup::default()
+            },
+        );
+        assert_eq!(ran.status(), 0, "{}", ran.err);
+        assert!(
+            ran.err
+                .contains("undo can reverse: a redirection, mkdir, mv"),
+            "{}",
+            ran.err
+        );
+        assert!(work.has("out/a.txt") && !work.has("a.txt"));
+        assert_eq!(fs::read_to_string(work.file("cfg")).unwrap(), "new\n");
+        assert!(
+            ran.err
+                .contains("recorded 3 changes (0 moved to the trash)"),
+            "{}",
+            ran.err
+        );
+
+        let journal = undo.journal().unwrap();
+        let action = journal.latest_undoable().unwrap();
+        assert_eq!(action.items, 3);
+        let report = journal.undo(action.id, &|| false).unwrap();
+        assert_eq!(report.failed, 0, "{:?}", report.lines);
+        assert!(work.has("a.txt") && !work.has("out"));
+        assert_eq!(fs::read_to_string(work.file("cfg")).unwrap(), "old");
+        assert_eq!(mode(&work.file("cfg")), 0o640);
+    }
+
+    #[test]
+    fn a_step_that_changes_nothing_leaves_no_entry() {
+        let work = Dir::new();
+        let (undo, _data) = with_trash();
+        fs::write(work.file("a.txt"), "a").unwrap();
+        // `mv` of a file that does not exist fails and changes nothing; the `||` goes on.
+        let command = format!("mv {} {} || true", work.file("nothing"), work.file("else"));
+        let answer = json(&[("Try", &command, "low")]);
+        let ran = go(
+            says(&answer),
+            "try",
+            Setup {
+                keys: vec![enter()],
+                undo: Some(Arc::clone(&undo)),
+                ..Setup::default()
+            },
+        );
+        assert_eq!(ran.status(), 0, "{}", ran.err);
+        let recorded = undo.journal().map(|j| j.list(10).len()).unwrap_or(0);
+        assert_eq!(recorded, 0);
+        assert!(!ran.err.contains("recorded"), "{}", ran.err);
+    }
+
+    #[test]
+    fn a_change_that_cannot_be_followed_is_said_before_the_key() {
+        let work = Dir::new();
+        let (undo, _data) = with_trash();
+        let answer = json(&[(
+            "Make",
+            &format!("for d in a b; do mkdir {}/$d; done", work.file("x")),
+            "low",
+        )]);
+        let ran = go(
+            says(&answer),
+            "make",
+            Setup {
+                keys: vec![Ok(Key::Escape)],
+                undo: Some(undo),
+                ..Setup::default()
+            },
+        );
+        // `$d` is only known when the loop runs: the panel says `undo` cannot follow it.
+        assert!(
+            ran.err.contains("not undoable: mkdir (")
+                && ran.err.contains("/x/$d is only known when the step runs)"),
+            "{}",
+            ran.err
+        );
+        assert!(!work.has("x"));
+    }
 }

@@ -6,6 +6,7 @@ use omsh_syntax::ast::{
 use omsh_syntax::{Span, parse_tolerant};
 
 use crate::blast::{FileTargets, targets_of};
+use crate::changes::{Change, NotTrashable, RmSite, change_of, rm_site_options, write_of};
 use crate::command::{Invocation, invocation};
 use crate::context::Context;
 use crate::level::Level;
@@ -43,6 +44,11 @@ pub struct Analysis {
     /// The working directory after the line, as far as the walk followed `cd`. `None` if it
     /// is not known. A plan's next step starts here.
     pub cwd_after: Option<String>,
+    /// Every `rm` command in the line, and whether it can go through the trash (§12.4).
+    pub deletes: Vec<RmSite>,
+    /// The `mkdir`, `mv` and redirections that write files, which the undo journal follows
+    /// (§12.5). Not those in the body of a function that is only being defined.
+    pub changes: Vec<Change>,
 }
 
 impl Analysis {
@@ -73,12 +79,17 @@ pub fn analyze(list: &List, src: &str, ctx: &Context<'_>) -> Analysis {
         cwd: ctx.cwd_text(),
         home: ctx.home_text(),
         findings: Vec::new(),
+        deletes: Vec::new(),
+        changes: Vec::new(),
+        functions: 0,
         depth: 0,
     };
     walker.list(list, &Frame { src, outer: None });
     Analysis {
         findings: walker.findings,
         cwd_after: walker.cwd,
+        deletes: walker.deletes,
+        changes: walker.changes,
     }
 }
 
@@ -96,6 +107,10 @@ struct Walker<'c, 'p> {
     /// What `~` means at this point. `None` once the line assigns `HOME`.
     home: Option<String>,
     findings: Vec<Finding>,
+    deletes: Vec<RmSite>,
+    changes: Vec<Change>,
+    /// How many function definitions the walk is inside: their bodies do not run now.
+    functions: usize,
     depth: usize,
 }
 
@@ -201,7 +216,9 @@ impl Walker<'_, '_> {
                 // The body runs later, wherever the shell is then: a `cd` in it does not
                 // count for the line.
                 let saved = self.cwd.clone();
+                self.functions += 1;
                 self.command(&def.body, frame);
+                self.functions -= 1;
                 self.cwd = saved;
             }
         }
@@ -235,6 +252,17 @@ impl Walker<'_, '_> {
                 };
                 for (rule, hit) in hits {
                     self.record(rule, hit, 0, command, frame, None);
+                }
+                if self.functions == 0
+                    && let Some(change) = write_of(
+                        *op,
+                        &arg,
+                        command,
+                        self.cwd.as_deref(),
+                        self.home.as_deref(),
+                    )
+                {
+                    self.changes.push(change);
                 }
             }
             RedirectKind::HereDoc(doc) => {
@@ -275,6 +303,24 @@ impl Walker<'_, '_> {
         let inv = invocation(span, words)?;
         if inv.only_asks_for_help() {
             return Some(inv);
+        }
+        if inv.name == "rm" {
+            let trashable = if frame.outer.is_some() {
+                Err(NotTrashable::InText)
+            } else if self.functions > 0 {
+                Err(NotTrashable::InFunction)
+            } else {
+                rm_site_options(&inv)
+            };
+            self.deletes.push(RmSite {
+                name: inv.name_span,
+                command: span,
+                trashable,
+            });
+        } else if self.functions == 0
+            && let Some(change) = change_of(&inv, self.cwd.as_deref(), self.home.as_deref())
+        {
+            self.changes.push(change);
         }
         let hits: Vec<(&'static Rule, Hit)> = {
             let env = self.env();

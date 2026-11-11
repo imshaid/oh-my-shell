@@ -20,6 +20,10 @@ pub struct Invocation<'a> {
     pub sudo: u8,
     /// Where the whole command is.
     pub span: Span,
+    /// Where the word with the program's name is.
+    pub name_span: Span,
+    /// True if a wrapper (`sudo`, `env`, `command`, `xargs`, ...) stands in front of the name.
+    pub wrapped: bool,
 }
 
 /// The words of an invocation, sorted into options and operands.
@@ -159,7 +163,9 @@ pub fn invocation(span: Span, mut words: Vec<Arg<'_>>) -> Option<Invocation<'_>>
             _ => break,
         }
     }
-    let name = base_name(&words.get(at)?.text).to_owned();
+    let name_word = words.get(at)?;
+    let name = base_name(&name_word.text).to_owned();
+    let name_span = name_word.span;
     let mut args = words.split_off(at + 1);
     if xargs {
         args.push(Arg::from_input());
@@ -169,6 +175,8 @@ pub fn invocation(span: Span, mut words: Vec<Arg<'_>>) -> Option<Invocation<'_>>
         args,
         sudo,
         span,
+        name_span,
+        wrapped: at > 0,
     })
 }
 

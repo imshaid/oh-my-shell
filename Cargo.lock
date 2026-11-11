@@ -1720,6 +1720,7 @@ dependencies = [
  "omsh-exec",
  "omsh-history",
  "omsh-safety",
+ "omsh-secrets",
  "omsh-ui",
 ]
 
@@ -1766,8 +1767,10 @@ dependencies = [
 name = "omsh-safety"
 version = "0.1.0"
 dependencies = [
+ "nix",
  "omsh-syntax",
  "proptest",
+ "rusqlite",
 ]
 
 [[package]]

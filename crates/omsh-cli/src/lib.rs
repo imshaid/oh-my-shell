@@ -33,6 +33,7 @@ mod probe;
 mod radius;
 mod repl;
 mod report;
+mod undo;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};

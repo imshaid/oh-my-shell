@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The undo journal (S18): its own database file, `undo.db`. Already in the tree (history).
+rusqlite.workspace = true
+# `access` for the trash: is the folder of a file writable, before it is copied away.
+nix.workspace = true
 omsh-syntax.workspace = true
 
 [dev-dependencies]

@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use omsh_config::{Config, Paths};
 use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, Recall, working_directory};
 use omsh_exec::{
-    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, LineResult, OmshCommand, Outcome, Shell, Trigger,
-    find_program, hung_up, is_builtin, is_root, note_inherited_signals, release_terminal,
-    start_interactive, terminal_gone, trigger, wait_for_input,
+    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, JournalCommand, LineResult, OmshCommand, Outcome,
+    Shell, Trigger, find_program, hung_up, is_builtin, is_root, note_inherited_signals,
+    release_terminal, start_interactive, terminal_gone, trigger, wait_for_input,
 };
 use omsh_history::{Filter, Store};
 use omsh_ui::Theme;
@@ -30,6 +30,7 @@ use crate::confirm;
 use crate::history::History;
 use crate::radius::BlastLimits;
 use crate::report::{self, Style};
+use crate::undo::{self, Undo};
 
 const PROMPT: &str = "$ ";
 const CONTINUATION_PROMPT: &str = "> ";
@@ -137,6 +138,7 @@ fn run_on(
         config,
         history,
         ai,
+        undo,
     } = match start_up(&mut shell, &mut files, options) {
         Ok(started) => started,
         // `exit` in the startup file.
@@ -246,6 +248,7 @@ fn run_on(
                     &config,
                     style,
                     &mut editor,
+                    undo.as_deref(),
                 ),
                 _ => confirm::run_line(
                     &mut shell,
@@ -254,6 +257,7 @@ fn run_on(
                     &mut files,
                     config.safety.confirm,
                     BlastLimits::from_config(&config.safety),
+                    undo.as_deref(),
                 ),
             }
         } else {
@@ -321,6 +325,7 @@ fn ai_line(
     config: &Config,
     style: Style,
     editor: &mut Option<Editor>,
+    undo: Option<&Undo>,
 ) -> LineResult {
     let fail = |shell: &mut Shell, status: ExitStatus| {
         shell.set_last_status(status);
@@ -364,6 +369,7 @@ fn ai_line(
             confirm: config.safety.confirm,
             blast: BlastLimits::from_config(&config.safety),
             unicode: matches!(style, Style::Graphical { unicode: true, .. }),
+            undo,
             edit: &mut edit,
         },
     )
@@ -513,6 +519,8 @@ struct Started {
     history: Option<History>,
     /// The `omsh` builtin's session, which `? request` also uses.
     ai: Option<Arc<ai::AiSession>>,
+    /// The trash and `undo` (S18). None under `--no-config` and without a data directory.
+    undo: Option<Arc<Undo>>,
 }
 
 /// How many lines of problems with `config.toml` are shown before "... and N more".
@@ -534,6 +542,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             config: Config::default(),
             history: None,
             ai: None,
+            undo: None,
         });
     }
     // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
@@ -556,6 +565,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             config,
             history: Some(history),
             ai: Some(ai),
+            undo: None,
         });
     }
     let loaded = omsh_config::load(&paths);
@@ -579,10 +589,21 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
         store,
         filter: Filter::new(&config.history.ignore),
     };
+    // The trash and `undo`. Nothing is opened here: the journal is opened by the first use.
+    // Old entries are emptied first, with one line before anything is deleted (§12.4).
+    let undo = paths.data_dir().map(|dir| {
+        undo::purge_old(dir, config.safety.trash_retention_days, &mut |notice| {
+            say(notice.trim_end());
+        });
+        let undo = Undo::new(dir.to_path_buf());
+        shell.set_journal(Arc::clone(&undo) as Arc<dyn JournalCommand>);
+        undo
+    });
     Ok(Started {
         config,
         history: Some(history),
         ai: Some(ai),
+        undo,
     })
 }
 

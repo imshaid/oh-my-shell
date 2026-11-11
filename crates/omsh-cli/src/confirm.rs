@@ -13,19 +13,24 @@ use std::path::PathBuf;
 use omsh_config::ConfirmLevel;
 use omsh_editor::working_directory;
 use omsh_exec::{
-    ExitStatus, Io, LineResult, Outcome, Prepared, ReadError, Shell, Terminal, clear_interrupt,
+    ExitStatus, Io, LineResult, Outcome, Prepared, ReadError, Shell, Span, TRASH, Terminal,
+    clear_interrupt,
 };
 use omsh_safety::blast::Radius;
+use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level, Paths, analyze};
 
 use crate::probe::ShellProbe;
 use crate::radius::{self, BlastLimits};
+use crate::undo::Undo;
 
 /// What to do with the line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
     /// Run it.
     Run,
+    /// Run it with every `rm` that can go through the trash moved there instead (`[t]`, §12.4).
+    Trash,
     /// Do not run it; `$?` becomes this status.
     Cancel(u8),
 }
@@ -48,24 +53,31 @@ pub fn run_line(
     files: &mut Io,
     confirm: ConfirmLevel,
     blast: BlastLimits,
+    undo: Option<&Undo>,
 ) -> LineResult {
     let prepared = match shell.prepare(text, at_end) {
         Ok(prepared) => prepared,
         Err(result) => return *result,
     };
     let analysis = review(shell, &prepared);
+    let offer_trash = undo.is_some() && shell.has_journal() && trash_possible(&analysis, confirm);
     let decision = {
         let mut terminal = shell.terminal(files);
-        decide(
+        decide_with(
             &analysis,
             prepared.text(),
             confirm,
             Some(blast),
+            offer_trash,
             &mut terminal,
         )
     };
     match decision {
         Decision::Run => shell.run_prepared(prepared, files),
+        Decision::Trash => match undo {
+            Some(undo) => run_trashed(shell, prepared, &analysis, text, files, undo),
+            None => shell.run_prepared(prepared, files),
+        },
         Decision::Cancel(code) => {
             // Ctrl+C at the question must not stop the next line.
             clear_interrupt();
@@ -73,6 +85,58 @@ pub fn run_line(
             LineResult::Ran(Outcome::Continue(ExitStatus(code)))
         }
     }
+}
+
+/// The names of the `rm` commands in `analysis` that can go through the trash.
+pub(crate) fn trashable_names(analysis: &Analysis) -> Vec<Span> {
+    analysis
+        .deletes
+        .iter()
+        .filter(|site| site.trashable.is_ok())
+        .map(|site| site.name)
+        .collect()
+}
+
+/// True if answering `[t]` to the question about `analysis` would deal with everything the
+/// question is about: no critical finding, and each finding that asks is an `rm` that can be
+/// sent to the trash.
+fn trash_possible(analysis: &Analysis, confirm: ConfirmLevel) -> bool {
+    let from = threshold(confirm);
+    if analysis.level() < from || analysis.level() >= Level::Critical {
+        return false;
+    }
+    analysis.at_least(from).all(|finding| {
+        finding.rule.trash_alternative
+            && analysis
+                .deletes
+                .iter()
+                .any(|site| site.command == finding.span && site.trashable.is_ok())
+    })
+}
+
+/// Runs a line with its `rm`s replaced by moves to the trash, and says what was recorded.
+fn run_trashed(
+    shell: &mut Shell,
+    prepared: Prepared,
+    analysis: &Analysis,
+    typed: &str,
+    files: &mut Io,
+    undo: &Undo,
+) -> LineResult {
+    let Some(rewritten) = shell.rewrite(&prepared, &trashable_names(analysis), TRASH) else {
+        // Not expected: the names come from the tree of this very text.
+        shell
+            .terminal(files)
+            .err("oh-my-shell: could not prepare the move to the trash; nothing ran\n");
+        shell.set_last_status(ExitStatus(DECLINED));
+        return LineResult::Ran(Outcome::Continue(ExitStatus(DECLINED)));
+    };
+    undo.begin_line(typed, Origin::Typed);
+    let result = shell.run_prepared(rewritten, files);
+    if let Some(summary) = undo.end_line() {
+        shell.terminal(files).err(&format!("{}\n", summary.line()));
+    }
+    result
 }
 
 /// Runs the analyzer on a line (or one step of a plan), with the shell's working directory and home folder.
@@ -131,6 +195,19 @@ pub fn decide(
     blast: Option<BlastLimits>,
     terminal: &mut dyn Terminal,
 ) -> Decision {
+    decide_with(analysis, text, confirm, blast, false, terminal)
+}
+
+/// Like [`decide`]; with `offer_trash` the question also takes `t`: run it, with the `rm`s
+/// moved to the trash instead.
+pub fn decide_with(
+    analysis: &Analysis,
+    text: &str,
+    confirm: ConfirmLevel,
+    blast: Option<BlastLimits>,
+    offer_trash: bool,
+    terminal: &mut dyn Terminal,
+) -> Decision {
     let level = analysis.level();
     if level == Level::Safe {
         return Decision::Run;
@@ -164,17 +241,30 @@ pub fn decide(
         .filter(|finding| finding.level == Level::Critical)
         .filter_map(|finding| finding.target.as_deref())
         .collect();
-    ask(level, &critical, terminal)
+    ask_with(level, &critical, offer_trash, terminal)
 }
 
 /// Asks the question for `level`: "Run it? [y/N]" for a dangerous line, and for a critical one
 /// that `yes` or one of the `critical` targets be typed. Anything else cancels.
 pub fn ask(level: Level, critical: &[&str], terminal: &mut dyn Terminal) -> Decision {
+    ask_with(level, critical, false, terminal)
+}
+
+/// [`ask`], and with `offer_trash` (never for a critical line) `t` runs it through the trash.
+pub fn ask_with(
+    level: Level,
+    critical: &[&str],
+    offer_trash: bool,
+    terminal: &mut dyn Terminal,
+) -> Decision {
+    let offer_trash = offer_trash && level != Level::Critical;
     let prompt = if level == Level::Critical {
         match critical.first() {
             Some(target) => format!("Type \"yes\" or \"{target}\" to run it: "),
             None => "Type \"yes\" to run it: ".to_owned(),
         }
+    } else if offer_trash {
+        "Run it? [y/N] (t = move to the trash instead) ".to_owned()
     } else {
         "Run it? [y/N] ".to_owned()
     };
@@ -183,6 +273,11 @@ pub fn ask(level: Level, critical: &[&str], terminal: &mut dyn Terminal) -> Deci
         Ok(()) => {
             let answer = String::from_utf8_lossy(&answer);
             let answer = answer.trim();
+            if offer_trash
+                && (answer.eq_ignore_ascii_case("t") || answer.eq_ignore_ascii_case("trash"))
+            {
+                return Decision::Trash;
+            }
             let accepted = if level == Level::Critical {
                 answer.eq_ignore_ascii_case("yes") || critical.contains(&answer)
             } else {
@@ -271,6 +366,8 @@ mod tests {
     use omsh_exec::{ReadError, Shell, Terminal};
     use omsh_safety::{Context, analyze};
     use std::path::{Path, PathBuf};
+
+    use crate::undo::Undo;
 
     use super::{Decision, decide, shorten};
     use crate::probe::ShellProbe;
@@ -695,5 +792,161 @@ mod tests {
             "{}",
             terminal.err
         );
+    }
+
+    // -- the trash (S18) ---------------------------------------------------------------------
+
+    use super::{decide_with, run_trashed, trash_possible};
+
+    fn analysis_of(line: &str) -> (Shell, omsh_exec::Prepared, omsh_safety::Analysis) {
+        let mut shell = Shell::new();
+        let prepared = shell.prepare(line, true).expect("the line parses");
+        let ctx = Context {
+            cwd: Some(Path::new("/home/me/work")),
+            home: Some(Path::new("/home/me")),
+            probe: &ShellProbe,
+        };
+        let analysis = analyze(prepared.list(), prepared.text(), &ctx);
+        (shell, prepared, analysis)
+    }
+
+    #[test]
+    fn trash_is_offered_for_an_rm_that_can_go_to_the_trash() {
+        for line in [
+            "rm -rf build",
+            "rm -r a b",
+            "rm -f x; rm -rf y",
+            "cd build && rm -rf out",
+        ] {
+            let (_, _, analysis) = analysis_of(line);
+            assert!(trash_possible(&analysis, D), "{line}");
+        }
+    }
+
+    #[test]
+    fn trash_is_not_offered_when_it_cannot_deal_with_what_the_question_is_about() {
+        for line in [
+            "ls",
+            "rm -rf /",
+            "rm -rf ~",
+            "command rm -rf build",
+            "sudo rm -rf build",
+            "rm -ri build",
+            "find . -name '*.o' -delete",
+            "chmod -R 777 build",
+            "rm -rf build; git push --force",
+            "eval 'rm -rf build'",
+            "f() { rm -rf build; }",
+        ] {
+            let (_, _, analysis) = analysis_of(line);
+            assert!(!trash_possible(&analysis, D), "{line}");
+        }
+        // Below the level that asks there is no question to answer.
+        let (_, _, analysis) = analysis_of("rm -rf build");
+        assert!(!trash_possible(&analysis, ConfirmLevel::Critical));
+    }
+
+    fn ask_trash(offer: bool, level_line: &str, answer: &'static str) -> (Decision, Scripted) {
+        let (_, prepared, analysis) = analysis_of(level_line);
+        let mut terminal = Scripted::new(&[Ok(answer)]);
+        let decision = decide_with(&analysis, prepared.text(), D, None, offer, &mut terminal);
+        (decision, terminal)
+    }
+
+    #[test]
+    fn t_answers_trash_only_when_it_is_offered() {
+        for answer in ["t", "T", " t ", "trash", "TRASH"] {
+            let (decision, terminal) = ask_trash(true, "rm -rf build", answer);
+            assert_eq!(decision, Decision::Trash, "{answer:?}");
+            assert_eq!(
+                terminal.prompts,
+                ["Run it? [y/N] (t = move to the trash instead) "]
+            );
+        }
+        // Not offered: `t` is no answer, and the question does not mention it.
+        let (decision, terminal) = ask_trash(false, "rm -rf build", "t");
+        assert_eq!(decision, Decision::Cancel(1));
+        assert_eq!(terminal.prompts, ["Run it? [y/N] "]);
+        // The other answers are unchanged.
+        let (decision, _) = ask_trash(true, "rm -rf build", "y");
+        assert_eq!(decision, Decision::Run);
+        let (decision, _) = ask_trash(true, "rm -rf build", "");
+        assert_eq!(decision, Decision::Cancel(1));
+    }
+
+    #[test]
+    fn a_critical_question_never_takes_t() {
+        let (decision, terminal) = ask_trash(true, "rm -rf /", "t");
+        assert_eq!(decision, Decision::Cancel(1));
+        assert_eq!(terminal.prompts, ["Type \"yes\" or \"/\" to run it: "]);
+    }
+
+    #[test]
+    fn running_trashed_moves_every_trashable_rm_and_keeps_the_rest_of_the_line() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Scratch::new();
+        dir.files([
+            "build/a.o".to_owned(),
+            "keep.txt".to_owned(),
+            "gone".to_owned(),
+        ]);
+        std::fs::set_permissions(dir.0.join("build"), std::fs::Permissions::from_mode(0o750))
+            .unwrap();
+        let undo = Undo::new(dir.0.join("data"));
+        let line = format!(
+            "rm -rf {b}; echo marker > {m}; rm {g}",
+            b = dir.0.join("build").display(),
+            m = dir.0.join("marker").display(),
+            g = dir.0.join("gone").display()
+        );
+        let (mut shell, prepared, analysis) = analysis_of(&line);
+        shell.set_journal(
+            std::sync::Arc::clone(&undo) as std::sync::Arc<dyn omsh_exec::JournalCommand>
+        );
+        let mut files = omsh_exec::Io::process();
+        let result = run_trashed(&mut shell, prepared, &analysis, &line, &mut files, &undo);
+        assert!(matches!(result, omsh_exec::LineResult::Ran(_)));
+        assert!(!dir.0.join("build").exists() && !dir.0.join("gone").exists());
+        assert!(dir.0.join("keep.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("marker")).unwrap(),
+            "marker\n"
+        );
+        let journal = undo.journal().unwrap();
+        let action = journal.latest_undoable().unwrap();
+        assert_eq!((action.items, action.command.as_str()), (2, line.as_str()));
+        assert_eq!(action.origin, omsh_safety::journal::Origin::Typed);
+        let report = journal.undo(action.id, &|| false).unwrap();
+        assert_eq!(report.failed, 0, "{:?}", report.lines);
+        assert!(dir.0.join("build/a.o").exists() && dir.0.join("gone").exists());
+        assert_eq!(
+            std::fs::metadata(dir.0.join("build"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o750
+        );
+    }
+
+    #[test]
+    fn a_site_that_cannot_be_trashed_stays_a_real_rm_and_is_not_rewritten() {
+        let dir = Scratch::new();
+        dir.files(["a".to_owned(), "b".to_owned()]);
+        let undo = Undo::new(dir.0.join("data"));
+        let line = format!(
+            "rm {a}; command rm {b}",
+            a = dir.0.join("a").display(),
+            b = dir.0.join("b").display()
+        );
+        let (mut shell, prepared, analysis) = analysis_of(&line);
+        shell.set_journal(
+            std::sync::Arc::clone(&undo) as std::sync::Arc<dyn omsh_exec::JournalCommand>
+        );
+        let mut files = omsh_exec::Io::process();
+        run_trashed(&mut shell, prepared, &analysis, &line, &mut files, &undo);
+        // `a` is in the trash; `command rm b` ran for good.
+        assert!(!dir.0.join("a").exists() && !dir.0.join("b").exists());
+        assert_eq!(undo.journal().unwrap().latest_undoable().unwrap().items, 1);
     }
 }

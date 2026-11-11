@@ -23,6 +23,8 @@ omsh-editor.workspace = true
 omsh-exec.workspace = true
 omsh-history.workspace = true
 omsh-safety.workspace = true
+# Masks secrets in the line kept in the undo journal.
+omsh-secrets.workspace = true
 omsh-ui.workspace = true
 
 [lints]

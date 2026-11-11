@@ -127,6 +127,8 @@ pub struct Shell {
     pub(crate) history: crate::builtins::HistoryHook,
     /// What the `omsh` builtin runs (see `builtins/omsh.rs`). Shared by every copy.
     pub(crate) omsh: crate::builtins::OmshHook,
+    /// What `undo` and the trash do (see `builtins/journal.rs`). Shared by every copy.
+    pub(crate) journal: crate::builtins::JournalHook,
     /// The working directory of a copy of the shell (a subshell, a pipeline stage, a
     /// `$(...)`), when it is not the process's. `cd` in a copy must not call `chdir`: the
     /// working directory belongs to the whole process, which other threads are using. A copy
@@ -229,6 +231,7 @@ impl Shell {
             color_probes: crate::color::ProbeCache::default(),
             history: crate::builtins::HistoryHook::default(),
             omsh: crate::builtins::OmshHook::default(),
+            journal: crate::builtins::JournalHook::default(),
             cwd_override: None,
             in_subshell: false,
             depth: 0,
@@ -459,6 +462,39 @@ impl Shell {
                 Err(Box::new(LineResult::Rejected(failure.to_diagnostic(src))))
             }
         }
+    }
+
+    /// A copy of `prepared` in which the text at each of `spans` (all inside
+    /// [`Prepared::text`]) is replaced by `with`; the result is parsed again. Aliases are not
+    /// replaced a second time. The shell takes the new text as the line it is running, so that
+    /// the spans of the new tree match it. This is how an `rm` becomes a move to the trash.
+    ///
+    /// # Errors
+    ///
+    /// `None` if a span does not fit the text, or the result does not parse (the caller then
+    /// runs nothing rather than something it did not look at).
+    pub fn rewrite(
+        &mut self,
+        prepared: &Prepared,
+        spans: &[omsh_syntax::Span],
+        with: &str,
+    ) -> Option<Prepared> {
+        let mut spans = spans.to_vec();
+        spans.sort_by_key(|span| span.start);
+        let mut text = String::with_capacity(prepared.text.len() + spans.len() * with.len());
+        let mut at = 0;
+        for span in &spans {
+            if span.start < at || span.end < span.start {
+                return None;
+            }
+            text.push_str(prepared.text.get(at..span.start)?);
+            text.push_str(with);
+            at = span.end;
+        }
+        text.push_str(prepared.text.get(at..)?);
+        let list = parse(&text).ok()?;
+        self.source = Some(Arc::from(text.as_str()));
+        Some(Prepared { list, text })
     }
 
     /// The second half of [`run_source`](Self::run_source): runs a line from

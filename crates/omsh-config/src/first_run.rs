@@ -66,7 +66,8 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # The lowest risk level that asks before a typed line runs: "caution", "dangerous" or
 # "critical". Lines below it print a one-line note and run; "critical" lines always ask.
 #confirm = "dangerous"
-# Days a file stays in the trash before it is purged. (not used yet)
+# Days a file stays in the trash before it is purged. A shell empties the older entries when it
+# starts, after one line saying so.
 #trash_retention_days = 8
 # Limits of the walk that counts what a risky command would touch before you confirm it: it
 # stops at this many entries or this many milliseconds, whichever comes first, and then says
