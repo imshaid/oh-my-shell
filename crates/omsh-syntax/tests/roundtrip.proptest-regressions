@@ -12,3 +12,4 @@ cc ad5684bb3997851273425ceb58d6afcd6ba39ba0c092d376148f318949fa22c3 # shrinks to
 cc 30809d5680bfa031dbe78792fe4aeb0dc0729e1228c37eeac6f6911f389ffc40 # shrinks to src = "echo `echo<< 'EOF\na\\\nb'`"
 cc 857693a7107bee3b9cab7b32d49b1be2761a0348328f5a2906d244890fdf9f93 # shrinks to src = "echo a`<<EOF\necho a\\\\`"
 cc d263f1df5ebd9cbeb0a85d52806e414b3bf615aaeed34c42dfce567bcb17d34d # shrinks to src = "echo `echo a<<\\\\`"
+cc aaddd666159feedd75a5f6ff65d4b7ee63a102daa48a09447db48f4ce030392c # shrinks to src = "`<<\"'\"`"

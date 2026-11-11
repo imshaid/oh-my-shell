@@ -427,7 +427,9 @@ impl Printer {
                     name.push('_');
                 }
                 let delimiter = if doc.quoted {
-                    format!("'{name}'")
+                    // Inside single quotes every character is itself except the quote, which
+                    // has to be written outside them: `a'b` becomes `'a'\''b'`.
+                    format!("'{}'", name.replace('\'', "'\\''"))
                 } else {
                     name.clone()
                 };
@@ -541,9 +543,10 @@ fn run(script: &str, dir: &PathBuf) -> Output {
         .unwrap_or_else(|error| panic!("cannot run /bin/sh: {error}"))
 }
 
-/// The test's own folder, so that parallel runs do not meet.
-fn scratch_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("omsh-roundtrip-{}", std::process::id()))
+/// A folder of its own for the test called `test`, so that parallel runs do not meet. The tests
+/// of one file run on threads of one process, so the process id alone is not enough.
+fn scratch_dir(test: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("omsh-roundtrip-{}-{test}", std::process::id()))
 }
 
 fn assert_same_behavior(line: &str, printed: &str, dir: &PathBuf) {
@@ -560,7 +563,7 @@ fn assert_same_behavior(line: &str, printed: &str, dir: &PathBuf) {
 
 #[test]
 fn printed_trees_behave_like_the_source() {
-    let dir = scratch_dir();
+    let dir = scratch_dir("lines");
     for line in LINES {
         let list = parse(line).unwrap_or_else(|failure| panic!("{line:?} gave {failure:?}"));
         let printed = print_tree(&list);
@@ -569,6 +572,39 @@ fn printed_trees_behave_like_the_source() {
         // Printing is stable, so the printed text means the same tree to the parser too.
         let again = parse(&printed).unwrap_or_else(|failure| panic!("{printed:?}: {failure:?}"));
         assert_eq!(print_tree(&again), printed, "{line:?} is not stable");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A here-document delimiter that is quoted and holds a single quote. The tree keeps the
+/// delimiter without its quotes, so the printer has to quote it again, and wrapping it in single
+/// quotes is not enough: `'` + `'` + `'` is not a delimiter (the shell reads an empty string and
+/// then opens a quote that never closes). Found by the round-trip proptest in CI: the text
+/// `` `<<"'"` `` printed as `$( <<'''`, a newline, `'`, a newline and `) `, which does not parse.
+#[test]
+fn a_single_quote_in_a_quoted_here_document_delimiter_is_printed_so_that_it_parses() {
+    let dir = scratch_dir("delimiter");
+    // The first is the minimal input of the CI failure (a body that ends with the input, inside
+    // backticks); the others have a real body and `/bin/sh` runs them.
+    for src in ["`<<\"'\"`", "echo `cat <<\"a'b\"`"] {
+        let list = parse(src).unwrap_or_else(|failure| panic!("{src:?} gave {failure:?}"));
+        let printed = print_tree(&list);
+        let again = parse(&printed)
+            .unwrap_or_else(|failure| panic!("{src:?} printed as {printed:?} gave {failure:?}"));
+        assert_eq!(print_tree(&again), printed, "{src:?} is not stable");
+    }
+    for src in [
+        "cat <<\"a'b\"\n$x 'y'\na'b\n",
+        "cat <<\\'\nbody\n'\n",
+        "cat <<\"'\"\nbody\n'\n",
+        "cat <<'a b'\nbody\na b\n",
+    ] {
+        let list = parse(src).unwrap_or_else(|failure| panic!("{src:?} gave {failure:?}"));
+        let printed = print_tree(&list);
+        assert_same_behavior(src, &printed, &dir);
+        let again = parse(&printed)
+            .unwrap_or_else(|failure| panic!("{src:?} printed as {printed:?} gave {failure:?}"));
+        assert_eq!(print_tree(&again), printed, "{src:?} is not stable");
     }
     let _ = fs::remove_dir_all(&dir);
 }
