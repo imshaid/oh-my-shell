@@ -73,3 +73,28 @@ jobs:
         # Every test has its own limit (60 s); this step limit is the second line of defense.
         timeout-minutes: 10
         run: cargo test -p omsh-tests --locked
+
+  offline:
+    name: Test with the network off
+    # Gate C (blueprint section 21): the whole suite passes with no network. scripts/test-offline.sh
+    # makes a network namespace that has only loopback (sudo, once), drops back to the runner's own
+    # user id, checks that nothing outside loopback can be reached, and runs `cargo test --workspace`.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Check the tools of the tests and of the script
+        # Same needs as the Test job, plus the tools of scripts/test-offline.sh. A missing tool
+        # fails the job (a skipped test would hide that it never ran).
+        run: |
+          command -v setsid && test -r /proc/self/stat
+          command -v scp && command -v timeout
+          if ! test -x /usr/lib/openssh/sftp-server || ! command -v strace; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends openssh-sftp-server strace
+          fi
+          test -x /usr/lib/openssh/sftp-server
+          command -v strace && command -v bash && command -v sudo && command -v unshare && command -v setpriv && command -v ip && command -v getent
+      - name: Run every test with the network off
+        run: scripts/test-offline.sh

@@ -16,6 +16,7 @@
 //! anything.
 
 pub mod explain;
+pub mod history_search;
 pub mod plan;
 pub mod recent;
 mod setup;

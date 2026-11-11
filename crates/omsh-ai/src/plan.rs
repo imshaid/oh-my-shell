@@ -165,12 +165,59 @@ pub(crate) fn extract_object(answer: &str) -> Option<&str> {
 
 /// Rejects control characters (escape codes, carriage returns, the bell). Line breaks and tabs
 /// are allowed where `layout` is set (commands, explanations).
-fn no_controls(what: &str, text: &str, layout: bool) -> Result<(), PlanError> {
+pub(crate) fn no_controls(what: &str, text: &str, layout: bool) -> Result<(), PlanError> {
     let bad = text
         .chars()
         .any(|c| c.is_control() && !(layout && matches!(c, '\n' | '\t')));
     if bad {
         Err(PlanError::new(format!("{what} has a control character")))
+    } else {
+        Ok(())
+    }
+}
+
+/// Unicode "format" characters (category Cf) and the line and paragraph separators. They draw
+/// nothing, but they can reorder what is shown (U+202E), hide text (U+200B) or break a line, so
+/// a word that is printed back to the terminal must not have them. `char::is_control` covers
+/// only the control characters (Cc), which is why this is a separate check.
+const INVISIBLE: &[(u32, u32)] = &[
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+];
+
+/// True for a character that is invisible or changes the order of what is shown.
+#[must_use]
+pub(crate) fn is_invisible(c: char) -> bool {
+    let code = u32::from(c);
+    INVISIBLE
+        .iter()
+        .any(|&(first, last)| (first..=last).contains(&code))
+}
+
+/// Rejects invisible and reordering characters (see [`is_invisible`]).
+pub(crate) fn no_format_chars(what: &str, text: &str) -> Result<(), PlanError> {
+    if text.chars().any(is_invisible) {
+        Err(PlanError::new(format!(
+            "{what} has an invisible or text-reordering character"
+        )))
     } else {
         Ok(())
     }

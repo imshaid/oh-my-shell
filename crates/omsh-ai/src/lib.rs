@@ -24,6 +24,7 @@ mod destination;
 mod error;
 mod explain;
 mod genai_provider;
+mod history_search;
 mod keys;
 mod plan;
 mod prompt;
@@ -46,6 +47,10 @@ pub use explain::{
     status_text,
 };
 pub use genai_provider::{GenaiProvider, Settings, map_error};
+pub use history_search::{
+    DEFAULT_NEWEST, Day, HISTORY_MAX_TOKENS, HistoryFilter, MAX_NEWEST, Status,
+    history_request_hides_secret, history_search_request,
+};
 pub use keys::{
     CredentialsFile, KeyError, KeyStore, Keys, SecretService, Stored, parse_credentials,
 };

@@ -107,6 +107,16 @@ pub struct Query {
     pub prefix: Option<String>,
     /// Only commands that are exactly this text.
     pub exact: Option<String>,
+    /// Only commands that contain **every** one of these words, capitals ignored. SQLite folds
+    /// the case of the letters A to Z only; other letters must match as they are.
+    pub words_all: Vec<String>,
+    /// Only commands that contain **at least one** of these words (same rules). Ignored when
+    /// empty.
+    pub words_any: Vec<String>,
+    /// Only commands that ended with status 0.
+    pub succeeded: bool,
+    /// Only commands started before this time (milliseconds since 1970).
+    pub until_ms: Option<i64>,
     /// Leave out commands with the same text as the entry with this id.
     pub unlike: Option<i64>,
     /// Only what this shell ran, and what any shell ran before this one started.
@@ -384,11 +394,11 @@ impl Store {
 
     /// The `WHERE` part for `query` and the values of its `?` marks, in order.
     fn conditions(&self, query: &Query) -> (String, Vec<Value>) {
-        let mut parts: Vec<&str> = vec!["1"];
+        let mut parts: Vec<String> = vec!["1".to_owned()];
         let mut values = Vec::new();
-        let mut text = |parts: &mut Vec<&str>, condition: &'static str, value: &Option<String>| {
+        let mut text = |parts: &mut Vec<String>, condition: &str, value: &Option<String>| {
             if let Some(value) = value {
-                parts.push(condition);
+                parts.push(condition.to_owned());
                 values.push(Value::Text(value.clone()));
             }
         };
@@ -397,15 +407,31 @@ impl Store {
         text(&mut parts, "instr(command, ?) = 1", &query.prefix);
         text(&mut parts, "command = ?", &query.exact);
         if query.failed {
-            parts.push("exit_status IS NOT NULL AND exit_status <> 0");
+            parts.push("exit_status IS NOT NULL AND exit_status <> 0".to_owned());
         }
-        let mut number = |parts: &mut Vec<&str>, condition: &'static str, value: Option<i64>| {
+        if query.succeeded {
+            parts.push("exit_status = 0".to_owned());
+        }
+        for word in &query.words_all {
+            parts.push("instr(lower(command), lower(?)) > 0".to_owned());
+            values.push(Value::Text(word.clone()));
+        }
+        if !query.words_any.is_empty() {
+            let one = "instr(lower(command), lower(?)) > 0";
+            parts.push(format!(
+                "({})",
+                vec![one; query.words_any.len()].join(" OR ")
+            ));
+            values.extend(query.words_any.iter().cloned().map(Value::Text));
+        }
+        let mut number = |parts: &mut Vec<String>, condition: &str, value: Option<i64>| {
             if let Some(value) = value {
-                parts.push(condition);
+                parts.push(condition.to_owned());
                 values.push(Value::Integer(value));
             }
         };
         number(&mut parts, "started_at >= ?", query.since_ms);
+        number(&mut parts, "started_at < ?", query.until_ms);
         number(
             &mut parts,
             "command <> ifnull((SELECT command FROM history WHERE id = ?), '')",
@@ -414,7 +440,7 @@ impl Store {
         number(&mut parts, "id < ?", query.below_id);
         number(&mut parts, "id > ?", query.above_id);
         if query.own_or_older {
-            parts.push("(session_id = ? OR started_at < ?)");
+            parts.push("(session_id = ? OR started_at < ?)".to_owned());
             values.push(Value::Integer(self.inner.session));
             values.push(Value::Integer(self.inner.session_start_ms));
         }

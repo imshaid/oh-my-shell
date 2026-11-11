@@ -399,6 +399,20 @@ fn ai_line(
             );
         }
     };
+    // `? history ...` searches the local history; the model only writes the filter (S25).
+    if let Some(search) = ai::history_search::request_of(request) {
+        return ai::history_search::run(
+            ai.plan_setup(),
+            search,
+            chrono::Local::now(),
+            ai::history_search::SearchEnv {
+                shell,
+                files,
+                tty: &mut ai::plan::RealTerminal,
+                history,
+            },
+        );
+    }
     if request.is_empty() {
         // Before anything about the AI layer: `?` alone only needs to be explained.
         say(ai::plan::USAGE.trim_end());

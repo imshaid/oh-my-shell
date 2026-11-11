@@ -242,6 +242,123 @@ fn queries_filter_by_directory_failure_and_text() {
     }
 }
 
+fn found(store: &Store, query: Query) -> Vec<String> {
+    store
+        .query(&query)
+        .into_iter()
+        .map(|entry| entry.command)
+        .collect()
+}
+
+#[test]
+fn words_must_all_be_there_whatever_their_case() {
+    let store = Store::in_memory();
+    record(&store, "Docker compose up", "/a", 0);
+    record(&store, "docker ps", "/a", 0);
+    record(&store, "echo compose", "/a", 0);
+    assert!(store.settle(PATIENT));
+    let both = Query {
+        words_all: vec!["DOCKER".to_owned(), "Compose".to_owned()],
+        ..Query::default()
+    };
+    assert_eq!(found(&store, both.clone()), ["Docker compose up"]);
+    assert_eq!(store.count(&both), 1);
+    // No words at all means no condition.
+    assert_eq!(found(&store, Query::default()).len(), 3);
+    // Wildcard characters are text, not patterns.
+    let percent = Query {
+        words_all: vec!["%".to_owned()],
+        ..Query::default()
+    };
+    assert_eq!(found(&store, percent), Vec::<String>::new());
+}
+
+#[test]
+fn any_word_is_enough_and_an_empty_list_is_no_condition() {
+    let store = Store::in_memory();
+    record(&store, "git push", "/a", 0);
+    record(&store, "svn commit", "/a", 0);
+    record(&store, "ls", "/a", 0);
+    assert!(store.settle(PATIENT));
+    let either = Query {
+        words_any: vec!["GIT".to_owned(), "svn".to_owned()],
+        ..Query::default()
+    };
+    assert_eq!(found(&store, either), ["git push", "svn commit"]);
+    // `all` and `any` combine: both must hold.
+    let combined = Query {
+        words_all: vec!["push".to_owned()],
+        words_any: vec!["git".to_owned(), "svn".to_owned()],
+        ..Query::default()
+    };
+    assert_eq!(found(&store, combined), ["git push"]);
+    let empty = Query {
+        words_any: Vec::new(),
+        ..Query::default()
+    };
+    assert_eq!(found(&store, empty).len(), 3);
+}
+
+#[test]
+fn succeeded_means_status_zero_and_not_unfinished() {
+    let store = sample();
+    let ok = Query {
+        succeeded: true,
+        ..Query::default()
+    };
+    // `vim notes` has not ended, so it has not succeeded; `git push` and `make` failed.
+    assert_eq!(found(&store, ok), ["ls", "git status", "ls", "ls -l"]);
+}
+
+#[test]
+fn the_time_window_has_an_inclusive_start_and_an_exclusive_end() {
+    let store = Store::in_memory();
+    record(&store, "one", "/", 0);
+    assert!(store.settle(PATIENT));
+    thread::sleep(Duration::from_millis(30));
+    record(&store, "two", "/", 0);
+    assert!(store.settle(PATIENT));
+    // The start time of the second command, exactly: it is the edge of the window.
+    let edge = store.query(&Query::default())[1].started_ms;
+    assert_eq!(store.query(&Query::default())[1].command, "two");
+    let before = Query {
+        until_ms: Some(edge),
+        ..Query::default()
+    };
+    assert_eq!(found(&store, before), ["one"], "the end is not included");
+    let from = Query {
+        since_ms: Some(edge),
+        ..Query::default()
+    };
+    assert_eq!(found(&store, from), ["two"], "the start is included");
+    let nothing = Query {
+        since_ms: Some(edge),
+        until_ms: Some(edge),
+        ..Query::default()
+    };
+    assert_eq!(found(&store, nothing), Vec::<String>::new());
+    let one_ms = Query {
+        since_ms: Some(edge),
+        until_ms: Some(edge + 1),
+        ..Query::default()
+    };
+    assert_eq!(found(&store, one_ms), ["two"]);
+}
+
+#[test]
+fn a_directory_filter_means_that_folder_and_not_its_subfolders() {
+    let store = Store::in_memory();
+    record(&store, "in-dir", "/work/proj", 0);
+    record(&store, "in-sub", "/work/proj/sub", 0);
+    record(&store, "in-sibling", "/work/proj2", 0);
+    assert!(store.settle(PATIENT));
+    let here = Query {
+        cwd: Some("/work/proj".to_owned()),
+        ..Query::default()
+    };
+    assert_eq!(found(&store, here), ["in-dir"]);
+}
+
 #[test]
 fn queries_page_by_id_order_and_limit() {
     let store = sample();

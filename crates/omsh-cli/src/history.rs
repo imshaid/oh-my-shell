@@ -218,7 +218,7 @@ fn query_for(listing: &Listing, cwd: &str, to_terminal: bool, now: i64) -> Query
 }
 
 /// The local date and time of a moment given in milliseconds since 1970.
-fn local_time(ms: i64) -> String {
+pub(crate) fn local_time(ms: i64) -> String {
     Local.timestamp_millis_opt(ms).single().map_or_else(
         || "????-??-?? ??:??".to_owned(),
         |time| time.format("%Y-%m-%d %H:%M").to_string(),
@@ -227,7 +227,7 @@ fn local_time(ms: i64) -> String {
 
 /// The listing: one entry after the other, oldest first, as `number  date time  command`. The
 /// numbers are lined up on the right. No colors.
-fn render(newest_first: &[Entry], time: impl Fn(i64) -> String) -> String {
+pub(crate) fn render(newest_first: &[Entry], time: impl Fn(i64) -> String) -> String {
     let width = newest_first
         .iter()
         .map(|entry| entry.id.to_string().len())

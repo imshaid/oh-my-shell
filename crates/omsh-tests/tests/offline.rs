@@ -106,6 +106,9 @@ fn session_of_ordinary_work(term: &mut Session, ctx: &Ctx) -> io::Result<()> {
         "??",
         "ls / | ? what is here",
         "echo a?b | cat",
+        // The history search of S25 with no AI set up: it says so and opens nothing.
+        "? history yesterday",
+        "? history",
         "omsh ai status",
     ] {
         term.command(command)?;

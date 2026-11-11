@@ -321,14 +321,14 @@ struct Checked {
 
 // -- asking ---------------------------------------------------------------------------------
 
-enum Failure {
+pub(crate) enum Failure {
     Provider(ProviderError),
     Invalid(PlanError),
 }
 
 /// The request that was sent last (the first one, or the second try), for `[v]`.
 #[derive(Clone)]
-struct Sent {
+pub(crate) struct Sent {
     request: ChatRequest,
     /// On a second try: how long the model's refused first answer was.
     first_answer_chars: Option<usize>,
@@ -380,13 +380,13 @@ async fn attempts<T>(
 
 /// Runs [`attempts`] and shows the wait: on a terminal one line that is redrawn with the real
 /// time and the number of characters that have arrived; otherwise one plain line.
-fn ask(
+pub(crate) fn ask<T>(
     provider: Box<dyn Provider>,
     first: &ChatRequest,
-    check: &dyn Fn(&str) -> Result<Checked, PlanError>,
+    check: &dyn Fn(&str) -> Result<T, PlanError>,
     label: &str,
     terminal: &mut dyn Terminal,
-) -> (Result<(Checked, String), Failure>, Option<Sent>) {
+) -> (Result<(T, String), Failure>, Option<Sent>) {
     let received = AtomicUsize::new(0);
     let tries = AtomicUsize::new(1);
     let sent = RefCell::new(None);

@@ -266,3 +266,34 @@ fn an_explanation_leaves_no_socket_behind_even_with_a_keep_alive_server() {
         Ok(())
     });
 }
+
+#[test]
+fn a_history_search_leaves_no_socket_behind_even_with_a_keep_alive_server() {
+    pty_test(BIN, |ctx| {
+        // Keep-alive on: the server leaves connections open, as the real providers do.
+        let server = Server::start_answering(Duration::ZERO, true, &[r#"{"all": ["echo"]}"#])?;
+        write_config(
+            ctx,
+            &format!(
+                "[ai]\nprovider = \"openai-compatible\"\nmodel = \"m\"\nbase_url = \"{}\"\n",
+                server.url("/v1")
+            ),
+        )?;
+        let mut term = launch(ctx).start()?;
+        let pid = term.shell_pid();
+        term.command("echo something")?;
+        term.command("? history what I echoed")?;
+        term.expect(" shown", SHORT);
+        let mut left = sockets(pid);
+        for _ in 0..100 {
+            if left.is_empty() {
+                break;
+            }
+            term.pump(Duration::from_millis(20));
+            left = sockets(pid);
+        }
+        assert_eq!(left, Vec::<String>::new(), "a socket after `? history`");
+        term.sync("end")?;
+        Ok(())
+    });
+}
