@@ -939,3 +939,130 @@ fn highlight_separates_command_ends_from_operators() {
         vec![HighlightKind::Operator, HighlightKind::Separator]
     );
 }
+
+// ---- a backslash inside `$(( ))` -------------------------------------------------------------
+//
+// dash and bash agree: a backslash protects the next character from being a delimiter, so `\)`
+// is not part of the closing `))`. `$((\))` and `$((1\))` are unterminated ("Missing '))'" in
+// dash, "unexpected EOF while looking for matching `)'" in bash); `$((\)1))` is a complete
+// arithmetic expansion whose body fails only when it is evaluated. The lexer used to count
+// the `)` after a backslash as a real one, but only when `looks_like_arithmetic` had already
+// decided that it was arithmetic. Found by the round-trip proptest on 100,000 cases: `$((\))`
+// lexed fine, while `$((\)) ` and a line feed gave `UnterminatedCommandSub`.
+
+/// The text of the first arithmetic body in `src`, if there is one.
+fn arithmetic_body(src: &str) -> Option<String> {
+    fn find(src: &str, parts: &[WordPart]) -> Option<String> {
+        parts.iter().find_map(|part| match &part.kind {
+            PartKind::Arithmetic { body, .. } => Some(body.text(src).to_owned()),
+            PartKind::DoubleQuoted { parts } => find(src, parts),
+            _ => None,
+        })
+    }
+    lex(src).tokens.iter().find_map(|token| match &token.kind {
+        TokenKind::Word(Word { parts, .. }) => find(src, parts),
+        _ => None,
+    })
+}
+
+#[test]
+fn an_escaped_parenthesis_does_not_close_an_arithmetic_expansion() {
+    for src in [
+        "$((\\))",
+        "$((1\\))",
+        "$((1+1\\))",
+        "echo $((\\))",
+        "$((a\\)",
+    ] {
+        assert_eq!(
+            error_kinds(src),
+            [LexErrorKind::UnterminatedArithmetic],
+            "{src:?}"
+        );
+    }
+}
+
+#[test]
+fn an_escaped_parenthesis_stays_in_the_body_and_does_not_count() {
+    for (src, body) in [
+        ("$((\\)1))", "\\)1"),
+        ("$(( \\( 1 \\) ))", " \\( 1 \\) "),
+        ("$((1\\)+(2)))", "1\\)+(2)"),
+        // The `(` is protected, so the first real `)` closes: dash reports the last `)` as
+        // unexpected, which is the parser's job.
+        ("$((2*\\(1+1)))", "2*\\(1+1"),
+    ] {
+        assert_eq!(arithmetic_body(src).as_deref(), Some(body), "{src:?}");
+        assert_eq!(error_kinds(src), [], "{src:?}");
+    }
+}
+
+/// Only a parenthesis is protected by this rule. The other escapes inside `$(( ))` (`\$`,
+/// `` \` `` and `\\`) are still escapes, and a backslash before any other character is still
+/// plain text.
+#[test]
+fn only_a_parenthesis_gets_the_new_protection_and_other_escapes_are_unchanged() {
+    fn arithmetic_parts(src: &str) -> Vec<String> {
+        fn kinds(parts: &[WordPart]) -> Vec<String> {
+            parts
+                .iter()
+                .map(|part| {
+                    let text = format!("{:?}", part.kind);
+                    text.split(|c: char| !c.is_alphanumeric())
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+                .collect()
+        }
+        lex(src)
+            .tokens
+            .iter()
+            .find_map(|token| match &token.kind {
+                TokenKind::Word(Word { parts, .. }) => {
+                    parts.iter().find_map(|part| match &part.kind {
+                        PartKind::Arithmetic { parts, .. } => Some(kinds(parts)),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+    // `1 `, then an escaped dollar, then `x`.
+    assert_eq!(
+        arithmetic_parts("$((1 \\$x))"),
+        ["Literal", "Escaped", "Literal"]
+    );
+    assert_eq!(
+        arithmetic_parts("$((1 \\\\ 2))"),
+        ["Literal", "Escaped", "Literal"]
+    );
+    // A backslash before an ordinary character stays in the literal text.
+    assert_eq!(arithmetic_parts("$((1\\+1))"), ["Literal"]);
+    // A protected parenthesis stays in the literal text too.
+    assert_eq!(arithmetic_parts("$((\\)1))"), ["Literal"]);
+    assert_eq!(error_kinds("$((1 \\$x))"), []);
+}
+
+/// The failure itself: a space and a line feed after a complete command cannot change
+/// whether it lexes.
+#[test]
+fn a_space_and_a_line_feed_after_a_complete_command_change_nothing() {
+    for src in [
+        "$((\\))",
+        "$((1\\))",
+        "$((\\)1))",
+        "$(( \\( 1 \\) ))",
+        "$((\\\\))",
+        "$((a))",
+        "echo $((\\)) x",
+    ] {
+        let alone = lex(src).errors.is_empty();
+        let followed = lex(&format!("{src} \n")).errors.is_empty();
+        assert_eq!(
+            alone, followed,
+            "{src:?}: alone {alone}, followed {followed}"
+        );
+    }
+}

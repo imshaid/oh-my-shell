@@ -397,6 +397,16 @@ impl<S: Sink> Scanner<'_, S> {
                 Ctx::Word if is_word_end(b) => break true,
                 Ctx::DoubleQuote if b == b'"' => break true,
                 Ctx::ParamArg { .. } if b == b'}' => break true,
+                // A backslash protects a parenthesis here, as in dash and bash: `\)` is not a
+                // closing one, so `$((1\))` is unterminated. The pair stays in the literal
+                // text. `looks_like_arithmetic` already skips the byte after a backslash; the
+                // two have to agree, or an input is arithmetic to one and not to the other.
+                Ctx::Arithmetic
+                    if b == b'\\' && matches!(self.at(self.pos + 1), Some(b'(' | b')')) =>
+                {
+                    self.pos += 2;
+                    continue;
+                }
                 Ctx::Arithmetic if b == b'(' => {
                     parens += 1;
                     self.pos += 1;
