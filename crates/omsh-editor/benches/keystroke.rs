@@ -170,7 +170,11 @@ fn main() {
     let mut first = Vec::new();
     for _ in 0..200 {
         let start = Instant::now();
-        std::hint::black_box(store.hint("g", "/home/me/src/api", omsh_history::now_ms()));
+        std::hint::black_box(
+            store
+                .hint("g", "/home/me/src/api", omsh_history::now_ms())
+                .ok(),
+        );
         first.push(start.elapsed());
     }
     first.sort_unstable();

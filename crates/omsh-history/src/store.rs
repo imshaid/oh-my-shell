@@ -115,6 +115,10 @@ pub struct Entry {
     pub host: String,
 }
 
+/// A hint could not be looked up at this moment (see [`Store::hint`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotReady;
+
 /// A folder the shell has been in, for `j`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dir {
@@ -413,21 +417,28 @@ impl Store {
         read().unwrap_or_default()
     }
 
-    /// The command to suggest for the typed text `prefix` (fish-style hint), or none.
+    /// The command to suggest for the typed text `prefix` (fish-style hint): `Ok(Some(..))`, or
+    /// `Ok(None)` when the history has nothing for it, or `Err(NotReady)` when it cannot be
+    /// looked up at this moment (the database is not open yet, or could not be read). The
+    /// difference matters to the caller: "nothing" can be remembered, "not ready" cannot.
     ///
     /// Looks at the newest [`HINT_WINDOW`] rows of every shell. A command that starts with
     /// `prefix` and is longer than it is a candidate, unless it has several lines or ended
     /// with status 127 (a mistyped name). The best candidate is one that was run in `cwd`;
     /// among those, the one with the best score for how often and how recently it ran (4 for
     /// each use in the last hour, 2 in the last day, 1 in the last week, 0.25 before), then the
-    /// newest. `now_ms` is a parameter so that tests can fix the time.
-    #[must_use]
-    pub fn hint(&self, prefix: &str, cwd: &str, now_ms: i64) -> Option<String> {
+    /// newest. `now_ms` is a parameter so that tests can fix the time. This does not wait for
+    /// the writer: a command that was just run may still be on its way ([`Store::settle`]).
+    ///
+    /// # Errors
+    ///
+    /// [`NotReady`] as described above.
+    pub fn hint(&self, prefix: &str, cwd: &str, now_ms: i64) -> Result<Option<String>, NotReady> {
         if prefix.is_empty() {
-            return None;
+            return Ok(None);
         }
         let guard = lock(&self.inner.shared.reader);
-        let connection = guard.as_ref()?;
+        let connection = guard.as_ref().ok_or(NotReady)?;
         let values = [
             Value::Integer(HINT_WINDOW),
             Value::Text(prefix.to_owned()),
@@ -437,23 +448,27 @@ impl Store {
             Value::Integer(now_ms.saturating_sub(DAY_MS)),
             Value::Integer(now_ms.saturating_sub(WEEK_MS)),
         ];
-        connection
-            .query_row(
-                "SELECT command FROM history \
-                 WHERE id > (SELECT max(id) FROM history) - ? \
-                   AND instr(command, ?) = 1 AND command <> ? \
-                   AND instr(command, char(10)) = 0 \
-                   AND (exit_status IS NULL OR exit_status <> 127) \
-                 GROUP BY command \
-                 ORDER BY max(cwd = ?) DESC, \
-                   sum(CASE WHEN started_at >= ? THEN 4.0 WHEN started_at >= ? THEN 2.0 \
-                            WHEN started_at >= ? THEN 1.0 ELSE 0.25 END) DESC, \
-                   max(id) DESC \
-                 LIMIT 1",
-                params_from_iter(values.iter()),
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
+        let found = connection.query_row(
+            "SELECT command FROM history \
+             WHERE id > (SELECT max(id) FROM history) - ? \
+               AND instr(command, ?) = 1 AND command <> ? \
+               AND instr(command, char(10)) = 0 \
+               AND (exit_status IS NULL OR exit_status <> 127) \
+             GROUP BY command \
+             ORDER BY max(cwd = ?) DESC, \
+               sum(CASE WHEN started_at >= ? THEN 4.0 WHEN started_at >= ? THEN 2.0 \
+                        WHEN started_at >= ? THEN 1.0 ELSE 0.25 END) DESC, \
+               max(id) DESC \
+             LIMIT 1",
+            params_from_iter(values.iter()),
+            |row| row.get::<_, String>(0),
+        );
+        match found {
+            Ok(command) => Ok(Some(command)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            // Busy, locked, or a read that failed: no answer is not the same as "nothing".
+            Err(_) => Err(NotReady),
+        }
     }
 
     /// The entries that fit `query`. Empty if the database cannot be read right now: history

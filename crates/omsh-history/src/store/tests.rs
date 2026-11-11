@@ -878,6 +878,11 @@ fn stores_opened_at_the_same_moment_on_a_new_file_all_use_the_file() {
     }
 }
 
+/// The hint, for a store that is open.
+fn hint_of(store: &Store, prefix: &str, cwd: &str, now: i64) -> Option<String> {
+    store.hint(prefix, cwd, now).expect("the store is ready")
+}
+
 /// A store with the commands run in order, each with its folder and status.
 fn hinted(rows: &[(&str, &str, i32)]) -> Store {
     let store = Store::in_memory();
@@ -893,18 +898,18 @@ fn a_hint_is_the_rest_of_a_longer_command_that_starts_with_the_text() {
     let store = hinted(&[("git status", "/a", 0), ("ls", "/a", 0)]);
     let now = now_ms();
     assert_eq!(
-        store.hint("git s", "/a", now).as_deref(),
+        hint_of(&store, "git s", "/a", now).as_deref(),
         Some("git status")
     );
     assert_eq!(
-        store.hint("git status", "/a", now),
+        hint_of(&store, "git status", "/a", now),
         None,
         "nothing is left to add"
     );
-    assert_eq!(store.hint("", "/a", now), None);
-    assert_eq!(store.hint("tig", "/a", now), None);
+    assert_eq!(hint_of(&store, "", "/a", now), None);
+    assert_eq!(hint_of(&store, "tig", "/a", now), None);
     assert_eq!(
-        store.hint("it s", "/a", now),
+        hint_of(&store, "it s", "/a", now),
         None,
         "a prefix, not a substring"
     );
@@ -919,16 +924,16 @@ fn a_command_from_this_folder_beats_a_newer_one_from_another() {
     ]);
     let now = now_ms();
     assert_eq!(
-        store.hint("make", "/here", now).as_deref(),
+        hint_of(&store, "make", "/here", now).as_deref(),
         Some("make test")
     );
     assert_eq!(
-        store.hint("make", "/elsewhere", now).as_deref(),
+        hint_of(&store, "make", "/elsewhere", now).as_deref(),
         Some("make build")
     );
     // A folder where neither ran: the score decides (two uses beat one).
     assert_eq!(
-        store.hint("make", "/new", now).as_deref(),
+        hint_of(&store, "make", "/new", now).as_deref(),
         Some("make build")
     );
 }
@@ -945,7 +950,7 @@ fn frequency_counts_and_a_tie_goes_to_the_newest() {
     let now = now_ms();
     // build x2, test x2, run x1: test is the newest of the two that tie.
     assert_eq!(
-        store.hint("cargo", "/p", now).as_deref(),
+        hint_of(&store, "cargo", "/p", now).as_deref(),
         Some("cargo test")
     );
 }
@@ -959,12 +964,18 @@ fn old_uses_count_less_than_recent_ones() {
     ]);
     // Two weeks later every use is "old" (0.25 each): two uses still win.
     let later = now_ms() + 14 * DAY_MS;
-    assert_eq!(store.hint("job", "/p", later).as_deref(), Some("job old"));
+    assert_eq!(
+        hint_of(&store, "job", "/p", later).as_deref(),
+        Some("job old")
+    );
     // Just after: 3 uses worth 4 each, same order. Add a fresh one and it must win by recency
     // only when the counts are equal.
     let store = hinted(&[("job old", "/p", 0), ("job new", "/p", 0)]);
     let now = now_ms();
-    assert_eq!(store.hint("job", "/p", now).as_deref(), Some("job new"));
+    assert_eq!(
+        hint_of(&store, "job", "/p", now).as_deref(),
+        Some("job new")
+    );
 }
 
 #[test]
@@ -976,13 +987,19 @@ fn hints_leave_out_several_line_commands_and_mistyped_names() {
         ("gti status", "/p", 127),
     ]);
     let now = now_ms();
-    assert_eq!(store.hint("echo", "/p", now), None);
-    assert_eq!(store.hint("g", "/p", now).as_deref(), Some("git status"));
+    assert_eq!(hint_of(&store, "echo", "/p", now), None);
+    assert_eq!(
+        hint_of(&store, "g", "/p", now).as_deref(),
+        Some("git status")
+    );
     // A command that has not ended (no status yet) can be suggested.
     let token = store.start("sleep 100", "/p");
     let _ = token;
     assert!(store.settle(PATIENT));
-    assert_eq!(store.hint("sle", "/p", now).as_deref(), Some("sleep 100"));
+    assert_eq!(
+        hint_of(&store, "sle", "/p", now).as_deref(),
+        Some("sleep 100")
+    );
 }
 
 #[test]
@@ -994,7 +1011,7 @@ fn hints_see_what_other_shells_ran_and_only_the_newest_rows() {
     let mine = Store::open(&scratch.db(), 1000);
     assert!(mine.settle(PATIENT));
     assert_eq!(
-        mine.hint("dep", "/p", now_ms()).as_deref(),
+        hint_of(&mine, "dep", "/p", now_ms()).as_deref(),
         Some("deploy prod"),
         "another shell's command"
     );
@@ -1020,9 +1037,9 @@ fn the_hint_window_is_a_count_of_rows_from_the_newest() {
             )
             .unwrap();
     }
-    assert_eq!(store.hint("anc", "/p", now_ms()), None);
+    assert_eq!(hint_of(&store, "anc", "/p", now_ms()), None);
     assert_eq!(
-        store.hint("fill", "/p", now_ms()).as_deref(),
+        hint_of(&store, "fill", "/p", now_ms()).as_deref(),
         Some("filler")
     );
 }
@@ -1083,4 +1100,71 @@ fn a_version_one_file_without_dirs_gets_the_table_and_keeps_its_version() {
     assert_eq!(store.directories().len(), 1);
     assert!(store.close(PATIENT));
     assert_eq!(pragma(&scratch.db(), "user_version"), "1");
+}
+
+/// The premise of the hint-timing fix, with a real writer held up by another process: while
+/// the writer cannot write, a hint question finds nothing, and the same question finds the
+/// command once the writer has caught up. So "nothing" is not an answer to be kept.
+#[test]
+fn a_hint_asked_while_the_writer_is_held_up_finds_nothing_until_it_catches_up() {
+    let scratch = Scratch::new();
+    let store = Store::open(&scratch.db(), 100);
+    assert!(store.settle(PATIENT), "the database is open");
+    // Another process in the middle of a long write: this store's writer must wait for it.
+    let other = Connection::open(scratch.db()).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    record(&store, "make test", "/p", 0);
+    assert!(
+        !store.settle(Duration::from_millis(100)),
+        "the writer cannot have caught up"
+    );
+    assert_eq!(hint_of(&store, "make", "/p", now_ms()), None);
+    other.execute_batch("COMMIT").unwrap();
+    assert!(store.settle(PATIENT), "the writer caught up");
+    assert_eq!(
+        hint_of(&store, "make", "/p", now_ms()).as_deref(),
+        Some("make test")
+    );
+}
+
+/// Before the writer has opened the database there is nothing to read from: that is "not
+/// ready", which a caller must not mistake for "no hint".
+#[test]
+fn a_hint_asked_before_the_database_is_open_is_not_ready() {
+    let scratch = Scratch::new();
+    {
+        let store = Store::open(&scratch.db(), 100);
+        record(&store, "make test", "/p", 0);
+        assert!(store.close(PATIENT));
+    }
+    // A process that holds the whole file: the writer cannot finish opening it.
+    let holder = Connection::open(scratch.db()).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let store = Store::open(&scratch.db(), 100);
+    assert_eq!(store.hint("make", "/p", now_ms()), Err(NotReady));
+    holder.execute_batch("COMMIT").unwrap();
+    assert!(store.settle(PATIENT), "the open finished");
+    assert_eq!(
+        store.hint("make", "/p", now_ms()),
+        Ok(Some("make test".to_owned()))
+    );
+    // An empty prefix is a plain "nothing", also when not ready.
+    assert_eq!(store.hint("", "/p", now_ms()), Ok(None));
+    assert_eq!(store.hint("zzz", "/p", now_ms()), Ok(None));
+}
+
+/// A read that fails (here: the table is gone) is "not ready", not "no hint".
+#[test]
+fn a_hint_whose_query_fails_is_not_ready() {
+    let scratch = Scratch::new();
+    let store = Store::open(&scratch.db(), 100);
+    record(&store, "make test", "/p", 0);
+    assert!(store.settle(PATIENT));
+    assert_eq!(
+        store.hint("make", "/p", now_ms()),
+        Ok(Some("make test".to_owned()))
+    );
+    let other = Connection::open(scratch.db()).unwrap();
+    other.execute_batch("DROP TABLE history").unwrap();
+    assert_eq!(store.hint("make", "/p", now_ms()), Err(NotReady));
 }

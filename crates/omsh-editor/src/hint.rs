@@ -11,8 +11,17 @@
 //!   still starts with it, that answer is still the best (the ranking belongs to the whole
 //!   command and does not depend on how much of it was typed), and when the previous line had
 //!   no hint, a longer line has none either. No question is asked in both cases;
-//! - **one wait for the writer** at the first question of a prompt (a short limit), so the
+//! - **a wait for the writer** at the first question of a prompt (a short limit), so the
 //!   command that just ran can be suggested.
+//!
+//! **What may be remembered.** "Nothing to suggest" is an answer only when the history is up to
+//! date: the writer has stored what was typed before this prompt, and the database could be
+//! read. If the wait for the writer timed out (a slow disk, another shell holding the database),
+//! or the database was not open or not readable, the answer is *unknown*, not "nothing": it is
+//! shown if there is one, but it is not remembered, and it is not used by the reuse rule, so the
+//! next keystroke asks again (with a very short wait, so that typing is never held up). Without
+//! this a hint that missed the first question was missing for the rest of the prompt. This was
+//! the failure of two PTY tests on the CI runner.
 //!
 //! A hint is accepted with Right or End (all of it) and Alt+F (one word); reedline's default
 //! key bindings already do that.
@@ -21,27 +30,37 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use omsh_history::{Store, now_ms};
+use omsh_history::{NotReady, Store, now_ms};
 use omsh_syntax::trigger;
 use reedline::{Hinter, History};
 
-/// How long the first hint of a prompt may wait for the history writer.
-const HINT_SETTLE: Duration = Duration::from_millis(50);
+/// How long the first question of a prompt may wait for the history writer.
+const FIRST_WAIT: Duration = Duration::from_millis(50);
 
-/// Where hints come from. [`Store`] is the real one; tests use a counting fake.
+/// How long each later question waits, while the writer has still not caught up. Short: this
+/// is on the path of a keystroke, and a writer that is that far behind is held up for a while.
+const RETRY_WAIT: Duration = Duration::from_millis(2);
+
+/// Where hints come from. [`Store`] is the real one; tests use fakes.
 pub trait HintSource: Send {
-    /// Waits (briefly) until the commands that just ran are readable.
-    fn settle(&self);
-    /// The best whole command that starts with `prefix` and is longer than it.
-    fn best(&self, prefix: &str, cwd: &str) -> Option<String>;
+    /// Waits for at most `limit` until the commands that just ran are readable. True if they
+    /// are.
+    fn settle(&self, limit: Duration) -> bool;
+    /// The best whole command that starts with `prefix` and is longer than it: `Ok(None)` when
+    /// the history has none, `Err` when it cannot be asked now.
+    ///
+    /// # Errors
+    ///
+    /// [`NotReady`] when the history cannot be read at this moment.
+    fn best(&self, prefix: &str, cwd: &str) -> Result<Option<String>, NotReady>;
 }
 
 impl HintSource for Store {
-    fn settle(&self) {
-        Store::settle(self, HINT_SETTLE);
+    fn settle(&self, limit: Duration) -> bool {
+        Store::settle(self, limit)
     }
 
-    fn best(&self, prefix: &str, cwd: &str) -> Option<String> {
+    fn best(&self, prefix: &str, cwd: &str) -> Result<Option<String>, NotReady> {
         self.hint(prefix, cwd, now_ms())
     }
 }
@@ -52,7 +71,11 @@ impl HintSource for Store {
 #[derive(Default)]
 pub(crate) struct HintState {
     cwd: String,
+    /// True once the writer has been seen to catch up at this prompt. Until then no answer is
+    /// remembered.
     settled: bool,
+    /// True once the writer has been waited for at this prompt (the first wait is the long one).
+    waited: bool,
     /// The best command for each line asked about at this prompt (none: no hint).
     answers: HashMap<String, Option<String>>,
     /// The line asked about last, and its answer.
@@ -63,6 +86,7 @@ impl HintState {
     pub(crate) fn reset(&mut self, cwd: String) {
         self.cwd = cwd;
         self.settled = false;
+        self.waited = false;
         self.answers.clear();
         self.previous = None;
     }
@@ -107,7 +131,8 @@ impl ShellHinter {
     }
 
     /// The command to suggest for `line`, or none. Asks the source only when the memory and
-    /// the reuse rule cannot answer.
+    /// the reuse rule cannot answer. Remembers an answer only if the history was up to date
+    /// when it was given (see the module comment).
     fn best(&self, line: &str) -> Option<String> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(known) = state.answers.get(line) {
@@ -127,10 +152,19 @@ impl ShellHinter {
             Some(answer) => answer,
             None => {
                 if !state.settled {
-                    state.settled = true;
-                    self.source.settle();
+                    let limit = if state.waited { RETRY_WAIT } else { FIRST_WAIT };
+                    state.waited = true;
+                    state.settled = self.source.settle(limit);
                 }
-                self.source.best(line, &state.cwd)
+                // The history cannot be read now: nothing to show, nothing to remember.
+                let Ok(answer) = self.source.best(line, &state.cwd) else {
+                    return None;
+                };
+                if !state.settled {
+                    // The writer is behind: what was found (or not found) may be out of date.
+                    return answer;
+                }
+                answer
             }
         };
         state.answers.insert(line.to_owned(), answer.clone());
@@ -197,7 +231,7 @@ impl Hinter for ShellHinter {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use nu_ansi_term::{Color, Style};
 
@@ -211,16 +245,18 @@ mod tests {
     }
 
     impl HintSource for Fake {
-        fn settle(&self) {
+        fn settle(&self, _limit: Duration) -> bool {
             self.settled.fetch_add(1, Ordering::Relaxed);
+            true
         }
 
-        fn best(&self, prefix: &str, _cwd: &str) -> Option<String> {
+        fn best(&self, prefix: &str, _cwd: &str) -> Result<Option<String>, NotReady> {
             self.asked.fetch_add(1, Ordering::Relaxed);
-            self.commands
+            Ok(self
+                .commands
                 .iter()
                 .find(|command| command.starts_with(prefix) && command.len() > prefix.len())
-                .map(|command| (*command).to_owned())
+                .map(|command| (*command).to_owned()))
         }
     }
 
@@ -364,6 +400,137 @@ mod tests {
         assert_eq!(rig.hinter.next_hint_token(), "fix");
         rig.hint("zzz");
         assert_eq!(rig.hinter.next_hint_token(), "");
+    }
+
+    /// A history that can be slow or unreadable, controlled by the test, like a writer that is
+    /// held up by a slow disk or by another shell. It records how long each wait was allowed.
+    #[derive(Clone, Default)]
+    struct Slow {
+        /// The writer has caught up: `settle` says true.
+        caught_up: Arc<AtomicBool>,
+        /// The last command has reached the database. Before that, a question finds nothing.
+        stored: Arc<AtomicBool>,
+        /// The database can be read. Before that, a question is "not ready".
+        readable: Arc<AtomicBool>,
+        limits: Arc<Mutex<Vec<Duration>>>,
+        asked: Arc<AtomicUsize>,
+    }
+
+    const STORED: &str = "echo hint-$((1+1))";
+
+    impl Slow {
+        fn set(flag: &AtomicBool, value: bool) {
+            flag.store(value, Ordering::Relaxed);
+        }
+
+        /// A hinter over this history, and a handle to start a new prompt.
+        fn hinter(&self) -> (ShellHinter, Arc<Mutex<HintState>>) {
+            let state = Arc::new(Mutex::new(HintState::default()));
+            let hinter = ShellHinter::new(Box::new(self.clone()), Arc::clone(&state), Style::new());
+            (hinter, state)
+        }
+
+        fn limits(&self) -> Vec<Duration> {
+            self.limits.lock().unwrap().clone()
+        }
+    }
+
+    impl HintSource for Slow {
+        fn settle(&self, limit: Duration) -> bool {
+            self.limits.lock().unwrap().push(limit);
+            self.caught_up.load(Ordering::Relaxed)
+        }
+
+        fn best(&self, prefix: &str, _cwd: &str) -> Result<Option<String>, NotReady> {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            if !self.readable.load(Ordering::Relaxed) {
+                return Err(NotReady);
+            }
+            let found = self.stored.load(Ordering::Relaxed)
+                && STORED.starts_with(prefix)
+                && STORED.len() > prefix.len();
+            Ok(found.then(|| STORED.to_owned()))
+        }
+    }
+
+    fn typed(hinter: &mut ShellHinter, line: &str) -> String {
+        let history = reedline::FileBackedHistory::default();
+        hinter.handle(line, line.len(), &history, false, "/")
+    }
+
+    /// The CI failure of two S14b PTY tests: the first question of a prompt came while the writer
+    /// had not stored the last command, the answer "nothing" was remembered, and the hint never
+    /// showed at that prompt, however much more was typed.
+    #[test]
+    fn nothing_found_while_the_writer_was_behind_is_not_kept_for_the_prompt() {
+        let slow = Slow::default();
+        Slow::set(&slow.readable, true);
+        let (mut hinter, _) = slow.hinter();
+        assert_eq!(typed(&mut hinter, "echo h"), "", "the writer is behind");
+        // The writer catches up and the command is stored.
+        Slow::set(&slow.stored, true);
+        Slow::set(&slow.caught_up, true);
+        assert_eq!(typed(&mut hinter, "echo hi"), "nt-$((1+1))");
+        // The same line again, and a longer one, are now answered and remembered.
+        let asked = slow.asked.load(Ordering::Relaxed);
+        assert_eq!(typed(&mut hinter, "echo hi"), "nt-$((1+1))");
+        assert_eq!(typed(&mut hinter, "echo hin"), "t-$((1+1))");
+        assert_eq!(slow.asked.load(Ordering::Relaxed), asked);
+    }
+
+    #[test]
+    fn a_history_that_cannot_be_read_gives_no_hint_and_is_asked_again() {
+        let slow = Slow::default();
+        Slow::set(&slow.caught_up, true);
+        Slow::set(&slow.stored, true);
+        let (mut hinter, _) = slow.hinter();
+        assert_eq!(typed(&mut hinter, "echo h"), "", "not readable yet");
+        assert_eq!(typed(&mut hinter, "echo h"), "", "still not readable");
+        assert_eq!(slow.asked.load(Ordering::Relaxed), 2, "asked each time");
+        Slow::set(&slow.readable, true);
+        assert_eq!(typed(&mut hinter, "echo h"), "int-$((1+1))");
+    }
+
+    #[test]
+    fn an_answer_given_while_the_writer_is_behind_is_shown_but_not_kept_or_reused() {
+        let slow = Slow::default();
+        Slow::set(&slow.readable, true);
+        Slow::set(&slow.stored, true);
+        let (mut hinter, _) = slow.hinter();
+        // The command is already readable, but the writer has not said it is up to date.
+        assert_eq!(typed(&mut hinter, "echo h"), "int-$((1+1))");
+        assert_eq!(slow.asked.load(Ordering::Relaxed), 1);
+        // Neither the memory nor the reuse rule answer the next questions.
+        assert_eq!(typed(&mut hinter, "echo h"), "int-$((1+1))");
+        assert_eq!(typed(&mut hinter, "echo hi"), "nt-$((1+1))");
+        assert_eq!(slow.asked.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn the_first_wait_is_long_the_later_ones_are_short_and_they_stop_once_the_writer_caught_up() {
+        let slow = Slow::default();
+        Slow::set(&slow.readable, true);
+        let (mut hinter, state) = slow.hinter();
+        typed(&mut hinter, "e");
+        typed(&mut hinter, "ec");
+        typed(&mut hinter, "ech");
+        assert_eq!(slow.limits(), [FIRST_WAIT, RETRY_WAIT, RETRY_WAIT]);
+        Slow::set(&slow.caught_up, true);
+        typed(&mut hinter, "echo");
+        // Lines that the reuse rule cannot answer: each is a new question, and none waits.
+        typed(&mut hinter, "ls");
+        typed(&mut hinter, "pwd");
+        assert_eq!(slow.asked.load(Ordering::Relaxed), 6);
+        assert_eq!(
+            slow.limits(),
+            [FIRST_WAIT, RETRY_WAIT, RETRY_WAIT, RETRY_WAIT],
+            "no wait after the writer caught up"
+        );
+        // A new prompt starts again with the long wait.
+        state.lock().unwrap().reset("/".to_owned());
+        Slow::set(&slow.caught_up, false);
+        typed(&mut hinter, "e");
+        assert_eq!(slow.limits().last(), Some(&FIRST_WAIT));
     }
 
     #[test]
