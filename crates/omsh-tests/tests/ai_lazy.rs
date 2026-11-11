@@ -230,3 +230,39 @@ fn a_plan_panel_holds_no_socket_while_it_waits() {
         Ok(())
     });
 }
+
+#[test]
+fn an_explanation_leaves_no_socket_behind_even_with_a_keep_alive_server() {
+    pty_test(BIN, |ctx| {
+        // Keep-alive on: the server leaves connections open, as the real providers do.
+        let server = Server::start_answering(Duration::ZERO, true, &["It lists files.", "Fine."])?;
+        write_config(
+            ctx,
+            &format!(
+                "[ai]\nprovider = \"openai-compatible\"\nmodel = \"m\"\nbase_url = \"{}\"\n",
+                server.url("/v1")
+            ),
+        )?;
+        let mut term = launch(ctx).start()?;
+        let pid = term.shell_pid();
+        let no_socket_soon = |term: &mut Session, when: &str| {
+            let mut left = sockets(pid);
+            for _ in 0..100 {
+                if left.is_empty() {
+                    break;
+                }
+                term.pump(Duration::from_millis(20));
+                left = sockets(pid);
+            }
+            assert_eq!(left, Vec::<String>::new(), "a socket {when}");
+        };
+        term.command("?? ls")?;
+        term.expect("It lists files.", SHORT);
+        no_socket_soon(&mut term, "after `?? ls`");
+        term.command("echo hi | ? what is this")?;
+        term.expect("Fine.", SHORT);
+        no_socket_soon(&mut term, "after `| ?`");
+        term.sync("end")?;
+        Ok(())
+    });
+}

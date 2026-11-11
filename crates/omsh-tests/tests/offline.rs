@@ -12,9 +12,10 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use omsh_tests::skip::skip;
-use omsh_tests::{Ctx, Launch, Session, pty_test};
+use omsh_tests::{Ctx, Launch, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
 
@@ -100,10 +101,23 @@ fn session_of_ordinary_work(term: &mut Session, ctx: &Ctx) -> io::Result<()> {
         "history | tail -1",
         "sleep 0.1 & wait",
         "false",
+        // The explain triggers of S24 with no AI set up: they say so and open nothing.
+        "?? ls -l",
+        "??",
+        "ls / | ? what is here",
+        "echo a?b | cat",
         "omsh ai status",
     ] {
         term.command(command)?;
     }
+    // Alt+? with a failure to explain, and the AI not set up.
+    term.command("false")?;
+    term.prompt();
+    term.write_bytes(b"\x1b?")?;
+    term.expect("AI is ", SHORT);
+    // Alt+? is not a line, so the harness cannot tell when the editor is back: give it a moment
+    // before the next line is typed.
+    term.pump(Duration::from_millis(500));
     term.sync("done")
 }
 

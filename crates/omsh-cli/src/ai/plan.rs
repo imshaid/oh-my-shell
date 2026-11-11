@@ -22,11 +22,10 @@
 //! The model never runs anything itself, and no code path below step 4 is reached without the
 //! key press.
 
-use std::cell::{Cell, RefCell};
-use std::io::{self, IsTerminal};
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use omsh_ai::{
     ChatRequest, Conversation, ErrorKind, Gathered, GitState, ModelRisk, Plan, PlanContext,
@@ -42,6 +41,7 @@ use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level};
 
 use super::recent::Recent;
+use super::wait::WaitLine;
 use crate::confirm::{self, Decision, StartDir};
 use crate::history::History;
 use crate::radius::{self, BlastLimits};
@@ -51,12 +51,12 @@ use crate::undo::watch::Watch;
 /// How many lines of a command, and of an explanation, the panel shows, and how wide.
 const SHOWN_LINES: usize = 5;
 const SHOWN_WIDTH: usize = 160;
-/// How often the "waiting" line is redrawn.
-const REDRAW: Duration = Duration::from_millis(150);
 /// Exit status after a request that could not be answered or was given up.
 const FAILED: u8 = 1;
 const USAGE_STATUS: u8 = 2;
 const INTERRUPTED: u8 = 130;
+/// Exit status of a job that was stopped (Ctrl+Z): 128 + SIGTSTP.
+const STOPPED: u8 = 148;
 
 /// What `?` alone prints.
 pub const USAGE: &str =
@@ -132,7 +132,7 @@ pub struct PlanEnv<'a> {
 
 /// What is known about the shell right now, for the items `allowed` lets through. What is off
 /// is not even collected; `PlanContext::build` looks at the switches again and masks.
-fn gather(shell: &Shell, allowed: &AiContext, recent: &Recent) -> Gathered {
+pub(crate) fn gather(shell: &Shell, allowed: &AiContext, recent: &Recent) -> Gathered {
     let dir = crate::repl::directory(shell);
     Gathered {
         os: if allowed.os { os_name() } else { None },
@@ -390,42 +390,29 @@ fn ask(
     let received = AtomicUsize::new(0);
     let tries = AtomicUsize::new(1);
     let sent = RefCell::new(None);
-    let live = io::stderr().is_terminal();
-    if !live {
-        terminal.err(&format!("{label}...\n"));
-    }
-    let started = Instant::now();
-    let last_draw = Cell::new(None::<Instant>);
+    let wait = WaitLine::start(label, terminal);
     let terminal = RefCell::new(terminal);
     let watch = || {
         let mut terminal = terminal.borrow_mut();
         if terminal.interrupted() {
             return true;
         }
-        if live && last_draw.get().is_none_or(|at| at.elapsed() >= REDRAW) {
-            let chars = received.load(Ordering::Relaxed);
-            let mut line = format!(
-                "\r\x1b[K{label}... {:.1} s",
-                started.elapsed().as_secs_f64()
-            );
-            if chars > 0 {
-                line.push_str(&format!(", {chars} characters"));
-            }
-            if tries.load(Ordering::Relaxed) > 1 {
-                line.push_str(" (second try)");
-            }
-            terminal.err(&line);
-            last_draw.set(Some(Instant::now()));
+        let chars = received.load(Ordering::Relaxed);
+        let mut extra = String::new();
+        if chars > 0 {
+            extra.push_str(&format!(", {chars} characters"));
         }
+        if tries.load(Ordering::Relaxed) > 1 {
+            extra.push_str(" (second try)");
+        }
+        wait.tick(&mut **terminal, &extra);
         false
     };
     let outcome = runtime::block_on(
         attempts(provider, first, check, &received, &tries, &sent),
         &watch,
     );
-    if last_draw.get().is_some() {
-        terminal.borrow_mut().err("\r\x1b[K");
-    }
+    wait.clear(&mut **terminal.borrow_mut());
     let result = match outcome {
         Ok(result) => result,
         Err(error) => Err(Failure::Provider(error)),
@@ -705,7 +692,7 @@ fn say(env: &mut PlanEnv<'_>, text: &str) {
 }
 
 /// A provider for the next request, or the one line that says why there is none.
-fn provider_for(
+pub(crate) fn provider_for(
     connect: &mut Connect,
     kind: omsh_config::Provider,
 ) -> Result<Box<dyn Provider>, String> {
@@ -1060,7 +1047,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
                 let why = message_of(&result);
                 say(env, &format!("  {failed}: {why}\n"));
                 last = ExitStatus::USAGE.0;
-                return stopped(env, number, total, last);
+                return stopped(env, number, total, last, false);
             }
         };
         // An earlier step may have changed what this one touches.
@@ -1079,7 +1066,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             };
             if let Decision::Cancel(code) = decision {
                 omsh_exec::clear_interrupt();
-                return stopped(env, number, total, code);
+                return stopped(env, number, total, code, false);
             }
         }
 
@@ -1104,7 +1091,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
                                 env,
                                 &format!("  {failed}: could not prepare the move to the trash\n"),
                             );
-                            return stopped(env, number, total, ExitStatus::USAGE.0);
+                            return stopped(env, number, total, ExitStatus::USAGE.0, false);
                         }
                     }
                 };
@@ -1159,7 +1146,10 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             say(env, &format!("  {ok}\n"));
         } else {
             say(env, &format!("  {failed} (status {last})\n"));
-            return stopped(env, number, total, last);
+            // A step that ran and failed: offer the explanation (§13.6). Ctrl+C and a stop are
+            // not failures to explain.
+            let offer = last != INTERRUPTED && last != STOPPED;
+            return stopped(env, number, total, last, offer);
         }
     }
     say(
@@ -1173,7 +1163,15 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
 }
 
 /// The plan ends at step `number` with `status`.
-fn stopped(env: &mut PlanEnv<'_>, number: usize, total: usize, status: u8) -> LineResult {
+///
+/// `offer` adds the line about `??` (the step ran and failed, so it is the last command).
+fn stopped(
+    env: &mut PlanEnv<'_>,
+    number: usize,
+    total: usize,
+    status: u8,
+    offer: bool,
+) -> LineResult {
     let left = total - number;
     let text = if left == 0 {
         format!("\noh-my-shell: step {number} did not succeed (status {status})\n")
@@ -1185,6 +1183,12 @@ fn stopped(env: &mut PlanEnv<'_>, number: usize, total: usize, status: u8) -> Li
         )
     };
     say(env, &text);
+    if offer {
+        say(
+            env,
+            "oh-my-shell: type ?? (or press Alt+?) to ask why it failed\n",
+        );
+    }
     finish(env.shell, status)
 }
 

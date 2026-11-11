@@ -17,6 +17,20 @@ use omsh_history::Filter;
 pub struct Recent {
     items: VecDeque<RecentCommand>,
     filter: Filter,
+    last: Option<Last>,
+}
+
+/// The last line that ended, for `??` and `Alt+?` (S24). Unlike the list of recent commands it
+/// also remembers a line that the history ignores, so that "why did this fail" never explains
+/// the command before it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Last {
+    Ran {
+        command: String,
+        status: i32,
+    },
+    /// A line matching `[history] ignore`: it is not sent anywhere.
+    Ignored,
 }
 
 impl Recent {
@@ -26,15 +40,24 @@ impl Recent {
         Self {
             items: VecDeque::new(),
             filter,
+            last: None,
         }
     }
 
     /// Notes that `command` ran and ended with `status`.
     pub fn record(&mut self, command: &str, status: i32) {
         let command = command.strip_suffix('\n').unwrap_or(command);
-        if self.filter.ignores(command) {
+        if command.trim().is_empty() {
             return;
         }
+        if self.filter.ignores(command) {
+            self.last = Some(Last::Ignored);
+            return;
+        }
+        self.last = Some(Last::Ran {
+            command: command.to_owned(),
+            status,
+        });
         if self.items.len() == RECENT_COMMANDS {
             self.items.pop_front();
         }
@@ -42,6 +65,12 @@ impl Recent {
             command: command.to_owned(),
             status,
         });
+    }
+
+    /// The last line that ended (blank lines do not count).
+    #[must_use]
+    pub fn last(&self) -> Option<&Last> {
+        self.last.as_ref()
     }
 
     /// The commands noted, oldest first.
@@ -84,6 +113,35 @@ mod tests {
         recent.record("history", 0);
         recent.record("ls -l\n", 0);
         assert_eq!(commands(&recent), [("ls -l".into(), 0)]);
+    }
+
+    #[test]
+    fn the_last_line_is_remembered_even_when_the_history_ignores_it() {
+        let mut recent = Recent::new(Filter::new(&[" *".to_owned()]));
+        assert_eq!(recent.last(), None);
+        recent.record("make", 2);
+        assert_eq!(
+            recent.last(),
+            Some(&Last::Ran {
+                command: "make".into(),
+                status: 2
+            })
+        );
+        recent.record("", 0);
+        recent.record("  \n", 0);
+        assert!(matches!(recent.last(), Some(Last::Ran { command, .. }) if command == "make"));
+        recent.record(" false", 1);
+        assert_eq!(recent.last(), Some(&Last::Ignored));
+        // The list of recent commands still has only what was not ignored.
+        assert_eq!(commands(&recent), [("make".into(), 2)]);
+        recent.record("ls\n", 0);
+        assert_eq!(
+            recent.last(),
+            Some(&Last::Ran {
+                command: "ls".into(),
+                status: 0
+            })
+        );
     }
 
     #[test]

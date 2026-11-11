@@ -155,6 +155,56 @@ pub async fn collect_text_counting(
     .await
 }
 
+/// Sends the request and hands each piece of the answer to `on_piece` as it arrives. Returns the
+/// whole answer.
+///
+/// Like [`collect_text`], a transient failure is tried again according to `policy`, but **only
+/// while no text has been passed on**: once a piece is on the screen, a second try would show
+/// the answer twice, so the error is returned and the caller ends the line.
+///
+/// # Errors
+///
+/// The error of the last try.
+pub async fn stream_text(
+    provider: &dyn Provider,
+    request: &ChatRequest,
+    policy: &Policy,
+    on_piece: &mut dyn FnMut(&str),
+) -> Result<String, ProviderError> {
+    let mut failures = 0;
+    let mut passed_on = false;
+    loop {
+        let mut stream = provider.chat(request.clone());
+        let mut answer = String::new();
+        let outcome: Result<(), ProviderError> = async {
+            while let Some(event) = stream.next().await {
+                match event? {
+                    ChatEvent::Text(piece) => {
+                        if !piece.is_empty() {
+                            passed_on = true;
+                            on_piece(&piece);
+                            answer.push_str(&piece);
+                        }
+                    }
+                    ChatEvent::Done => break,
+                }
+            }
+            Ok(())
+        }
+        .await;
+        match outcome {
+            Ok(()) => return Ok(answer),
+            Err(error) => {
+                failures += 1;
+                if passed_on || !error.is_transient() || failures >= policy.attempts.max(1) {
+                    return Err(error);
+                }
+                tokio::time::sleep(policy.pause(failures)).await;
+            }
+        }
+    }
+}
+
 /// The smallest request that proves a key and a model work: one short question, a few tokens
 /// of answer. Used by `omsh ai setup` and `omsh ai test`. Success means the server accepted
 /// the key and knows the model; what the model said does not matter.
@@ -272,6 +322,70 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(text, "whole answer");
+    }
+
+    fn streamed(
+        fake: &FakeProvider,
+        policy: &Policy,
+    ) -> (Result<String, ProviderError>, Vec<String>) {
+        let mut seen = Vec::new();
+        let result = run(stream_text(
+            fake,
+            &ChatRequest::ask("hi", 8),
+            policy,
+            &mut |piece| seen.push(piece.to_owned()),
+        ));
+        (result, seen)
+    }
+
+    #[test]
+    fn streamed_pieces_arrive_in_order_and_empty_ones_are_skipped() {
+        let fake = FakeProvider::new(Kind::Ollama).says(&["Hel", "", "lo ", "there"]);
+        let (result, seen) = streamed(&fake, &Policy::once());
+        assert_eq!(result.unwrap(), "Hello there");
+        assert_eq!(seen, ["Hel", "lo ", "there"]);
+    }
+
+    #[test]
+    fn a_stream_is_tried_again_while_nothing_was_shown() {
+        let fake = FakeProvider::new(Kind::Ollama)
+            .fails(ProviderError::new(ErrorKind::Server, "x"))
+            .says(&["fine"]);
+        let (result, seen) = streamed(&fake, &fast_retries());
+        assert_eq!(result.unwrap(), "fine");
+        assert_eq!(seen, ["fine"]);
+        assert_eq!(fake.requests().len(), 2);
+    }
+
+    #[test]
+    fn a_stream_is_not_tried_again_once_text_was_shown() {
+        // A second try would print the answer twice.
+        let fake = FakeProvider::new(Kind::Ollama)
+            .partial_then_fail(&["half"], ProviderError::new(ErrorKind::Server, "x"))
+            .says(&["whole answer"]);
+        let (result, seen) = streamed(&fake, &fast_retries());
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Server);
+        assert_eq!(seen, ["half"]);
+        assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[test]
+    fn a_stream_gives_up_after_the_tries_and_on_errors_that_do_not_pass() {
+        let fake = FakeProvider::new(Kind::Ollama)
+            .fails(ProviderError::new(ErrorKind::Auth, "no"))
+            .says(&["never"]);
+        let (result, seen) = streamed(&fake, &fast_retries());
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Auth);
+        assert!(seen.is_empty());
+        assert_eq!(fake.requests().len(), 1);
+        let fake = FakeProvider::new(Kind::Ollama)
+            .fails(ProviderError::new(ErrorKind::Server, "1"))
+            .fails(ProviderError::new(ErrorKind::Server, "2"))
+            .fails(ProviderError::new(ErrorKind::Server, "3"))
+            .says(&["never"]);
+        let (result, _) = streamed(&fake, &fast_retries());
+        assert_eq!(result.unwrap_err().detail, "3");
+        assert_eq!(fake.requests().len(), 3);
     }
 
     #[test]

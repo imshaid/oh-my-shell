@@ -105,6 +105,8 @@ enum Next {
     End,
     /// Ctrl+C in the editor: drop what was typed.
     Interrupted,
+    /// `Alt+?`: explain the last failure (S24). The typed text stays in the editor.
+    ExplainLast,
     /// The terminal hung up.
     HungUp,
     /// The editor cannot work with this terminal.
@@ -206,6 +208,12 @@ fn run_on(
                 // `$?` stays as it was, as with the plain reader (the terminal throws the
                 // half-typed line away there).
                 pending.clear();
+                continue;
+            }
+            Next::ExplainLast => {
+                // Not a line: nothing is stored in history, `$?` stays, and what was typed
+                // stays in the editor.
+                explain_last_key(ai.as_deref(), &mut shell, &mut files, &mut recent);
                 continue;
             }
             Next::HungUp => {
@@ -310,7 +318,28 @@ fn run_on(
     }
 }
 
-/// Handles a line that starts with `?`: a plan (`? request`) or, later, an explanation.
+/// `Alt+?` in the editor: why did the last command fail? Prints below the prompt line; the
+/// editor draws the prompt again afterwards with the text that was being typed.
+fn explain_last_key(
+    ai: Option<&ai::AiSession>,
+    shell: &mut Shell,
+    files: &mut Io,
+    recent: &mut ai::recent::Recent,
+) {
+    let Some(ai) = ai else { return };
+    // The cursor is on the line being typed: move below it.
+    say("");
+    let env = ai::explain::ExplainEnv {
+        shell,
+        files,
+        tty: &mut ai::plan::RealTerminal,
+        recent,
+    };
+    let _ = ai::explain::last(|| ai.plan_setup(), false, env);
+}
+
+/// Handles a line that starts with `?` (or ends with `| ?`): a plan (`? request`), an
+/// explanation (`?? text`, `??`) or a question about output (`cmd | ? question`).
 #[expect(
     clippy::too_many_arguments,
     reason = "the pieces of the shell the flow needs"
@@ -333,9 +362,41 @@ fn ai_line(
     };
     let request = match trigger {
         Trigger::Plan(request) => request,
-        Trigger::Explain(_) => {
-            say("oh-my-shell: ??: explaining a command comes in a later version");
-            return fail(shell, ExitStatus::USAGE);
+        Trigger::Explain(text) => {
+            let mut env = ai::explain::ExplainEnv {
+                shell,
+                files,
+                tty: &mut ai::plan::RealTerminal,
+                recent,
+            };
+            if text.is_empty() {
+                return ai::explain::last(|| ai.plan_setup(), true, env);
+            }
+            return match ai.plan_setup() {
+                Ok(setup) => ai::explain::command(setup, text, env),
+                Err(why) => ai::explain::unavailable(&mut env, "??", &why),
+            };
+        }
+        Trigger::Pipe {
+            command, question, ..
+        } => {
+            let env = ai::explain::ExplainEnv {
+                shell,
+                files,
+                tty: &mut ai::plan::RealTerminal,
+                recent,
+            };
+            return ai::explain::pipe(
+                ai.plan_setup(),
+                command,
+                question,
+                ai::explain::PipeEnv {
+                    confirm: config.safety.confirm,
+                    blast: BlastLimits::from_config(&config.safety),
+                    undo,
+                },
+                env,
+            );
         }
     };
     if request.is_empty() {
@@ -487,6 +548,7 @@ fn read_edited(editor: &mut Editor, shell: &Shell, pending: &str, took: Option<D
             Next::Line(text.into_bytes())
         }
         Typed::Interrupted => Next::Interrupted,
+        Typed::ExplainLast => Next::ExplainLast,
         Typed::EndOfInput => Next::End,
         Typed::HungUp => Next::HungUp,
         Typed::Failed(error) => Next::EditorFailed(error),

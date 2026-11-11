@@ -422,9 +422,9 @@ fn a_question_mark_alone_and_a_glob_are_not_confused() {
         let mut term = launch(ctx).start()?;
         term.command("?")?;
         term.expect("usage: ? <what you want done>", SHORT);
-        // `??` explains, which is not there yet.
+        // `??` explains; with no AI set up it says so.
         term.command("?? tar")?;
-        term.expect("comes in a later version", SHORT);
+        term.expect("oh-my-shell: ??: AI is not set up yet", SHORT);
         // A glob that happens to start with `?` is still a glob.
         term.command("echo x > ab; echo ?b")?;
         term.expect("ab", SHORT);

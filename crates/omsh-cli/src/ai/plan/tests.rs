@@ -1791,3 +1791,69 @@ mod trash {
         assert!(!work.has("x"));
     }
 }
+
+// -- the offer to explain a failure (S24) ----------------------------------------------------
+
+#[test]
+fn a_step_that_ran_and_failed_offers_the_explanation_and_is_the_last_command() {
+    let answer = json(&[
+        ("Fail", "sh -c 'exit 3'", "low"),
+        ("Never", "echo unreachable", "low"),
+    ]);
+    let ran = go(
+        says(&answer),
+        "do it",
+        Setup {
+            keys: vec![enter()],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 3);
+    assert!(
+        ran.err
+            .contains("type ?? (or press Alt+?) to ask why it failed"),
+        "{}",
+        ran.err
+    );
+    // `??` would explain exactly this step.
+    assert_eq!(
+        ran.recent.last().map(|c| (c.command.as_str(), c.status)),
+        Some(("sh -c 'exit 3'", 3))
+    );
+}
+
+#[test]
+fn no_offer_after_ctrl_c_a_stop_a_cancel_or_success() {
+    for status in [130, 148] {
+        let answer = json(&[("Stop", &format!("sh -c 'exit {status}'"), "low")]);
+        let ran = go(
+            says(&answer),
+            "do it",
+            Setup {
+                keys: vec![enter()],
+                ..Setup::default()
+            },
+        );
+        assert_eq!(ran.status(), status);
+        assert!(!ran.err.contains("Alt+?"), "{status}: {}", ran.err);
+    }
+    let answer = json(&[("Fine", "true", "low")]);
+    let ran = go(
+        says(&answer),
+        "do it",
+        Setup {
+            keys: vec![enter()],
+            ..Setup::default()
+        },
+    );
+    assert!(!ran.err.contains("Alt+?"), "{}", ran.err);
+    let ran = go(
+        says(&answer),
+        "do it",
+        Setup {
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert!(!ran.err.contains("Alt+?"), "{}", ran.err);
+}

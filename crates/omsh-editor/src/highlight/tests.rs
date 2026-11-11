@@ -521,3 +521,32 @@ fn a_request_to_the_ai_is_plain_text() {
     // `?x` is still a glob word and `nosuch ?` is still an unknown command.
     assert_eq!(s.codes_of("nosuch ? x", "nosuch"), vec![RED]);
 }
+
+#[test]
+fn a_pipe_into_the_ai_colors_the_command_and_leaves_the_question_plain() {
+    let s = setup();
+    let line = "ls -l | ? what's the 'biggest";
+    let pieces = s.pieces(line);
+    // The command part is colored as usual; the text of the pieces still adds up to the line.
+    assert_eq!(
+        pieces.iter().map(|p| p.0.as_str()).collect::<String>(),
+        line
+    );
+    assert_eq!(s.codes_of(line, "-l"), vec![CYAN]);
+    assert_eq!(s.codes_of(line, "|"), vec![CYAN]);
+    // The question: no yellow quote, no red word.
+    let (last, codes) = pieces.last().unwrap();
+    assert!(last.contains("what's"), "{pieces:?}");
+    assert_eq!(codes, &Vec::<u8>::new());
+    // An unknown command in front is still red.
+    assert_eq!(s.codes_of("nosuch | ? q", "nosuch"), vec![RED]);
+}
+
+#[test]
+fn a_pipe_trigger_after_blanks_is_cut_at_the_right_place() {
+    let s = setup();
+    let line = "  ls | ? x";
+    let joined: String = s.pieces(line).iter().map(|p| p.0.clone()).collect();
+    assert_eq!(joined, line);
+    assert_eq!(s.codes_of(line, "|"), vec![CYAN]);
+}

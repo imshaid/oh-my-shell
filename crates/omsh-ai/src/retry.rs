@@ -34,7 +34,7 @@ impl Policy {
         }
     }
 
-    fn pause(&self, failures: u32) -> Duration {
+    pub(crate) fn pause(&self, failures: u32) -> Duration {
         let index = (failures.saturating_sub(1)) as usize;
         self.pauses
             .get(index)

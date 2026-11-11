@@ -55,9 +55,24 @@ pub fn run_line(
     blast: BlastLimits,
     undo: Option<&Undo>,
 ) -> LineResult {
+    run_line_outcome(shell, text, at_end, files, confirm, blast, undo).0
+}
+
+/// Like [`run_line`], and also says whether the line was really run: `false` when it could not
+/// be prepared (unfinished, a syntax error) or was cancelled at the question. `cmd | ? q` needs
+/// it: a line that did not run has no output to ask about.
+pub fn run_line_outcome(
+    shell: &mut Shell,
+    text: &str,
+    at_end: bool,
+    files: &mut Io,
+    confirm: ConfirmLevel,
+    blast: BlastLimits,
+    undo: Option<&Undo>,
+) -> (LineResult, bool) {
     let prepared = match shell.prepare(text, at_end) {
         Ok(prepared) => prepared,
-        Err(result) => return *result,
+        Err(result) => return (*result, false),
     };
     let analysis = review(shell, &prepared);
     let offer_trash = undo.is_some() && shell.has_journal() && trash_possible(&analysis, confirm);
@@ -73,16 +88,19 @@ pub fn run_line(
         )
     };
     match decision {
-        Decision::Run => shell.run_prepared(prepared, files),
+        Decision::Run => (shell.run_prepared(prepared, files), true),
         Decision::Trash => match undo {
-            Some(undo) => run_trashed(shell, prepared, &analysis, text, files, undo),
-            None => shell.run_prepared(prepared, files),
+            Some(undo) => (
+                run_trashed(shell, prepared, &analysis, text, files, undo),
+                true,
+            ),
+            None => (shell.run_prepared(prepared, files), true),
         },
         Decision::Cancel(code) => {
             // Ctrl+C at the question must not stop the next line.
             clear_interrupt();
             shell.set_last_status(ExitStatus(code));
-            LineResult::Ran(Outcome::Continue(ExitStatus(code)))
+            (LineResult::Ran(Outcome::Continue(ExitStatus(code))), false)
         }
     }
 }

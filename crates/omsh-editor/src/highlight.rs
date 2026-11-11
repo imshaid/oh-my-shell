@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use nu_ansi_term::{Color, Style};
-use omsh_syntax::{HighlightKind, HighlightWord, lex_for_highlight, trigger};
+use omsh_syntax::{HighlightKind, HighlightWord, Trigger, lex_for_highlight, trigger};
 use omsh_ui::{AnsiColor, Role, RoleStyle, Theme};
 use reedline::{Highlighter, StyledText};
 
@@ -234,18 +234,22 @@ impl Highlighter for ShellHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         // A request to the AI is natural language: no red `?`, no quote or glob colors, and
         // no lookup of a "command".
-        if trigger(line).is_some() {
-            return render(
-                line,
-                &[Piece {
-                    start: 0,
-                    end: line.len(),
-                    kind: HighlightKind::Argument,
-                    style: self.style(Role::Normal),
-                }],
-            );
+        let plain = |start: usize| Piece {
+            start,
+            end: line.len(),
+            kind: HighlightKind::Argument,
+            style: self.style(Role::Normal),
+        };
+        // `cmd | ? question`: the command is colored as usual, the `|` is an operator and the
+        // question is plain text.
+        let mut pipe_at = None;
+        match trigger(line) {
+            Some(Trigger::Pipe { at, .. }) => pipe_at = Some(at),
+            Some(_) => return render(line, &[plain(0)]),
+            None => {}
         }
-        let lexed = lex_for_highlight(line);
+        let code = &line[..pipe_at.unwrap_or(line.len())];
+        let lexed = lex_for_highlight(code);
         let mut pieces: Vec<Piece> = lexed
             .spans
             .iter()
@@ -260,7 +264,7 @@ impl Highlighter for ShellHighlighter {
         {
             let mut context = self.context.lock().unwrap_or_else(PoisonError::into_inner);
             for word in &lexed.words {
-                self.look_at_word(&mut context, line, word, &mut pieces);
+                self.look_at_word(&mut context, code, word, &mut pieces);
             }
         }
 
@@ -274,6 +278,15 @@ impl Highlighter for ShellHighlighter {
             }
         }
 
+        if let Some(at) = pipe_at {
+            pieces.push(Piece {
+                start: at,
+                end: at + 1,
+                kind: HighlightKind::Operator,
+                style: self.style(role_of(HighlightKind::Operator)),
+            });
+            pieces.push(plain(at + 1));
+        }
         render(line, &pieces)
     }
 }

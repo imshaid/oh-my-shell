@@ -15,11 +15,13 @@
 //! Under `--no-ai` everything but `status` and the help is refused, and none of them touches
 //! anything.
 
+pub mod explain;
 pub mod plan;
 pub mod recent;
 mod setup;
 #[cfg(test)]
 mod tests;
+mod wait;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

@@ -30,7 +30,11 @@ use std::time::Duration;
 use omsh_config::{Config, EditMode as ConfigMode};
 use omsh_history::{Filter, Store};
 use omsh_ui::{Role, Theme};
-use reedline::{EditCommand, Emacs, Reedline, Signal, Vi};
+use reedline::{
+    EditCommand, Emacs, KeyCode, KeyModifiers, Keybindings, Reedline, ReedlineEvent, Signal, Vi,
+    default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
+    default_vi_visual_keybindings,
+};
 
 pub use highlight::{CommandLookup, ShellHighlighter};
 pub use prompt::{Look, PromptState, ShellPrompt};
@@ -57,6 +61,9 @@ pub enum Read {
     Interrupted,
     /// Ctrl+D on an empty line.
     EndOfInput,
+    /// `Alt+?`: the person asks why the last command failed. What was typed so far stays in
+    /// the editor's buffer.
+    ExplainLast,
     /// The terminal hung up.
     HungUp,
     /// The editor could not work with this terminal, or stopped unexpectedly. The shell goes on
@@ -141,8 +148,20 @@ impl Editor {
             .with_history(Box::new(history))
             .with_history_session_id(Some(session));
         engine = match config.editor.mode {
-            ConfigMode::Emacs => engine.with_edit_mode(Box::new(Emacs::default())),
-            ConfigMode::Vi => engine.with_edit_mode(Box::new(Vi::default())),
+            ConfigMode::Emacs => {
+                let mut keys = default_emacs_keybindings();
+                bind_explain(&mut keys);
+                engine.with_edit_mode(Box::new(Emacs::new(keys)))
+            }
+            ConfigMode::Vi => {
+                let mut insert = default_vi_insert_keybindings();
+                let mut normal = default_vi_normal_keybindings();
+                bind_explain(&mut insert);
+                let mut visual = default_vi_visual_keybindings();
+                bind_explain(&mut normal);
+                bind_explain(&mut visual);
+                engine.with_edit_mode(Box::new(Vi::new(insert, normal, visual)))
+            }
         };
         if config.prompt.transient {
             let neutral = ShellPrompt::new(&look, &neutral_state(), segments::now).transient();
@@ -230,9 +249,24 @@ impl Editor {
     }
 }
 
+/// The name the editor gives to `Alt+?` when it hands control back to the shell.
+const EXPLAIN_LAST: &str = "omsh:explain-last";
+
+/// Binds `Alt+?` (with and without Shift: terminals differ) to "explain the last failure".
+fn bind_explain(keys: &mut Keybindings) {
+    for modifiers in [KeyModifiers::ALT, KeyModifiers::ALT | KeyModifiers::SHIFT] {
+        keys.add_binding(
+            modifiers,
+            KeyCode::Char('?'),
+            ReedlineEvent::ExecuteHostCommand(EXPLAIN_LAST.to_owned()),
+        );
+    }
+}
+
 /// What the editor's answer means to the shell.
 fn classify(answer: io::Result<Signal>) -> Read {
     match answer {
+        Ok(Signal::HostCommand(name)) if name == EXPLAIN_LAST => Read::ExplainLast,
         Ok(Signal::Success(line)) => Read::Line(line),
         Ok(Signal::CtrlD) => Read::EndOfInput,
         Ok(Signal::ExternalBreak(_)) => Read::HungUp,
@@ -310,6 +344,15 @@ mod tests {
             Read::Line(line) if line == "ls"
         ));
         assert!(matches!(classify(Ok(Signal::CtrlC)), Read::Interrupted));
+        assert!(matches!(
+            classify(Ok(Signal::HostCommand(EXPLAIN_LAST.into()))),
+            Read::ExplainLast
+        ));
+        // A host command we did not ask for is not Alt+?.
+        assert!(matches!(
+            classify(Ok(Signal::HostCommand("other".into()))),
+            Read::Interrupted
+        ));
         assert!(matches!(classify(Ok(Signal::CtrlD)), Read::EndOfInput));
         assert!(matches!(
             classify(Ok(Signal::ExternalBreak("half".into()))),

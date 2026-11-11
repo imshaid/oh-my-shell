@@ -22,6 +22,7 @@ mod context;
 mod conversation;
 mod destination;
 mod error;
+mod explain;
 mod genai_provider;
 mod keys;
 mod plan;
@@ -39,6 +40,11 @@ pub use conversation::{
 };
 pub use destination::{key_may_go_to, server_of};
 pub use error::{ErrorKind, ProviderError};
+pub use explain::{
+    EXPLAIN_MAX_TOKENS, LEFT_OUT, OUTPUT_HEAD_CHARS, OUTPUT_TAIL_CHARS, Output, OutputAsk,
+    answer_about_output, explain_command, explain_failure, hides_secret_in, signal_name,
+    status_text,
+};
 pub use genai_provider::{GenaiProvider, Settings, map_error};
 pub use keys::{
     CredentialsFile, KeyError, KeyStore, Keys, SecretService, Stored, parse_credentials,
@@ -49,7 +55,7 @@ pub use plan::{
 pub use prompt::{PLAN_MAX_TOKENS, PlanRequest, hides_secret, plan_request, retry_request};
 pub use provider::{
     ChatEvent, ChatRequest, EventStream, Message, Provider, Role, collect_text,
-    collect_text_counting, verify,
+    collect_text_counting, stream_text, verify,
 };
 pub use retry::{Policy, retry};
 pub use secret::Secret;
