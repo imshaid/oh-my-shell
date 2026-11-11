@@ -4,6 +4,7 @@
 //! [`Provider`] and nothing about HTTP, genai or which company is behind it.
 
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::future::BoxFuture;
 use futures::{Stream, StreamExt};
@@ -93,6 +94,22 @@ pub trait Provider: Send + Sync {
     fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>>;
 }
 
+/// A provider that is shared keeps working as one (a test keeps a handle on the fake it hands
+/// over, to look at the requests it got).
+impl<T: Provider + ?Sized> Provider for std::sync::Arc<T> {
+    fn kind(&self) -> Kind {
+        (**self).kind()
+    }
+
+    fn chat(&self, request: ChatRequest) -> EventStream {
+        (**self).chat(request)
+    }
+
+    fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>> {
+        (**self).models()
+    }
+}
+
 /// Sends the request and returns the whole answer. A transient failure is tried again
 /// according to `policy`; each try starts a new request, and nothing of a failed try is kept.
 ///
@@ -104,12 +121,32 @@ pub async fn collect_text(
     request: &ChatRequest,
     policy: &Policy,
 ) -> Result<String, ProviderError> {
+    collect_text_counting(provider, request, policy, &AtomicUsize::new(0)).await
+}
+
+/// Like [`collect_text`], and `received` always holds the number of characters of the answer
+/// that have arrived in the current try (it starts again at 0 for a new try). The caller can
+/// show it as real progress while it waits.
+///
+/// # Errors
+///
+/// The error of the last try.
+pub async fn collect_text_counting(
+    provider: &dyn Provider,
+    request: &ChatRequest,
+    policy: &Policy,
+    received: &AtomicUsize,
+) -> Result<String, ProviderError> {
     retry(policy, || async {
+        received.store(0, Ordering::Relaxed);
         let mut stream = provider.chat(request.clone());
         let mut answer = String::new();
         while let Some(event) = stream.next().await {
             match event? {
-                ChatEvent::Text(piece) => answer.push_str(&piece),
+                ChatEvent::Text(piece) => {
+                    answer.push_str(&piece);
+                    received.store(answer.chars().count(), Ordering::Relaxed);
+                }
                 ChatEvent::Done => break,
             }
         }
@@ -162,6 +199,23 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(text, "Hello there");
+    }
+
+    #[test]
+    fn the_count_follows_the_answer_and_starts_again_on_a_new_try() {
+        let fake = FakeProvider::new(Kind::Gemini)
+            .partial_then_fail(&["half an ans"], ProviderError::new(ErrorKind::Server, "x"))
+            .says(&["abc", "de"]);
+        let received = AtomicUsize::new(99);
+        let text = run(collect_text_counting(
+            &fake,
+            &ChatRequest::ask("hi", 8),
+            &fast_retries(),
+            &received,
+        ))
+        .unwrap();
+        assert_eq!(text, "abcde");
+        assert_eq!(received.load(Ordering::Relaxed), 5);
     }
 
     #[test]

@@ -19,6 +19,8 @@ mod destination;
 mod error;
 mod genai_provider;
 mod keys;
+mod plan;
+mod prompt;
 mod provider;
 mod retry;
 mod secret;
@@ -32,8 +34,13 @@ pub use genai_provider::{GenaiProvider, Settings, map_error};
 pub use keys::{
     CredentialsFile, KeyError, KeyStore, Keys, SecretService, Stored, parse_credentials,
 };
+pub use plan::{
+    Lang, MAX_COMMAND_CHARS, MAX_STEPS, ModelRisk, Plan, PlanError, Step, placeholder_in,
+};
+pub use prompt::{PLAN_MAX_TOKENS, PlanContext, PlanRequest, plan_request, retry_request};
 pub use provider::{
-    ChatEvent, ChatRequest, EventStream, Message, Provider, Role, collect_text, verify,
+    ChatEvent, ChatRequest, EventStream, Message, Provider, Role, collect_text,
+    collect_text_counting, verify,
 };
 pub use retry::{Policy, retry};
 pub use secret::Secret;

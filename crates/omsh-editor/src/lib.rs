@@ -30,7 +30,7 @@ use std::time::Duration;
 use omsh_config::{Config, EditMode as ConfigMode};
 use omsh_history::{Filter, Store};
 use omsh_ui::{Role, Theme};
-use reedline::{Emacs, Reedline, Signal, Vi};
+use reedline::{EditCommand, Emacs, Reedline, Signal, Vi};
 
 pub use highlight::{CommandLookup, ShellHighlighter};
 pub use prompt::{Look, PromptState, ShellPrompt};
@@ -173,7 +173,17 @@ impl Editor {
         self.read_with(ShellPrompt::continuation())
     }
 
+    /// Asks for a new version of `text` (the command of a plan step): the line editor opens
+    /// with `text` already in the buffer, under an `edit> ` prompt. No history is added.
+    pub fn edit(&mut self, text: &str) -> Read {
+        self.read_prefilled(ShellPrompt::labeled("edit"), Some(text.to_owned()))
+    }
+
     fn read_with(&mut self, prompt: ShellPrompt) -> Read {
+        self.read_prefilled(prompt, None)
+    }
+
+    fn read_prefilled(&mut self, prompt: ShellPrompt, initial: Option<String>) -> Read {
         let Some(mut engine) = self.engine.take() else {
             return Read::Failed(io::Error::other("the line editor is not available"));
         };
@@ -182,6 +192,9 @@ impl Editor {
             .name("line-editor".to_owned())
             .stack_size(EDITOR_STACK)
             .spawn(move || {
+                if let Some(text) = initial {
+                    engine.run_edit_commands(&[EditCommand::InsertString(text)]);
+                }
                 let answer = engine.read_line(&prompt);
                 // A line that is not stored is reported to the editor as a failed save (see
                 // `history.rs`); nobody needs to hear of it.

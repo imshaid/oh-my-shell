@@ -64,8 +64,8 @@ pub fn run_line(
     }
 }
 
-/// Runs the analyzer on a line, with the shell's working directory and home folder.
-fn review(shell: &Shell, prepared: &Prepared) -> Analysis {
+/// Runs the analyzer on a line (or one step of a plan), with the shell's working directory and home folder.
+pub(crate) fn review(shell: &Shell, prepared: &Prepared) -> Analysis {
     let paths = Paths {
         cwd: Some(working_directory(shell.var("PWD"))),
         home: shell
@@ -115,6 +115,12 @@ pub fn decide(
         .filter(|finding| finding.level == Level::Critical)
         .filter_map(|finding| finding.target.as_deref())
         .collect();
+    ask(level, &critical, terminal)
+}
+
+/// Asks the question for `level`: "Run it? [y/N]" for a dangerous line, and for a critical one
+/// that `yes` or one of the `critical` targets be typed. Anything else cancels.
+pub fn ask(level: Level, critical: &[&str], terminal: &mut dyn Terminal) -> Decision {
     let prompt = if level == Level::Critical {
         match critical.first() {
             Some(target) => format!("Type \"yes\" or \"{target}\" to run it: "),

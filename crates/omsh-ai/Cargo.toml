@@ -14,6 +14,8 @@ keyring-core.workspace = true
 # Only to switch on TLS in genai's HTTP client (see the workspace entry).
 reqwest.workspace = true
 rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 zbus-secret-service-keyring-store.workspace = true
 zeroize.workspace = true

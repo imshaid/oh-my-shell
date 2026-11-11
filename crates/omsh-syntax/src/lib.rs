@@ -13,6 +13,7 @@ mod parser;
 mod scanner;
 mod span;
 mod token;
+mod trigger;
 
 pub use diagnostic::SyntaxDiagnostic;
 pub use highlight::{HighlightKind, HighlightSpan, HighlightWord, Highlighted, lex_for_highlight};
@@ -25,3 +26,4 @@ pub use token::{
     HereDoc, LexError, LexErrorKind, Lexed, Op, ParamOp, Parameter, PartKind, ReservedWord, Token,
     TokenKind, Word, WordPart,
 };
+pub use trigger::{Trigger, trigger};

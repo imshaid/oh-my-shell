@@ -1699,6 +1699,8 @@ dependencies = [
  "omsh-config",
  "reqwest",
  "rustls",
+ "serde",
+ "serde_json",
  "tokio",
  "zbus-secret-service-keyring-store",
  "zeroize",

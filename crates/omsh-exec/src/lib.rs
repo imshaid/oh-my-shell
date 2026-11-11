@@ -37,10 +37,12 @@ mod traps;
 mod user;
 mod vars;
 
-pub use builtins::{BuiltinOutput, HistoryCommand, OmshCommand, ReadError, Terminal, is_builtin};
+pub use builtins::{
+    BuiltinOutput, HistoryCommand, Key, OmshCommand, ReadError, Terminal, is_builtin,
+};
 pub use check::NotYet;
 pub use io::{FdPlan, Io, Slot};
-pub use omsh_syntax::{Span, SyntaxDiagnostic};
+pub use omsh_syntax::{Span, SyntaxDiagnostic, Trigger, trigger};
 pub use path::{DEFAULT_PATH, Lookup, PathCache, find_program};
 pub use shell::{LineResult, Outcome, Prepared, Shell};
 pub use signals::{

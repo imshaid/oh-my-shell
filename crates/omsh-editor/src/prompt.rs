@@ -141,6 +141,19 @@ impl ShellPrompt {
         }
     }
 
+    /// A prompt that is only a label, such as `edit> `, for asking about one thing (the
+    /// command of a plan step that is being changed).
+    #[must_use]
+    pub fn labeled(label: &str) -> Self {
+        let indicator = format!("{label}> ");
+        Self {
+            left: String::new(),
+            right: String::new(),
+            vi_normal_indicator: indicator.clone(),
+            indicator,
+        }
+    }
+
     /// The prompt old lines collapse to (`[prompt] transient`): only the indicator.
     #[must_use]
     pub fn transient(&self) -> Self {
@@ -478,6 +491,13 @@ mod tests {
         assert_eq!(p.render_prompt_left(), "");
         assert_eq!(p.render_prompt_right(), "");
         assert_eq!(indicator(&p), "> ");
+    }
+
+    #[test]
+    fn a_labeled_prompt_is_the_label_and_a_greater_than() {
+        let p = ShellPrompt::labeled("edit");
+        assert_eq!(p.render_prompt_left(), "");
+        assert_eq!(indicator(&p), "edit> ");
     }
 
     #[test]

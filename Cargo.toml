@@ -85,6 +85,11 @@ keyring-core = "1.0"
 zbus-secret-service-keyring-store = { version = "1.0", features = ["crypto-rust"] }
 # Wipes a key from memory when it is dropped.
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
+# The plan the model sends back (S21, §13.4) is JSON. Both crates were in the tree already
+# (genai, reedline), so they add no crate; only `omsh-ai` uses them. `serde_json` without
+# `preserve_order`/`arbitrary_precision`: a plain parse into our own types.
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
 # Edits `config.toml` and keeps its comments (the wizard writes the `[ai]` keys).
 toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
 # Test-only. Its `colors` feature is left out: it only colors the diff shown when a

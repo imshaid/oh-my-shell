@@ -1,13 +1,18 @@
 //! Decides whether Enter runs the line or adds a new line to it.
 
-use omsh_syntax::parse;
+use omsh_syntax::{parse, trigger};
 use reedline::{ValidationResult, Validator};
 
 /// True if `text` is a command that is not finished yet: an open quote, an `if` without its
 /// `fi`, a here-document without its end word, a trailing backslash. More typed text could fix
 /// it. A line with a real mistake is *not* incomplete: it is run, and the shell reports it.
+/// A request to the AI (`? what's here`) is natural language and never waits: its open quote is
+/// not shell syntax.
 #[must_use]
 pub fn is_incomplete(text: &str) -> bool {
+    if trigger(text).is_some() {
+        return false;
+    }
     parse(text).is_err_and(|failure| failure.is_incomplete())
 }
 
@@ -71,6 +76,21 @@ mod tests {
         for line in ["fi", "echo )", "; ls", "if true; then fi done"] {
             assert!(!is_incomplete(line), "{line:?}");
         }
+    }
+
+    #[test]
+    fn a_request_to_the_ai_never_waits_for_more() {
+        for line in [
+            "? what's here",
+            "? list \"big files",
+            "?? tar 'x",
+            "? a |",
+            "? echo $(",
+        ] {
+            assert!(!is_incomplete(line), "{line:?}");
+        }
+        // Only the first word makes a trigger.
+        assert!(is_incomplete("echo ? 'x"));
     }
 
     #[test]

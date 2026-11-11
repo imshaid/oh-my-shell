@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use omsh_config::{Config, Paths};
 use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, Recall, working_directory};
 use omsh_exec::{
-    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, LineResult, OmshCommand, Outcome, Shell,
+    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, LineResult, OmshCommand, Outcome, Shell, Trigger,
     find_program, hung_up, is_builtin, is_root, note_inherited_signals, release_terminal,
-    start_interactive, terminal_gone, wait_for_input,
+    start_interactive, terminal_gone, trigger, wait_for_input,
 };
 use omsh_history::{Filter, Store};
 use omsh_ui::Theme;
@@ -132,7 +132,11 @@ fn run_on(
         shell.import_login_environment(&files);
     }
     // After the login environment, so that a profile may set `XDG_CONFIG_HOME`.
-    let (config, history) = match start_up(&mut shell, &mut files, options) {
+    let Started {
+        config,
+        history,
+        ai,
+    } = match start_up(&mut shell, &mut files, options) {
         Ok(started) => started,
         // `exit` in the startup file.
         Err(status) => return finish(&mut shell, status, &files, None),
@@ -221,13 +225,27 @@ fn run_on(
         // A typed line is looked at by the safety analyzer first (S16). Other input (`-c`
         // scripts, a pipe) is run as written: the person is not there to answer.
         let result = if interactive {
-            confirm::run_line(
-                &mut shell,
-                &pending,
-                at_end,
-                &mut files,
-                config.safety.confirm,
-            )
+            // A request to the AI is natural language, so it is recognized before aliases and
+            // the parser see the line (§4.2 step 2).
+            match (trigger(&pending), ai.as_ref()) {
+                (Some(trigger), Some(ai)) => ai_line(
+                    trigger,
+                    ai,
+                    &mut shell,
+                    &mut files,
+                    history,
+                    &config,
+                    style,
+                    &mut editor,
+                ),
+                _ => confirm::run_line(
+                    &mut shell,
+                    &pending,
+                    at_end,
+                    &mut files,
+                    config.safety.confirm,
+                ),
+            }
         } else {
             shell.run_source(&pending, at_end, &mut files)
         };
@@ -268,6 +286,66 @@ fn run_on(
     }
 }
 
+/// Handles a line that starts with `?`: a plan (`? request`) or, later, an explanation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pieces of the shell the flow needs"
+)]
+fn ai_line(
+    trigger: Trigger<'_>,
+    ai: &ai::AiSession,
+    shell: &mut Shell,
+    files: &mut Io,
+    history: Option<&History>,
+    config: &Config,
+    style: Style,
+    editor: &mut Option<Editor>,
+) -> LineResult {
+    let fail = |shell: &mut Shell, status: ExitStatus| {
+        shell.set_last_status(status);
+        LineResult::Ran(Outcome::Continue(status))
+    };
+    let request = match trigger {
+        Trigger::Plan(request) => request,
+        Trigger::Explain(_) => {
+            say("oh-my-shell: ??: explaining a command comes in a later version");
+            return fail(shell, ExitStatus::USAGE);
+        }
+    };
+    if request.is_empty() {
+        // Before anything about the AI layer: `?` alone only needs to be explained.
+        say(ai::plan::USAGE.trim_end());
+        return fail(shell, ExitStatus::USAGE);
+    }
+    let setup = match ai.plan_setup() {
+        Ok(setup) => setup,
+        Err(why) => {
+            say(&format!("oh-my-shell: ?: {why}"));
+            return fail(shell, ExitStatus(1));
+        }
+    };
+    let mut edit = |text: &str| match editor {
+        Some(editor) => match editor.edit(text) {
+            Typed::Line(text) => ai::plan::Edited::Text(text),
+            _ => ai::plan::Edited::Cancelled,
+        },
+        None => ai::plan::Edited::Unavailable,
+    };
+    ai::plan::run(
+        setup,
+        request,
+        ai::plan::PlanEnv {
+            shell,
+            files,
+            tty: &mut ai::plan::RealTerminal,
+            history,
+            confirm: config.safety.confirm,
+            unicode: matches!(style, Style::Graphical { unicode: true, .. }),
+            edit: &mut edit,
+        },
+    )
+}
+
 /// Whether to use the line editor: a terminal to read from and to draw on, a `TERM` that is
 /// set and not `dumb`, and not inside Emacs (whose shell mode cannot show escape codes; bash
 /// turns readline off there too).
@@ -279,7 +357,7 @@ fn should_edit(terminals: bool, term: Option<&[u8]>, inside_emacs: Option<&[u8]>
 
 /// The shell's working directory as history keeps it: text. A name that is not UTF-8 is
 /// stored with replacement characters.
-fn directory(shell: &Shell) -> String {
+pub(crate) fn directory(shell: &Shell) -> String {
     working_directory(shell.var("PWD"))
         .to_string_lossy()
         .into_owned()
@@ -406,6 +484,14 @@ fn read_plain(input: &mut impl Read, interactive: bool, first_line: bool) -> Nex
     }
 }
 
+/// What an interactive start-up produces.
+struct Started {
+    config: Config,
+    history: Option<History>,
+    /// The `omsh` builtin's session, which `? request` also uses.
+    ai: Option<Arc<ai::AiSession>>,
+}
+
 /// How many lines of problems with `config.toml` are shown before "... and N more".
 const MAX_CONFIG_LINES: usize = 10;
 
@@ -419,13 +505,13 @@ const MAX_CONFIG_LINES: usize = 10;
 ///
 /// `-c`, scripts and piped input never get here (they are handed to `/bin/sh` first), and
 /// neither does `--interpret-stdin`, which is not interactive.
-fn start_up(
-    shell: &mut Shell,
-    files: &mut Io,
-    options: Options,
-) -> Result<(Config, Option<History>), ExitStatus> {
+fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Started, ExitStatus> {
     if !options.interactive {
-        return Ok((Config::default(), None));
+        return Ok(Started {
+            config: Config::default(),
+            history: None,
+            ai: None,
+        });
     }
     // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
     // that the file can replace or remove the wrappers.
@@ -438,12 +524,16 @@ fn start_up(
     });
     if options.no_config {
         let config = Config::default();
-        install_omsh(shell, &config, &paths, options);
+        let ai = install_omsh(shell, &config, &paths, options);
         let history = History {
             store: Store::in_memory(),
             filter: Filter::new(&config.history.ignore),
         };
-        return Ok((config, Some(history)));
+        return Ok(Started {
+            config,
+            history: Some(history),
+            ai: Some(ai),
+        });
     }
     let loaded = omsh_config::load(&paths);
     for line in loaded.report(MAX_CONFIG_LINES) {
@@ -455,7 +545,7 @@ fn start_up(
         return Err(status);
     }
     let config = loaded.config;
-    install_omsh(shell, &config, &paths, options);
+    let ai = install_omsh(shell, &config, &paths, options);
     // After `init.omsh`: what the startup file runs is not typed by anyone and is not
     // history. The file is opened by the store's own thread, so the prompt does not wait.
     let store = match paths.data_dir() {
@@ -466,16 +556,26 @@ fn start_up(
         store,
         filter: Filter::new(&config.history.ignore),
     };
-    Ok((config, Some(history)))
+    Ok(Started {
+        config,
+        history: Some(history),
+        ai: Some(ai),
+    })
 }
 
 /// Gives the shell its `omsh` builtin (`omsh ai setup` and friends, S20). This only stores the
 /// settings: the keyring, the TLS setup and the runtime are created when a person types an
 /// `omsh ai` command, never here.
-fn install_omsh(shell: &mut Shell, config: &Config, paths: &Paths, options: Options) {
+fn install_omsh(
+    shell: &mut Shell,
+    config: &Config,
+    paths: &Paths,
+    options: Options,
+) -> Arc<ai::AiSession> {
     let env = ai::Environment::system(paths, options.no_config);
-    shell
-        .set_omsh(Arc::new(ai::AiSession::new(config, options.no_ai, env)) as Arc<dyn OmshCommand>);
+    let session = Arc::new(ai::AiSession::new(config, options.no_ai, env));
+    shell.set_omsh(Arc::clone(&session) as Arc<dyn OmshCommand>);
+    session
 }
 
 /// The name of the history database in the data directory.

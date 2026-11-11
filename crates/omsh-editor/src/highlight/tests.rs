@@ -506,3 +506,18 @@ fn a_poisoned_context_does_not_stop_highlighting() {
     .join();
     assert_eq!(s.codes_of("nosuch", "nosuch"), vec![RED]);
 }
+
+#[test]
+fn a_request_to_the_ai_is_plain_text() {
+    let s = setup();
+    // No red `?`, no yellow quote, no lookup of a command.
+    for line in ["? what's in *.txt | here", "?? nosuch 'x", "  ? list files"] {
+        let pieces = s.pieces(line);
+        assert_eq!(pieces.len(), 1, "{pieces:?}");
+        assert_eq!(pieces[0].1, Vec::<u8>::new(), "{line:?}");
+        assert_eq!(pieces[0].0, line);
+    }
+    assert_eq!(s.asked.load(Ordering::Relaxed), 0);
+    // `?x` is still a glob word and `nosuch ?` is still an unknown command.
+    assert_eq!(s.codes_of("nosuch ? x", "nosuch"), vec![RED]);
+}

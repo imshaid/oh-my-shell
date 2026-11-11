@@ -86,10 +86,12 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # contain a user name or password. A key is sent only to https:// addresses and to this
 # computer (localhost, 127.0.0.1, ::1).
 # base_url = "http://localhost:11434"
-# "auto" (the language of the request), "en" or "bn". (not used yet)
+# Language of the plan text for `? request`: "auto" (the language of the request), "en" or
+# "bn". The commands themselves stay in shell syntax.
 #language = "auto"
 
-# What may be sent along with a request. Each item can be turned off. (not used yet)
+# What may be sent along with a request. Each item can be turned off. `os` and `cwd` are used
+# now; `git` and `recent_commands` are not used yet.
 #[ai.context]
 #os = true
 #cwd = true

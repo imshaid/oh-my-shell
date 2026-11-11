@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use nu_ansi_term::{Color, Style};
-use omsh_syntax::{HighlightKind, HighlightWord, lex_for_highlight};
+use omsh_syntax::{HighlightKind, HighlightWord, lex_for_highlight, trigger};
 use omsh_ui::{AnsiColor, Role, RoleStyle, Theme};
 use reedline::{Highlighter, StyledText};
 
@@ -232,6 +232,19 @@ struct Piece {
 
 impl Highlighter for ShellHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
+        // A request to the AI is natural language: no red `?`, no quote or glob colors, and
+        // no lookup of a "command".
+        if trigger(line).is_some() {
+            return render(
+                line,
+                &[Piece {
+                    start: 0,
+                    end: line.len(),
+                    kind: HighlightKind::Argument,
+                    style: self.style(Role::Normal),
+                }],
+            );
+        }
         let lexed = lex_for_highlight(line);
         let mut pieces: Vec<Piece> = lexed
             .spans

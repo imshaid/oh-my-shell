@@ -15,6 +15,7 @@
 //! Under `--no-ai` everything but `status` and the help is refused, and none of them touches
 //! anything.
 
+pub mod plan;
 mod setup;
 #[cfg(test)]
 mod tests;
@@ -140,6 +141,31 @@ impl OmshCommand for AiSession {
                 USAGE_STATUS
             }
         }
+    }
+}
+
+impl AiSession {
+    /// Everything a `? request` needs, taken under the lock and then handed over: the lock is
+    /// not held while the plan runs, because a step may itself run `omsh ai ...`.
+    ///
+    /// # Errors
+    ///
+    /// One line saying why the AI layer cannot be used right now.
+    pub fn plan_setup(&self) -> Result<plan::PlanSetup, String> {
+        let inner = self.lock();
+        if let Some(why) = inner.unavailable() {
+            return Err(why);
+        }
+        let settings = inner.settings().ok_or("AI is not set up".to_owned())?;
+        let key = inner.stored_key(settings.kind)?;
+        let provider = (inner.env.make_provider)(&settings, key.as_ref())
+            .map_err(|error| error.one_line(settings.kind))?;
+        Ok(plan::PlanSetup {
+            provider,
+            settings,
+            language: inner.ai.language,
+            context: inner.ai.context.clone(),
+        })
     }
 }
 
