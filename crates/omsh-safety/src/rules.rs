@@ -1,8 +1,9 @@
 //! The rule table (§12.2). Each rule is data: an id, the highest level it can give, a reason in
 //! plain words, whether a trash alternative exists, and a matcher over the syntax tree.
 
+use std::borrow::Cow;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use omsh_syntax::ast::{Command, CommandKind, FunctionDef, List, Pipeline, RedirectOp};
 
@@ -30,7 +31,7 @@ pub struct Hit {
     /// The thing it acts on, as the person wrote it. A Critical confirmation asks for it.
     pub target: Option<String>,
     /// A sentence that goes after the rule's reason.
-    pub note: Option<&'static str>,
+    pub note: Option<Cow<'static, str>>,
 }
 
 impl Hit {
@@ -46,7 +47,7 @@ impl Hit {
         Self {
             level,
             target: Some(arg.src.clone()),
-            note: arg.unknown.then_some(EMPTY_VARIABLE),
+            note: arg.unknown.then_some(Cow::Borrowed(EMPTY_VARIABLE)),
         }
     }
 }
@@ -77,6 +78,9 @@ pub struct Rule {
     pub reason: &'static str,
     /// True if moving to the trash would be a gentler way to do the same (S18).
     pub trash_alternative: bool,
+    /// True if the command acts on files, so the confirmation can count what it would touch
+    /// (§12.3).
+    pub blast: bool,
     /// How to find it.
     pub matcher: Matcher,
 }
@@ -98,6 +102,7 @@ pub static RULES: &[Rule] = &[
         reason: "Deletes the system, your home folder, or everything in one of them. \
                  This cannot be undone.",
         trash_alternative: false,
+        blast: true,
         matcher: Matcher::Command(rm_critical_path),
     },
     Rule {
@@ -106,20 +111,32 @@ pub static RULES: &[Rule] = &[
         reason: "Deletes files without asking, and folders with everything in them. \
                  This cannot be undone.",
         trash_alternative: true,
+        blast: true,
         matcher: Matcher::Command(rm_recursive_or_force),
     },
     Rule {
         id: "rm-glob",
-        level: Level::Caution,
+        level: Level::Dangerous,
         reason: "Deletes every file the pattern matches. This cannot be undone.",
         trash_alternative: true,
+        blast: true,
         matcher: Matcher::Command(rm_glob),
+    },
+    Rule {
+        id: "find-delete",
+        level: Level::Dangerous,
+        reason: "Deletes every file that the tests of find match, without asking about each \
+                 one. This cannot be undone.",
+        trash_alternative: false,
+        blast: true,
+        matcher: Matcher::Command(find_delete),
     },
     Rule {
         id: "destructive-unknown-target",
         level: Level::Dangerous,
         reason: "What this acts on is only known when it runs, so it could be anything.",
         trash_alternative: false,
+        blast: true,
         matcher: Matcher::Command(destructive_unknown_target),
     },
     Rule {
@@ -127,6 +144,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Critical,
         reason: "Writes straight onto a disk or device and destroys what is on it.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(dd_to_device),
     },
     Rule {
@@ -134,6 +152,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Critical,
         reason: "Formats, wipes or overwrites a disk or a file for good.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(format_or_wipe),
     },
     Rule {
@@ -141,6 +160,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Critical,
         reason: "Writes straight onto a disk and destroys what is on it.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Redirect(write_to_disk_device),
     },
     Rule {
@@ -149,6 +169,7 @@ pub static RULES: &[Rule] = &[
         reason: "Changes the owner or the permissions of everything in a system folder, \
                  which can break the machine.",
         trash_alternative: false,
+        blast: true,
         matcher: Matcher::Command(chmod_chown_system_recursive),
     },
     Rule {
@@ -156,6 +177,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Gives everyone full access to everything under the path.",
         trash_alternative: false,
+        blast: true,
         matcher: Matcher::Command(chmod_777_recursive),
     },
     Rule {
@@ -163,6 +185,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Critical,
         reason: "A function that starts copies of itself without end. It freezes the machine.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Function(fork_bomb),
     },
     Rule {
@@ -170,6 +193,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Opens the firewall or turns it off, which exposes this machine to the network.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(firewall_open),
     },
     Rule {
@@ -177,6 +201,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Opens a port that anyone who can reach this machine can connect to.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(listen_socket),
     },
     Rule {
@@ -184,6 +209,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Creates an account with no password set up.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(account_create),
     },
     Rule {
@@ -191,6 +217,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Removes a password, so anyone can log in to that account.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(account_no_password),
     },
     Rule {
@@ -198,6 +225,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Gives an account administrator rights.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(account_admin_group),
     },
     Rule {
@@ -205,6 +233,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Runs a script straight from the network, with no chance to read it first.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Pipeline(download_to_shell),
     },
     Rule {
@@ -212,6 +241,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Runs a script straight from the network, with no chance to read it first.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(download_eval),
     },
     Rule {
@@ -219,6 +249,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Replaces the history on the remote, which can erase other people's work.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(git_force_push),
     },
     Rule {
@@ -226,6 +257,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Throws away every change that is not committed.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(git_reset_hard),
     },
     Rule {
@@ -233,6 +265,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Dangerous,
         reason: "Deletes the files that git does not track, for good.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Command(git_clean),
     },
     Rule {
@@ -240,6 +273,7 @@ pub static RULES: &[Rule] = &[
         level: Level::Caution,
         reason: "Replaces the content of a file that already has content.",
         trash_alternative: false,
+        blast: false,
         matcher: Matcher::Redirect(overwrite_file),
     },
 ];
@@ -335,6 +369,29 @@ fn rm_recursive_or_force(inv: &Invocation<'_>, env: &Env<'_>) -> Option<Hit> {
     Some(Hit::on(Level::Dangerous, options.operands[0]))
 }
 
+/// More matches than this, and a plain `rm` with a pattern is Dangerous (§12.2 "globs that
+/// expand to many items").
+pub const MANY_MATCHES: usize = 20;
+
+/// How many names the patterns among `targets` match, if every one of them can be expanded.
+fn matches_of(targets: &[&Arg<'_>], env: &Env<'_>) -> Option<usize> {
+    let mut total = 0_usize;
+    for arg in targets {
+        // With a part only known at run time the pattern is not the text we have.
+        if arg.unknown {
+            return None;
+        }
+        let base: PathBuf = if arg.text.starts_with('/') {
+            PathBuf::from("/")
+        } else {
+            PathBuf::from(env.cwd?)
+        };
+        let found = env.probe.glob(arg.text.as_bytes(), &arg.active, &base)?;
+        total = total.saturating_add(found.len());
+    }
+    Some(total)
+}
+
 fn rm_glob(inv: &Invocation<'_>, env: &Env<'_>) -> Option<Hit> {
     if inv.name != "rm" {
         return None;
@@ -343,11 +400,39 @@ fn rm_glob(inv: &Invocation<'_>, env: &Env<'_>) -> Option<Hit> {
     if forceful(&options) {
         return None;
     }
-    let target = options
+    let patterns: Vec<&Arg<'_>> = options
         .operands
         .iter()
-        .find(|arg| arg.glob && !class_of(arg, env).is_critical())?;
-    Some(Hit::on(Level::Caution, target))
+        .copied()
+        .filter(|arg| arg.glob && !class_of(arg, env).is_critical())
+        .collect();
+    let target = *patterns.first()?;
+    let mut hit = Hit::on(Level::Caution, target);
+    if let Some(count) = matches_of(&patterns, env)
+        && count > MANY_MATCHES
+    {
+        hit.level = Level::Dangerous;
+        hit.note = Some(Cow::Owned(format!("The pattern matches {count} entries.")));
+    }
+    Some(hit)
+}
+
+fn find_delete(inv: &Invocation<'_>, _env: &Env<'_>) -> Option<Hit> {
+    if inv.name != "find" {
+        return None;
+    }
+    let find = crate::find::parse(inv);
+    if !find.deletes {
+        return None;
+    }
+    Some(match find.starts.first() {
+        Some(start) => Hit::on(Level::Dangerous, start),
+        None => {
+            let mut hit = Hit::new(Level::Dangerous);
+            hit.target = Some(".".to_owned());
+            hit
+        }
+    })
 }
 
 fn destructive_unknown_target(inv: &Invocation<'_>, env: &Env<'_>) -> Option<Hit> {

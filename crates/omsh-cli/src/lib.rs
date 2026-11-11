@@ -29,6 +29,8 @@ mod ai;
 mod confirm;
 mod handoff;
 mod history;
+mod probe;
+mod radius;
 mod repl;
 mod report;
 

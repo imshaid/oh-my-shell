@@ -425,3 +425,114 @@ fn a_question_mark_alone_and_a_glob_are_not_confused() {
         Ok(())
     });
 }
+
+// -- the blast radius and the question after Enter (S17) -----------------------------------
+
+#[test]
+fn a_destructive_step_shows_its_count_and_asks_once_more_after_enter() {
+    pty_test(BIN, |ctx| {
+        let build = ctx.home().join("proj/build");
+        fs::create_dir_all(&build)?;
+        fs::write(build.join("f"), "x\n")?;
+        // The model calls the step harmless; the analyzer does not.
+        let answer = plan(&[("Remove build", "rm -rf proj/build", "low")]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure(ctx, &server)?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("? remove the build folder")?;
+        term.expect_plain("touches 1 file and 1 folder (2 B of file data)", SHORT);
+        term.expect_plain(PANEL_KEYS, SHORT);
+        term.write_bytes(ENTER)?;
+        term.expect_plain("this plan has a dangerous step", SHORT);
+        term.expect_plain("Run it? [y/N]", SHORT);
+        term.line("n")?;
+        term.expect_plain("cancelled; nothing ran", SHORT);
+        assert!(build.join("f").exists(), "Enter alone must not delete");
+
+        term.command("? remove the build folder")?;
+        term.expect_plain(PANEL_KEYS, SHORT);
+        term.write_bytes(ENTER)?;
+        term.expect_plain("Run it? [y/N]", SHORT);
+        term.line("y")?;
+        term.expect_plain("plan done (1 step)", SHORT);
+        term.prompt();
+        assert!(!build.exists());
+        Ok(())
+    });
+}
+
+#[test]
+fn a_find_delete_step_no_longer_runs_on_enter_alone() {
+    pty_test(BIN, |ctx| {
+        // Found by hand: the model's plan deleted a log file with only Enter.
+        let logs = ctx.home().join("logs");
+        fs::create_dir_all(&logs)?;
+        fs::write(logs.join("a.log"), "x\n")?;
+        fs::write(logs.join("b.txt"), "x\n")?;
+        let answer = plan(&[(
+            "Delete the logs",
+            "find logs -name '*.log' -delete",
+            "medium",
+        )]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure(ctx, &server)?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("? delete the log files")?;
+        term.expect_plain("searches 2 files and 1 folder", SHORT);
+        term.expect_plain(PANEL_KEYS, SHORT);
+        term.write_bytes(ENTER)?;
+        term.expect_plain("Run it? [y/N]", SHORT);
+        term.line("n")?;
+        term.expect_plain("cancelled; nothing ran", SHORT);
+        assert!(logs.join("a.log").exists());
+        Ok(())
+    });
+}
+
+#[test]
+fn the_models_own_dangerous_label_asks_even_when_the_analyzer_sees_nothing() {
+    pty_test(BIN, |ctx| {
+        let answer = plan(&[("Say hi", "echo hi > hi.txt", "high")]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure(ctx, &server)?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("? say hi")?;
+        term.expect_plain(PANEL_KEYS, SHORT);
+        term.write_bytes(ENTER)?;
+        term.expect_plain("Run it? [y/N]", SHORT);
+        term.line("n")?;
+        term.expect_plain("cancelled; nothing ran", SHORT);
+        assert!(!ctx.home().join("hi.txt").exists());
+        Ok(())
+    });
+}
+
+#[test]
+fn the_limits_in_config_toml_reach_the_plan_panel() {
+    pty_test(BIN, |ctx| {
+        let big = ctx.home().join("big");
+        fs::create_dir_all(&big)?;
+        for i in 0..10 {
+            fs::write(big.join(format!("f{i}")), "x\n")?;
+        }
+        let answer = plan(&[("Remove big", "rm -rf big", "low")]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure_with(ctx, &server, "[safety]\nblast_radius_max_entries = 3\n")?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("? remove the big folder")?;
+        term.expect_plain("touches at least 2 files and 1 folder", SHORT);
+        term.expect_plain(
+            "counting stopped at the limit of 3 entries; there is more",
+            SHORT,
+        );
+        term.expect_plain(PANEL_KEYS, SHORT);
+        term.write_bytes(ESCAPE)?;
+        term.expect_plain("cancelled; nothing ran", SHORT);
+        assert_eq!(fs::read_dir(&big)?.count(), 10);
+        Ok(())
+    });
+}

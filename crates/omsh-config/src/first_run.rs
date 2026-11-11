@@ -68,7 +68,9 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #confirm = "dangerous"
 # Days a file stays in the trash before it is purged. (not used yet)
 #trash_retention_days = 8
-# Limits of the walk that counts what a command would touch. (not used yet)
+# Limits of the walk that counts what a risky command would touch before you confirm it: it
+# stops at this many entries or this many milliseconds, whichever comes first, and then says
+# "at least".
 #blast_radius_max_entries = 50000
 #blast_radius_max_ms = 300
 

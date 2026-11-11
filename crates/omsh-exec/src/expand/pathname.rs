@@ -167,6 +167,24 @@ mod tests {
     }
 
     #[test]
+    fn the_public_glob_honours_which_bytes_are_unquoted() {
+        let tree = Tree::new(&["a.log", "b.log", "*.log"]);
+        // `*.log` with an unquoted star lists all three; with the star quoted, one name.
+        let all = crate::glob(b"*.log", &[true; 5], &tree.0);
+        assert_eq!(
+            all,
+            [b"*.log".to_vec(), b"a.log".to_vec(), b"b.log".to_vec()]
+        );
+        let quoted = crate::glob(b"*.log", &[false, true, true, true, true], &tree.0);
+        assert!(quoted.is_empty(), "a quoted star is no pattern: {quoted:?}");
+        // Relative patterns are looked up from `base`, and come back relative.
+        assert_eq!(
+            crate::glob(b"a.*", &[true; 3], &tree.0),
+            [b"a.log".to_vec()]
+        );
+    }
+
+    #[test]
     fn a_star_matches_names_and_the_result_is_sorted() {
         let tree = Tree::new(&["b.rs", "a.rs", "c.txt"]);
         assert_eq!(tree.glob("*.rs"), ["a.rs", "b.rs"]);

@@ -2,7 +2,7 @@
 //! the level it must give, and lines it must leave alone. A meta-test fails if a rule has no
 //! case of either kind.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use omsh_syntax::{parse, parse_tolerant};
 use proptest::prelude::*;
@@ -20,6 +20,19 @@ struct FakeProbe;
 impl Probe for FakeProbe {
     fn is_nonempty_file(&self, path: &Path) -> bool {
         ["/home/me/work/notes.txt", "/etc/hosts"].contains(&path.to_str().unwrap_or(""))
+    }
+
+    /// Patterns ending in `.few` match 20 names, `.many` 21 (the limit is more than 20);
+    /// anything else cannot be expanded.
+    fn glob(&self, pattern: &[u8], _active: &[bool], _base: &Path) -> Option<Vec<PathBuf>> {
+        let count = if pattern.ends_with(b".few") {
+            20
+        } else if pattern.ends_with(b".many") {
+            21
+        } else {
+            return None;
+        };
+        Some((0..count).map(|i| PathBuf::from(format!("f{i}"))).collect())
     }
 }
 
@@ -123,14 +136,50 @@ const CASES: &[Case] = &[
             ("rm file?.txt", Caution),
             ("rm [ab].c", Caution),
             ("sudo rm *.o", Dangerous),
+            ("rm *.few", Caution),
+            ("rm *.many", Dangerous),
+            ("rm ./*.many", Dangerous),
+            ("rm a*.few", Caution),
+            ("rm *.few *.few", Dangerous),
+            ("rm /var/tmp/*.many", Dangerous),
+            ("cd /tmp && rm *.many", Dangerous),
         ],
         negatives: &[
-            "rm '*.tmp'",
+            "rm '*.many'",
+            "rm \"*.many\"",
+            "rm a.many",
             "rm \"*.tmp\"",
             "rm a.tmp",
             "rm -f *.tmp",
             "ls *.tmp",
             "rm /*",
+        ],
+    },
+    Case {
+        id: "find-delete",
+        positives: &[
+            ("find . -name '*.log' -delete", Dangerous),
+            ("find /tmp -type f -delete", Dangerous),
+            ("find -delete", Dangerous),
+            ("find . -exec rm {} \\;", Dangerous),
+            ("find . -name x -exec rm -f {} +", Dangerous),
+            ("find . -execdir /bin/rm {} \\;", Dangerous),
+            ("find . -ok rmdir {} \\;", Dangerous),
+            ("find . -exec shred {} \\;", Dangerous),
+            ("find -L . -delete", Dangerous),
+            ("find . -maxdepth 1 -mtime +30 -delete", Dangerous),
+            ("sudo find . -delete", Critical),
+        ],
+        negatives: &[
+            "find . -name '*.log'",
+            "find . -name -delete",
+            "find . -exec echo {} \\;",
+            "find . -exec echo -delete {} \\;",
+            "find . -exec grep rm {} +",
+            "find . -type f -print",
+            "echo find . -delete",
+            "ls -delete",
+            "find --help",
         ],
     },
     Case {

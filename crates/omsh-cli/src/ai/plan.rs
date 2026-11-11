@@ -36,11 +36,13 @@ use omsh_ai::{
 use omsh_config::{AiContext, AiLanguage, ConfirmLevel};
 use omsh_editor::Head;
 use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, Terminal};
-use omsh_safety::{Analysis, Level};
+use omsh_safety::blast::Radius;
+use omsh_safety::{Analysis, Finding, Level};
 
 use super::recent::Recent;
-use crate::confirm::{self, Decision};
+use crate::confirm::{self, Decision, StartDir};
 use crate::history::History;
+use crate::radius::{self, BlastLimits};
 
 /// How many lines of a command, and of an explanation, the panel shows, and how wide.
 const SHOWN_LINES: usize = 5;
@@ -104,6 +106,8 @@ pub struct PlanEnv<'a> {
     /// steps that run.
     pub recent: &'a mut Recent,
     pub confirm: ConfirmLevel,
+    /// The limits of the blast-radius count (§12.3).
+    pub blast: BlastLimits,
     /// Draw ✓ and ✗ (otherwise `ok` and `failed`).
     pub unicode: bool,
     /// Changes the text of a command in the line editor.
@@ -173,6 +177,9 @@ struct Reviewed {
     /// The same after aliases are replaced: what would run.
     text: String,
     analysis: Analysis,
+    /// What the findings of the analysis would touch: one entry per finding, counted when the
+    /// plan is shown. Empty until then.
+    radii: Vec<Option<Radius>>,
     edited: bool,
 }
 
@@ -206,15 +213,28 @@ impl Reviewed {
 }
 
 /// Prepares and analyzes `command` on a copy of the shell, so that nothing about the real one
-/// (its status, its source text) changes. `Err` is a short reason why it cannot run here.
-fn review(shell: &Shell, command: &str) -> Result<(String, Analysis), String> {
+/// (its status, its source text) changes. `start` is where the command starts: for a step of a
+/// plan, where the step before it ended. `Err` is a short reason why it cannot run here.
+fn review(shell: &Shell, command: &str, start: &StartDir) -> Result<(String, Analysis), String> {
     let mut scratch = shell.clone();
     match scratch.prepare(command, true) {
         Ok(prepared) => {
-            let analysis = confirm::review(&scratch, &prepared);
+            let analysis = confirm::review_at(&scratch, &prepared, start);
             Ok((prepared.text().to_owned(), analysis))
         }
         Err(result) => Err(message_of(&result)),
+    }
+}
+
+/// Where step `index` starts: the shell's directory for the first, else where the one before
+/// it ended (as far as the analysis could follow its `cd`s).
+fn start_of(steps: &[Reviewed], index: usize) -> StartDir {
+    match index.checked_sub(1).map(|before| &steps[before].analysis) {
+        None => StartDir::Shell,
+        Some(analysis) => analysis
+            .cwd_after
+            .as_ref()
+            .map_or(StartDir::Unknown, |dir| StartDir::At(dir.into())),
     }
 }
 
@@ -226,11 +246,13 @@ fn message_of(result: &LineResult) -> String {
     }
 }
 
-/// Every step of a plan must parse in this shell.
+/// Every step of a plan must parse in this shell. Each is analyzed from where the step before
+/// it ended, so `cd /` followed by `rm -rf *` is seen for what it is.
 fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
-    let mut out = Vec::new();
+    let mut out: Vec<Reviewed> = Vec::new();
     for (index, step) in plan.steps.iter().enumerate() {
-        let (text, analysis) = review(shell, &step.command).map_err(|why| {
+        let start = start_of(&out, index);
+        let (text, analysis) = review(shell, &step.command, &start).map_err(|why| {
             PlanError::new(format!(
                 "the command of step {} cannot be used here ({why}); use only the supported \
                  POSIX sh syntax",
@@ -245,10 +267,37 @@ fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
             command: step.command.clone(),
             text,
             analysis,
+            radii: Vec::new(),
             edited: false,
         });
     }
     Ok(out)
+}
+
+/// Counts what the findings of `step` that the person is asked about would touch. Dangerous
+/// findings always get a count (the panel is the question for them); a lower level only when
+/// `[safety] confirm` is lower.
+fn count_step(step: &mut Reviewed, confirm: ConfirmLevel, blast: BlastLimits) {
+    let from = confirm::threshold(confirm).min(Level::Dangerous);
+    let shown: Vec<&Finding> = step
+        .analysis
+        .findings
+        .iter()
+        .filter(|finding| finding.level >= from)
+        .collect();
+    let mut counted = radius::measure(&shown, blast).into_iter();
+    step.radii = step
+        .analysis
+        .findings
+        .iter()
+        .map(|finding| {
+            if finding.level >= from {
+                counted.next().flatten()
+            } else {
+                None
+            }
+        })
+        .collect();
 }
 
 struct Checked {
@@ -395,7 +444,7 @@ fn block(out: &mut String, first: &str, indent: &str, text: &str) {
     }
 }
 
-fn panel(summary: &str, settings: &Settings, steps: &[Reviewed]) -> String {
+fn panel(summary: &str, settings: &Settings, steps: &[Reviewed], blast: BlastLimits) -> String {
     let mut out = format!(
         "oh-my-shell: plan from {} ({}):\n  {}\n",
         settings.kind.label(),
@@ -430,7 +479,8 @@ fn panel(summary: &str, settings: &Settings, steps: &[Reviewed]) -> String {
                  to run it\n",
             );
         }
-        for finding in &step.analysis.findings {
+        let mut counted = false;
+        for (at, finding) in step.analysis.findings.iter().enumerate() {
             out.push_str("     - ");
             out.push_str(&finding.reason);
             out.push('\n');
@@ -439,6 +489,18 @@ fn panel(summary: &str, settings: &Settings, steps: &[Reviewed]) -> String {
                 out.push_str(&shorten(target));
                 out.push('\n');
             }
+            if let Some(Some(found)) = step.radii.get(at) {
+                counted = true;
+                let cwd = finding.files.as_ref().and_then(|f| f.cwd.as_deref());
+                for line in radius::lines(found, cwd, blast) {
+                    out.push_str("       ");
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+            }
+        }
+        if counted && index > 0 {
+            out.push_str("       (counted now, before the steps above have run)\n");
         }
     }
     out.push('\n');
@@ -611,9 +673,12 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         }
     };
 
-    // -- show it and wait for a key
+    // -- count what the destructive steps would touch, then show it and wait for a key
+    for step in &mut steps {
+        count_step(step, env.confirm, env.blast);
+    }
     loop {
-        let text = panel(&summary, &setup.settings, &steps);
+        let text = panel(&summary, &setup.settings, &steps, env.blast);
         let choice = {
             let mut terminal = env.tty.open(env.shell, env.files);
             terminal.err(&text);
@@ -638,6 +703,11 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         .flat_map(|step| step.analysis.at_least(Level::Critical))
         .filter_map(|finding| finding.target.clone())
         .collect();
+    let top = steps
+        .iter()
+        .map(|step| step.rating().level)
+        .max()
+        .unwrap_or(Level::Safe);
     if steps
         .iter()
         .any(|step| step.analysis.level() == Level::Critical)
@@ -647,6 +717,20 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
             let mut terminal = env.tty.open(env.shell, env.files);
             terminal.err("oh-my-shell: this plan has a critical step\n");
             confirm::ask(Level::Critical, &targets, &mut *terminal)
+        };
+        if let Decision::Cancel(code) = decision {
+            return finish(env.shell, code);
+        }
+    } else if top >= confirm::threshold(env.confirm) {
+        // Enter on the panel showed the plan; a step at the level that asks for a typed line
+        // asks once more here, with the counts above, as `[safety] confirm` says.
+        let decision = {
+            let mut terminal = env.tty.open(env.shell, env.files);
+            terminal.err(&format!(
+                "oh-my-shell: this plan has a {} step\n",
+                top.name()
+            ));
+            confirm::ask(top, &[], &mut *terminal)
         };
         if let Decision::Cancel(code) = decision {
             return finish(env.shell, code);
@@ -676,18 +760,35 @@ fn edit_step(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], index: usize) {
     if new.is_empty() || new == current.trim() {
         return;
     }
-    match review(env.shell, new) {
+    let start = start_of(steps, index);
+    match review(env.shell, new, &start) {
         Ok((text, analysis)) => {
             let step = &mut steps[index];
             step.command = new.to_owned();
             step.text = text;
             step.analysis = analysis;
             step.edited = true;
+            count_step(step, env.confirm, env.blast);
+            // The edit may have changed where the steps after it start.
+            rechain(env, steps, index + 1);
         }
         Err(why) => say(
             env,
             &format!("oh-my-shell: the command was not changed: {why}\n"),
         ),
+    }
+}
+
+/// Analyzes the steps from `from` on again, each from where the one before it ends.
+fn rechain(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], from: usize) {
+    for index in from..steps.len() {
+        let start = start_of(steps, index);
+        let command = steps[index].command.clone();
+        if let Ok((text, analysis)) = review(env.shell, &command, &start) {
+            steps[index].text = text;
+            steps[index].analysis = analysis;
+        }
+        count_step(&mut steps[index], env.confirm, env.blast);
     }
 }
 
@@ -721,7 +822,13 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             let decision = {
                 let mut terminal = env.tty.open(env.shell, env.files);
                 terminal.err("oh-my-shell: this step is riskier than the plan showed\n");
-                confirm::decide(&fresh, prepared.text(), env.confirm, &mut *terminal)
+                confirm::decide(
+                    &fresh,
+                    prepared.text(),
+                    env.confirm,
+                    Some(env.blast),
+                    &mut *terminal,
+                )
             };
             if let Decision::Cancel(code) = decision {
                 omsh_exec::clear_interrupt();

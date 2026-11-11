@@ -41,6 +41,7 @@ pub use builtins::{
     BuiltinOutput, HistoryCommand, Key, OmshCommand, ReadError, Terminal, is_builtin,
 };
 pub use check::NotYet;
+pub use expand::glob;
 pub use io::{FdPlan, Io, Slot};
 pub use omsh_syntax::{Span, SyntaxDiagnostic, Trigger, trigger};
 pub use path::{DEFAULT_PATH, Lookup, PathCache, find_program};
@@ -51,5 +52,5 @@ pub use signals::{
 pub use spawn::{ChildGroup, ExecRequest, SpawnFailure, start, wait};
 pub use status::{ExitStatus, Termination};
 pub use terminal::{release_terminal, start_interactive, terminal_gone, wait_for_input};
-pub use user::is_root;
+pub use user::{effective_uid, is_root};
 pub use vars::{ReadOnly, Variables};

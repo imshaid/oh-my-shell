@@ -252,3 +252,139 @@ fn run_piped(home: &Path, script: &str) -> io::Result<String> {
         String::from_utf8_lossy(&output.stderr)
     ))
 }
+
+// -- the blast radius (S17) ----------------------------------------------------------------
+
+/// Makes `count` files named `name0.ext`, `name1.ext`... in `dir`.
+fn many_files(dir: &Path, stem: &str, ext: &str, count: usize) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    for i in 0..count {
+        fs::write(dir.join(format!("{stem}{i}.{ext}")), "x\n")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn the_question_shows_what_the_line_would_touch() {
+    pty_test(BIN, |ctx| {
+        let mut term = shell_with_build(ctx)?;
+        term.command("rm -rf proj/build")?;
+        term.expect_plain("this command is dangerous:", SHORT);
+        // One folder and one file of two bytes, all inside the working directory.
+        term.expect_plain("touches 1 file and 1 folder (2 B of file data)", SHORT);
+        term.expect_plain(
+            "none outside the current folder; none owned by someone else",
+            SHORT,
+        );
+        term.expect_plain("for example: proj/build, proj/build/f", SHORT);
+        term.expect_plain(DANGEROUS_QUESTION, SHORT);
+        term.line("n")?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        // Looking at the files did not change them.
+        assert!(ctx.home().join("proj/build/f").exists());
+        term.quit()
+    });
+}
+
+#[test]
+fn something_outside_the_working_directory_is_counted_as_outside() {
+    pty_test(BIN, |ctx| {
+        let mut term = shell_with_build(ctx)?;
+        term.command("cd proj && rm -rf ../proj/build")?;
+        term.expect_plain("touches 1 file and 1 folder", SHORT);
+        term.expect_plain("none outside the current folder", SHORT);
+        term.line("n")?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        term.command("rm -rf proj")?;
+        term.expect_plain("touches 1 file and 2 folders", SHORT);
+        term.line("n")?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        // From inside `proj`, the same folder is "." and `..` leaves it.
+        term.command("cd proj")?;
+        term.command("rm -rf ..")?;
+        term.expect_plain("this command is critical:", SHORT);
+        term.expect_plain("outside the current folder", SHORT);
+        term.line("n")?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        assert!(ctx.home().join("proj/build/f").exists());
+        term.quit()
+    });
+}
+
+#[test]
+fn a_pattern_with_many_matches_asks_and_a_small_one_only_notes() {
+    pty_test(BIN, |ctx| {
+        let many = ctx.home().join("many");
+        many_files(&many, "f", "tmp", 21)?;
+        let mut term = ctx.launch().cwd(&many).start()?;
+        term.command("rm *.tmp")?;
+        term.expect_plain("The pattern matches 21 entries.", SHORT);
+        term.expect_plain("touches 21 files", SHORT);
+        term.expect_plain(DANGEROUS_QUESTION, SHORT);
+        term.line("n")?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        assert_eq!(fs::read_dir(&many)?.count(), 21);
+        term.quit()?;
+
+        let few = ctx.home().join("few");
+        many_files(&few, "f", "tmp", 20)?;
+        let mut term = ctx.launch().cwd(&few).start()?;
+        term.command("rm *.tmp")?;
+        term.expect_plain("oh-my-shell: caution: ", SHORT);
+        status_is(&mut term, 0)?;
+        assert_eq!(fs::read_dir(&few)?.count(), 0);
+        assert!(!term.transcript().contains(DANGEROUS_QUESTION));
+        term.quit()
+    });
+}
+
+#[test]
+fn find_delete_asks_and_says_what_it_searches_not_what_it_deletes() {
+    pty_test(BIN, |ctx| {
+        let tree = ctx.home().join("logs");
+        fs::create_dir_all(tree.join("sub"))?;
+        fs::write(tree.join("a.log"), "x\n")?;
+        fs::write(tree.join("sub/b.log"), "x\n")?;
+        fs::write(tree.join("sub/keep.txt"), "x\n")?;
+        let mut term = ctx.launch().cwd(&tree).start()?;
+        term.command("find . -name '*.log' -delete")?;
+        term.expect_plain("this command is dangerous:", SHORT);
+        term.expect_plain(
+            "searches 3 files and 2 folders (6 B of file data); it deletes only the ones its tests match",
+            SHORT,
+        );
+        term.expect_plain(DANGEROUS_QUESTION, SHORT);
+        term.line("n")?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        assert!(tree.join("a.log").exists());
+        term.command("find . -name '*.log' -delete")?;
+        term.expect_plain(DANGEROUS_QUESTION, SHORT);
+        term.line("y")?;
+        status_is(&mut term, 0)?;
+        assert!(!tree.join("a.log").exists() && !tree.join("sub/b.log").exists());
+        assert!(tree.join("sub/keep.txt").exists());
+        term.quit()
+    });
+}
+
+#[test]
+fn the_limits_in_config_toml_decide_where_counting_stops() {
+    pty_test(BIN, |ctx| {
+        fs::write(
+            config_dir(ctx)?.join("config.toml"),
+            "[safety]\nblast_radius_max_entries = 3\n",
+        )?;
+        let mut term = ctx.launch().cwd(ctx.home()).start()?;
+        many_files(&ctx.home().join("big"), "f", "dat", 10)?;
+        term.command("rm -rf big")?;
+        term.expect_plain("touches at least 2 files and 1 folder", SHORT);
+        term.expect_plain(
+            "counting stopped at the limit of 3 entries; there is more",
+            SHORT,
+        );
+        term.line("n")?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        assert_eq!(fs::read_dir(ctx.home().join("big"))?.count(), 10);
+        term.quit()
+    });
+}

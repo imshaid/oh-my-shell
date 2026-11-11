@@ -5,6 +5,7 @@ use omsh_syntax::ast::{
 };
 use omsh_syntax::{Span, parse_tolerant};
 
+use crate::blast::{FileTargets, targets_of};
 use crate::command::{Invocation, invocation};
 use crate::context::Context;
 use crate::level::Level;
@@ -29,6 +30,9 @@ pub struct Finding {
     /// The command, in the text that was analyzed. For a command found inside an `eval` or
     /// `sh -c` string it is the span of the `eval` or `sh` command.
     pub span: Span,
+    /// What the command acts on, for a rule that works on files (§12.3). The blast radius is
+    /// counted from this when the confirmation is shown.
+    pub files: Option<FileTargets>,
 }
 
 /// Everything found in one line.
@@ -36,6 +40,9 @@ pub struct Finding {
 pub struct Analysis {
     /// The findings, in the order the commands appear.
     pub findings: Vec<Finding>,
+    /// The working directory after the line, as far as the walk followed `cd`. `None` if it
+    /// is not known. A plan's next step starts here.
+    pub cwd_after: Option<String>,
 }
 
 impl Analysis {
@@ -71,6 +78,7 @@ pub fn analyze(list: &List, src: &str, ctx: &Context<'_>) -> Analysis {
     walker.list(list, &Frame { src, outer: None });
     Analysis {
         findings: walker.findings,
+        cwd_after: walker.cwd,
     }
 }
 
@@ -126,7 +134,7 @@ impl Walker<'_, '_> {
                 .max()
                 .unwrap_or(0);
             for (rule, hit) in hits {
-                self.record(rule, hit, sudo, pipeline.span, frame);
+                self.record(rule, hit, sudo, pipeline.span, frame, None);
             }
         }
     }
@@ -188,7 +196,7 @@ impl Walker<'_, '_> {
                     })
                     .collect();
                 for (rule, hit) in hits {
-                    self.record(rule, hit, 0, command.span, frame);
+                    self.record(rule, hit, 0, command.span, frame, None);
                 }
                 // The body runs later, wherever the shell is then: a `cd` in it does not
                 // count for the line.
@@ -226,7 +234,7 @@ impl Walker<'_, '_> {
                         .collect()
                 };
                 for (rule, hit) in hits {
-                    self.record(rule, hit, 0, command, frame);
+                    self.record(rule, hit, 0, command, frame, None);
                 }
             }
             RedirectKind::HereDoc(doc) => {
@@ -279,7 +287,7 @@ impl Walker<'_, '_> {
                 .collect()
         };
         for (rule, hit) in hits {
-            self.record(rule, hit, inv.sudo, span, frame);
+            self.record(rule, hit, inv.sudo, span, frame, Some(&inv));
         }
         self.effects(&inv, span, frame);
         Some(inv)
@@ -358,7 +366,15 @@ impl Walker<'_, '_> {
         }
     }
 
-    fn record(&mut self, rule: &'static Rule, hit: Hit, sudo: u8, span: Span, frame: &Frame<'_>) {
+    fn record(
+        &mut self,
+        rule: &'static Rule,
+        hit: Hit,
+        sudo: u8,
+        span: Span,
+        frame: &Frame<'_>,
+        inv: Option<&Invocation<'_>>,
+    ) {
         debug_assert!(
             hit.level <= rule.level,
             "rule {} gave {:?}, above its own level {:?}",
@@ -368,7 +384,7 @@ impl Walker<'_, '_> {
         );
         let mut level = hit.level.min(rule.level);
         let mut reason = rule.reason.to_owned();
-        if let Some(note) = hit.note {
+        if let Some(note) = &hit.note {
             reason.push(' ');
             reason.push_str(note);
         }
@@ -381,12 +397,16 @@ impl Walker<'_, '_> {
             std::ptr::eq(finding.rule, rule) && finding.span == span && finding.target == hit.target
         });
         if !known {
+            let files = inv
+                .filter(|_| rule.blast)
+                .and_then(|inv| targets_of(inv, self.cwd.as_deref(), self.home.as_deref()));
             self.findings.push(Finding {
                 rule,
                 level,
                 reason,
                 target: hit.target,
                 span,
+                files,
             });
         }
     }

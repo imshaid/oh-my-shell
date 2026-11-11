@@ -15,7 +15,11 @@ use omsh_editor::working_directory;
 use omsh_exec::{
     ExitStatus, Io, LineResult, Outcome, Prepared, ReadError, Shell, Terminal, clear_interrupt,
 };
-use omsh_safety::{Analysis, Finding, FsProbe, Level, Paths, analyze};
+use omsh_safety::blast::Radius;
+use omsh_safety::{Analysis, Finding, Level, Paths, analyze};
+
+use crate::probe::ShellProbe;
+use crate::radius::{self, BlastLimits};
 
 /// What to do with the line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +47,7 @@ pub fn run_line(
     at_end: bool,
     files: &mut Io,
     confirm: ConfirmLevel,
+    blast: BlastLimits,
 ) -> LineResult {
     let prepared = match shell.prepare(text, at_end) {
         Ok(prepared) => prepared,
@@ -51,7 +56,13 @@ pub fn run_line(
     let analysis = review(shell, &prepared);
     let decision = {
         let mut terminal = shell.terminal(files);
-        decide(&analysis, prepared.text(), confirm, &mut terminal)
+        decide(
+            &analysis,
+            prepared.text(),
+            confirm,
+            Some(blast),
+            &mut terminal,
+        )
     };
     match decision {
         Decision::Run => shell.run_prepared(prepared, files),
@@ -66,18 +77,44 @@ pub fn run_line(
 
 /// Runs the analyzer on a line (or one step of a plan), with the shell's working directory and home folder.
 pub(crate) fn review(shell: &Shell, prepared: &Prepared) -> Analysis {
+    review_at(shell, prepared, &StartDir::Shell)
+}
+
+/// Where a line starts, for the analysis.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StartDir {
+    /// The shell's working directory now.
+    Shell,
+    /// A directory an earlier step of a plan moved to.
+    At(PathBuf),
+    /// Not known: an earlier step moved somewhere that depends on how it runs. Relative paths
+    /// are then not judged, as for any line whose directory is not known.
+    Unknown,
+}
+
+/// Like [`review`], but the line starts where `start` says: a plan's next step starts where the
+/// one before it left off.
+pub(crate) fn review_at(shell: &Shell, prepared: &Prepared, start: &StartDir) -> Analysis {
     let paths = Paths {
-        cwd: Some(working_directory(shell.var("PWD"))),
+        cwd: match start {
+            StartDir::Shell => Some(working_directory(shell.var("PWD"))),
+            StartDir::At(dir) => Some(dir.clone()),
+            StartDir::Unknown => None,
+        },
         home: shell
             .var("HOME")
             .filter(|home| home.starts_with(b"/"))
             .map(|home| PathBuf::from(OsStr::from_bytes(home))),
     };
-    analyze(prepared.list(), prepared.text(), &paths.context(&FsProbe))
+    analyze(
+        prepared.list(),
+        prepared.text(),
+        &paths.context(&ShellProbe),
+    )
 }
 
 /// The lowest level that asks, from the setting.
-const fn threshold(confirm: ConfirmLevel) -> Level {
+pub(crate) const fn threshold(confirm: ConfirmLevel) -> Level {
     match confirm {
         ConfirmLevel::Caution => Level::Caution,
         ConfirmLevel::Dangerous => Level::Dangerous,
@@ -85,11 +122,13 @@ const fn threshold(confirm: ConfirmLevel) -> Level {
     }
 }
 
-/// Says what is wrong with the line and asks, if the analysis calls for it.
+/// Says what is wrong with the line and asks, if the analysis calls for it. With `blast`, the
+/// panel counts what the file commands in it would touch (§12.3); without, it does not (tests).
 pub fn decide(
     analysis: &Analysis,
     text: &str,
     confirm: ConfirmLevel,
+    blast: Option<BlastLimits>,
     terminal: &mut dyn Terminal,
 ) -> Decision {
     let level = analysis.level();
@@ -109,7 +148,17 @@ pub fn decide(
         return Decision::Run;
     }
     let asking: Vec<&Finding> = analysis.at_least(asks_from).collect();
-    terminal.err(&panel(level, text, &asking));
+    let radii = match blast {
+        Some(limits) => radius::measure(&asking, limits),
+        None => vec![None; asking.len()],
+    };
+    terminal.err(&panel(
+        level,
+        text,
+        &asking,
+        &radii,
+        blast.unwrap_or_default(),
+    ));
     let critical: Vec<&str> = asking
         .iter()
         .filter(|finding| finding.level == Level::Critical)
@@ -163,7 +212,13 @@ pub fn ask(level: Level, critical: &[&str], terminal: &mut dyn Terminal) -> Deci
 }
 
 /// The text above the question: the level, the command, and one line for each reason.
-fn panel(level: Level, text: &str, findings: &[&Finding]) -> String {
+fn panel(
+    level: Level,
+    text: &str,
+    findings: &[&Finding],
+    radii: &[Option<Radius>],
+    blast: BlastLimits,
+) -> String {
     let mut out = format!("oh-my-shell: this command is {}:\n", level.name());
     let mut lines = text.trim_end().lines();
     for line in lines.by_ref().take(SHOWN_LINES) {
@@ -174,7 +229,7 @@ fn panel(level: Level, text: &str, findings: &[&Finding]) -> String {
     if lines.next().is_some() {
         out.push_str("  ...\n");
     }
-    for finding in findings {
+    for (index, finding) in findings.iter().enumerate() {
         out.push_str("  - ");
         out.push_str(&finding.reason);
         out.push('\n');
@@ -182,6 +237,17 @@ fn panel(level: Level, text: &str, findings: &[&Finding]) -> String {
             out.push_str("    on: ");
             out.push_str(&shorten(target));
             out.push('\n');
+        }
+        if let Some(Some(found)) = radii.get(index) {
+            let cwd = finding
+                .files
+                .as_ref()
+                .and_then(|files| files.cwd.as_deref());
+            for line in radius::lines(found, cwd, blast) {
+                out.push_str("    ");
+                out.push_str(&line);
+                out.push('\n');
+            }
         }
     }
     out
@@ -203,10 +269,12 @@ mod tests {
 
     use omsh_config::ConfirmLevel;
     use omsh_exec::{ReadError, Shell, Terminal};
-    use omsh_safety::{Context, FsProbe, analyze};
-    use std::path::Path;
+    use omsh_safety::{Context, analyze};
+    use std::path::{Path, PathBuf};
 
     use super::{Decision, decide, shorten};
+    use crate::probe::ShellProbe;
+    use crate::radius::BlastLimits;
 
     /// A terminal that gives scripted answers and keeps what was printed.
     struct Scripted {
@@ -259,17 +327,60 @@ mod tests {
         confirm: ConfirmLevel,
         answers: &[Result<&'static str, ReadError>],
     ) -> (Decision, Scripted) {
+        ask_in("/home/me/work", None, text, confirm, answers)
+    }
+
+    /// Like `ask`, from `cwd`, and counting what the line touches when `blast` is given.
+    fn ask_in(
+        cwd: &str,
+        blast: Option<BlastLimits>,
+        text: &str,
+        confirm: ConfirmLevel,
+        answers: &[Result<&'static str, ReadError>],
+    ) -> (Decision, Scripted) {
         let mut shell = Shell::new();
         let prepared = shell.prepare(text, true).expect("the line parses");
         let ctx = Context {
-            cwd: Some(Path::new("/home/me/work")),
+            cwd: Some(Path::new(cwd)),
             home: Some(Path::new("/home/me")),
-            probe: &FsProbe,
+            probe: &ShellProbe,
         };
         let analysis = analyze(prepared.list(), prepared.text(), &ctx);
         let mut terminal = Scripted::new(answers);
-        let decision = decide(&analysis, prepared.text(), confirm, &mut terminal);
+        let decision = decide(&analysis, prepared.text(), confirm, blast, &mut terminal);
         (decision, terminal)
+    }
+
+    /// A folder in the temporary directory, removed at the end.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("omsh-confirm-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn files(&self, names: impl IntoIterator<Item = String>) {
+            for name in names {
+                let path = self.0.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, "12345").unwrap();
+            }
+        }
+
+        fn path(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     const D: ConfirmLevel = ConfirmLevel::Dangerous;
@@ -398,5 +509,197 @@ mod tests {
         let cut = shorten(&text);
         assert_eq!(cut.chars().count(), 163);
         assert_eq!(shorten("short"), "short");
+    }
+
+    #[test]
+    fn the_panel_counts_what_the_command_would_touch() {
+        let dir = Scratch::new();
+        dir.files([
+            "build/a.o".to_owned(),
+            "build/lib/b.o".to_owned(),
+            "build/c.o".to_owned(),
+        ]);
+        let (decision, terminal) = ask_in(
+            dir.path(),
+            Some(BlastLimits::default()),
+            "rm -rf build",
+            D,
+            &[Ok("n")],
+        );
+        assert_eq!(decision, Decision::Cancel(1));
+        assert!(
+            terminal
+                .err
+                .contains("    touches 3 files and 2 folders (15 B of file data)\n"),
+            "{}",
+            terminal.err
+        );
+        assert!(
+            terminal
+                .err
+                .contains("none outside the current folder; none owned by someone else")
+        );
+        assert!(
+            terminal.err.contains("for example: build, "),
+            "{}",
+            terminal.err
+        );
+        // The counting reads the disk and changes nothing.
+        assert!(dir.0.join("build/lib/b.o").exists());
+    }
+
+    #[test]
+    fn without_limits_nothing_is_counted() {
+        let dir = Scratch::new();
+        dir.files(["build/a.o".to_owned()]);
+        let (_, terminal) = ask_in(dir.path(), None, "rm -rf build", D, &[Ok("n")]);
+        assert!(!terminal.err.contains("touches"), "{}", terminal.err);
+    }
+
+    #[test]
+    fn a_note_below_the_asking_level_counts_nothing() {
+        let dir = Scratch::new();
+        dir.files(["build/a.o".to_owned()]);
+        // `rm -rf build` is Dangerous; with `confirm = critical` it only gets a note.
+        let (decision, terminal) = ask_in(
+            dir.path(),
+            Some(BlastLimits::default()),
+            "rm -rf build",
+            ConfirmLevel::Critical,
+            &[],
+        );
+        assert_eq!(decision, Decision::Run);
+        assert!(terminal.err.starts_with("oh-my-shell: dangerous: "));
+        assert!(!terminal.err.contains("touches"));
+    }
+
+    #[test]
+    fn a_pattern_over_twenty_matches_asks_and_says_how_many() {
+        let dir = Scratch::new();
+        dir.files((0..21).map(|i| format!("f{i}.tmp")));
+        let (decision, terminal) = ask_in(
+            dir.path(),
+            Some(BlastLimits::default()),
+            "rm *.tmp",
+            D,
+            &[Ok("n")],
+        );
+        assert_eq!(decision, Decision::Cancel(1));
+        assert!(
+            terminal.err.contains("The pattern matches 21 entries."),
+            "{}",
+            terminal.err
+        );
+        assert!(
+            terminal.err.contains("touches 21 files"),
+            "{}",
+            terminal.err
+        );
+        assert_eq!(terminal.prompts, ["Run it? [y/N] "]);
+        assert!(dir.0.join("f0.tmp").exists());
+    }
+
+    #[test]
+    fn a_pattern_of_twenty_or_fewer_only_gets_a_note() {
+        let dir = Scratch::new();
+        dir.files((0..20).map(|i| format!("f{i}.tmp")));
+        let (decision, terminal) =
+            ask_in(dir.path(), Some(BlastLimits::default()), "rm *.tmp", D, &[]);
+        assert_eq!(decision, Decision::Run);
+        assert!(terminal.err.starts_with("oh-my-shell: caution: "));
+        assert!(terminal.prompts.is_empty());
+    }
+
+    #[test]
+    fn find_delete_asks_and_says_what_it_searches() {
+        let dir = Scratch::new();
+        dir.files([
+            "a.log".to_owned(),
+            "sub/b.log".to_owned(),
+            "sub/c.txt".to_owned(),
+        ]);
+        let (decision, terminal) = ask_in(
+            dir.path(),
+            Some(BlastLimits::default()),
+            "find . -name '*.log' -delete",
+            D,
+            &[Ok("n")],
+        );
+        assert_eq!(decision, Decision::Cancel(1));
+        assert!(
+            terminal
+                .err
+                .contains("searches 3 files and 2 folders (15 B of file data); it deletes only the ones its tests match"),
+            "{}",
+            terminal.err
+        );
+        assert!(dir.0.join("a.log").exists());
+    }
+
+    #[test]
+    fn one_budget_covers_the_commands_of_a_line() {
+        let dir = Scratch::new();
+        dir.files((0..10).map(|i| format!("a/f{i}")));
+        dir.files((0..10).map(|i| format!("b/f{i}")));
+        let limits = BlastLimits {
+            max_entries: 15,
+            max_ms: 5_000,
+        };
+        let (_, terminal) = ask_in(
+            dir.path(),
+            Some(limits),
+            "rm -rf a; rm -rf b",
+            D,
+            &[Ok("n")],
+        );
+        // a has 11 entries; b gets the 4 that are left and says the count stopped.
+        assert!(
+            terminal.err.contains("touches 10 files and 1 folder"),
+            "{}",
+            terminal.err
+        );
+        assert!(
+            terminal.err.contains("touches at least"),
+            "{}",
+            terminal.err
+        );
+        assert!(
+            terminal
+                .err
+                .contains("counting stopped at the limit of 15 entries"),
+            "{}",
+            terminal.err
+        );
+    }
+
+    #[test]
+    fn a_command_with_two_findings_is_counted_once() {
+        let dir = Scratch::new();
+        dir.files(["a".to_owned()]);
+        // `/` is critical and `$x` is unknown: two findings about the same command. Small limits
+        // keep the look at `/` short.
+        let limits = BlastLimits {
+            max_entries: 10,
+            max_ms: 1_000,
+        };
+        let (decision, terminal) = ask_in(dir.path(), Some(limits), "rm -rf / $x", D, &[Ok("no")]);
+        assert_eq!(decision, Decision::Cancel(1));
+        assert_eq!(
+            terminal.err.matches("touches").count(),
+            1,
+            "{}",
+            terminal.err
+        );
+        assert!(
+            terminal.err.matches("  - ").count() >= 2,
+            "{}",
+            terminal.err
+        );
+        // Counted a second time, it would find the budget used up by the first count.
+        assert!(
+            !terminal.err.contains("used up by earlier commands"),
+            "{}",
+            terminal.err
+        );
     }
 }

@@ -28,6 +28,7 @@ use omsh_ui::Theme;
 use crate::ai;
 use crate::confirm;
 use crate::history::History;
+use crate::radius::BlastLimits;
 use crate::report::{self, Style};
 
 const PROMPT: &str = "$ ";
@@ -252,6 +253,7 @@ fn run_on(
                     at_end,
                     &mut files,
                     config.safety.confirm,
+                    BlastLimits::from_config(&config.safety),
                 ),
             }
         } else {
@@ -360,6 +362,7 @@ fn ai_line(
             history,
             recent,
             confirm: config.safety.confirm,
+            blast: BlastLimits::from_config(&config.safety),
             unicode: matches!(style, Style::Graphical { unicode: true, .. }),
             edit: &mut edit,
         },

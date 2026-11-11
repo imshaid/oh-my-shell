@@ -6,6 +6,13 @@ use std::path::{Path, PathBuf};
 pub trait Probe {
     /// True if `path` is a regular file with something in it.
     fn is_nonempty_file(&self, path: &Path) -> bool;
+
+    /// The names the pattern matches, looked for from `base` (`active[i]` says whether byte
+    /// `i` of `pattern` was written unquoted). `None` if this probe cannot expand patterns:
+    /// the rules then judge the pattern without a count.
+    fn glob(&self, _pattern: &[u8], _active: &[bool], _base: &Path) -> Option<Vec<PathBuf>> {
+        None
+    }
 }
 
 /// The real file system. Only `stat`: nothing is opened, so a named pipe cannot block it.

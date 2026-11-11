@@ -10,6 +10,9 @@ pub struct Arg<'a> {
     /// time (`$x`, `$(...)`, arithmetic) contributes nothing, so `"$d"/` is `/`: the
     /// *empty case*, which is what a rule must worry about.
     pub text: String,
+    /// One flag for each byte of `text`: true if it was written unquoted, so a pattern
+    /// character there is special. Text put in for `~` or `$HOME` is never special.
+    pub active: Vec<bool>,
     /// The word as the person wrote it. Shown as the target of a finding.
     pub src: String,
     /// Where the word is.
@@ -31,6 +34,7 @@ impl<'a> Arg<'a> {
     pub fn from_word(word: &'a Word, src: &str, home: Option<&str>) -> Self {
         let mut arg = Self {
             text: String::new(),
+            active: Vec::new(),
             src: word.span.text(src).to_owned(),
             span: word.span,
             unknown: false,
@@ -47,7 +51,10 @@ impl<'a> Arg<'a> {
             && (arg.text == "~" || arg.text.starts_with("~/"))
             && let Some(home) = home
         {
+            let mut active = vec![false; home.len()];
+            active.extend_from_slice(&arg.active[1..]);
             arg.text = format!("{home}{}", &arg.text[1..]);
+            arg.active = active;
         }
         arg
     }
@@ -57,6 +64,7 @@ impl<'a> Arg<'a> {
     pub fn from_input() -> Self {
         Self {
             text: String::new(),
+            active: Vec::new(),
             src: "(read by xargs)".to_owned(),
             span: Span::new(0, 0),
             unknown: true,
@@ -66,6 +74,12 @@ impl<'a> Arg<'a> {
         }
     }
 
+    /// Adds known text; `active` says whether pattern characters in it are special.
+    fn push(&mut self, text: &str, active: bool) {
+        self.text.push_str(text);
+        self.active.extend(std::iter::repeat_n(active, text.len()));
+    }
+
     fn parts(&mut self, parts: &'a [WordPart], quoted: bool, home: Option<&str>) {
         for part in parts {
             match &part.kind {
@@ -73,11 +87,11 @@ impl<'a> Arg<'a> {
                     if !quoted && text.contains(['*', '?', '[']) {
                         self.glob = true;
                     }
-                    self.text.push_str(text);
+                    self.push(text, !quoted);
                 }
-                PartKind::Escaped(c) => self.text.push(*c),
+                PartKind::Escaped(c) => self.push(c.encode_utf8(&mut [0; 4]), false),
                 PartKind::SingleQuoted(text) | PartKind::AnsiCQuoted(text) => {
-                    self.text.push_str(text);
+                    self.push(text, false);
                 }
                 PartKind::DoubleQuoted(inner) => self.parts(inner, true, home),
                 PartKind::Parameter(parameter) => {
@@ -86,7 +100,7 @@ impl<'a> Arg<'a> {
                         && !parameter.length
                         && let Some(home) = home
                     {
-                        self.text.push_str(home);
+                        self.push(home, false);
                     } else {
                         self.unknown = true;
                         self.nested(&parameter.arg);
@@ -200,6 +214,25 @@ mod tests {
         let unknown = args("x ~ $HOME", None);
         assert_eq!(unknown[1].0, "~");
         assert_eq!((unknown[2].0.as_str(), unknown[2].1), ("", true));
+    }
+
+    #[test]
+    fn active_marks_the_bytes_a_pattern_character_may_be_special_in() {
+        let list = parse(r#"x a*"b*"\*c ~/*"#).unwrap();
+        let CommandKind::Simple(simple) = &list.items[0].and_or.first.commands[0].kind else {
+            panic!();
+        };
+        let word = |i: usize| Arg::from_word(&simple.words[i], r#"x a*"b*"\*c ~/*"#, Some("/h"));
+        let mixed = word(1);
+        assert_eq!(mixed.text, "a*b**c");
+        assert_eq!(mixed.active, [true, true, false, false, false, true]);
+        let tilde = word(2);
+        assert_eq!(tilde.text, "/h/*");
+        assert_eq!(tilde.active, [false, false, true, true]);
+        for i in 0..3 {
+            let arg = word(i);
+            assert_eq!(arg.active.len(), arg.text.len());
+        }
     }
 
     #[test]

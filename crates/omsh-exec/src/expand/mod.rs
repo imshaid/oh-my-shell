@@ -43,6 +43,29 @@ pub(crate) enum Kind {
     Expanded,
 }
 
+/// The names that the pattern `pattern` matches, looked for from `base` (what the safety
+/// analyzer asks before a command runs). `active[i]` says whether byte `i` is an unquoted
+/// character, so one that may be special; a quoted `*` is a plain star. Sorted, and empty if
+/// nothing matches or the pattern holds no pattern character.
+#[must_use]
+pub fn glob(pattern: &[u8], active: &[bool], base: &std::path::Path) -> Vec<Vec<u8>> {
+    let kinds = (0..pattern.len())
+        .map(|i| {
+            if active.get(i).copied().unwrap_or(false) {
+                Kind::Literal
+            } else {
+                Kind::Quoted
+            }
+        })
+        .collect();
+    let field = Field {
+        bytes: pattern.to_vec(),
+        kinds,
+        forced: false,
+    };
+    pathname::expand(&field, Some(base))
+}
+
 /// A word being built: its bytes and what kind each one is.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Field {

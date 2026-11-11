@@ -157,6 +157,10 @@ struct Setup {
     context: Option<AiContext>,
     /// Commands the shell already ran before the request: (line, status).
     recent: Vec<(&'static str, i32)>,
+    /// `[safety] confirm`; Dangerous when not set.
+    confirm: Option<ConfirmLevel>,
+    /// The limits of the blast-radius count; the defaults when not set.
+    blast: Option<BlastLimits>,
 }
 
 fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
@@ -196,7 +200,8 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             tty: &mut tty,
             history: setup.history.as_ref(),
             recent: &mut recent,
-            confirm: ConfirmLevel::Dangerous,
+            confirm: setup.confirm.unwrap_or(ConfirmLevel::Dangerous),
+            blast: setup.blast.unwrap_or_default(),
             unicode: false,
             edit: &mut edit,
         },
@@ -371,6 +376,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         command: "shred /nonexistent-omsh-plan-test".to_owned(),
         text: String::new(),
         analysis: Analysis::default(),
+        radii: Vec::new(),
         edited: false,
     };
     let marker = Reviewed {
@@ -390,6 +396,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         history: None,
         recent: &mut recent,
         confirm: ConfirmLevel::Dangerous,
+        blast: BlastLimits::default(),
         unicode: false,
         edit: &mut edit,
     };
@@ -452,7 +459,9 @@ fn steps_share_the_session_and_report_each_status() {
     let dir = Dir::new();
     let answer = json(&[
         ("Go", &format!("cd {}", dir.0.display()), "low"),
-        ("Make", "echo made > here", "low"),
+        // `pwd` prints the shell's own idea of where it is. A relative file would depend on the
+        // working directory of the whole test process, which other tests change too.
+        ("Where", &format!("pwd > {}", dir.file("here")), "low"),
     ]);
     let ran = go(
         says(&answer),
@@ -462,9 +471,14 @@ fn steps_share_the_session_and_report_each_status() {
             ..Setup::default()
         },
     );
-    assert!(dir.has("here"), "the cd of step 1 holds for step 2");
+    let printed = fs::read_to_string(dir.0.join("here")).unwrap_or_default();
+    assert_eq!(
+        printed.trim_end(),
+        dir.0.display().to_string(),
+        "the cd of step 1 holds for step 2"
+    );
     assert_eq!(ran.status(), 0);
-    assert!(ran.err.contains("[1/2] Go") && ran.err.contains("[2/2] Make"));
+    assert!(ran.err.contains("[1/2] Go") && ran.err.contains("[2/2] Where"));
     assert!(ran.err.contains("plan done (2 steps)"));
 }
 
@@ -1209,4 +1223,318 @@ fn the_view_drops_control_characters() {
     );
     assert!(view.contains("  | line[2J one\n  | line two\n"), "{view:?}");
     assert!(view.contains("  | ask me\n"), "{view:?}");
+}
+
+// -- the blast radius and the question after Enter ---------------------------------------------
+
+/// `a/` with two files and `b/` with four, in a fresh directory.
+fn two_folders() -> Dir {
+    let dir = Dir::new();
+    for (folder, files) in [("a", 2), ("b", 4)] {
+        fs::create_dir_all(dir.0.join(folder)).unwrap();
+        for i in 0..files {
+            fs::write(dir.0.join(format!("{folder}/f{i}")), "12345").unwrap();
+        }
+    }
+    dir
+}
+
+#[test]
+fn the_panel_counts_what_a_destructive_step_would_touch() {
+    let dir = two_folders();
+    let command = format!("rm -rf {}", dir.file("a"));
+    let ran = go(
+        says(&json(&[("Remove a", &command, "high")])),
+        "x",
+        Setup {
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert!(
+        ran.err
+            .contains("       touches 2 files and 1 folder (10 B of file data)\n"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.err.contains("owned by someone else"), "{}", ran.err);
+    // Counting changed nothing.
+    assert!(dir.has("a/f0") && dir.has("a/f1"));
+    assert_eq!(ran.status(), 1);
+}
+
+#[test]
+fn a_dangerous_plan_asks_once_more_after_enter() {
+    let dir = two_folders();
+    let command = format!("rm -rf {}", dir.file("a"));
+    let answer = json(&[("Remove a", &command, "low")]);
+    // "n": nothing is deleted.
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            lines: vec![Ok("n".to_owned())],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 1);
+    assert_eq!(ran.line_prompts, ["Run it? [y/N] "]);
+    assert!(
+        ran.err.contains("this plan has a dangerous step"),
+        "{}",
+        ran.err
+    );
+    assert!(dir.has("a/f0"), "nothing ran");
+    // Enter alone at that question is "no" too.
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            lines: vec![Ok(String::new())],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 1);
+    assert!(dir.has("a/f0"));
+    // "y": it runs.
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            lines: vec![Ok("y".to_owned())],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 0);
+    assert!(!dir.has("a"), "the folder was removed after the answer");
+    assert!(dir.has("b/f0"));
+}
+
+#[test]
+fn the_models_own_dangerous_label_asks_too() {
+    // The analyzer sees nothing wrong with `echo`; the model said "high". The person is asked.
+    let dir = Dir::new();
+    let command = format!("echo hi > {}", dir.file("m"));
+    let answer = json(&[("Say hi", &command, "high")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            lines: vec![Ok("n".to_owned())],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 1);
+    assert_eq!(ran.line_prompts, ["Run it? [y/N] "]);
+    assert!(!dir.has("m"));
+}
+
+#[test]
+fn a_harmless_plan_does_not_ask_again() {
+    let dir = Dir::new();
+    let command = format!("echo hi > {}", dir.file("m"));
+    let ran = go(
+        says(&json(&[("Say hi", &command, "low")])),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 0);
+    assert!(ran.line_prompts.is_empty());
+    assert!(dir.has("m"));
+}
+
+#[test]
+fn with_confirm_set_to_critical_a_dangerous_plan_does_not_ask_again() {
+    let dir = two_folders();
+    let command = format!("rm -rf {}", dir.file("a"));
+    let ran = go(
+        says(&json(&[("Remove a", &command, "high")])),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            confirm: Some(ConfirmLevel::Critical),
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 0);
+    assert!(ran.line_prompts.is_empty(), "{:?}", ran.line_prompts);
+    assert!(!dir.has("a"));
+    // The panel still showed the count.
+    assert!(ran.err.contains("touches 2 files"), "{}", ran.err);
+}
+
+#[test]
+fn with_confirm_set_to_caution_a_plan_with_a_caution_step_asks() {
+    let dir = Dir::new();
+    // `git clean -f` is a caution; the plan asks only because the setting says so.
+    let command = format!("git clean -f 2>/dev/null; echo > {}", dir.file("m"));
+    let answer = json(&[("Clean", &command, "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            lines: vec![Ok("n".to_owned())],
+            confirm: Some(ConfirmLevel::Caution),
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.line_prompts, ["Run it? [y/N] "]);
+    assert!(!dir.has("m"));
+}
+
+#[test]
+fn a_cd_in_one_step_decides_what_the_next_one_means() {
+    // `rm -rf *` is only critical because the step before it moved to `/etc`.
+    let answer = json(&[("Go", "cd /etc", "low"), ("Clear", "rm -rf *", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![Ok(Key::Escape)],
+            blast: Some(BlastLimits {
+                max_entries: 100,
+                max_ms: 1_000,
+            }),
+            ..Setup::default()
+        },
+    );
+    assert!(ran.err.contains("2. Clear   [critical]"), "{}", ran.err);
+    assert!(
+        ran.err
+            .contains("(counted now, before the steps above have run)"),
+        "{}",
+        ran.err
+    );
+    assert_eq!(ran.status(), 1);
+}
+
+#[test]
+fn editing_a_step_counts_the_new_command() {
+    let dir = two_folders();
+    let first = format!("rm -rf {}", dir.file("a"));
+    let second = format!("rm -rf {}", dir.file("b"));
+    let ran = go(
+        says(&json(&[("Remove", &first, "high")])),
+        "x",
+        Setup {
+            keys: vec![ch('e'), Ok(Key::Escape)],
+            edits: vec![Edited::Text(second)],
+            ..Setup::default()
+        },
+    );
+    let first_count = ran.err.find("touches 2 files").expect(&ran.err);
+    let second_count = ran.err.find("touches 4 files").expect(&ran.err);
+    assert!(first_count < second_count, "{}", ran.err);
+    assert!(dir.has("a/f0") && dir.has("b/f0"), "nothing was deleted");
+}
+
+#[test]
+fn a_find_delete_step_says_what_it_searches() {
+    let dir = two_folders();
+    let command = format!("find {} -name 'f0' -delete", dir.file(""));
+    let ran = go(
+        says(&json(&[("Find", &command, "low")])),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            lines: vec![Ok("n".to_owned())],
+            ..Setup::default()
+        },
+    );
+    assert!(
+        ran.err.contains("searches 6 files and 3 folders"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.err.contains("it deletes only the ones its tests match"));
+    assert_eq!(ran.status(), 1);
+    assert!(dir.has("a/f0"), "the answer was no");
+}
+
+#[test]
+fn editing_an_earlier_step_changes_how_the_later_ones_are_judged() {
+    // `rm -rf *` is dangerous in a temporary folder and critical once the step before it has
+    // moved to `/etc`; editing that step must show the change.
+    let dir = Dir::new();
+    let answer = json(&[
+        ("Go", &format!("cd {}", dir.0.display()), "low"),
+        ("Clear", "rm -rf *", "low"),
+    ]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![ch('e'), ch('1'), Ok(Key::Escape)],
+            edits: vec![Edited::Text("cd /etc".to_owned())],
+            blast: Some(BlastLimits {
+                max_entries: 100,
+                max_ms: 1_000,
+            }),
+            ..Setup::default()
+        },
+    );
+    let before = ran.err.find("2. Clear   [dangerous]").expect(&ran.err);
+    let after = ran.err.find("2. Clear   [critical]").expect(&ran.err);
+    assert!(before < after, "{}", ran.err);
+}
+
+#[test]
+fn the_panel_of_a_step_that_became_riskier_counts_too() {
+    let dir = two_folders();
+    let mut shell = Shell::new();
+    let mut files = Io::process();
+    // The plan showed nothing about this step; the fresh analysis finds a dangerous one.
+    let step = Reviewed {
+        title: "Remove a".to_owned(),
+        explanation: String::new(),
+        needs_root: false,
+        model: ModelRisk::Low,
+        command: format!("rm -rf {}", dir.file("a")),
+        text: String::new(),
+        analysis: Analysis::default(),
+        radii: Vec::new(),
+        edited: false,
+    };
+    let mut tty = Script(RefCell::new(State {
+        lines: vec![Ok("no".to_owned())].into(),
+        ..State::default()
+    }));
+    let mut edit = |_: &str| Edited::Cancelled;
+    let mut recent = Recent::new(Filter::default());
+    let mut env = PlanEnv {
+        shell: &mut shell,
+        files: &mut files,
+        tty: &mut tty,
+        history: None,
+        recent: &mut recent,
+        confirm: ConfirmLevel::Dangerous,
+        blast: BlastLimits::default(),
+        unicode: false,
+        edit: &mut edit,
+    };
+    let result = execute(&mut env, &[step]);
+    let LineResult::Ran(outcome) = result else {
+        panic!("{result:?}")
+    };
+    assert_eq!(outcome.status().0, 1);
+    let state = tty.0.borrow();
+    assert!(
+        state.err.contains("riskier than the plan showed"),
+        "{}",
+        state.err
+    );
+    assert!(
+        state.err.contains("touches 2 files and 1 folder"),
+        "{}",
+        state.err
+    );
+    assert!(dir.has("a/f0"), "the answer was no");
 }
