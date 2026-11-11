@@ -513,10 +513,15 @@ fn field_splitting_behaves_like_sh() -> io::Result<()> {
     ])
 }
 
+/// The fixture's Bengali name is left out of the comparison: dash 0.5.13 and later garble a
+/// multibyte file name that a pattern expands to (the output is not the bytes of the name).
+/// `g/[A-Za-z[]*` lists every other name with the same code path as `g/*`; a name that
+/// starts with a letter or `[` is all it matches. The full listing, Bengali name included, is
+/// pinned in `a_pattern_lists_a_multibyte_name`.
 #[test]
 fn pathname_expansion_behaves_like_sh() -> io::Result<()> {
     assert_all_same(&[
-        "printf '<%s>\\n' g/*\n",
+        "printf '<%s>\\n' g/[A-Za-z[]*\n",
         "printf '<%s>\\n' g/*.txt g/?.txt g/[ab].txt g/[!a].txt g/[a-b].*\n",
         "printf '<%s>\\n' g/*.nomatch g/nomatch*\n",
         "printf '<%s>\\n' g/c.* g/*.rs g/Z g/[A-Z]\n",
@@ -544,7 +549,7 @@ fn pathname_expansion_behaves_like_sh() -> io::Result<()> {
         "x=g/*.txt; printf '<%s>\\n' \"$x\" $x\n",
         "printf '%s\\n' g/bad*\n",
         "printf '%s\\n' g/b?dname g/*name g/[a-c]??\\?name\n",
-        "x=$(printf '%s ' g/*); printf '<%s>\\n' $x\n",
+        "x=$(printf '%s ' g/[A-Za-z[]*); printf '<%s>\\n' $x\n",
         "[ -f g/a.txt ]; echo $?; [ -f g/*.rs ]; echo $?\n",
         "echo g/[a\n",
         "echo g/*.txt; echo g/*.nomatch\n",
@@ -747,6 +752,34 @@ fn a_question_mark_matches_a_whole_character() -> io::Result<()> {
         "<g/a.txt>\n<g/b.txt>\n<g/sub-b>\n<g/বাংলা>\n"
     );
     assert_eq!(output_of("printf '<%s>\\n' g/ব?ং??\n")?, "<g/বাংলা>\n");
+    Ok(())
+}
+
+/// `g/*` lists the Bengali name together with the others, byte for byte. Not compared with
+/// `/bin/sh`: dash 0.5.13 and later garble a multibyte name here (see
+/// `pathname_expansion_behaves_like_sh`).
+#[test]
+fn a_pattern_lists_a_multibyte_name() -> io::Result<()> {
+    let sandbox = Sandbox::new()?;
+    let others: &[u8] = b"<g/Z>\n<g/[x]>\n<g/a.txt>\n<g/b.txt>\n<g/bad\xffname>\n<g/c.rs>\n";
+    let bengali = "বাংলা".as_bytes();
+
+    let out = sandbox.run(OMSH, b"printf '<%s>\\n' g/*\n")?;
+    let mut expected = others.to_vec();
+    expected.extend_from_slice(b"<g/sp ace>\n<g/sub>\n<g/sub-b>\n<g/");
+    expected.extend_from_slice(bengali);
+    expected.extend_from_slice(b">\n");
+    assert_eq!(out.stdout, expected);
+    assert_eq!(out.status.code(), Some(0));
+
+    // Through a substitution, where "sp ace" splits into two fields.
+    let out = sandbox.run(OMSH, b"x=$(printf '%s ' g/*); printf '<%s>\\n' $x\n")?;
+    let mut expected = others.to_vec();
+    expected.extend_from_slice(b"<g/sp>\n<ace>\n<g/sub>\n<g/sub-b>\n<g/");
+    expected.extend_from_slice(bengali);
+    expected.extend_from_slice(b">\n");
+    assert_eq!(out.stdout, expected);
+    assert_eq!(out.status.code(), Some(0));
     Ok(())
 }
 
@@ -1350,11 +1383,14 @@ fn test_behaves_like_sh() -> io::Result<()> {
 }
 
 /// `printf` (S07b): conversions, flags, escapes, reuse of the format, and bad numbers.
+///
+/// `\xHH` in a format is not compared: dash 0.5.13 and later read it as a byte, dash 0.5.12
+/// prints it as it was written. See `printf_leaves_a_hex_escape_in_a_format_alone`.
 #[test]
 fn printf_behaves_like_sh() -> io::Result<()> {
     assert_all_same_in_fresh_directories(&[
         "printf '[\\c]\\n'\n",
-        "printf '\\x41|A|\\e|\\q|\\101|\\0101|\\1234|\\8|\\\"|\\'\"'\"'\\n'\n",
+        "printf 'A|\\e|\\q|\\101|\\0101|\\1234|\\8|\\\"|\\'\"'\"'\\n'\n",
         "printf '%b|' 'a\\cb' 'x\\0101y' 'p\\101q' '\\x41'; echo\n",
         "printf '[%c][%c][%5c]\\n' abc '' z\n",
         "printf '[%s][%5s][%-5s][%.2s][%05s][%5.1s]\\n' abc abc abc abc abc abc\n",
@@ -1399,7 +1435,19 @@ fn printf_behaves_like_sh() -> io::Result<()> {
     ])
 }
 
+/// `\xHH` in a format is not an escape of this shell: it is printed as written, as dash 0.5.12
+/// does. dash 0.5.13 and later turn it into a byte, so it is not compared with `/bin/sh`.
+#[test]
+fn printf_leaves_a_hex_escape_in_a_format_alone() -> io::Result<()> {
+    assert_eq!(output_of("printf '\\x41|A\\n'\n")?, "\\x41|A\n");
+    Ok(())
+}
+
 /// Aliases (S07b): they are replaced in the text of a line, so a definition works from the next line on.
+///
+/// The inputs that print a definition (`alias`, `alias NAME`, `command -v NAME`) are not here:
+/// dash 0.5.13 and later quote what they print differently. See
+/// `alias_definitions_are_printed_the_way_dash_0_5_12_prints_them`.
 #[test]
 fn aliases_behave_like_sh() -> io::Result<()> {
     assert_all_same_in_fresh_directories(&[
@@ -1420,9 +1468,7 @@ fn aliases_behave_like_sh() -> io::Result<()> {
         "alias s='echo '\nalias x=XX\ns x\n",
         "alias s='echo'\nalias x=XX\ns x\n",
         "alias e=echo\nunalias e\ne hi 2>/dev/null; echo $?\n",
-        "alias e=echo f='echo f'\nalias\n",
-        "alias e=echo\nalias e\nalias nosuch 2>/dev/null; echo $?\n",
-        "alias e='echo it'\"'\"'s'\nalias e\n",
+        "alias e=echo\nalias nosuch 2>/dev/null; echo $?\n",
         "unalias nosuch 2>/dev/null; echo $?\n",
         "alias e=echo\neval 'e from-eval'\n",
         "alias e=echo\ne=1\necho $e\n",
@@ -1441,6 +1487,31 @@ fn aliases_behave_like_sh() -> io::Result<()> {
         "alias e=echo\nprintf 'e in-dot\\n' > b.sh\n. ./b.sh\n",
         "printf 'alias e=echo\\ne same-file\\nunalias e\\ne gone 2>/dev/null; echo $?\\n' > c.sh\n. ./c.sh\n",
     ])
+}
+
+/// What `alias` and `command -v` print for an alias: `name='value'`, with a quote inside the
+/// value written as `'"'"'`. This is what dash 0.5.12 prints and what scripts that parse the
+/// output expect. dash 0.5.13 and later quote the whole `name=value` instead, so these
+/// inputs are not compared with `/bin/sh`.
+#[test]
+fn alias_definitions_are_printed_the_way_dash_0_5_12_prints_them() -> io::Result<()> {
+    assert_eq!(
+        output_of("alias e=echo f='echo f'\nalias\n")?,
+        "e='echo'\nf='echo f'\n"
+    );
+    assert_eq!(
+        output_of("alias e=echo\nalias e\nalias nosuch 2>/dev/null; echo $?\n")?,
+        "e='echo'\n1\n"
+    );
+    assert_eq!(
+        output_of("alias e='echo it'\"'\"'s'\nalias e\n")?,
+        "e='echo it'\"'\"'s'\n"
+    );
+    assert_eq!(
+        output_of("alias a='b c'\ncommand -v a\n")?,
+        "alias a='b c'\n"
+    );
+    Ok(())
 }
 
 /// `set` options (S07b): `-e` in every place it does and does not apply, `-u`, `-f`, `-C`, `-x`, `-o`, `$-`.
@@ -1560,6 +1631,8 @@ fn newer_and_older_than_follow_posix_2024_for_missing_files() -> io::Result<()> 
 }
 
 /// `type`, `command` and `hash` (S07b). The "tracked alias" wording of dash is avoided here: see the direct test.
+/// `command -v NAME` for an alias is not here either: see
+/// `alias_definitions_are_printed_the_way_dash_0_5_12_prints_them`.
 #[test]
 fn type_command_and_hash_behave_like_sh() -> io::Result<()> {
     assert_all_same_in_fresh_directories(&[
@@ -1573,7 +1646,7 @@ fn type_command_and_hash_behave_like_sh() -> io::Result<()> {
         "type echo printf test '['\n",
         "command -v cd\ncommand -v if\ncommand -v nosuch; echo $?\n",
         "f() { :; }\ncommand -v f\ncommand -V f\n",
-        "alias a='b c'\ncommand -v a\ncommand -V a\n",
+        "alias a='b c'\ncommand -V a\n",
         "command -V cd\ncommand -V export\ncommand -V if\n",
         "command -V nosuch 2>/dev/null; echo $?\n",
         "command -v /bin/sh\n",
@@ -1919,6 +1992,11 @@ fn a_failed_cd_gives_1() -> io::Result<()> {
 /// runner passes two, 142 and 145) reaches every program, as it does in bash and dash: a
 /// shell does not close what it inherited. So the test asks `/bin/sh` which numbers above 2
 /// the environment provides and does not count those as strays.
+///
+/// Each inner `sh -c` probe ends with `; :`. dash 0.5.13 and later run the last command of
+/// `sh -c` in place of the shell, so `$$` would be `ls` itself and the list would hold the
+/// directory descriptor that `ls` opens to read it. A builtin at the end keeps every dash
+/// version from doing that.
 #[test]
 fn a_program_inherits_no_stray_descriptors() -> io::Result<()> {
     let sandbox = Sandbox::new()?;
@@ -1936,11 +2014,11 @@ fn a_program_inherits_no_stray_descriptors() -> io::Result<()> {
         .collect();
     let seen = list(
         OMSH,
-        "sh -c 'ls /proc/$$/fd'\n\
-         echo x | sh -c 'ls /proc/$$/fd'\n\
-         sh -c 'ls /proc/$$/fd' <<EOF\nbody\nEOF\n\
-         y=$(sh -c 'ls /proc/$$/fd'); echo $y\n\
-         sh -c 'ls /proc/$$/fd' 3>/dev/null\n",
+        "sh -c 'ls /proc/$$/fd; :'\n\
+         echo x | sh -c 'ls /proc/$$/fd; :'\n\
+         sh -c 'ls /proc/$$/fd; :' <<EOF\nbody\nEOF\n\
+         y=$(sh -c 'ls /proc/$$/fd; :'); echo $y\n\
+         sh -c 'ls /proc/$$/fd; :' 3>/dev/null\n",
     )?;
     let strays: Vec<&str> = seen
         .iter()

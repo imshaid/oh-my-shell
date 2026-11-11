@@ -238,11 +238,15 @@ fn piped_input_without_arguments_is_run_by_sh() -> io::Result<()> {
 
 /// `-c` must replace the process and not start a second one: ssh, cron and editors look at the
 /// process they started.
+///
+/// The probe ends with `; :` on purpose. dash 0.5.13 and later run the last command of `sh -c`
+/// in place of the shell (no fork), so `$$` would be that program's pid and `/proc/$$/exe` would
+/// not name `/bin/sh`. A builtin at the end keeps every dash version from doing that.
 #[test]
 fn dash_c_replaces_the_process_with_bin_sh() -> io::Result<()> {
     let home = Scratch::new()?;
     let child = Command::new(BINARY)
-        .args(["-c", "echo $$; readlink /proc/$$/exe"])
+        .args(["-c", "echo $$; readlink /proc/$$/exe; :"])
         .current_dir(home.path())
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
