@@ -308,9 +308,11 @@ fn rename_undo_checks_that_it_is_the_same_file() {
         .note_rename(&action, &work.join("a"), &work.join("b"))
         .unwrap();
     journal.finish(&action);
-    // Someone replaced b by another file.
-    fs::remove_file(work.join("b")).unwrap();
-    fs::write(work.join("b"), "other").unwrap();
+    // Someone replaced b by another file. The new one is made while the old one still exists
+    // and then renamed over it, so the two cannot share an inode number (a file system may
+    // hand out the number of a file that was just deleted again).
+    fs::write(work.join("c"), "other").unwrap();
+    fs::rename(work.join("c"), work.join("b")).unwrap();
     let report = journal.undo(action.id, NEVER).unwrap();
     assert_eq!(report.failed, 1);
     assert!(
