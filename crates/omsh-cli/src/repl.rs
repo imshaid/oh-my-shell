@@ -26,6 +26,7 @@ use omsh_history::{Filter, Store};
 use omsh_ui::Theme;
 
 use crate::ai;
+use crate::confirm;
 use crate::history::History;
 use crate::report::{self, Style};
 
@@ -217,7 +218,19 @@ fn run_on(
             Some((history, token))
         });
         let started = Instant::now();
-        let result = shell.run_source(&pending, at_end, &mut files);
+        // A typed line is looked at by the safety analyzer first (S16). Other input (`-c`
+        // scripts, a pipe) is run as written: the person is not there to answer.
+        let result = if interactive {
+            confirm::run_line(
+                &mut shell,
+                &pending,
+                at_end,
+                &mut files,
+                config.safety.confirm,
+            )
+        } else {
+            shell.run_source(&pending, at_end, &mut files)
+        };
         if let Some((history, token)) = noted {
             match &result {
                 // Nothing ran: the rest of the command is still to come.

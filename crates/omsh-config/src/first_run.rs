@@ -63,8 +63,8 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #ignore = [" *"]
 
 #[safety]
-# The lowest risk level that asks for confirmation: "caution", "dangerous" or "critical".
-# (not used yet)
+# The lowest risk level that asks before a typed line runs: "caution", "dangerous" or
+# "critical". Lines below it print a one-line note and run; "critical" lines always ask.
 #confirm = "dangerous"
 # Days a file stays in the trash before it is purged. (not used yet)
 #trash_retention_days = 8

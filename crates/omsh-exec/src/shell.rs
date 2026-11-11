@@ -10,6 +10,7 @@ use nix::sys::signal::Signal;
 use omsh_syntax::ast::{FunctionDef, List};
 use omsh_syntax::{Span, SyntaxDiagnostic, parse};
 
+use crate::builtins::Terminal;
 use crate::check::{NotYet, check_list};
 use crate::exec::Unwind;
 use crate::io::Io;
@@ -52,6 +53,28 @@ pub enum LineResult {
     /// The line was not run, because it is wrong or uses something that is not implemented
     /// yet. Nothing in it ran. The status is now 2.
     Rejected(SyntaxDiagnostic),
+}
+
+/// A line that has had its aliases replaced and has been parsed, but has not run.
+#[derive(Clone, Debug)]
+pub struct Prepared {
+    list: List,
+    text: String,
+}
+
+impl Prepared {
+    /// The syntax tree.
+    #[must_use]
+    pub const fn list(&self) -> &List {
+        &self.list
+    }
+
+    /// The text the tree was parsed from: the line after alias replacement. Spans in the tree
+    /// point into it.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 /// The shell's state: its variables, functions, where commands were found, and the last
@@ -406,25 +429,54 @@ impl Shell {
     /// Messages from the shell itself ("not found", "killed by SIGSEGV") go to descriptor 2
     /// of `io`.
     pub fn run_source(&mut self, src: &str, at_end: bool, io: &mut Io) -> LineResult {
+        match self.prepare(src, at_end) {
+            Ok(prepared) => self.run_prepared(prepared, io),
+            Err(result) => *result,
+        }
+    }
+
+    /// The first half of [`run_source`](Self::run_source): replaces aliases and parses, and
+    /// stops before anything runs. The caller may look at the tree (the safety analysis does)
+    /// and then hand it to [`run_prepared`](Self::run_prepared).
+    ///
+    /// # Errors
+    ///
+    /// The [`LineResult`] that `run_source` would have given (boxed, it is large): `Incomplete`
+    /// when more input is needed, `Rejected` when the line is wrong.
+    pub fn prepare(&mut self, src: &str, at_end: bool) -> Result<Prepared, Box<LineResult>> {
         let src = &*self.expand_aliases(src).into_owned();
         self.source = Some(Arc::from(src));
-        let list = match parse(src) {
-            Ok(list) => list,
+        match parse(src) {
+            Ok(list) => Ok(Prepared {
+                list,
+                text: src.to_owned(),
+            }),
             Err(failure) => {
                 if failure.is_incomplete() && !at_end {
-                    return LineResult::Incomplete;
+                    return Err(Box::new(LineResult::Incomplete));
                 }
                 self.status = ExitStatus::USAGE;
-                return LineResult::Rejected(failure.to_diagnostic(src));
+                Err(Box::new(LineResult::Rejected(failure.to_diagnostic(src))))
             }
-        };
-        match self.run(&list, io) {
+        }
+    }
+
+    /// The second half of [`run_source`](Self::run_source): runs a line from
+    /// [`prepare`](Self::prepare).
+    pub fn run_prepared(&mut self, prepared: Prepared, io: &mut Io) -> LineResult {
+        match self.run(&prepared.list, io) {
             Ok(outcome) => LineResult::Ran(outcome),
             Err(not_yet) => {
                 self.status = ExitStatus::USAGE;
-                LineResult::Rejected(not_yet.to_diagnostic(src))
+                LineResult::Rejected(not_yet.to_diagnostic(&prepared.text))
             }
         }
+    }
+
+    /// A handle for asking the person a question, the way `omsh ai setup` does: byte by byte
+    /// from `io`'s standard input, aware of Ctrl+C.
+    pub fn terminal<'a>(&'a self, io: &'a Io) -> impl Terminal + 'a {
+        crate::builtins::terminal_handle(self, io)
     }
 
     /// Runs a parsed list.

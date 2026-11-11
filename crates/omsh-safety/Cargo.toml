@@ -9,5 +9,8 @@ repository.workspace = true
 [dependencies]
 omsh-syntax.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

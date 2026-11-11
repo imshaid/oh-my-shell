@@ -26,6 +26,7 @@
 //! piped input, which would otherwise go to `/bin/sh`.
 
 mod ai;
+mod confirm;
 mod handoff;
 mod history;
 mod repl;

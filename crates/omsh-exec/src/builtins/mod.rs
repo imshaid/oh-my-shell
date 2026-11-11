@@ -26,8 +26,8 @@ use nix::errno::Errno;
 
 pub(crate) use history::HistoryHook;
 pub use history::{BuiltinOutput, HistoryCommand};
-pub(crate) use omsh::OmshHook;
 pub use omsh::{OmshCommand, ReadError, Terminal};
+pub(crate) use omsh::{OmshHook, terminal_handle};
 
 use crate::exec::{Flow, Unwind};
 use crate::io::Io;

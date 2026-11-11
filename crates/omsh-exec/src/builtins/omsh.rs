@@ -101,6 +101,11 @@ pub(super) fn omsh(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     Ok(ExitStatus(status))
 }
 
+/// A [`Terminal`] over `io`, for code outside the `omsh` command that needs to ask a question.
+pub(crate) fn terminal_handle<'a>(shell: &'a Shell, io: &'a Io) -> impl Terminal + 'a {
+    Handle { shell, io }
+}
+
 /// The [`Terminal`] of one `omsh` command: the shell's table of files for that command.
 struct Handle<'a> {
     shell: &'a Shell,
