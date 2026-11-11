@@ -134,6 +134,8 @@ struct Ran {
     requests: Vec<ChatRequest>,
     key_prompts: Vec<String>,
     line_prompts: Vec<String>,
+    /// What the shell remembered as recent commands when the flow ended.
+    recent: Vec<omsh_ai::RecentCommand>,
 }
 
 impl Ran {
@@ -153,6 +155,8 @@ struct Setup {
     aliases: Vec<&'static str>,
     history: Option<History>,
     context: Option<AiContext>,
+    /// Commands the shell already ran before the request: (line, status).
+    recent: Vec<(&'static str, i32)>,
 }
 
 fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
@@ -167,6 +171,10 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
         lines: setup.lines.into(),
         ..State::default()
     }));
+    let mut recent = Recent::new(Filter::new(&[" *".to_owned()]));
+    for (line, status) in &setup.recent {
+        recent.record(line, *status);
+    }
     let mut edits: VecDeque<Edited> = setup.edits.into();
     let mut edit = |_: &str| edits.pop_front().unwrap_or(Edited::Cancelled);
     let plan_setup = PlanSetup {
@@ -187,6 +195,7 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             files: &mut files,
             tty: &mut tty,
             history: setup.history.as_ref(),
+            recent: &mut recent,
             confirm: ConfirmLevel::Dangerous,
             unicode: false,
             edit: &mut edit,
@@ -200,6 +209,7 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
         requests: fake.requests(),
         key_prompts: state.key_prompts,
         line_prompts: state.line_prompts,
+        recent: recent.items(),
     }
 }
 
@@ -226,7 +236,10 @@ fn a_plan_of_one_harmless_step_still_waits_for_enter() {
     assert!(!dir.has("marker"));
     assert_eq!(ran.status(), 1);
     assert!(ran.err.contains("cancelled; nothing ran"), "{}", ran.err);
-    assert_eq!(ran.key_prompts, ["[Enter] run  [e] edit  [Esc] cancel "]);
+    assert_eq!(
+        ran.key_prompts,
+        ["[Enter] run  [e] edit  [v] view context  [Esc] cancel "]
+    );
     // Enter: it ran.
     let ran = go(
         says(&answer),
@@ -369,11 +382,13 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         ..State::default()
     }));
     let mut edit = |_: &str| Edited::Cancelled;
+    let mut recent = Recent::new(Filter::default());
     let mut env = PlanEnv {
         shell: &mut shell,
         files: &mut files,
         tty: &mut tty,
         history: None,
+        recent: &mut recent,
         confirm: ConfirmLevel::Dangerous,
         unicode: false,
         edit: &mut edit,
@@ -648,11 +663,7 @@ fn secrets_in_the_request_are_masked_before_sending() {
     assert!(!sent.contains(&token), "{sent}");
     assert!(sent.contains("[MASKED]"), "{sent}");
     assert!(sent.starts_with("push using "), "{sent}");
-    assert!(
-        ran.err.contains("a secret in the request was hidden"),
-        "{}",
-        ran.err
-    );
+    assert!(ran.err.contains("hidden before sending"), "{}", ran.err);
     // Nothing to hide: no note, text unchanged.
     let ran = go(
         says(&json(&[("List", "ls", "low")])),
@@ -699,28 +710,9 @@ fn the_context_toggles_decide_what_is_sent() {
     let system = ran.requests[0].system.clone().unwrap();
     assert!(system.contains("- Working directory: /"), "{system}");
     assert!(!system.contains("OS:"));
-    // Only the request, the system prompt and the plan schema go out: no history, no git.
+    // Only the request and the system prompt go out.
     assert_eq!(ran.requests[0].messages.len(), 1);
     assert!(ran.requests[0].json);
-}
-
-#[test]
-fn masking_replaces_each_secret_and_nothing_else() {
-    assert_eq!(mask("list files"), "list files");
-    assert_eq!(mask(""), "");
-    let token = format!("ghp_{}", "x".repeat(36));
-    assert_eq!(
-        mask(&format!("a {token} b {token} c")),
-        "a [MASKED] b [MASKED] c"
-    );
-    let masked = mask("export API_KEY=hunter2hunter2 then ls");
-    assert!(!masked.contains("hunter2"), "{masked}");
-    assert!(masked.ends_with("then ls"), "{masked}");
-    let url = mask("clone https://bob:pw123@example.com/x.git please");
-    assert!(!url.contains("pw123") && url.ends_with("please"), "{url}");
-    // Bangla text around a secret stays whole.
-    let bangla = mask(&format!("আমার {token} দেখাও"));
-    assert_eq!(bangla, "আমার [MASKED] দেখাও");
 }
 
 #[test]
@@ -944,5 +936,277 @@ fn choose_reads_keys_until_one_means_something() {
     let shell = Shell::new();
     let files = Io::process();
     let mut terminal = tty.open(&shell, &files);
-    assert_eq!(choose(&mut *terminal, 1), Choice::Edit(0));
+    assert_eq!(choose(&mut *terminal, 1, ""), Choice::Edit(0));
+}
+
+// -- context: git, recent commands, `[v]` -----------------------------------------------------
+
+/// A directory that looks like a git repository on branch `branch`, removed at the end.
+fn repo(dir: &Dir, branch: &str) {
+    fs::create_dir_all(dir.0.join(".git")).unwrap();
+    fs::write(
+        dir.0.join(".git/HEAD"),
+        format!("ref: refs/heads/{branch}\n"),
+    )
+    .unwrap();
+}
+
+fn system_of(ran: &Ran) -> String {
+    ran.requests[0].system.clone().unwrap()
+}
+
+fn in_dir(dir: &Dir) -> Vec<&'static str> {
+    // `Setup::aliases` are lines the shell runs before the request; `cd` sets PWD.
+    vec![Box::leak(format!("cd {}", dir.file("")).into_boxed_str())]
+}
+
+#[test]
+fn the_git_branch_and_recent_commands_are_sent_by_default() {
+    let dir = Dir::new();
+    repo(&dir, "feature/x");
+    let ran = go(
+        says(&json(&[("List", "ls", "low")])),
+        "x",
+        Setup {
+            aliases: in_dir(&dir),
+            recent: vec![("ls", 0), ("false", 1)],
+            ..Setup::default()
+        },
+    );
+    let system = system_of(&ran);
+    assert!(
+        system.contains("- Git: inside a repository, on branch feature/x\n"),
+        "{system}"
+    );
+    assert!(
+        system.contains("  - ls  (exit 0)\n  - false  (exit 1)\n"),
+        "{system}"
+    );
+}
+
+#[test]
+fn a_folder_that_is_no_repository_says_so() {
+    let dir = Dir::new();
+    let ran = go(
+        says(&json(&[("List", "ls", "low")])),
+        "x",
+        Setup {
+            aliases: in_dir(&dir),
+            ..Setup::default()
+        },
+    );
+    // The temp folder may itself sit inside a repository on some machines; only the shape of
+    // the answer is fixed.
+    assert!(system_of(&ran).contains("- Git: "), "{}", system_of(&ran));
+}
+
+#[test]
+fn recent_commands_are_masked_and_the_note_is_shown() {
+    let token = format!("ghp_{}", "a1B2".repeat(9));
+    let line: &'static str = Box::leak(format!("export GITHUB_TOKEN={token}").into_boxed_str());
+    let ran = go(
+        says(&json(&[("List", "ls", "low")])),
+        "list files",
+        Setup {
+            recent: vec![(line, 0)],
+            ..Setup::default()
+        },
+    );
+    let system = system_of(&ran);
+    assert!(!system.contains(&token), "{system}");
+    assert!(
+        system.contains("export GITHUB_TOKEN=[MASKED]  (exit 0)"),
+        "{system}"
+    );
+    assert!(ran.err.contains("hidden before sending"), "{}", ran.err);
+}
+
+#[test]
+fn the_switches_keep_git_and_recent_commands_out() {
+    let dir = Dir::new();
+    repo(&dir, "main");
+    let ran = go(
+        says(&json(&[("List", "ls", "low")])),
+        "x",
+        Setup {
+            aliases: in_dir(&dir),
+            recent: vec![("ls", 0)],
+            context: Some(AiContext {
+                git: false,
+                recent_commands: false,
+                ..AiContext::default()
+            }),
+            ..Setup::default()
+        },
+    );
+    let system = system_of(&ran);
+    assert!(
+        !system.contains("Git:") && !system.contains("Recent commands"),
+        "{system}"
+    );
+    assert!(system.contains("Working directory"), "{system}");
+}
+
+#[test]
+fn lines_the_history_ignores_are_not_sent_as_recent_commands() {
+    let ran = go(
+        says(&json(&[("List", "ls", "low")])),
+        "x",
+        Setup {
+            recent: vec![(" hidden thing", 0), ("visible", 0)],
+            ..Setup::default()
+        },
+    );
+    let system = system_of(&ran);
+    assert!(!system.contains("hidden thing"), "{system}");
+    assert!(system.contains("  - visible  (exit 0)"), "{system}");
+}
+
+#[test]
+fn steps_that_run_become_recent_commands() {
+    let dir = Dir::new();
+    let first = format!("echo a > {}", dir.file("a"));
+    let answer = json(&[("One", &first, "low"), ("Two", "false", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            recent: vec![("old1", 0), ("old2", 0)],
+            ..Setup::default()
+        },
+    );
+    let kept: Vec<(&str, i32)> = ran
+        .recent
+        .iter()
+        .map(|r| (r.command.as_str(), r.status))
+        .collect();
+    // Three are kept: the older one first, then the two steps with their status.
+    assert_eq!(kept, [("old2", 0), (first.as_str(), 0), ("false", 1)]);
+}
+
+#[test]
+fn v_shows_what_was_sent_and_then_keeps_waiting() {
+    let dir = Dir::new();
+    let marker = dir.file("marker");
+    let command = format!("echo hi > {marker}");
+    let answer = json(&[("Say hi", &command, "low")]);
+    let ran = go(
+        says(&answer),
+        "say hi please",
+        Setup {
+            keys: vec![ch('v'), ch('V'), Ok(Key::Escape)],
+            recent: vec![("ls", 0)],
+            ..Setup::default()
+        },
+    );
+    // Shown twice, and neither `v` ran anything or ended the question.
+    assert_eq!(
+        ran.err.matches("this was sent to").count(),
+        2,
+        "{}",
+        ran.err
+    );
+    assert!(!dir.has("marker"));
+    assert_eq!(ran.key_prompts.len(), 3);
+    assert!(
+        ran.err.contains("  | You are the planning engine"),
+        "{}",
+        ran.err
+    );
+    assert!(
+        ran.err.contains("  | - Recent commands in this shell"),
+        "{}",
+        ran.err
+    );
+    assert!(
+        ran.err.contains("request:\n  | say hi please\n"),
+        "{}",
+        ran.err
+    );
+    assert!(
+        ran.err.contains("[MASKED] before anything is sent"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.err.contains("cancelled; nothing ran"), "{}", ran.err);
+    // Enter after `v` still runs.
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![ch('v'), enter()],
+            ..Setup::default()
+        },
+    );
+    assert!(dir.has("marker"));
+    assert_eq!(ran.status(), 0);
+}
+
+#[test]
+fn v_shows_the_masked_request_and_never_the_secret() {
+    let token = format!("ghp_{}", "a1B2".repeat(9));
+    let ran = go(
+        says(&json(&[("List", "ls", "low")])),
+        &format!("use {token} please"),
+        Setup {
+            keys: vec![ch('v'), Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert!(!ran.err.contains(&token), "{}", ran.err);
+    assert!(ran.err.contains("  | use [MASKED] please\n"), "{}", ran.err);
+}
+
+#[test]
+fn v_after_a_second_try_shows_the_retry_message() {
+    let good = json(&[("List", "ls", "low")]);
+    let fake = FakeProvider::new(Kind::Ollama)
+        .says(&["{\"summary\":\"FIRST-ANSWER-MARKER\",\"steps\":[]}"])
+        .says(&[&good]);
+    let ran = go(
+        fake,
+        "x",
+        Setup {
+            keys: vec![ch('v'), Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert!(
+        ran.err.contains("second try: the model's first answer ("),
+        "{}",
+        ran.err
+    );
+    assert!(
+        ran.err.contains("That answer was not usable"),
+        "{}",
+        ran.err
+    );
+    // The refused answer's own text is not printed again.
+    assert!(!ran.err.contains("FIRST-ANSWER-MARKER"), "{}", ran.err);
+}
+
+#[test]
+fn the_view_drops_control_characters() {
+    let sent = Sent {
+        request: ChatRequest {
+            system: Some("line\x1b[2J one\nline two".to_owned()),
+            messages: vec![omsh_ai::Message::user("ask\x07 me")],
+            max_tokens: 1,
+            json: true,
+        },
+        first_answer_chars: None,
+    };
+    let settings = Settings {
+        kind: Kind::Ollama,
+        model: "m".to_owned(),
+        base_url: None,
+    };
+    let view = sent_view(&sent, &settings);
+    assert!(
+        !view.chars().any(|c| c.is_control() && c != '\n'),
+        "{view:?}"
+    );
+    assert!(view.contains("  | line[2J one\n  | line two\n"), "{view:?}");
+    assert!(view.contains("  | ask me\n"), "{view:?}");
 }

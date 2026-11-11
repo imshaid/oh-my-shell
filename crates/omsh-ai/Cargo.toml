@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 omsh-config.workspace = true
+omsh-secrets.workspace = true
 futures.workspace = true
 genai.workspace = true
 keyring-core.workspace = true

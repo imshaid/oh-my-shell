@@ -3,7 +3,9 @@
 //! The flow, in order:
 //!
 //! 1. The request is masked (secrets, §14.4) and sent with a little context (OS, working
-//!    directory) to the provider, which answers with a JSON plan (§13.4).
+//!    directory, git branch, the last commands of this shell; each can be turned off, §13.5)
+//!    to the provider, which answers with a JSON plan (§13.4). `[v]` on the panel shows exactly
+//!    what was sent.
 //! 2. The answer must parse, fit the schema, and every command must parse in *our* shell
 //!    (no `[[ ]]`, arrays, ...). If not, the model gets the error once and tries again; after
 //!    that: "couldn't make a plan".
@@ -22,23 +24,24 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::{self, IsTerminal};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use omsh_ai::{
-    ChatRequest, ErrorKind, ModelRisk, Plan, PlanContext, PlanError, PlanRequest, Policy, Provider,
-    ProviderError, Settings, collect_text_counting, plan_request, retry_request, runtime,
+    ChatRequest, ErrorKind, Gathered, GitState, ModelRisk, Plan, PlanContext, PlanError,
+    PlanRequest, Policy, Provider, ProviderError, Role, Settings, collect_text_counting,
+    hides_secret, plan_request, retry_request, runtime,
 };
 use omsh_config::{AiContext, AiLanguage, ConfirmLevel};
+use omsh_editor::Head;
 use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, Terminal};
-use omsh_history::secrets;
 use omsh_safety::{Analysis, Level};
 
+use super::recent::Recent;
 use crate::confirm::{self, Decision};
 use crate::history::History;
 
-/// What the replacement of a secret looks like in the text sent to the model.
-const MASK: &str = "[MASKED]";
 /// How many lines of a command, and of an explanation, the panel shows, and how wide.
 const SHOWN_LINES: usize = 5;
 const SHOWN_WIDTH: usize = 160;
@@ -53,7 +56,7 @@ const INTERRUPTED: u8 = 130;
 pub const USAGE: &str =
     "usage: ? <what you want done>   (example: ? show the 5 biggest files here)\n";
 
-const KEYS: &str = "[Enter] run  [e] edit  [Esc] cancel ";
+const KEYS: &str = "[Enter] run  [e] edit  [v] view context  [Esc] cancel ";
 
 // -- what the REPL hands over ---------------------------------------------------------------
 
@@ -97,6 +100,9 @@ pub struct PlanEnv<'a> {
     pub files: &'a mut Io,
     pub tty: &'a mut dyn TerminalSource,
     pub history: Option<&'a History>,
+    /// The last commands of this shell: given to the model as context, and added to by the
+    /// steps that run.
+    pub recent: &'a mut Recent,
     pub confirm: ConfirmLevel,
     /// Draw ✓ and ✗ (otherwise `ok` and `failed`).
     pub unicode: bool,
@@ -106,27 +112,28 @@ pub struct PlanEnv<'a> {
 
 // -- masking and context --------------------------------------------------------------------
 
-/// `text` with every part that looks like a secret (§14.4) replaced by `[MASKED]`.
-#[must_use]
-pub fn mask(text: &str) -> String {
-    let mut ranges = secrets::find(text);
-    ranges.sort_by_key(|range| (range.start, range.end));
-    let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    for range in ranges {
-        if range.end <= at {
-            continue;
-        }
-        let start = range.start.max(at);
-        let Some(before) = text.get(at..start) else {
-            continue;
-        };
-        out.push_str(before);
-        out.push_str(MASK);
-        at = range.end;
+/// What is known about the shell right now, for the items `allowed` lets through. What is off
+/// is not even collected; `PlanContext::build` looks at the switches again and masks.
+fn gather(shell: &Shell, allowed: &AiContext, recent: &Recent) -> Gathered {
+    let dir = crate::repl::directory(shell);
+    Gathered {
+        os: if allowed.os { os_name() } else { None },
+        git: allowed.git.then(|| git_state(&dir)),
+        recent: if allowed.recent_commands {
+            recent.items()
+        } else {
+            Vec::new()
+        },
+        cwd: allowed.cwd.then_some(dir),
     }
-    out.push_str(text.get(at..).unwrap_or_default());
-    out
+}
+
+fn git_state(dir: &str) -> GitState {
+    match omsh_editor::git_head(Path::new(dir)) {
+        Some(Head::Branch(name)) => GitState::Branch(name),
+        Some(Head::Detached(commit)) => GitState::Detached(commit),
+        None => GitState::NotARepository,
+    }
 }
 
 /// The `PRETTY_NAME` of an `os-release` file, without quotes and control characters.
@@ -256,6 +263,14 @@ enum Failure {
     Invalid(PlanError),
 }
 
+/// The request that was sent last (the first one, or the second try), for `[v]`.
+#[derive(Clone)]
+struct Sent {
+    request: ChatRequest,
+    /// On a second try: how long the model's refused first answer was.
+    first_answer_chars: Option<usize>,
+}
+
 /// Asks, checks the answer, and asks once more with the error if it was no good. Ends with the
 /// provider dropped, inside the runtime (see `omsh_ai::runtime::block_on`).
 async fn attempts<T>(
@@ -264,12 +279,18 @@ async fn attempts<T>(
     check: &dyn Fn(&str) -> Result<T, PlanError>,
     received: &AtomicUsize,
     tries: &AtomicUsize,
+    sent: &RefCell<Option<Sent>>,
 ) -> Result<T, Failure> {
     let policy = Policy::standard();
     let mut request = first.clone();
+    let mut first_answer_chars = None;
     let mut outcome = Err(Failure::Invalid(PlanError::new("there was no answer")));
     for attempt in 1..=2 {
         tries.store(attempt, Ordering::Relaxed);
+        *sent.borrow_mut() = Some(Sent {
+            request: request.clone(),
+            first_answer_chars,
+        });
         let answer =
             match collect_text_counting(provider.as_ref(), &request, &policy, received).await {
                 Ok(answer) => answer,
@@ -283,7 +304,10 @@ async fn attempts<T>(
                 outcome = Ok(value);
                 break;
             }
-            Err(error) if attempt == 1 => request = retry_request(first, &answer, &error),
+            Err(error) if attempt == 1 => {
+                first_answer_chars = Some(answer.chars().count());
+                request = retry_request(first, &answer, &error);
+            }
             Err(error) => outcome = Err(Failure::Invalid(error)),
         }
     }
@@ -299,9 +323,10 @@ fn ask(
     check: &dyn Fn(&str) -> Result<Checked, PlanError>,
     label: &str,
     terminal: &mut dyn Terminal,
-) -> Result<Checked, Failure> {
+) -> (Result<Checked, Failure>, Option<Sent>) {
     let received = AtomicUsize::new(0);
     let tries = AtomicUsize::new(1);
+    let sent = RefCell::new(None);
     let live = io::stderr().is_terminal();
     if !live {
         terminal.err(&format!("{label}...\n"));
@@ -331,14 +356,18 @@ fn ask(
         }
         false
     };
-    let outcome = runtime::block_on(attempts(provider, first, check, &received, &tries), &watch);
+    let outcome = runtime::block_on(
+        attempts(provider, first, check, &received, &tries, &sent),
+        &watch,
+    );
     if last_draw.get().is_some() {
         terminal.borrow_mut().err("\r\x1b[K");
     }
-    match outcome {
+    let result = match outcome {
         Ok(result) => result,
         Err(error) => Err(Failure::Provider(error)),
-    }
+    };
+    (result, sent.into_inner())
 }
 
 // -- the panel ------------------------------------------------------------------------------
@@ -416,6 +445,51 @@ fn panel(summary: &str, settings: &Settings, steps: &[Reviewed]) -> String {
     out
 }
 
+// -- what was sent --------------------------------------------------------------------------
+
+/// `text` as it may be shown: no control characters but line feeds.
+fn displayable(text: &str) -> String {
+    text.chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect()
+}
+
+/// Exactly what went to the model (`[v]`, §13.5): the instructions with the context lines, and
+/// the request. After a second try, the refused first answer was sent back too; its own text is
+/// not printed again (it is the model's, and it may hold escape codes).
+fn sent_view(sent: &Sent, settings: &Settings) -> String {
+    let request = &sent.request;
+    let mut out = format!(
+        "\noh-my-shell: this was sent to {} ({}):\n\ninstructions:\n",
+        settings.kind.label(),
+        settings.model
+    );
+    for line in displayable(request.system.as_deref().unwrap_or_default()).lines() {
+        out.push_str("  | ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    let mut user_messages = request.messages.iter().filter(|m| m.role == Role::User);
+    out.push_str("\nrequest:\n");
+    for line in displayable(user_messages.next().map_or("", |m| m.text.as_str())).lines() {
+        out.push_str("  | ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    if let Some(chars) = sent.first_answer_chars {
+        out.push_str(&format!(
+            "\nsecond try: the model's first answer ({chars} characters) was sent back, with:\n"
+        ));
+        for line in displayable(user_messages.next().map_or("", |m| m.text.as_str())).lines() {
+            out.push_str("  | ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push_str("\nsecrets are replaced by [MASKED] before anything is sent; no file contents or command output are sent\n\n");
+    out
+}
+
 // -- the keys -------------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq)]
@@ -426,12 +500,13 @@ enum Choice {
     Cancel(u8),
 }
 
-/// Waits for a key on the panel. Only Enter (or `y`) runs; `e` edits; Esc, `n` and `q` cancel;
-/// any other key is ignored.
-fn choose(terminal: &mut dyn Terminal, steps: usize) -> Choice {
+/// Waits for a key on the panel. Only Enter (or `y`) runs; `e` edits; `v` shows what was sent
+/// and goes on waiting; Esc, `n` and `q` cancel; any other key is ignored.
+fn choose(terminal: &mut dyn Terminal, steps: usize, view: &str) -> Choice {
     loop {
         match terminal.read_key(KEYS) {
             Ok(Key::Enter | Key::Char('y' | 'Y')) => return Choice::Run,
+            Ok(Key::Char('v' | 'V')) => terminal.err(view),
             Ok(Key::Char('e' | 'E')) => {
                 if steps == 1 {
                     return Choice::Edit(0);
@@ -469,24 +544,24 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         say(&mut env, USAGE);
         return finish(env.shell, USAGE_STATUS);
     }
-    let masked = mask(request);
-    if masked != request {
-        say(
-            &mut env,
-            "oh-my-shell: a secret in the request was hidden before sending\n",
-        );
-    }
 
     // -- ask
-    let context = PlanContext {
-        os: if setup.context.os { os_name() } else { None },
-        cwd: setup.context.cwd.then(|| crate::repl::directory(env.shell)),
-    };
-    let first = plan_request(&PlanRequest {
-        request: &masked,
+    let context = PlanContext::build(
+        gather(env.shell, &setup.context, env.recent),
+        &setup.context,
+    );
+    let plan_asked = PlanRequest {
+        request,
         context: &context,
         language: setup.language,
-    });
+    };
+    if hides_secret(&plan_asked) {
+        say(
+            &mut env,
+            "oh-my-shell: a secret in the request or the context was hidden before sending\n",
+        );
+    }
+    let first = plan_request(&plan_asked);
     let label = format!(
         "Asking {} ({})",
         setup.settings.kind.label(),
@@ -501,10 +576,18 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
             steps,
         })
     };
-    let outcome = {
+    let (outcome, sent) = {
         let mut terminal = env.tty.open(env.shell, env.files);
         ask(setup.provider, &first, &check, &label, &mut *terminal)
     };
+    // What `[v]` shows: the request that was really sent last (a second try, if there was one).
+    let view = sent_view(
+        &sent.unwrap_or(Sent {
+            request: first,
+            first_answer_chars: None,
+        }),
+        &setup.settings,
+    );
     let kind = setup.settings.kind;
     let Checked { summary, mut steps } = match outcome {
         Ok(checked) => checked,
@@ -534,7 +617,7 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         let choice = {
             let mut terminal = env.tty.open(env.shell, env.files);
             terminal.err(&text);
-            choose(&mut *terminal, steps.len())
+            choose(&mut *terminal, steps.len(), &view)
         };
         match choice {
             Choice::Run => break,
@@ -670,6 +753,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             }
             LineResult::Incomplete => ExitStatus::USAGE.0,
         };
+        env.recent.record(&step.command, i32::from(last));
         if last == 0 {
             say(env, &format!("  {ok}\n"));
         } else {

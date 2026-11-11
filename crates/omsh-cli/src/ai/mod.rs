@@ -16,6 +16,7 @@
 //! anything.
 
 pub mod plan;
+pub mod recent;
 mod setup;
 #[cfg(test)]
 mod tests;

@@ -90,8 +90,11 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # "bn". The commands themselves stay in shell syntax.
 #language = "auto"
 
-# What may be sent along with a request. Each item can be turned off. `os` and `cwd` are used
-# now; `git` and `recent_commands` are not used yet.
+# What may be sent along with a request. Each item can be turned off. `os` is the name of the
+# system, `cwd` the working directory, `git` whether it is inside a git repository and the
+# branch, `recent_commands` the last 3 commands of this shell with their exit status (never
+# their output). Secrets are replaced by [MASKED] first. Press `v` in the plan panel to see
+# exactly what was sent.
 #[ai.context]
 #os = true
 #cwd = true

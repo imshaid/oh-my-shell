@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+omsh-secrets.workspace = true
 rusqlite.workspace = true
 
 [lints]

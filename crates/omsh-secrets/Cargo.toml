@@ -1,0 +1,15 @@
+[package]
+name = "omsh-secrets"
+description = "Finds and masks text that looks like a secret (blueprint section 14.4) for Oh My Shell."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

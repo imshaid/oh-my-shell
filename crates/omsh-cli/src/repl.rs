@@ -152,6 +152,13 @@ fn run_on(
     let mut pending = String::new();
     // How long the last command took, for the prompt.
     let mut took: Option<Duration> = None;
+    // The last commands typed here, for the AI context (S22). Lines the history ignores are
+    // left out of it too.
+    let mut recent = ai::recent::Recent::new(
+        history
+            .map(|history| history.filter.clone())
+            .unwrap_or_default(),
+    );
     loop {
         if interactive {
             if hung_up() {
@@ -234,6 +241,7 @@ fn run_on(
                     &mut shell,
                     &mut files,
                     history,
+                    &mut recent,
                     &config,
                     style,
                     &mut editor,
@@ -263,6 +271,16 @@ fn run_on(
                     history.store.finish(token, status, started.elapsed());
                 }
             }
+        }
+        // A typed line that ended (not a `?` request: its steps are noted when they run).
+        if interactive
+            && trigger(&pending).is_none()
+            && matches!(
+                result,
+                LineResult::Ran(Outcome::Continue(_)) | LineResult::Rejected(_)
+            )
+        {
+            recent.record(&pending, i32::from(shell.last_status().0));
         }
         match result {
             LineResult::Incomplete => {}
@@ -297,6 +315,7 @@ fn ai_line(
     shell: &mut Shell,
     files: &mut Io,
     history: Option<&History>,
+    recent: &mut ai::recent::Recent,
     config: &Config,
     style: Style,
     editor: &mut Option<Editor>,
@@ -339,6 +358,7 @@ fn ai_line(
             files,
             tty: &mut ai::plan::RealTerminal,
             history,
+            recent,
             confirm: config.safety.confirm,
             unicode: matches!(style, Style::Graphical { unicode: true, .. }),
             edit: &mut edit,

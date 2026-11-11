@@ -4,12 +4,11 @@
 //!   a database in memory. Writing happens on a thread of its own; see `store.rs`.
 //! - [`Query`] says what to look for and [`Entry`] is one stored command.
 //! - [`Filter`] decides which lines are stored: not the ones that match a `[history] ignore`
-//!   pattern, and never one that looks like it holds a secret ([`secrets`]).
+//!   pattern, and never one that looks like it holds a secret (the rules are in `omsh-secrets`).
 //!
-//! This crate depends on no other crate of the workspace.
+//! This crate depends on `omsh-secrets` only.
 
 mod filter;
-pub mod secrets;
 mod store;
 
 pub use filter::Filter;

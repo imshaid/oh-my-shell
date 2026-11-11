@@ -10,12 +10,13 @@ repository = "https://github.com/imshaid/oh-my-shell"
 
 [workspace.dependencies]
 # Internal crates. Allowed dependency direction (no cycles):
-#   cli    -> editor, exec, ui, ai, safety, history, config
+#   cli    -> editor, exec, ui, ai, safety, history, config, secrets
 #   editor -> syntax, history, ui, config
 #   exec   -> syntax, config
 #   tests  -> cli (development only: the end-to-end tests run the shell's entry function)
 #   safety -> syntax
-#   ai     -> config
+#   ai     -> config, secrets
+#   history -> secrets
 #   ui     -> config
 omsh-ai = { path = "crates/omsh-ai" }
 omsh-config = { path = "crates/omsh-config" }
@@ -23,6 +24,7 @@ omsh-editor = { path = "crates/omsh-editor" }
 omsh-exec = { path = "crates/omsh-exec" }
 omsh-history = { path = "crates/omsh-history" }
 omsh-safety = { path = "crates/omsh-safety" }
+omsh-secrets = { path = "crates/omsh-secrets" }
 omsh-syntax = { path = "crates/omsh-syntax" }
 omsh-ui = { path = "crates/omsh-ui" }
 

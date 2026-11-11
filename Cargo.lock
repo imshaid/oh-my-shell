@@ -1697,6 +1697,7 @@ dependencies = [
  "genai",
  "keyring-core",
  "omsh-config",
+ "omsh-secrets",
  "reqwest",
  "rustls",
  "serde",
@@ -1757,6 +1758,7 @@ dependencies = [
 name = "omsh-history"
 version = "0.1.0"
 dependencies = [
+ "omsh-secrets",
  "rusqlite",
 ]
 
@@ -1765,6 +1767,13 @@ name = "omsh-safety"
 version = "0.1.0"
 dependencies = [
  "omsh-syntax",
+ "proptest",
+]
+
+[[package]]
+name = "omsh-secrets"
+version = "0.1.0"
+dependencies = [
  "proptest",
 ]
 

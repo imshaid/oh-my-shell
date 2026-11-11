@@ -29,15 +29,27 @@ fn config_dir(ctx: &Ctx) -> PathBuf {
 
 /// Points the shell at the fake server.
 fn configure(ctx: &Ctx, server: &Server) -> io::Result<()> {
+    configure_with(ctx, server, "")
+}
+
+/// The same, with more text at the end of `config.toml`.
+fn configure_with(ctx: &Ctx, server: &Server, more: &str) -> io::Result<()> {
     let dir = config_dir(ctx);
     fs::create_dir_all(&dir)?;
     fs::write(
         dir.join("config.toml"),
         format!(
-            "[ai]\nprovider = \"openai-compatible\"\nmodel = \"model-one\"\nbase_url = \"{}\"\n",
+            "[ai]\nprovider = \"openai-compatible\"\nmodel = \"model-one\"\nbase_url = \"{}\"\n{more}",
             server.url("/v1")
         ),
     )
+}
+
+/// A folder `repo` in the home directory that looks like a git repository on `branch`.
+fn make_repo(ctx: &Ctx, branch: &str) -> io::Result<()> {
+    let git = ctx.home().join("repo/.git");
+    fs::create_dir_all(&git)?;
+    fs::write(git.join("HEAD"), format!("ref: refs/heads/{branch}\n"))
 }
 
 /// A launch whose keyring does not exist, in the home directory (so relative paths in the
@@ -82,7 +94,7 @@ fn chat_requests(server: &Server) -> Vec<String> {
         .collect()
 }
 
-const PANEL_KEYS: &str = "[Enter] run  [e] edit  [Esc] cancel";
+const PANEL_KEYS: &str = "[Enter] run  [e] edit  [v] view context  [Esc] cancel";
 
 #[test]
 fn a_plan_waits_for_enter_and_only_then_runs() {
@@ -165,7 +177,7 @@ fn the_request_is_masked_and_carries_only_the_allowed_context() {
         let mut term = launch(ctx).start()?;
 
         term.command(&format!("? push with {token} please"))?;
-        term.expect("a secret in the request was hidden", SHORT);
+        term.expect("hidden before sending", SHORT);
         term.expect(PANEL_KEYS, SHORT);
         term.write_bytes(ESCAPE)?;
         term.expect("cancelled", SHORT);
@@ -173,8 +185,110 @@ fn the_request_is_masked_and_carries_only_the_allowed_context() {
         assert!(!body.contains(&token), "the token left the machine: {body}");
         assert!(body.contains("push with [MASKED] please"), "{body}");
         assert!(body.contains("Working directory"), "{body}");
-        // No history, no git facts, no environment.
+        // Nothing ran yet and the folder is no repository: no recent commands, no branch.
         assert!(!body.contains("Recent commands"), "{body}");
+        assert!(body.contains("not inside a repository"), "{body}");
+        Ok(())
+    });
+}
+
+const SECRET_EXPORT: &str = "export GITHUB_TOKEN=ghp_a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2";
+const TOKEN: &str = "ghp_a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2";
+
+#[test]
+fn the_branch_and_the_last_commands_are_sent_and_masked() {
+    pty_test(BIN, |ctx| {
+        let answer = plan(&[("List", "ls", "low")]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure(ctx, &server)?;
+        make_repo(ctx, "feature-x")?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("cd repo")?;
+        term.command(SECRET_EXPORT)?;
+        term.command("false")?;
+        term.command("? list the files")?;
+        term.expect("hidden before sending", SHORT);
+        term.expect(PANEL_KEYS, SHORT);
+        term.write_bytes(ESCAPE)?;
+        term.expect("cancelled", SHORT);
+        let body = &chat_requests(&server)[0];
+        assert!(!body.contains(TOKEN), "the token left the machine: {body}");
+        assert!(
+            body.contains("inside a repository, on branch feature-x"),
+            "{body}"
+        );
+        assert!(body.contains("Recent commands in this shell"), "{body}");
+        assert!(
+            body.contains("export GITHUB_TOKEN=[MASKED]  (exit 0)"),
+            "{body}"
+        );
+        assert!(body.contains("false  (exit 1)"), "{body}");
+        // The request itself is not a recent command.
+        assert!(!body.contains("list the files  (exit"), "{body}");
+        Ok(())
+    });
+}
+
+#[test]
+fn switched_off_context_items_are_not_sent() {
+    pty_test(BIN, |ctx| {
+        let answer = plan(&[("List", "ls", "low")]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure_with(
+            ctx,
+            &server,
+            "[ai.context]\nos = false\ncwd = false\ngit = false\nrecent_commands = false\n",
+        )?;
+        make_repo(ctx, "feature-x")?;
+        let mut term = launch(ctx).start()?;
+
+        term.command("cd repo")?;
+        term.command("false")?;
+        term.command("? list the files")?;
+        term.expect(PANEL_KEYS, SHORT);
+        term.write_bytes(ESCAPE)?;
+        term.expect("cancelled", SHORT);
+        let body = &chat_requests(&server)[0];
+        for absent in [
+            "Git:",
+            "feature-x",
+            "Recent commands",
+            "Working directory",
+            "OS:",
+            "repo",
+        ] {
+            assert!(!body.contains(absent), "{absent} was sent: {body}");
+        }
+        assert!(body.contains("list the files"), "{body}");
+        Ok(())
+    });
+}
+
+#[test]
+fn v_shows_what_was_sent_and_runs_nothing() {
+    pty_test(BIN, |ctx| {
+        let marker = ctx.home().join("marker");
+        let answer = plan(&[("Touch", &format!("echo x > {}", marker.display()), "low")]);
+        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+        configure(ctx, &server)?;
+        let mut term = launch(ctx).start()?;
+
+        term.command(&format!("? touch it, key {TOKEN}"))?;
+        term.expect(PANEL_KEYS, SHORT);
+        term.write_bytes(b"v")?;
+        term.expect_plain(
+            "this was sent to OpenAI-compatible server (model-one)",
+            SHORT,
+        );
+        term.expect_plain("| - Working directory:", SHORT);
+        term.expect_plain("| touch it, key [MASKED]", SHORT);
+        term.expect_plain("no file contents or command output are sent", SHORT);
+        assert!(!marker.exists(), "`v` must not run the plan");
+        // The question is still open: Esc cancels it.
+        term.write_bytes(ESCAPE)?;
+        term.expect("cancelled; nothing ran", SHORT);
+        assert!(!marker.exists());
         Ok(())
     });
 }

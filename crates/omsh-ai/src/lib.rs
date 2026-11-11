@@ -13,8 +13,12 @@
 //! - [`runtime::block_on`] runs a request from the shell's ordinary (synchronous) code and
 //!   stops it on Ctrl+C.
 //!
-//! This crate depends on `omsh-config` only.
+//! This crate depends on `omsh-config` and `omsh-secrets` only.
+//!
+//! - [`PlanContext`] is what may be sent besides the request: it masks every text with the
+//!   rules of `omsh-secrets` and applies the `[ai.context]` switches.
 
+mod context;
 mod destination;
 mod error;
 mod genai_provider;
@@ -28,6 +32,7 @@ mod secret;
 pub mod fake;
 pub mod runtime;
 
+pub use context::{Gathered, GitState, PlanContext, RECENT_COMMANDS, RecentCommand};
 pub use destination::{key_may_go_to, server_of};
 pub use error::{ErrorKind, ProviderError};
 pub use genai_provider::{GenaiProvider, Settings, map_error};
@@ -37,7 +42,7 @@ pub use keys::{
 pub use plan::{
     Lang, MAX_COMMAND_CHARS, MAX_STEPS, ModelRisk, Plan, PlanError, Step, placeholder_in,
 };
-pub use prompt::{PLAN_MAX_TOKENS, PlanContext, PlanRequest, plan_request, retry_request};
+pub use prompt::{PLAN_MAX_TOKENS, PlanRequest, hides_secret, plan_request, retry_request};
 pub use provider::{
     ChatEvent, ChatRequest, EventStream, Message, Provider, Role, collect_text,
     collect_text_counting, verify,

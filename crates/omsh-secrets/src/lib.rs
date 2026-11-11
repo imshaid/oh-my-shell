@@ -1,14 +1,17 @@
-//! Finds text that looks like a secret (blueprint §14.4).
+//! Finds and masks text that looks like a secret (blueprint §14.4).
 //!
-//! History never stores a line in which [`find`] sees something (§14.2). The answer is a list
-//! of byte ranges and not a yes or no, so that the same rules can later mask the secret parts
-//! of a text instead of dropping it.
+//! The same rules serve two users: history never stores a line in which [`find`] sees something
+//! (§14.2), and the AI layer replaces what [`find`] sees with [`MASK`] before anything is sent
+//! to a model (§13.5). The answer of `find` is a list of byte ranges and not a yes or no, so that
+//! one set of rules can do both.
 //!
 //! The rules are written by hand, on bytes: there are few of them and each is a fixed prefix
 //! followed by a run of characters, which does not need a regular-expression crate.
 //!
 //! A value that starts with `$` is not a secret: `API_KEY=$OTHER` and `--token=$(cat file)`
 //! name where the secret is, they do not hold it.
+//!
+//! This crate depends on no other crate.
 
 use std::ops::Range;
 
@@ -25,6 +28,41 @@ pub fn find(text: &str) -> Vec<Range<usize>> {
     url_credentials(bytes, &mut found);
     found.sort_by_key(|range| (range.start, range.end));
     found
+}
+
+/// What a secret is replaced by in text that leaves the machine.
+pub const MASK: &str = "[MASKED]";
+
+/// `text` with every part [`find`] sees replaced by [`MASK`]. Overlapping parts become one
+/// mask. The rest of the text is kept byte for byte.
+#[must_use]
+pub fn mask(text: &str) -> String {
+    mask_counting(text).0
+}
+
+/// Like [`mask`], and also says whether anything was replaced.
+#[must_use]
+pub fn mask_counting(text: &str) -> (String, bool) {
+    let ranges = find(text);
+    if ranges.is_empty() {
+        return (text.to_owned(), false);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for range in ranges {
+        if range.end <= at {
+            continue;
+        }
+        let start = range.start.max(at);
+        let Some(before) = text.get(at..start) else {
+            continue;
+        };
+        out.push_str(before);
+        out.push_str(MASK);
+        at = range.end;
+    }
+    out.push_str(text.get(at..).unwrap_or_default());
+    (out, true)
 }
 
 /// True if `text` holds something that looks like a secret.
@@ -469,6 +507,246 @@ mod tests {
             "ssh user@host",
         ] {
             assert!(!looks_secret(text), "{text}");
+        }
+    }
+    // -- masking: one case for every pattern of §14.4 ------------------------------------------
+
+    /// (pattern name of §14.4, text, expected masked text). A secret that is not in the
+    /// expected text is gone.
+    fn cases() -> Vec<(&'static str, String, String)> {
+        let github = format!("ghp_{}", "a1B2".repeat(9));
+        let pat = format!("github_pat_{}", "x_1".repeat(8));
+        let google = format!("AIza{}", "Sy-_9".repeat(7));
+        let anthropic = format!("sk-ant-api03-{}", "q".repeat(24));
+        let openai = format!("sk-proj-{}", "Z9".repeat(12));
+        vec![
+            (
+                "*_KEY=",
+                "export API_KEY=abc123 now".into(),
+                "export API_KEY=[MASKED] now".into(),
+            ),
+            (
+                "*_TOKEN=",
+                "GITHUB_TOKEN=xyz gh pr list".into(),
+                "GITHUB_TOKEN=[MASKED] gh pr list".into(),
+            ),
+            (
+                "*_SECRET=",
+                "CLIENT_SECRET='a b' run".into(),
+                "CLIENT_SECRET='[MASKED]' run".into(),
+            ),
+            (
+                "password=",
+                "mysql --password=hunter2 db".into(),
+                "mysql --password=[MASKED] db".into(),
+            ),
+            (
+                "password= (PGPASSWORD)",
+                "PGPASSWORD=pw psql".into(),
+                "PGPASSWORD=[MASKED] psql".into(),
+            ),
+            (
+                "Authorization: Bearer",
+                "curl -H 'Authorization: Bearer abc.def' url".into(),
+                "curl -H 'Authorization: Bearer [MASKED]' url".into(),
+            ),
+            (
+                "AWS AKIA",
+                "echo AKIAIOSFODNN7EXAMPLE | cmd".into(),
+                "echo [MASKED] | cmd".into(),
+            ),
+            (
+                "AWS ASIA",
+                "echo ASIAABCDEFGHIJKLMNOP".into(),
+                "echo [MASKED]".into(),
+            ),
+            (
+                "GitHub ghp_",
+                format!("echo {github}"),
+                "echo [MASKED]".into(),
+            ),
+            (
+                "GitHub gho_",
+                format!("gho_{}", "0".repeat(36)),
+                "[MASKED]".into(),
+            ),
+            (
+                "GitHub ghu_",
+                format!("ghu_{}", "0".repeat(36)),
+                "[MASKED]".into(),
+            ),
+            (
+                "GitHub ghs_",
+                format!("ghs_{}", "0".repeat(36)),
+                "[MASKED]".into(),
+            ),
+            (
+                "GitHub ghr_",
+                format!("ghr_{}", "0".repeat(36)),
+                "[MASKED]".into(),
+            ),
+            (
+                "GitHub github_pat_",
+                format!("use {pat} here"),
+                "use [MASKED] here".into(),
+            ),
+            (
+                "Google AIza",
+                format!("key {google}"),
+                "key [MASKED]".into(),
+            ),
+            (
+                "Anthropic sk-ant-",
+                format!("export X={anthropic}"),
+                "export X=[MASKED]".into(),
+            ),
+            (
+                "OpenAI sk-proj-",
+                format!("echo {openai}"),
+                "echo [MASKED]".into(),
+            ),
+            (
+                "OpenAI sk-",
+                format!("echo sk-{}", "a".repeat(20)),
+                "echo [MASKED]".into(),
+            ),
+            (
+                "private key (one line)",
+                "echo '-----BEGIN OPENSSH PRIVATE KEY-----' > k".into(),
+                "echo '[MASKED]".into(),
+            ),
+            (
+                "private key (block)",
+                "cat <<E\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\nE"
+                    .into(),
+                "cat <<E\n[MASKED]\nE".into(),
+            ),
+            (
+                "user:pass@ URL",
+                "git clone https://me:s3cret@example.com/r.git".into(),
+                "git clone https://me:[MASKED]@example.com/r.git".into(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_pattern_of_the_blueprint_is_masked_exactly() {
+        for (name, text, expected) in cases() {
+            let (masked, changed) = mask_counting(&text);
+            assert_eq!(masked, expected, "{name}");
+            assert!(changed, "{name}");
+            assert_eq!(mask(&text), expected, "{name}");
+            // Nothing found afterwards, so a second pass changes nothing.
+            assert_eq!(mask(&masked), masked, "{name} is not stable");
+        }
+    }
+
+    #[test]
+    fn the_table_lists_every_pattern_of_section_14_4() {
+        let names: Vec<&str> = cases().iter().map(|case| case.0).collect();
+        for needed in [
+            "*_KEY=",
+            "*_TOKEN=",
+            "*_SECRET=",
+            "password=",
+            "Authorization: Bearer",
+            "AWS AKIA",
+            "GitHub ghp_",
+            "GitHub github_pat_",
+            "Google AIza",
+            "Anthropic sk-ant-",
+            "OpenAI sk-proj-",
+            "private key (block)",
+            "user:pass@ URL",
+        ] {
+            assert!(names.contains(&needed), "no masking case for {needed}");
+        }
+    }
+
+    #[test]
+    fn text_without_a_secret_is_returned_unchanged() {
+        for text in [
+            "",
+            "ls -la ~/বাংলা",
+            "echo $API_KEY",
+            "API_KEY=$OTHER cmd",
+            "git push origin sk-feature-branch",
+            "curl https://user:@example.com",
+        ] {
+            assert_eq!(mask_counting(text), (text.to_owned(), false), "{text}");
+        }
+    }
+
+    #[test]
+    fn two_secrets_and_bangla_text_around_them() {
+        let text = "ক API_KEY=গোপন curl https://u:পাস@h শেষ";
+        assert_eq!(
+            mask(text),
+            "ক API_KEY=[MASKED] curl https://u:[MASKED]@h শেষ"
+        );
+    }
+
+    #[test]
+    fn overlapping_findings_give_one_mask() {
+        // The key format and the assignment both see the same value.
+        let key = format!("sk-{}", "a".repeat(24));
+        let text = format!("OPENAI_API_KEY={key}");
+        assert_eq!(mask(&text), "OPENAI_API_KEY=[MASKED]");
+    }
+
+    mod props {
+        use super::super::{find, mask};
+        use proptest::prelude::*;
+
+        /// One secret of each fixed format, built from a random body.
+        fn planted(body: &str) -> Vec<String> {
+            let upper: String = body
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .map(|c| c.to_ascii_uppercase())
+                .chain("ABCDEFGHIJKLMNOP".chars())
+                .take(16)
+                .collect();
+            let token: String = body
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .chain("abcdefghijklmnopqrstuvwxyz0123456789".chars())
+                .take(40)
+                .collect();
+            vec![
+                format!("AKIA{upper}"),
+                format!("ghp_{token}"),
+                format!("sk-ant-{token}"),
+                format!("github_pat_{token}"),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn a_planted_key_never_survives_masking(
+                body in "[A-Za-z0-9]{0,40}",
+                before in "[ -~ক-ঢ]{0,30}",
+                after in "[ -~ক-ঢ]{0,30}",
+            ) {
+                for key in planted(&body) {
+                    // A blank on each side keeps the key a word of its own.
+                    let text = format!("{before} {key} {after}");
+                    let masked = mask(&text);
+                    prop_assert!(!masked.contains(&key), "{masked}");
+                }
+            }
+
+            #[test]
+            fn masking_any_text_does_not_panic_and_ranges_fit(text in "\\PC{0,200}") {
+                let masked = mask(&text);
+                prop_assert!(find(&masked).iter().all(|r| r.end <= masked.len()));
+                for range in find(&text) {
+                    prop_assert!(text.is_char_boundary(range.start));
+                    prop_assert!(text.is_char_boundary(range.end));
+                }
+            }
         }
     }
 }

@@ -2,12 +2,13 @@
 //! asks again after a bad answer.
 //!
 //! What is sent is decided here and nowhere else: the system prompt below, the context lines
-//! the caller allows (`os`, `cwd`), and the request text. The caller masks secrets in the
-//! request before it gets here (the secret rules live in `omsh-history`, which this crate may
-//! not depend on).
+//! of [`PlanContext`] (already masked and limited by `PlanContext::build`), and the request
+//! text, which is masked here with the rules of `omsh-secrets` (§14.4) whatever the caller did.
 
 use omsh_config::AiLanguage;
+use omsh_secrets::{looks_secret, mask};
 
+use crate::context::PlanContext;
 use crate::plan::{MAX_STEPS, PlanError};
 use crate::provider::{ChatRequest, Message};
 
@@ -17,22 +18,19 @@ pub const PLAN_MAX_TOKENS: u32 = 2048;
 /// How much of a bad answer is repeated back to the model when asking again.
 const ECHO_CHARS: usize = 6000;
 
-/// What the caller lets the model know besides the request. `None` means "not sent".
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PlanContext {
-    /// `PRETTY_NAME` of the OS, e.g. `Ubuntu 26.04 LTS`.
-    pub os: Option<String>,
-    /// The shell's working directory.
-    pub cwd: Option<String>,
-}
-
 /// A request to plan a task.
 #[derive(Clone, Copy, Debug)]
 pub struct PlanRequest<'a> {
-    /// What the person asked for, with secrets already masked.
+    /// What the person asked for. Secrets in it are masked when the request is made.
     pub request: &'a str,
     pub context: &'a PlanContext,
     pub language: AiLanguage,
+}
+
+/// True if [`plan_request`] will hide something: a secret in the request or in the context.
+#[must_use]
+pub fn hides_secret(req: &PlanRequest<'_>) -> bool {
+    req.context.masked || looks_secret(req.request)
 }
 
 /// The request to send to the model.
@@ -40,7 +38,7 @@ pub struct PlanRequest<'a> {
 pub fn plan_request(req: &PlanRequest<'_>) -> ChatRequest {
     ChatRequest {
         system: Some(system_prompt(req.language, req.context)),
-        messages: vec![Message::user(req.request)],
+        messages: vec![Message::user(mask(req.request))],
         max_tokens: PLAN_MAX_TOKENS,
         json: true,
     }
@@ -110,19 +108,16 @@ fn system_prompt(language: AiLanguage, context: &PlanContext) -> String {
         }
     });
     out.push_str("\nContext:\n- Shell: oh-my-shell (a POSIX sh subset), on Linux\n");
-    if let Some(os) = &context.os {
-        out.push_str(&format!("- OS: {os}\n"));
-    }
-    if let Some(cwd) = &context.cwd {
-        out.push_str(&format!("- Working directory: {cwd}\n"));
-    }
+    out.push_str(&context.lines());
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{Gathered, GitState, RecentCommand};
     use crate::provider::Role;
+    use omsh_config::AiContext;
 
     fn request(language: AiLanguage, context: &PlanContext) -> ChatRequest {
         plan_request(&PlanRequest {
@@ -155,19 +150,60 @@ mod tests {
         let none = request(AiLanguage::Auto, &PlanContext::default())
             .system
             .unwrap();
-        assert!(!none.contains("OS:") && !none.contains("Working directory"));
+        for absent in ["OS:", "Working directory", "Git:", "Recent commands"] {
+            assert!(!none.contains(absent), "{absent}");
+        }
+        let gathered = Gathered {
+            os: Some("Ubuntu 26.04".into()),
+            cwd: Some("/home/me/work".into()),
+            git: Some(GitState::Branch("main".into())),
+            recent: vec![RecentCommand {
+                command: "false".into(),
+                status: 1,
+            }],
+        };
         let all = request(
             AiLanguage::Auto,
-            &PlanContext {
-                os: Some("Ubuntu 26.04".into()),
-                cwd: Some("/home/me/work".into()),
-            },
+            &PlanContext::build(gathered, &AiContext::default()),
         )
         .system
         .unwrap();
         assert!(all.contains("- OS: Ubuntu 26.04\n"));
         assert!(all.contains("- Working directory: /home/me/work\n"));
+        assert!(all.contains("- Git: inside a repository, on branch main\n"));
+        assert!(all.contains("  - false  (exit 1)\n"));
         assert!(all.contains("oh-my-shell"));
+    }
+
+    #[test]
+    fn the_request_text_is_masked_even_if_the_caller_forgot() {
+        let key = format!("ghp_{}", "a1B2".repeat(9));
+        let text = format!("push with {key} please");
+        let context = PlanContext::default();
+        let req = PlanRequest {
+            request: &text,
+            context: &context,
+            language: AiLanguage::Auto,
+        };
+        assert!(hides_secret(&req));
+        let chat = plan_request(&req);
+        assert_eq!(
+            chat.messages,
+            vec![Message::user("push with [MASKED] please")]
+        );
+        let plain = PlanRequest {
+            request: "list files",
+            ..req
+        };
+        assert!(!hides_secret(&plain));
+        let masked_context = PlanContext {
+            masked: true,
+            ..PlanContext::default()
+        };
+        assert!(hides_secret(&PlanRequest {
+            context: &masked_context,
+            ..plain
+        }));
     }
 
     #[test]

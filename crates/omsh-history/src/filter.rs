@@ -3,7 +3,7 @@
 //! A line is not stored if it is blank, if it matches one of the `[history] ignore` patterns,
 //! or if it looks like it holds a secret (always, whatever the patterns say: §14.2).
 
-use crate::secrets;
+use omsh_secrets as secrets;
 
 /// The rule for what is stored. Cheap to share: the shell and the editor each hold one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -28,12 +28,19 @@ impl Filter {
     /// True if `command` may be written to history.
     #[must_use]
     pub fn stores(&self, command: &str) -> bool {
+        !self.ignores(command) && !secrets::looks_secret(command)
+    }
+
+    /// True if `command` is blank or matches a `[history] ignore` pattern: a line the person
+    /// asked not to be remembered. Unlike [`Filter::stores`] this does not look for secrets,
+    /// because the AI context masks them instead of dropping the line.
+    #[must_use]
+    pub fn ignores(&self, command: &str) -> bool {
         if command.trim().is_empty() {
-            return false;
+            return true;
         }
         let text: Vec<char> = command.chars().collect();
-        !self.patterns.iter().any(|pattern| matches(pattern, &text))
-            && !secrets::looks_secret(command)
+        self.patterns.iter().any(|pattern| matches(pattern, &text))
     }
 }
 
