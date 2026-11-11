@@ -255,6 +255,15 @@ fn run_piped(home: &Path, script: &str) -> io::Result<String> {
 
 // -- the blast radius (S17) ----------------------------------------------------------------
 
+/// The count of what a line touches has a time budget (300 ms by default); a busy machine must
+/// not change the numbers these tests look for. The configuration allows at most 60,000 ms.
+fn generous_time(ctx: &Ctx) -> io::Result<()> {
+    fs::write(
+        config_dir(ctx)?.join("config.toml"),
+        "[safety]\nblast_radius_max_ms = 60000\n",
+    )
+}
+
 /// Makes `count` files named `name0.ext`, `name1.ext`... in `dir`.
 fn many_files(dir: &Path, stem: &str, ext: &str, count: usize) -> io::Result<()> {
     fs::create_dir_all(dir)?;
@@ -267,6 +276,7 @@ fn many_files(dir: &Path, stem: &str, ext: &str, count: usize) -> io::Result<()>
 #[test]
 fn the_question_shows_what_the_line_would_touch() {
     pty_test(BIN, |ctx| {
+        generous_time(ctx)?;
         let mut term = shell_with_build(ctx)?;
         term.command("rm -rf proj/build")?;
         term.expect_plain("this command is dangerous:", SHORT);
@@ -289,6 +299,7 @@ fn the_question_shows_what_the_line_would_touch() {
 #[test]
 fn something_outside_the_working_directory_is_counted_as_outside() {
     pty_test(BIN, |ctx| {
+        generous_time(ctx)?;
         let mut term = shell_with_build(ctx)?;
         term.command("cd proj && rm -rf ../proj/build")?;
         term.expect_plain("touches 1 file and 1 folder", SHORT);
@@ -314,6 +325,7 @@ fn something_outside_the_working_directory_is_counted_as_outside() {
 #[test]
 fn a_pattern_with_many_matches_asks_and_a_small_one_only_notes() {
     pty_test(BIN, |ctx| {
+        generous_time(ctx)?;
         let many = ctx.home().join("many");
         many_files(&many, "f", "tmp", 21)?;
         let mut term = ctx.launch().cwd(&many).start()?;
@@ -341,6 +353,7 @@ fn a_pattern_with_many_matches_asks_and_a_small_one_only_notes() {
 #[test]
 fn find_delete_asks_and_says_what_it_searches_not_what_it_deletes() {
     pty_test(BIN, |ctx| {
+        generous_time(ctx)?;
         let tree = ctx.home().join("logs");
         fs::create_dir_all(tree.join("sub"))?;
         fs::write(tree.join("a.log"), "x\n")?;
@@ -372,7 +385,7 @@ fn the_limits_in_config_toml_decide_where_counting_stops() {
     pty_test(BIN, |ctx| {
         fs::write(
             config_dir(ctx)?.join("config.toml"),
-            "[safety]\nblast_radius_max_entries = 3\n",
+            "[safety]\nblast_radius_max_entries = 3\nblast_radius_max_ms = 60000\n",
         )?;
         let mut term = ctx.launch().cwd(ctx.home()).start()?;
         many_files(&ctx.home().join("big"), "f", "dat", 10)?;

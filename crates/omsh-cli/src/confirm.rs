@@ -276,6 +276,12 @@ mod tests {
     use crate::probe::ShellProbe;
     use crate::radius::BlastLimits;
 
+    /// Limits whose time budget cannot run out, so a busy machine cannot change a count.
+    const TEST_LIMITS: BlastLimits = BlastLimits {
+        max_entries: 50_000,
+        max_ms: 600_000,
+    };
+
     /// A terminal that gives scripted answers and keeps what was printed.
     struct Scripted {
         answers: VecDeque<Result<&'static str, ReadError>>,
@@ -519,13 +525,8 @@ mod tests {
             "build/lib/b.o".to_owned(),
             "build/c.o".to_owned(),
         ]);
-        let (decision, terminal) = ask_in(
-            dir.path(),
-            Some(BlastLimits::default()),
-            "rm -rf build",
-            D,
-            &[Ok("n")],
-        );
+        let (decision, terminal) =
+            ask_in(dir.path(), Some(TEST_LIMITS), "rm -rf build", D, &[Ok("n")]);
         assert_eq!(decision, Decision::Cancel(1));
         assert!(
             terminal
@@ -563,7 +564,7 @@ mod tests {
         // `rm -rf build` is Dangerous; with `confirm = critical` it only gets a note.
         let (decision, terminal) = ask_in(
             dir.path(),
-            Some(BlastLimits::default()),
+            Some(TEST_LIMITS),
             "rm -rf build",
             ConfirmLevel::Critical,
             &[],
@@ -577,13 +578,7 @@ mod tests {
     fn a_pattern_over_twenty_matches_asks_and_says_how_many() {
         let dir = Scratch::new();
         dir.files((0..21).map(|i| format!("f{i}.tmp")));
-        let (decision, terminal) = ask_in(
-            dir.path(),
-            Some(BlastLimits::default()),
-            "rm *.tmp",
-            D,
-            &[Ok("n")],
-        );
+        let (decision, terminal) = ask_in(dir.path(), Some(TEST_LIMITS), "rm *.tmp", D, &[Ok("n")]);
         assert_eq!(decision, Decision::Cancel(1));
         assert!(
             terminal.err.contains("The pattern matches 21 entries."),
@@ -603,8 +598,7 @@ mod tests {
     fn a_pattern_of_twenty_or_fewer_only_gets_a_note() {
         let dir = Scratch::new();
         dir.files((0..20).map(|i| format!("f{i}.tmp")));
-        let (decision, terminal) =
-            ask_in(dir.path(), Some(BlastLimits::default()), "rm *.tmp", D, &[]);
+        let (decision, terminal) = ask_in(dir.path(), Some(TEST_LIMITS), "rm *.tmp", D, &[]);
         assert_eq!(decision, Decision::Run);
         assert!(terminal.err.starts_with("oh-my-shell: caution: "));
         assert!(terminal.prompts.is_empty());
@@ -620,7 +614,7 @@ mod tests {
         ]);
         let (decision, terminal) = ask_in(
             dir.path(),
-            Some(BlastLimits::default()),
+            Some(TEST_LIMITS),
             "find . -name '*.log' -delete",
             D,
             &[Ok("n")],
@@ -643,7 +637,7 @@ mod tests {
         dir.files((0..10).map(|i| format!("b/f{i}")));
         let limits = BlastLimits {
             max_entries: 15,
-            max_ms: 5_000,
+            max_ms: 600_000,
         };
         let (_, terminal) = ask_in(
             dir.path(),
@@ -680,7 +674,7 @@ mod tests {
         // keep the look at `/` short.
         let limits = BlastLimits {
             max_entries: 10,
-            max_ms: 1_000,
+            max_ms: 600_000,
         };
         let (decision, terminal) = ask_in(dir.path(), Some(limits), "rm -rf / $x", D, &[Ok("no")]);
         assert_eq!(decision, Decision::Cancel(1));

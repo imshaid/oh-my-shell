@@ -36,10 +36,17 @@ fn configure(ctx: &Ctx, server: &Server) -> io::Result<()> {
 fn configure_with(ctx: &Ctx, server: &Server, more: &str) -> io::Result<()> {
     let dir = config_dir(ctx);
     fs::create_dir_all(&dir)?;
+    // The count of what a step touches has a time budget (300 ms by default); a busy machine
+    // must not change the numbers these tests look for.
+    let safety = if more.contains("[safety]") {
+        ""
+    } else {
+        "[safety]\nblast_radius_max_ms = 60000\n"
+    };
     fs::write(
         dir.join("config.toml"),
         format!(
-            "[ai]\nprovider = \"openai-compatible\"\nmodel = \"model-one\"\nbase_url = \"{}\"\n{more}",
+            "[ai]\nprovider = \"openai-compatible\"\nmodel = \"model-one\"\nbase_url = \"{}\"\n{more}{safety}",
             server.url("/v1")
         ),
     )
@@ -520,7 +527,11 @@ fn the_limits_in_config_toml_reach_the_plan_panel() {
         }
         let answer = plan(&[("Remove big", "rm -rf big", "low")]);
         let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
-        configure_with(ctx, &server, "[safety]\nblast_radius_max_entries = 3\n")?;
+        configure_with(
+            ctx,
+            &server,
+            "[safety]\nblast_radius_max_entries = 3\nblast_radius_max_ms = 60000\n",
+        )?;
         let mut term = launch(ctx).start()?;
 
         term.command("? remove the big folder")?;

@@ -12,6 +12,12 @@ use omsh_history::{Filter, Query, Store};
 
 use super::*;
 
+/// Limits whose time budget cannot run out, so a busy machine cannot change a count.
+const TEST_LIMITS: BlastLimits = BlastLimits {
+    max_entries: 50_000,
+    max_ms: 600_000,
+};
+
 // -- test doubles ---------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -201,7 +207,7 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             history: setup.history.as_ref(),
             recent: &mut recent,
             confirm: setup.confirm.unwrap_or(ConfirmLevel::Dangerous),
-            blast: setup.blast.unwrap_or_default(),
+            blast: setup.blast.unwrap_or(TEST_LIMITS),
             unicode: false,
             edit: &mut edit,
         },
@@ -396,7 +402,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         history: None,
         recent: &mut recent,
         confirm: ConfirmLevel::Dangerous,
-        blast: BlastLimits::default(),
+        blast: TEST_LIMITS,
         unicode: false,
         edit: &mut edit,
     };
@@ -1401,7 +1407,7 @@ fn a_cd_in_one_step_decides_what_the_next_one_means() {
             keys: vec![Ok(Key::Escape)],
             blast: Some(BlastLimits {
                 max_entries: 100,
-                max_ms: 1_000,
+                max_ms: 600_000,
             }),
             ..Setup::default()
         },
@@ -1476,7 +1482,7 @@ fn editing_an_earlier_step_changes_how_the_later_ones_are_judged() {
             edits: vec![Edited::Text("cd /etc".to_owned())],
             blast: Some(BlastLimits {
                 max_entries: 100,
-                max_ms: 1_000,
+                max_ms: 600_000,
             }),
             ..Setup::default()
         },
@@ -1516,7 +1522,7 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         history: None,
         recent: &mut recent,
         confirm: ConfirmLevel::Dangerous,
-        blast: BlastLimits::default(),
+        blast: TEST_LIMITS,
         unicode: false,
         edit: &mut edit,
     };
