@@ -15,6 +15,7 @@
 //! thread and returns [`Read::HungUp`], so that the shell can end properly.
 
 mod complete;
+mod explorer;
 mod git_status;
 mod highlight;
 mod hint;
@@ -109,6 +110,16 @@ pub struct Editor {
     git: Option<git_status::GitWatch>,
     /// Asked while waiting: has the terminal gone away?
     terminal_gone: Box<dyn Fn() -> bool + Send>,
+    /// Asked while waiting: was the shell told to hang up? Shared with the engine's idle
+    /// callback, which asks it on the editor's thread; the history explorer asks it on this one.
+    hang_up: Arc<Mutex<Box<dyn Fn() -> bool + Send>>>,
+    /// What `Ctrl+R` lists.
+    store: Store,
+    /// The theme and the look of the history explorer.
+    theme: Theme,
+    ui_look: omsh_ui::Look,
+    /// The folder of the last prompt, for the explorer's "this folder" scope.
+    cwd: String,
 }
 
 impl Editor {
@@ -159,7 +170,12 @@ impl Editor {
         let scene = Arc::new(Mutex::new(complete::Scene::default()));
         let flag = Arc::new(AtomicBool::new(false));
         let raise = Arc::clone(&flag);
+        let hang_up: Arc<Mutex<Box<dyn Fn() -> bool + Send>>> =
+            Arc::new(Mutex::new(Box::new(hang_up)));
+        let idle_hang_up = Arc::clone(&hang_up);
         let hint_source = recall.store.clone();
+        let explorer_store = recall.store.clone();
+        let explorer_theme = theme.clone();
         let history = history::DbHistory::new(recall.store, recall.filter);
         // With a session, Up shows this shell's commands and what was stored before it
         // started, not what another open shell runs meanwhile.
@@ -173,7 +189,8 @@ impl Editor {
             .with_validator(Box::new(validator::ShellValidator))
             .with_break_signal(flag)
             .with_idle_callback(Box::new(move || {
-                if hang_up() {
+                let hung_up = idle_hang_up.lock().unwrap_or_else(PoisonError::into_inner);
+                if hung_up() {
                     raise.store(true, Ordering::Relaxed);
                 }
             }))
@@ -203,6 +220,7 @@ impl Editor {
             ConfigMode::Emacs => {
                 let mut keys = default_emacs_keybindings();
                 bind_explain(&mut keys);
+                bind_history(&mut keys);
                 bind_completion(&mut keys);
                 engine.with_edit_mode(Box::new(paste::PasteMode::new(Box::new(Emacs::new(keys)))))
             }
@@ -210,9 +228,11 @@ impl Editor {
                 let mut insert = default_vi_insert_keybindings();
                 let mut normal = default_vi_normal_keybindings();
                 bind_explain(&mut insert);
+                bind_history(&mut insert);
                 bind_completion(&mut insert);
                 let mut visual = default_vi_visual_keybindings();
                 bind_explain(&mut normal);
+                bind_history(&mut normal);
                 bind_explain(&mut visual);
                 engine.with_edit_mode(Box::new(paste::PasteMode::new(Box::new(Vi::new(
                     insert, normal, visual,
@@ -242,6 +262,16 @@ impl Editor {
             scene,
             git,
             terminal_gone: Box::new(terminal_gone),
+            hang_up,
+            store: explorer_store,
+            theme: explorer_theme,
+            ui_look: omsh_ui::Look {
+                terminal: true,
+                color,
+                unicode,
+                motion: omsh_config::Motion::Off,
+            },
+            cwd: String::new(),
         }
     }
 
@@ -263,6 +293,7 @@ impl Editor {
             .unwrap_or_else(PoisonError::into_inner)
             .reset(lookup, state.cwd.clone(), state.home.clone());
         // The folder as history stores it (text), so that "run here" matches.
+        self.cwd = state.cwd.to_string_lossy().into_owned();
         self.hints
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -296,50 +327,111 @@ impl Editor {
     }
 
     fn read_prefilled(&mut self, prompt: ShellPrompt, initial: Option<String>) -> Read {
-        let Some(mut engine) = self.engine.take() else {
-            return Read::Failed(io::Error::other("the line editor is not available"));
-        };
-        let (send, receive) = mpsc::channel();
-        let spawned = thread::Builder::new()
-            .name("line-editor".to_owned())
-            .stack_size(EDITOR_STACK)
-            .spawn(move || {
-                if let Some(text) = initial {
-                    engine.run_edit_commands(&[EditCommand::InsertString(text)]);
-                }
-                let answer = engine.read_line(&prompt);
-                // A line that is not stored is reported to the editor as a failed save (see
-                // `history.rs`); nobody needs to hear of it.
-                let _ = engine.take_history_save_error();
-                // The receiver is gone if the shell gave up on this thread.
-                let _ = send.send((engine, answer));
-            });
-        if let Err(error) = spawned {
-            return Read::Failed(error);
-        }
+        let mut prompt = prompt;
+        let mut edits: Vec<EditCommand> = initial
+            .map(|text| vec![EditCommand::InsertString(text)])
+            .unwrap_or_default();
         loop {
-            match receive.recv_timeout(IDLE_STEP) {
-                Ok((engine, answer)) => {
-                    self.engine = Some(engine);
-                    return classify(answer);
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if (self.terminal_gone)() {
-                        // The thread may be spinning on the dead terminal; it ends with the
-                        // process. The engine stays with it.
+            let Some(mut engine) = self.engine.take() else {
+                return Read::Failed(io::Error::other("the line editor is not available"));
+            };
+            let (send, receive) = mpsc::channel();
+            let before = std::mem::take(&mut edits);
+            let spawned = thread::Builder::new()
+                .name("line-editor".to_owned())
+                .stack_size(EDITOR_STACK)
+                .spawn(move || {
+                    if !before.is_empty() {
+                        engine.run_edit_commands(&before);
+                    }
+                    let answer = engine.read_line(&prompt);
+                    // A line that is not stored is reported to the editor as a failed save (see
+                    // `history.rs`); nobody needs to hear of it.
+                    let _ = engine.take_history_save_error();
+                    // The receiver is gone if the shell gave up on this thread.
+                    let _ = send.send((engine, prompt, answer));
+                });
+            if let Err(error) = spawned {
+                return Read::Failed(error);
+            }
+            let (engine, back, answer) = loop {
+                match receive.recv_timeout(IDLE_STEP) {
+                    Ok(done) => break done,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if (self.terminal_gone)() {
+                            // The thread may be spinning on the dead terminal; it ends with the
+                            // process. The engine stays with it.
+                            let _ = crossterm::terminal::disable_raw_mode();
+                            return Read::HungUp;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        // The thread ended without an answer: it panicked. The terminal may be
+                        // in raw mode; the plain reader needs line mode.
                         let _ = crossterm::terminal::disable_raw_mode();
-                        return Read::HungUp;
+                        return Read::Failed(io::Error::other(
+                            "the line editor stopped unexpectedly",
+                        ));
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    // The thread ended without an answer: it panicked. The terminal may be
-                    // in raw mode; the plain reader needs line mode.
-                    let _ = crossterm::terminal::disable_raw_mode();
-                    return Read::Failed(io::Error::other("the line editor stopped unexpectedly"));
+            };
+            self.engine = Some(engine);
+            prompt = back;
+            if matches!(&answer, Ok(Signal::HostCommand(name)) if name == SHOW_HISTORY) {
+                match self.explore_history() {
+                    Explored::Edits(more) => edits = more,
+                    Explored::HungUp => return Read::HungUp,
                 }
+                continue;
+            }
+            return classify(answer);
+        }
+    }
+
+    /// `Ctrl+R`: the line editor has handed back the keyboard with the typed text still in its
+    /// buffer. The history explorer takes the whole screen; what comes out is the edit to make
+    /// before the editor reads again: replace the line by the chosen command, or leave it.
+    fn explore_history(&mut self) -> Explored {
+        let typed = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.current_buffer_contents().to_owned())
+            .unwrap_or_default();
+        let listing = explorer::listing(&self.store);
+        let settings = omsh_ui::explorer::Settings {
+            items: listing.items,
+            unavailable: listing.unavailable,
+            window: listing.window,
+            folder: self.cwd.clone(),
+            now_ms: omsh_history::now_ms(),
+            typed: &typed,
+            theme: &self.theme,
+            look: self.ui_look,
+        };
+        let hang_up = Arc::clone(&self.hang_up);
+        let terminal_gone = &self.terminal_gone;
+        let mut should_stop = || {
+            let hung_up = hang_up.lock().unwrap_or_else(PoisonError::into_inner);
+            hung_up() || terminal_gone()
+        };
+        match omsh_ui::explorer::run(settings, &mut should_stop) {
+            omsh_ui::explorer::Outcome::Picked(command) => {
+                Explored::Edits(vec![EditCommand::Clear, EditCommand::InsertString(command)])
+            }
+            omsh_ui::explorer::Outcome::HungUp => Explored::HungUp,
+            // Cancelled, or the terminal could not be taken: the line stays as it was.
+            omsh_ui::explorer::Outcome::Cancelled | omsh_ui::explorer::Outcome::Unavailable(_) => {
+                Explored::Edits(Vec::new())
             }
         }
     }
+}
+
+/// How the history explorer ended, for the editor loop.
+enum Explored {
+    /// Edits to apply to the buffer before the editor reads again.
+    Edits(Vec<EditCommand>),
+    HungUp,
 }
 
 /// The name of the menu that Tab opens.
@@ -389,6 +481,18 @@ fn bind_explain(keys: &mut Keybindings) {
             ReedlineEvent::ExecuteHostCommand(EXPLAIN_LAST.to_owned()),
         );
     }
+}
+
+/// The name the editor gives to `Ctrl+R` when it hands control back to open the history explorer.
+const SHOW_HISTORY: &str = "omsh:history";
+
+/// Binds `Ctrl+R` to the history explorer, in place of reedline's own search.
+fn bind_history(keys: &mut Keybindings) {
+    keys.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('r'),
+        ReedlineEvent::ExecuteHostCommand(SHOW_HISTORY.to_owned()),
+    );
 }
 
 /// What the editor's answer means to the shell.
@@ -473,6 +577,31 @@ mod tests {
             || false,
             || false,
         );
+    }
+
+    #[test]
+    fn ctrl_r_opens_the_history_explorer_in_every_mode() {
+        let is_explorer = |keys: &Keybindings| {
+            matches!(
+                keys.find_binding(KeyModifiers::CONTROL, KeyCode::Char('r')),
+                Some(ReedlineEvent::ExecuteHostCommand(name)) if name == SHOW_HISTORY
+            )
+        };
+        // Before the binding, reedline's own search owns the key.
+        for mut keys in [
+            default_emacs_keybindings(),
+            default_vi_insert_keybindings(),
+            default_vi_normal_keybindings(),
+        ] {
+            assert!(!is_explorer(&keys));
+            bind_history(&mut keys);
+            assert!(is_explorer(&keys));
+        }
+        // The explorer is not the answer of the line: it is handled inside `read`.
+        assert!(matches!(
+            classify(Ok(Signal::HostCommand(SHOW_HISTORY.into()))),
+            Read::Interrupted
+        ));
     }
 
     #[test]

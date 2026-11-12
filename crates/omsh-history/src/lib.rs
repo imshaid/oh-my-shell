@@ -16,4 +16,7 @@ mod store;
 
 pub use filter::Filter;
 pub use jump::rank;
-pub use store::{Dir, Entry, HINT_WINDOW, NotReady, Query, Ranking, SETTLE, Store, Token, now_ms};
+pub use store::{
+    Dir, Distinct, EXPLORER_WINDOW, Entry, HINT_WINDOW, NotReady, Query, Ranking, SETTLE, Store,
+    Token, now_ms,
+};

@@ -169,6 +169,21 @@ fn main() {
         times[times.len() - 1]
     );
 
+    // The history explorer's list (Ctrl+R): the distinct commands among the newest 10,000 runs, asked once when
+    // the view opens. Gated with the lookups.
+    let (times, found) = time(|| {
+        store
+            .distinct_recent(omsh_history::EXPLORER_WINDOW)
+            .map_or(0, |rows| rows.len())
+    });
+    let p99 = percentile(&times, 0.99);
+    worst = worst.max(p99);
+    println!(
+        "{:>10.3?} {p99:>10.3?} {:>10.3?}  explorer list: distinct commands ({found} rows)",
+        percentile(&times, 0.5),
+        times[times.len() - 1]
+    );
+
     // Reported only: a dump of every row is output, not a lookup. This is the streamed read that
     // `history --all` uses (pages of 2,000 rows, never all in memory), and for comparison the
     // single read that builds the whole list.

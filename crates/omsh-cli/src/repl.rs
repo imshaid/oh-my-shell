@@ -533,6 +533,9 @@ fn make_editor(
         );
         return None;
     }
+    // A panic while a full-screen view (Ctrl+R) is open gives the terminal back first, so that
+    // the message is readable. Costs nothing until a view opens.
+    omsh_ui::install_panic_restore();
     Some(Editor::new(
         config,
         theme,

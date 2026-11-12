@@ -1219,3 +1219,69 @@ fn the_ranking_is_not_ready_when_the_database_is_not() {
     let store = Store::open(&scratch.db(), 1000);
     assert_eq!(store.hint_ranking("/p", now_ms(), 10), Err(NotReady));
 }
+
+#[test]
+fn distinct_recent_folds_a_command_into_its_newest_run() {
+    let store = Store::in_memory();
+    record(&store, "ls", "/a", 0);
+    record(&store, "make", "/a", 2);
+    record(&store, "ls", "/b", 1);
+    record(&store, "echo hi", "/c", 0);
+    record(&store, "make", "/c", 0);
+    assert!(store.settle(PATIENT));
+    let rows = store.distinct_recent(100).expect("ready");
+    let commands: Vec<_> = rows.iter().map(|row| row.command.as_str()).collect();
+    // Newest run first, one row for each text.
+    assert_eq!(commands, ["make", "echo hi", "ls"]);
+    // The data are those of the newest run, and `runs` counts all of them.
+    assert_eq!(
+        (rows[0].cwd.as_str(), rows[0].exit_status, rows[0].runs),
+        ("/c", Some(0), 2)
+    );
+    assert_eq!(
+        (rows[1].cwd.as_str(), rows[1].exit_status, rows[1].runs),
+        ("/c", Some(0), 1)
+    );
+    assert_eq!(
+        (rows[2].cwd.as_str(), rows[2].exit_status, rows[2].runs),
+        ("/b", Some(1), 2)
+    );
+    let newest_ls = all(&store).into_iter().find(|e| e.cwd == "/b").unwrap();
+    assert_eq!(rows[2].id, newest_ls.id);
+    assert_eq!(rows[2].started_ms, newest_ls.started_ms);
+}
+
+#[test]
+fn distinct_recent_looks_only_at_the_newest_runs() {
+    let store = Store::in_memory();
+    for n in 0..10 {
+        record(&store, &format!("cmd {n}"), "/a", 0);
+    }
+    record(&store, "cmd 0", "/a", 0);
+    assert!(store.settle(PATIENT));
+    // The newest three runs are `cmd 8`, `cmd 9` and the second `cmd 0`.
+    let rows = store.distinct_recent(3).expect("ready");
+    let commands: Vec<_> = rows.iter().map(|row| row.command.as_str()).collect();
+    assert_eq!(commands, ["cmd 0", "cmd 9", "cmd 8"]);
+    // `runs` counts inside the window only.
+    assert_eq!(rows[0].runs, 1);
+    assert!(store.distinct_recent(0).expect("ready").is_empty());
+}
+
+#[test]
+fn distinct_recent_shows_a_command_that_is_still_running_without_a_status() {
+    let store = Store::in_memory();
+    let _token = store.start("sleep 100", "/a");
+    assert!(store.settle(PATIENT));
+    let rows = store.distinct_recent(10).expect("ready");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].exit_status, None);
+}
+
+#[test]
+fn distinct_recent_is_not_ready_when_the_database_is_not() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.db()).unwrap();
+    let store = Store::open(&scratch.db(), 1000);
+    assert_eq!(store.distinct_recent(10), Err(NotReady));
+}

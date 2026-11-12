@@ -115,6 +115,27 @@ pub struct Entry {
     pub host: String,
 }
 
+/// How many of the newest runs the history explorer looks at (a count of ids, like
+/// [`HINT_WINDOW`]).
+pub const EXPLORER_WINDOW: usize = 10_000;
+
+/// One distinct command with the data of its newest run, for the history explorer (see
+/// [`Store::distinct_recent`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Distinct {
+    /// The id of the newest run.
+    pub id: i64,
+    pub command: String,
+    /// Where the newest run started.
+    pub cwd: String,
+    /// How the newest run ended; missing while it runs.
+    pub exit_status: Option<i32>,
+    /// When the newest run started, in milliseconds since 1970 (UTC).
+    pub started_ms: i64,
+    /// How many times this exact command is in the history.
+    pub runs: u64,
+}
+
 /// A hint could not be looked up at this moment (see [`Store::hint`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NotReady;
@@ -564,6 +585,42 @@ impl Store {
         let complete = commands.len() <= limit;
         commands.truncate(limit);
         Ok(Ranking { commands, complete })
+    }
+
+    /// The distinct commands among the newest `window` runs (of every shell), newest first, each
+    /// with the folder, status and time of its newest run and the number of runs *inside the
+    /// window*. One row per command text. The window bounds the cost: grouping the whole table
+    /// of 100,000 rows took 94 ms, [`EXPLORER_WINDOW`] runs take a few. This does not wait for
+    /// the writer ([`Store::settle`]).
+    ///
+    /// # Errors
+    ///
+    /// [`NotReady`] when the history cannot be read at this moment.
+    pub fn distinct_recent(&self, window: usize) -> Result<Vec<Distinct>, NotReady> {
+        let guard = lock(&self.inner.shared.reader);
+        let connection = guard.as_ref().ok_or(NotReady)?;
+        let asked = i64::try_from(window).unwrap_or(i64::MAX);
+        let read = || -> rusqlite::Result<Vec<Distinct>> {
+            // With `max(id)` as the one min/max aggregate, SQLite takes the bare columns from
+            // the row that holds the maximum: the newest run.
+            let mut statement = connection.prepare(
+                "SELECT max(id), command, cwd, exit_status, started_at, count(*) FROM history \
+                 WHERE id > (SELECT max(id) FROM history) - ? \
+                 GROUP BY command ORDER BY max(id) DESC",
+            )?;
+            let rows = statement.query_map([asked], |row| {
+                Ok(Distinct {
+                    id: row.get(0)?,
+                    command: row.get(1)?,
+                    cwd: row.get(2)?,
+                    exit_status: row.get(3)?,
+                    started_ms: row.get(4)?,
+                    runs: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                })
+            })?;
+            rows.collect()
+        };
+        read().map_err(|_| NotReady)
     }
 
     /// The entries that fit `query`. Empty if the database cannot be read right now: history

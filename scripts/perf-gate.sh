@@ -7,6 +7,7 @@
 #   `--version` under 10 ms, `-c true` within 5 ms of `/bin/sh -c true`                hyperfine
 #   keystroke: highlight + hint under 5 ms p99                                          omsh-editor bench
 #   completion menu under 50 ms                                                         omsh-editor bench
+#   history explorer (Ctrl+R): a key under 5 ms p99, opening under 20 ms                omsh-ui bench
 #   history lookups on 100,000 rows under 20 ms                                         omsh-history bench
 #   lexer and parser (a report, no budget)                                              omsh-syntax bench
 #
@@ -99,6 +100,7 @@ step "--version and -c true (hyperfine)" hyperfine_check
 step "start, memory and keystroke on a terminal (omsh-perf)" target/release/omsh-perf --bin "$BIN"
 step "keystroke: highlight and hint" cargo bench --locked -p omsh-editor --bench keystroke
 step "completion menu" cargo bench --locked -p omsh-editor --bench completion
+step "history explorer (Ctrl+R)" cargo bench --locked -p omsh-ui --bench explorer
 step "history lookups on 100,000 rows" cargo bench --locked -p omsh-history --bench query
 step "lexer and parser (report only)" cargo bench --locked -p omsh-syntax --bench parse
 

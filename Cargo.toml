@@ -58,6 +58,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Terminal control used by the editor crate, to put the terminal back in line mode when the
 # editor's thread is abandoned or dies. reedline depends on it already, with the same version.
 crossterm = { version = "0.29", default-features = false }
+# Full-screen views (S27a), in `omsh-ui` only. ratatui draws into a buffer and writes only the cells
+# that changed; its `crossterm` feature uses crossterm 0.29, the version already in the tree.
+# Default features are off: `macros`, `layout-cache` and `underline-color` are not used.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 # Colors and text styles for the editor's highlighter (S14a): reedline draws with this crate's
 # `Style` and does not re-export it. reedline depends on it already (0.50.3, MIT, nushell), so
 # it adds no crate to the tree.
