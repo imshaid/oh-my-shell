@@ -28,6 +28,9 @@ pub struct Look {
     /// Colors are allowed: the symbol turns red after a failure. Off for `NO_COLOR`. Bold and dim
     /// do not depend on it.
     pub color: bool,
+    /// The SGR parameters of the symbol after a failure: the theme's `danger` token (`31`, ANSI
+    /// red, in `nord`). `None` when the theme gives that token no look.
+    pub failure: Option<String>,
     /// Segments left of the line, in order (`[prompt] left`).
     pub left: Vec<Segment>,
     /// Segments right of the line, in order (`[prompt] right`).
@@ -75,10 +78,9 @@ pub struct ShellPrompt {
 }
 
 const RESET: &str = "\x1b[0m";
-/// SGR codes: bold, dim (faint), and the foreground "ANSI color 1".
+/// SGR codes: bold and dim (faint).
 const BOLD: &str = "1";
 const DIM: &str = "2";
-const RED: &str = "31";
 
 fn styled(code: &str, text: &str) -> String {
     format!("\x1b[{code}m{text}{RESET}")
@@ -118,12 +120,9 @@ impl ShellPrompt {
         };
         // Plain, except red after a failure. The space is inside the escape sequence, so
         // `$ ` stays one piece of text in the output.
-        let symbol = |text: String| {
-            if look.color && state.last_status != 0 {
-                styled(RED, &text)
-            } else {
-                text
-            }
+        let symbol = |text: String| match (&look.failure, look.color && state.last_status != 0) {
+            (Some(code), true) => styled(code, &text),
+            _ => text,
         };
         Self {
             left,
@@ -247,6 +246,7 @@ mod tests {
         Look {
             unicode: true,
             color: false,
+            failure: Some("31".to_owned()),
             left: left.to_vec(),
             right: right.to_vec(),
         }
@@ -504,6 +504,26 @@ mod tests {
             failed.render_prompt_indicator(PromptEditMode::Vi(PromptViMode::Normal)),
             "\x1b[31m: \x1b[0m"
         );
+    }
+
+    #[test]
+    fn the_failure_symbol_follows_the_themes_danger_token() {
+        let mut l = look(&[], &[]);
+        l.color = true;
+        let mut s = state();
+        s.last_status = 2;
+        l.failure = Some("35".to_owned());
+        assert_eq!(indicator(&build(&l, &s)), "\x1b[35m❯ \x1b[0m");
+        // A token with several parts keeps them all.
+        l.failure = Some("2;91".to_owned());
+        assert_eq!(indicator(&build(&l, &s)), "\x1b[2;91m❯ \x1b[0m");
+        // A theme that gives `danger` no look leaves the symbol plain.
+        l.failure = None;
+        assert_eq!(indicator(&build(&l, &s)), "❯ ");
+        // And `NO_COLOR` still wins over any theme.
+        l.failure = Some("31".to_owned());
+        l.color = false;
+        assert_eq!(indicator(&build(&l, &s)), "❯ ");
     }
 
     #[test]

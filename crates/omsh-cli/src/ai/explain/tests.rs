@@ -10,6 +10,7 @@ use omsh_ai::{ErrorKind, LEFT_OUT, ProviderError};
 use omsh_config::{AiLanguage, Provider as Kind};
 use omsh_exec::ReadError;
 use omsh_history::Filter;
+use omsh_ui::Paint;
 
 use super::*;
 use crate::ai::plan::Connect;
@@ -208,6 +209,7 @@ fn go(fake: FakeProvider, flow: Flow<'_>, setup: Setup) -> Ran {
             files: &mut files,
             tty: &mut tty,
             recent: &mut recent,
+            paint: &Paint::plain(),
         };
         match flow {
             Flow::Command(text) => match available(&connects, &fake) {

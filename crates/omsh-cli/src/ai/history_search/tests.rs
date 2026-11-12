@@ -9,6 +9,7 @@ use omsh_ai::{ErrorKind, Provider, ProviderError, Settings};
 use omsh_config::{AiLanguage, Provider as Kind};
 use omsh_exec::{ReadError, Terminal};
 use omsh_history::{Filter, Store};
+use omsh_ui::Paint;
 
 use super::*;
 use crate::ai::plan::Connect;
@@ -148,6 +149,7 @@ fn go_with(fake: FakeProvider, request: &str, history: Option<&History>, no_ai: 
             files: &mut files,
             tty: &mut tty,
             history,
+            paint: &Paint::plain(),
         },
     );
     let state = tty.0.into_inner();
@@ -537,6 +539,7 @@ fn the_flow_sets_the_exit_status() {
             files: &mut files,
             tty: &mut tty,
             history: Some(&history),
+            paint: &Paint::plain(),
         },
     );
     assert_eq!(shell.last_status(), ExitStatus(0));

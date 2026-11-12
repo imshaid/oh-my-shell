@@ -61,6 +61,23 @@ impl Paths {
         self.config.as_ref().map(|dir| dir.join("config.toml"))
     }
 
+    /// `themes/<name>.toml` in the configuration directory. `None` when there is no
+    /// configuration directory or `name` is not made of letters, digits, `-` and `_` (the name
+    /// becomes a file name, so a `/` or `..` must never get through).
+    #[must_use]
+    pub fn theme_file(&self, name: &str) -> Option<PathBuf> {
+        let plain = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !plain {
+            return None;
+        }
+        self.config
+            .as_ref()
+            .map(|dir| dir.join("themes").join(format!("{name}.toml")))
+    }
+
     /// The startup file, in the shell's own language.
     #[must_use]
     pub fn init_file(&self) -> Option<PathBuf> {
@@ -110,6 +127,22 @@ mod tests {
             paths.init_file(),
             Some(PathBuf::from("/home/u/.config/oh-my-shell/init.omsh"))
         );
+    }
+
+    #[test]
+    fn a_theme_file_is_under_themes_and_the_name_cannot_escape() {
+        let paths = paths(&[("HOME", "/home/u")]);
+        assert_eq!(
+            paths.theme_file("my-theme_2"),
+            Some(PathBuf::from(
+                "/home/u/.config/oh-my-shell/themes/my-theme_2.toml"
+            ))
+        );
+        for bad in ["", "../x", "a/b", "a.b", ".hidden", "a b", "é"] {
+            assert_eq!(paths.theme_file(bad), None, "{bad:?}");
+        }
+        let none = Paths::from_lookup(|_| None);
+        assert_eq!(none.theme_file("nord"), None);
     }
 
     #[test]

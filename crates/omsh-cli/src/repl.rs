@@ -27,7 +27,7 @@ use omsh_exec::{
     terminal_gone, trigger, wait_for_input,
 };
 use omsh_history::{Filter, Store};
-use omsh_ui::Theme;
+use omsh_ui::{Look, Paint, Theme};
 
 use crate::ai;
 use crate::confirm;
@@ -142,6 +142,7 @@ fn run_on(
     // After the login environment, so that a profile may set `XDG_CONFIG_HOME`.
     let Started {
         config,
+        theme,
         history,
         ai,
         undo,
@@ -159,9 +160,23 @@ fn run_on(
         shell.set_history(Arc::new(history.clone()) as Arc<dyn HistoryCommand>);
         shell.set_jump(Arc::new(history.clone()) as Arc<dyn JumpCommand>);
     }
-    let style = Style::detect(config.ui.icons);
-    let mut editor = history
-        .and_then(|history| make_editor(&shell, &config, style, interactive && terminals, history));
+    let look = Look::detect(
+        io::stderr().is_terminal(),
+        config.ui.icons,
+        config.ui.motion,
+    );
+    let style = Style::from_look(look);
+    let paint = Paint::new(&theme, look);
+    let mut editor = history.and_then(|history| {
+        make_editor(
+            &shell,
+            &config,
+            &theme,
+            style,
+            interactive && terminals,
+            history,
+        )
+    });
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     // How long the last command took, for the prompt.
@@ -222,7 +237,7 @@ fn run_on(
             Next::ExplainLast => {
                 // Not a line: nothing is stored in history, `$?` stays, and what was typed
                 // stays in the editor.
-                explain_last_key(ai.as_deref(), &mut shell, &mut files, &mut recent);
+                explain_last_key(ai.as_deref(), &mut shell, &mut files, &mut recent, &paint);
                 continue;
             }
             Next::HungUp => {
@@ -264,7 +279,7 @@ fn run_on(
                     history,
                     &mut recent,
                     &config,
-                    style,
+                    &paint,
                     &mut editor,
                     undo.as_deref(),
                 ),
@@ -276,6 +291,7 @@ fn run_on(
                     config.safety.confirm,
                     BlastLimits::from_config(&config.safety),
                     undo.as_deref(),
+                    &paint,
                 ),
             }
         } else {
@@ -342,6 +358,7 @@ fn explain_last_key(
     shell: &mut Shell,
     files: &mut Io,
     recent: &mut ai::recent::Recent,
+    paint: &Paint,
 ) {
     let Some(ai) = ai else { return };
     // The cursor is on the line being typed: move below it.
@@ -351,6 +368,7 @@ fn explain_last_key(
         files,
         tty: &mut ai::plan::RealTerminal,
         recent,
+        paint,
     };
     let _ = ai::explain::last(|| ai.plan_setup(), false, env);
 }
@@ -369,7 +387,7 @@ fn ai_line(
     history: Option<&History>,
     recent: &mut ai::recent::Recent,
     config: &Config,
-    style: Style,
+    paint: &Paint,
     editor: &mut Option<Editor>,
     undo: Option<&Undo>,
 ) -> LineResult {
@@ -385,6 +403,7 @@ fn ai_line(
                 files,
                 tty: &mut ai::plan::RealTerminal,
                 recent,
+                paint,
             };
             if text.is_empty() {
                 return ai::explain::last(|| ai.plan_setup(), true, env);
@@ -402,6 +421,7 @@ fn ai_line(
                 files,
                 tty: &mut ai::plan::RealTerminal,
                 recent,
+                paint,
             };
             return ai::explain::pipe(
                 ai.plan_setup(),
@@ -427,6 +447,7 @@ fn ai_line(
                 files,
                 tty: &mut ai::plan::RealTerminal,
                 history,
+                paint,
             },
         );
     }
@@ -460,7 +481,7 @@ fn ai_line(
             recent,
             confirm: config.safety.confirm,
             blast: BlastLimits::from_config(&config.safety),
-            unicode: matches!(style, Style::Graphical { unicode: true, .. }),
+            paint,
             undo,
             edit: &mut edit,
         },
@@ -492,6 +513,7 @@ const CURSOR_ANSWER_LIMIT: Duration = Duration::from_millis(500);
 fn make_editor(
     shell: &Shell,
     config: &Config,
+    theme: &Theme,
     style: Style,
     terminals: bool,
     history: &History,
@@ -513,7 +535,7 @@ fn make_editor(
     }
     Some(Editor::new(
         config,
-        &Theme::default(),
+        theme,
         unicode,
         color,
         Recall {
@@ -671,6 +693,8 @@ fn read_plain(input: &mut impl Read, interactive: bool, first_line: bool) -> Nex
 /// What an interactive start-up produces.
 struct Started {
     config: Config,
+    /// The theme of `ui.theme`: `nord` unless a theme file says otherwise (S26).
+    theme: Theme,
     history: Option<History>,
     /// The `omsh` builtin's session, which `? request` also uses.
     ai: Option<Arc<ai::AiSession>>,
@@ -695,6 +719,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
     if !options.interactive {
         return Ok(Started {
             config: Config::default(),
+            theme: Theme::default(),
             history: None,
             ai: None,
             undo: None,
@@ -718,6 +743,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
         };
         return Ok(Started {
             config,
+            theme: Theme::default(),
             history: Some(history),
             ai: Some(ai),
             undo: None,
@@ -733,6 +759,12 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
         return Err(status);
     }
     let config = loaded.config;
+    // A built-in theme reads no file; any other name is `themes/<name>.toml`. A mistake in it
+    // is one line each, and `nord` stays for what it could not read.
+    let themed = omsh_ui::load_theme(&config.ui.theme, &paths);
+    for line in themed.report(MAX_CONFIG_LINES) {
+        say(&format!("oh-my-shell: {line}"));
+    }
     let ai = install_omsh(shell, &config, &paths, options);
     // After `init.omsh`: what the startup file runs is not typed by anyone and is not
     // history. The file is opened by the store's own thread, so the prompt does not wait.
@@ -756,6 +788,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
     });
     Ok(Started {
         config,
+        theme: themed.theme,
         history: Some(history),
         ai: Some(ai),
         undo,

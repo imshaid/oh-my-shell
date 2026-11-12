@@ -207,6 +207,70 @@ impl Role {
     }
 }
 
+/// A named color of the interface outside the command line (blueprint §15.4): panels, the
+/// prompt's failure symbol, the wait line. Each token has a stable name for theme files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Token {
+    /// Brand, the bar of neutral panels, key hints.
+    Accent,
+    /// Paths and the working directory.
+    Path,
+    /// Anything that has to do with the AI.
+    Ai,
+    /// Done, low risk.
+    Success,
+    /// Caution, medium risk.
+    Warning,
+    /// Errors, high risk.
+    Danger,
+    /// Secondary text. Plain: it only says "not the main thing".
+    Muted,
+    /// Hints and tertiary text. The only token that is dim.
+    Dim,
+}
+
+impl Token {
+    /// Every token.
+    pub const ALL: [Token; 8] = [
+        Token::Accent,
+        Token::Path,
+        Token::Ai,
+        Token::Success,
+        Token::Warning,
+        Token::Danger,
+        Token::Muted,
+        Token::Dim,
+    ];
+
+    /// The name used in theme files.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Token::Accent => "accent",
+            Token::Path => "path",
+            Token::Ai => "ai",
+            Token::Success => "success",
+            Token::Warning => "warning",
+            Token::Danger => "danger",
+            Token::Muted => "muted",
+            Token::Dim => "dim",
+        }
+    }
+
+    /// The token called `name`, if there is one.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|token| token.name() == name)
+    }
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|token| *token == self)
+            .unwrap_or(0)
+    }
+}
+
 /// How one role looks. There is no bold on purpose.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RoleStyle {
@@ -229,7 +293,7 @@ impl RoleStyle {
         reverse: false,
     };
 
-    const fn color(color: AnsiColor) -> Self {
+    pub(crate) const fn color(color: AnsiColor) -> Self {
         RoleStyle {
             color: Some(color),
             ..Self::PLAIN
@@ -248,6 +312,27 @@ impl RoleStyle {
         }
     }
 
+    /// The parameters of the SGR sequence that draws this style (`2;90` for a dim bright
+    /// black), or `None` for a plain style. Attributes first (dim 2, underline 4, reverse 7),
+    /// then the color. The caller writes the `ESC [` before and the `m` after.
+    #[must_use]
+    pub fn sgr_parameters(self) -> Option<String> {
+        let mut codes: Vec<String> = Vec::new();
+        if self.dim {
+            codes.push("2".to_owned());
+        }
+        if self.underline {
+            codes.push("4".to_owned());
+        }
+        if self.reverse {
+            codes.push("7".to_owned());
+        }
+        if let Some(color) = self.color {
+            codes.push(color.sgr_foreground().to_string());
+        }
+        (!codes.is_empty()).then(|| codes.join(";"))
+    }
+
     /// The same style without its color. Attributes stay, so that an autosuggestion is still
     /// dim and a valid path still underlined when `NO_COLOR` is set.
     #[must_use]
@@ -259,19 +344,37 @@ impl RoleStyle {
     }
 }
 
+/// The name of the one built-in theme.
+pub const BUILTIN: &str = "nord";
+
 /// The table from role to look.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Theme {
     styles: [RoleStyle; Role::ALL.len()],
+    tokens: [RoleStyle; Token::ALL.len()],
 }
 
 impl Default for Theme {
-    /// The default theme: terminal defaults for text that is fine, normal (not bright) colors
-    /// for the rest. Dim only for comments and autosuggestions.
+    /// The default theme, `nord`: terminal defaults for text that is fine, normal (not bright)
+    /// colors for the rest. Dim only for comments, autosuggestions and the `dim` token.
     fn default() -> Self {
         let mut theme = Theme {
             styles: [RoleStyle::PLAIN; Role::ALL.len()],
+            tokens: [RoleStyle::PLAIN; Token::ALL.len()],
         };
+        theme.set_token(Token::Accent, RoleStyle::color(AnsiColor::Blue));
+        theme.set_token(Token::Path, RoleStyle::color(AnsiColor::Cyan));
+        theme.set_token(Token::Ai, RoleStyle::color(AnsiColor::Magenta));
+        theme.set_token(Token::Success, RoleStyle::color(AnsiColor::Green));
+        theme.set_token(Token::Warning, RoleStyle::color(AnsiColor::Yellow));
+        theme.set_token(Token::Danger, RoleStyle::color(AnsiColor::Red));
+        theme.set_token(
+            Token::Dim,
+            RoleStyle {
+                dim: true,
+                ..RoleStyle::color(AnsiColor::BrightBlack)
+            },
+        );
         theme.set(Role::Error, RoleStyle::color(AnsiColor::Red));
         theme.set(Role::Param, RoleStyle::color(AnsiColor::Cyan));
         theme.set(Role::Option, RoleStyle::color(AnsiColor::Cyan));
@@ -325,11 +428,29 @@ impl Theme {
         self.styles[role.index()] = style;
     }
 
+    /// The look of `token`.
+    #[must_use]
+    pub fn token(&self, token: Token) -> RoleStyle {
+        self.tokens[token.index()]
+    }
+
+    /// Changes the look of `token`.
+    pub fn set_token(&mut self, token: Token, style: RoleStyle) {
+        self.tokens[token.index()] = style;
+    }
+
+    /// The built-in theme called `name`. Only `nord` exists; it never touches the disk.
+    #[must_use]
+    pub fn builtin(name: &str) -> Option<Theme> {
+        (name == BUILTIN).then(Theme::default)
+    }
+
     /// The same theme with every color removed (for `NO_COLOR`). Attributes stay.
     #[must_use]
     pub fn without_color(&self) -> Theme {
         Theme {
             styles: self.styles.map(RoleStyle::without_color),
+            tokens: self.tokens.map(RoleStyle::without_color),
         }
     }
 }
@@ -443,5 +564,81 @@ mod tests {
         theme.set(Role::Quote, RoleStyle::color(AnsiColor::Green));
         assert_eq!(theme.get(Role::Quote).color, Some(AnsiColor::Green));
         assert_eq!(theme.get(Role::Param).color, Some(AnsiColor::Cyan));
+    }
+
+    #[test]
+    fn token_names_round_trip_and_are_unique() {
+        for token in Token::ALL {
+            assert_eq!(Token::from_name(token.name()), Some(token));
+        }
+        assert_eq!(Token::from_name("hotpink"), None);
+        let mut names: Vec<&str> = Token::ALL.iter().map(|t| t.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), Token::ALL.len());
+        for (index, token) in Token::ALL.iter().enumerate() {
+            assert_eq!(token.index(), index);
+        }
+    }
+
+    #[test]
+    fn nord_maps_the_tokens_to_ansi_names() {
+        let theme = Theme::default();
+        let color = |token| theme.token(token).color;
+        assert_eq!(color(Token::Accent), Some(AnsiColor::Blue));
+        assert_eq!(color(Token::Path), Some(AnsiColor::Cyan));
+        assert_eq!(color(Token::Ai), Some(AnsiColor::Magenta));
+        assert_eq!(color(Token::Success), Some(AnsiColor::Green));
+        assert_eq!(color(Token::Warning), Some(AnsiColor::Yellow));
+        assert_eq!(color(Token::Danger), Some(AnsiColor::Red));
+        assert_eq!(color(Token::Muted), None);
+        assert_eq!(color(Token::Dim), Some(AnsiColor::BrightBlack));
+    }
+
+    #[test]
+    fn only_the_dim_token_is_dim() {
+        let theme = Theme::default();
+        let dim: Vec<Token> = Token::ALL
+            .into_iter()
+            .filter(|token| theme.token(*token).dim)
+            .collect();
+        assert_eq!(dim, [Token::Dim]);
+    }
+
+    #[test]
+    fn no_color_also_strips_the_tokens() {
+        let plain = Theme::default().without_color();
+        for token in Token::ALL {
+            assert_eq!(plain.token(token).color, None, "{token:?}");
+        }
+        assert!(plain.token(Token::Dim).dim);
+    }
+
+    #[test]
+    fn sgr_parameters_list_attributes_then_the_color() {
+        assert_eq!(RoleStyle::PLAIN.sgr_parameters(), None);
+        assert_eq!(
+            RoleStyle::color(AnsiColor::Red).sgr_parameters().as_deref(),
+            Some("31")
+        );
+        let all = RoleStyle {
+            color: Some(AnsiColor::BrightBlack),
+            dim: true,
+            underline: true,
+            reverse: true,
+        };
+        assert_eq!(all.sgr_parameters().as_deref(), Some("2;4;7;90"));
+        let dim_only = RoleStyle {
+            dim: true,
+            ..RoleStyle::PLAIN
+        };
+        assert_eq!(dim_only.sgr_parameters().as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn only_nord_is_built_in() {
+        assert_eq!(Theme::builtin("nord"), Some(Theme::default()));
+        assert_eq!(Theme::builtin("dracula"), None);
+        assert_eq!(Theme::builtin(""), None);
     }
 }

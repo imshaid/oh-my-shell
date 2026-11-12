@@ -14,6 +14,7 @@ mod edit;
 mod first_run;
 mod load;
 mod paths;
+mod read;
 mod schema;
 
 pub use ai_state::AiState;
@@ -21,6 +22,7 @@ pub use edit::{AiChoice, EditError, Edited, set_ai};
 pub use first_run::{TEMPLATE, create as write_if_missing};
 pub use load::{Loaded, Parsed, Problem, Severity, check_url, load, parse};
 pub use paths::Paths;
+pub use read::read_text_file;
 pub use schema::{
     Ai, AiContext, AiLanguage, Channel, Config, ConfirmLevel, EditMode, Editor, History, Icons,
     Motion, PROMPT_SEGMENTS, Prompt, Provider, SECTIONS, Safety, Ui, Update,

@@ -9,6 +9,7 @@ use omsh_ai::fake::FakeProvider;
 use omsh_ai::{ChatRequest, ErrorKind, ProviderError};
 use omsh_config::Provider as Kind;
 use omsh_history::{Filter, Query, Store};
+use omsh_ui::Paint;
 
 use super::*;
 
@@ -225,7 +226,7 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             recent: &mut recent,
             confirm: setup.confirm.unwrap_or(ConfirmLevel::Dangerous),
             blast: setup.blast.unwrap_or(TEST_LIMITS),
-            unicode: false,
+            paint: &Paint::plain(),
             undo: setup.undo.as_deref(),
             edit: &mut edit,
         },
@@ -424,7 +425,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         recent: &mut recent,
         confirm: ConfirmLevel::Dangerous,
         blast: TEST_LIMITS,
-        unicode: false,
+        paint: &Paint::plain(),
         undo: None,
         edit: &mut edit,
     };
@@ -980,7 +981,10 @@ fn choose_reads_keys_until_one_means_something() {
     let shell = Shell::new();
     let files = Io::process();
     let mut terminal = tty.open(&shell, &files);
-    assert_eq!(choose(&mut *terminal, 1, ""), Choice::Edit(0));
+    assert_eq!(
+        choose(&mut *terminal, 1, "", &Paint::plain()),
+        Choice::Edit(0)
+    );
 }
 
 // -- context: git, recent commands, `[v]` -----------------------------------------------------
@@ -1547,7 +1551,7 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         recent: &mut recent,
         confirm: ConfirmLevel::Dangerous,
         blast: TEST_LIMITS,
-        unicode: false,
+        paint: &Paint::plain(),
         undo: None,
         edit: &mut edit,
     };

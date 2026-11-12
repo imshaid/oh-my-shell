@@ -37,7 +37,7 @@ use std::time::Duration;
 use nu_ansi_term::Style;
 use omsh_config::{Config, EditMode as ConfigMode};
 use omsh_history::{Filter, Store};
-use omsh_ui::{Role, Theme};
+use omsh_ui::{Role, Theme, Token};
 use reedline::{
     ColumnarMenu, EditCommand, Emacs, KeyCode, KeyModifiers, Keybindings, MenuBuilder, Reedline,
     ReedlineEvent, ReedlineMenu, Signal, Vi, default_emacs_keybindings,
@@ -135,6 +135,7 @@ impl Editor {
         let look = Look {
             unicode,
             color,
+            failure: theme.token(Token::Danger).sgr_parameters(),
             left: names(&config.prompt.left),
             right: names(&config.prompt.right),
         };

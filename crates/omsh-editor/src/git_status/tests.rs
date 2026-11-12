@@ -433,6 +433,7 @@ fn a_prompt_reads_the_git_segment_when_it_is_drawn() {
     let look = Look {
         unicode: true,
         color: false,
+        failure: None,
         left: vec![Segment::Git],
         right: vec![],
     };

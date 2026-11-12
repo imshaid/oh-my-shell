@@ -1805,6 +1805,7 @@ name = "omsh-ui"
 version = "0.1.0"
 dependencies = [
  "omsh-config",
+ "toml",
 ]
 
 [[package]]

@@ -3,8 +3,10 @@
 //! Every line a person types goes through the safety analyzer after the aliases are replaced
 //! and the line is parsed, and before anything runs. A line the analyzer likes runs at once.
 //! One that is only worth a word gets a one-line note and runs. One at or above the level of
-//! `[safety] confirm` shows what is wrong with it and waits for an answer. The panel is plain
-//! text on standard error; styling comes with the theme work (S26).
+//! `[safety] confirm` shows what is wrong with it and waits for an answer. The panel is text on
+//! standard error. On a terminal it has a bar down the left edge in the color of the level and
+//! colored words (the theme's `danger`, `warning` and `accent` tokens, S26); on a pipe it is the
+//! same text with blanks where the bar would be.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
@@ -19,6 +21,7 @@ use omsh_exec::{
 use omsh_safety::blast::Radius;
 use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level, Paths, analyze};
+use omsh_ui::{Paint, Token};
 
 use crate::probe::ShellProbe;
 use crate::radius::{self, BlastLimits};
@@ -46,6 +49,10 @@ const SHOWN_WIDTH: usize = 160;
 
 /// Prepares a typed line, asks about it if it is risky, and runs it if the answer allows.
 /// Lines that are not finished or are wrong come back as `prepare` reports them.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pieces of the shell the question needs"
+)]
 pub fn run_line(
     shell: &mut Shell,
     text: &str,
@@ -54,13 +61,18 @@ pub fn run_line(
     confirm: ConfirmLevel,
     blast: BlastLimits,
     undo: Option<&Undo>,
+    paint: &Paint,
 ) -> LineResult {
-    run_line_outcome(shell, text, at_end, files, confirm, blast, undo).0
+    run_line_outcome(shell, text, at_end, files, confirm, blast, undo, paint).0
 }
 
 /// Like [`run_line`], and also says whether the line was really run: `false` when it could not
 /// be prepared (unfinished, a syntax error) or was cancelled at the question. `cmd | ? q` needs
 /// it: a line that did not run has no output to ask about.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pieces of the shell the question needs"
+)]
 pub fn run_line_outcome(
     shell: &mut Shell,
     text: &str,
@@ -69,6 +81,7 @@ pub fn run_line_outcome(
     confirm: ConfirmLevel,
     blast: BlastLimits,
     undo: Option<&Undo>,
+    paint: &Paint,
 ) -> (LineResult, bool) {
     let prepared = match shell.prepare(text, at_end) {
         Ok(prepared) => prepared,
@@ -84,6 +97,7 @@ pub fn run_line_outcome(
             confirm,
             Some(blast),
             offer_trash,
+            paint,
             &mut terminal,
         )
     };
@@ -211,9 +225,10 @@ pub fn decide(
     text: &str,
     confirm: ConfirmLevel,
     blast: Option<BlastLimits>,
+    paint: &Paint,
     terminal: &mut dyn Terminal,
 ) -> Decision {
-    decide_with(analysis, text, confirm, blast, false, terminal)
+    decide_with(analysis, text, confirm, blast, false, paint, terminal)
 }
 
 /// Like [`decide`]; with `offer_trash` the question also takes `t`: run it, with the `rm`s
@@ -224,6 +239,7 @@ pub fn decide_with(
     confirm: ConfirmLevel,
     blast: Option<BlastLimits>,
     offer_trash: bool,
+    paint: &Paint,
     terminal: &mut dyn Terminal,
 ) -> Decision {
     let level = analysis.level();
@@ -235,8 +251,8 @@ pub fn decide_with(
     for finding in analysis.findings.iter().filter(|f| f.level < asks_from) {
         terminal.err(&format!(
             "oh-my-shell: {}: {}\n",
-            finding.level.name(),
-            finding.reason
+            paint.token(level_token(finding.level), finding.level.name()),
+            reason_text(finding, Trash::No)
         ));
     }
     if level < asks_from {
@@ -248,24 +264,35 @@ pub fn decide_with(
         None => vec![None; asking.len()],
     };
     terminal.err(&panel(
+        paint,
         level,
         text,
         &asking,
         &radii,
         blast.unwrap_or_default(),
+        if offer_trash {
+            Trash::Offered
+        } else {
+            Trash::No
+        },
     ));
     let critical: Vec<&str> = asking
         .iter()
         .filter(|finding| finding.level == Level::Critical)
         .filter_map(|finding| finding.target.as_deref())
         .collect();
-    ask_with(level, &critical, offer_trash, terminal)
+    ask_with(level, &critical, offer_trash, paint, terminal)
 }
 
 /// Asks the question for `level`: "Run it? [y/N]" for a dangerous line, and for a critical one
 /// that `yes` or one of the `critical` targets be typed. Anything else cancels.
-pub fn ask(level: Level, critical: &[&str], terminal: &mut dyn Terminal) -> Decision {
-    ask_with(level, critical, false, terminal)
+pub fn ask(
+    level: Level,
+    critical: &[&str],
+    paint: &Paint,
+    terminal: &mut dyn Terminal,
+) -> Decision {
+    ask_with(level, critical, false, paint, terminal)
 }
 
 /// [`ask`], and with `offer_trash` (never for a critical line) `t` runs it through the trash.
@@ -273,18 +300,24 @@ pub fn ask_with(
     level: Level,
     critical: &[&str],
     offer_trash: bool,
+    paint: &Paint,
     terminal: &mut dyn Terminal,
 ) -> Decision {
     let offer_trash = offer_trash && level != Level::Critical;
+    let key = |text: &str| paint.token(Token::Accent, text);
     let prompt = if level == Level::Critical {
         match critical.first() {
-            Some(target) => format!("Type \"yes\" or \"{target}\" to run it: "),
-            None => "Type \"yes\" to run it: ".to_owned(),
+            Some(target) => format!("Type {} or \"{target}\" to run it: ", key("\"yes\"")),
+            None => format!("Type {} to run it: ", key("\"yes\"")),
         }
     } else if offer_trash {
-        "Run it? [y/N] (t = move to the trash instead) ".to_owned()
+        format!(
+            "Run it? {} ({} = move to the trash instead) ",
+            key("[y/N]"),
+            key("t")
+        )
     } else {
-        "Run it? [y/N] ".to_owned()
+        format!("Run it? {} ", key("[y/N]"))
     };
     let mut answer = Vec::new();
     match terminal.read_line(&prompt, false, &mut answer) {
@@ -324,31 +357,81 @@ pub fn ask_with(
     }
 }
 
+/// Whether the delete in a question will be for good, for the sentence about permanence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Trash {
+    /// The command runs as written; nothing is moved to the trash.
+    No,
+    /// The question offers `t`: the person may have the `rm` go to the trash instead.
+    Offered,
+    /// The `rm` goes to the trash. The caller says so itself, in its own words.
+    Yes,
+}
+
+/// The reason of `finding`, with "This cannot be undone." when the delete is permanent and not
+/// going to the trash. The rule's own reason never says it: next to "rm goes to the trash" it
+/// would be wrong.
+pub(crate) fn reason_text(finding: &Finding, trash: Trash) -> String {
+    if !finding.rule.permanent {
+        return finding.reason.clone();
+    }
+    match trash {
+        Trash::No => format!("{} This cannot be undone.", finding.reason),
+        Trash::Yes if finding.rule.trash_alternative => finding.reason.clone(),
+        Trash::Offered if finding.rule.trash_alternative => format!(
+            "{} This cannot be undone, unless you answer t to move it to the trash.",
+            finding.reason
+        ),
+        // `find -delete` and the like never go to the trash, whatever happens to the `rm`s.
+        Trash::Offered | Trash::Yes => format!("{} This cannot be undone.", finding.reason),
+    }
+}
+
+/// The color of a level's words and bar: `danger` for what asks for care, `warning` for a word
+/// of caution.
+pub(crate) fn level_token(level: Level) -> Token {
+    match level {
+        Level::Critical | Level::Dangerous => Token::Danger,
+        Level::Caution => Token::Warning,
+        Level::Safe => Token::Success,
+    }
+}
+
 /// The text above the question: the level, the command, and one line for each reason.
 fn panel(
+    paint: &Paint,
     level: Level,
     text: &str,
     findings: &[&Finding],
     radii: &[Option<Radius>],
     blast: BlastLimits,
+    trash: Trash,
 ) -> String {
-    let mut out = format!("oh-my-shell: this command is {}:\n", level.name());
+    let token = level_token(level);
+    let bar = paint.bar(token);
+    let mut out = format!(
+        "oh-my-shell: this command is {}:\n",
+        paint.token(token, level.name())
+    );
     let mut lines = text.trim_end().lines();
     for line in lines.by_ref().take(SHOWN_LINES) {
-        out.push_str("  ");
+        out.push_str(&bar);
         out.push_str(&shorten(line));
         out.push('\n');
     }
     if lines.next().is_some() {
-        out.push_str("  ...\n");
+        out.push_str(&bar);
+        out.push_str("...\n");
     }
     for (index, finding) in findings.iter().enumerate() {
-        out.push_str("  - ");
-        out.push_str(&finding.reason);
+        out.push_str(&bar);
+        out.push_str("- ");
+        out.push_str(&reason_text(finding, trash));
         out.push('\n');
         if let Some(target) = &finding.target {
-            out.push_str("    on: ");
-            out.push_str(&shorten(target));
+            out.push_str(&bar);
+            out.push_str("  on: ");
+            out.push_str(&paint.token(Token::Path, &shorten(target)));
             out.push('\n');
         }
         if let Some(Some(found)) = radii.get(index) {
@@ -357,8 +440,14 @@ fn panel(
                 .as_ref()
                 .and_then(|files| files.cwd.as_deref());
             for line in radius::lines(found, cwd, blast) {
-                out.push_str("    ");
-                out.push_str(&line);
+                out.push_str(&bar);
+                out.push_str("  ");
+                // Examples are the least important lines.
+                if line.starts_with("for example:") {
+                    out.push_str(&paint.token(Token::Dim, &line));
+                } else {
+                    out.push_str(&line);
+                }
                 out.push('\n');
             }
         }
@@ -383,6 +472,7 @@ mod tests {
     use omsh_config::ConfirmLevel;
     use omsh_exec::{ReadError, Shell, Terminal};
     use omsh_safety::{Context, analyze};
+    use omsh_ui::Paint;
     use std::path::{Path, PathBuf};
 
     use crate::undo::Undo;
@@ -468,7 +558,14 @@ mod tests {
         };
         let analysis = analyze(prepared.list(), prepared.text(), &ctx);
         let mut terminal = Scripted::new(answers);
-        let decision = decide(&analysis, prepared.text(), confirm, blast, &mut terminal);
+        let decision = decide(
+            &analysis,
+            prepared.text(),
+            confirm,
+            blast,
+            &Paint::plain(),
+            &mut terminal,
+        );
         (decision, terminal)
     }
 
@@ -867,7 +964,15 @@ mod tests {
     fn ask_trash(offer: bool, level_line: &str, answer: &'static str) -> (Decision, Scripted) {
         let (_, prepared, analysis) = analysis_of(level_line);
         let mut terminal = Scripted::new(&[Ok(answer)]);
-        let decision = decide_with(&analysis, prepared.text(), D, None, offer, &mut terminal);
+        let decision = decide_with(
+            &analysis,
+            prepared.text(),
+            D,
+            None,
+            offer,
+            &Paint::plain(),
+            &mut terminal,
+        );
         (decision, terminal)
     }
 

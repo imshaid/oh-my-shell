@@ -1,10 +1,13 @@
 //! Showing error reports to the user.
 
-use std::env;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 
 use miette::{Diagnostic, GraphicalReportHandler, GraphicalTheme, NarratableReportHandler};
+#[cfg(test)]
 use omsh_config::Icons;
+#[cfg(test)]
+use omsh_ui::Facts;
+use omsh_ui::Look;
 
 /// How reports are drawn, chosen once from what stderr is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,50 +24,32 @@ pub enum Style {
 }
 
 impl Style {
-    /// Picks a style for stderr as it is now. `icons` is the `ui.icons` setting: `ascii` and
-    /// `unicode` decide the box characters; `auto` looks at the locale and the terminal.
+    /// The style that goes with a [`Look`]: plain sentences for a pipe, else the graphical one
+    /// with the look's color and Unicode choices.
     #[must_use]
-    pub fn detect(icons: Icons) -> Self {
-        let dumb = env::var("TERM").is_ok_and(|term| term == "dumb");
-        Self::choose(
-            io::stderr().is_terminal(),
-            dumb,
-            env_set("NO_COLOR"),
-            locale_is_utf8(),
-            icons,
-        )
+    pub fn from_look(look: Look) -> Self {
+        if look.terminal {
+            Self::Graphical {
+                color: look.color,
+                unicode: look.unicode,
+            }
+        } else {
+            Self::Plain
+        }
     }
 
-    /// The choice itself, from the facts, so that it can be tested.
+    /// The choice from the facts, so that it can be tested.
+    #[cfg(test)]
     fn choose(terminal: bool, dumb: bool, no_color: bool, utf8: bool, icons: Icons) -> Self {
-        if !terminal {
-            return Self::Plain;
-        }
-        Self::Graphical {
-            color: !dumb && !no_color,
-            unicode: match icons {
-                Icons::Unicode => true,
-                Icons::Ascii => false,
-                Icons::Auto => !dumb && utf8,
-            },
-        }
+        let facts = Facts {
+            terminal,
+            dumb,
+            no_color,
+            utf8,
+            ssh: false,
+        };
+        Self::from_look(Look::decide(facts, icons, None))
     }
-}
-
-/// `NO_COLOR` counts when it is set to anything that is not empty.
-fn env_set(name: &str) -> bool {
-    env::var_os(name).is_some_and(|value| !value.is_empty())
-}
-
-/// The first of `LC_ALL`, `LC_CTYPE` and `LANG` that is set decides the character set.
-fn locale_is_utf8() -> bool {
-    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
-        .iter()
-        .find_map(|name| env::var(name).ok().filter(|value| !value.is_empty()));
-    locale.is_some_and(|value| {
-        let value = value.to_ascii_lowercase();
-        value.contains("utf-8") || value.contains("utf8")
-    })
 }
 
 /// Draws a report as text.

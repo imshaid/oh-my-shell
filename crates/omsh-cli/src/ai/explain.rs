@@ -28,6 +28,7 @@ use omsh_ai::{
 use omsh_config::ConfirmLevel;
 use omsh_exec::{ExitStatus, Io, LineResult, Outcome, Shell, Terminal};
 use omsh_safety::Level;
+use omsh_ui::Paint;
 
 use super::plan::{PlanSetup, TerminalSource, gather, provider_for};
 use super::recent::{Last, Recent};
@@ -55,6 +56,7 @@ pub struct ExplainEnv<'a> {
     pub files: &'a mut Io,
     pub tty: &'a mut dyn TerminalSource,
     pub recent: &'a mut Recent,
+    pub paint: &'a Paint,
 }
 
 fn say(env: &mut ExplainEnv<'_>, text: &str) {
@@ -94,10 +96,11 @@ fn stream_answer(
     provider: Box<dyn Provider>,
     request: &ChatRequest,
     label: &str,
+    paint: &Paint,
     terminal: &mut dyn Terminal,
 ) -> Ended {
     let kind = provider.kind();
-    let wait = WaitLine::start(label, terminal);
+    let wait = WaitLine::start(label, paint, terminal);
     let shown = Cell::new(false);
     let ended_with_newline = Cell::new(true);
     let terminal = RefCell::new(terminal);
@@ -166,7 +169,7 @@ fn ask(
     let label = format!("Asking {} ({})", settings.kind.label(), settings.model);
     let ended = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        stream_answer(provider, request, &label, &mut *terminal)
+        stream_answer(provider, request, &label, env.paint, &mut *terminal)
     };
     match ended {
         Ended::Answered => 0,
@@ -442,6 +445,7 @@ pub fn pipe(
             pipe_env.confirm,
             pipe_env.blast,
             pipe_env.undo,
+            env.paint,
         );
         // Let go of the writing end, or the reader never sees the end of the output.
         drop(table);

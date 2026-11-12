@@ -28,11 +28,19 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # version. They are marked "not used yet".
 
 #[ui]
-# Name of a theme: a built-in one, or themes/<name>.toml next to this file. (not used yet)
+# Name of a theme: "nord" (built in), or themes/<name>.toml next to this file. A theme file
+# lists the colors you want to change and nothing else; the rest stays as in "nord":
+#   [tokens]                      # accent, path, ai, success, warning, danger, muted, dim
+#   danger = "magenta"            # one of the 16 ANSI color names (black, red, ... bright-white)
+#   [roles]                       # the colors of the command line: command, error, quote, ...
+#   quote = { color = "green", underline = true }
+# Colors are names, never hex values, so they follow your terminal's own colors.
 #theme = "nord"
-# "full", "reduced" or "off". When unset: "reduced" over ssh, "full" otherwise. (not used yet)
+# "full", "reduced" or "off": how much of the waiting line moves. When unset: "reduced" over
+# ssh, "full" otherwise. Always off on a "dumb" terminal and in a locale that is not UTF-8.
 # motion = "full"
-# "unicode", "ascii" or "auto" (unicode when the locale is UTF-8). Used by error reports.
+# "unicode", "ascii" or "auto" (unicode when the locale is UTF-8). Used by error reports,
+# panels and the waiting line.
 #icons = "auto"
 
 #[editor]

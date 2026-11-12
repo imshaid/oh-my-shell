@@ -574,6 +574,34 @@ fn every_rule_has_a_reason_in_words() {
 }
 
 #[test]
+fn only_the_delete_rules_are_permanent_and_none_says_so_in_its_reason() {
+    // A panel adds "cannot be undone" itself, and only when the delete is for good: a reason
+    // that says it for every case would sit next to "rm goes to the trash" (S26).
+    let permanent: Vec<&str> = RULES
+        .iter()
+        .filter(|rule| rule.permanent)
+        .map(|rule| rule.id)
+        .collect();
+    assert_eq!(
+        permanent,
+        [
+            "rm-critical-path",
+            "rm-recursive-or-force",
+            "rm-glob",
+            "find-delete"
+        ]
+    );
+    for rule in RULES {
+        assert!(
+            !rule.reason.to_lowercase().contains("undone"),
+            "{}: {}",
+            rule.id,
+            rule.reason
+        );
+    }
+}
+
+#[test]
 fn positive_cases_are_flagged_with_the_expected_level() {
     for case in CASES {
         for &(line, expected) in case.positives {

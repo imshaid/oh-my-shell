@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 omsh-config.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true

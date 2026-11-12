@@ -39,10 +39,11 @@ use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, TRAS
 use omsh_safety::blast::Radius;
 use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level};
+use omsh_ui::{Paint, Token};
 
 use super::recent::Recent;
 use super::wait::WaitLine;
-use crate::confirm::{self, Decision, StartDir};
+use crate::confirm::{self, Decision, StartDir, Trash};
 use crate::history::History;
 use crate::radius::{self, BlastLimits};
 use crate::undo::Undo;
@@ -63,6 +64,22 @@ pub const USAGE: &str =
     "usage: ? <what you want done>   (example: ? show the 5 biggest files here)\n";
 
 const KEYS: &str = "[Enter] run  [e] edit  [c] chat  [v] view context  [Esc] cancel ";
+
+/// [`KEYS`] with each `[key]` in the accent color.
+fn keys_line(paint: &Paint) -> String {
+    let mut out = String::new();
+    let mut rest = KEYS;
+    while let Some(start) = rest.find('[') {
+        let Some(end) = rest[start..].find(']') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(&paint.token(Token::Accent, &rest[start..=start + end]));
+        rest = &rest[start + end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
 
 /// What the line for a follow-up message asks.
 const CHAT_PROMPT: &str = "chat> ";
@@ -120,8 +137,8 @@ pub struct PlanEnv<'a> {
     pub confirm: ConfirmLevel,
     /// The limits of the blast-radius count (§12.3).
     pub blast: BlastLimits,
-    /// Draw ✓ and ✗ (otherwise `ok` and `failed`).
-    pub unicode: bool,
+    /// Colors and glyphs of the panel and the step results (S26).
+    pub paint: &'a Paint,
     /// The trash and the undo journal. Without it (`--no-config`) an `rm` deletes for good.
     pub undo: Option<&'a Undo>,
     /// Changes the text of a command in the line editor.
@@ -385,12 +402,13 @@ pub(crate) fn ask<T>(
     first: &ChatRequest,
     check: &dyn Fn(&str) -> Result<T, PlanError>,
     label: &str,
+    paint: &Paint,
     terminal: &mut dyn Terminal,
 ) -> (Result<(T, String), Failure>, Option<Sent>) {
     let received = AtomicUsize::new(0);
     let tries = AtomicUsize::new(1);
     let sent = RefCell::new(None);
-    let wait = WaitLine::start(label, terminal);
+    let wait = WaitLine::start(label, paint, terminal);
     let terminal = RefCell::new(terminal);
     let watch = || {
         let mut terminal = terminal.borrow_mut();
@@ -445,7 +463,43 @@ fn block(out: &mut String, first: &str, indent: &str, text: &str) {
     }
 }
 
+/// Puts the bar of the panel where the first two columns of each indented line are. A look
+/// that is not a terminal has blanks for a bar, so its text is left as it is.
+fn with_bar(paint: &Paint, text: &str) -> String {
+    if !paint.look().terminal {
+        return text.to_owned();
+    }
+    let bar = paint.bar(Token::Ai);
+    let mut out = String::with_capacity(text.len() + 16);
+    for line in text.split_inclusive('\n') {
+        match line.strip_prefix("  ") {
+            Some(rest) => {
+                out.push_str(&bar);
+                out.push_str(rest);
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
 fn panel(
+    paint: &Paint,
+    summary: &str,
+    settings: &Settings,
+    steps: &[Reviewed],
+    blast: BlastLimits,
+    journal: bool,
+    turns: usize,
+) -> String {
+    with_bar(
+        paint,
+        &panel_text(paint, summary, settings, steps, blast, journal, turns),
+    )
+}
+
+fn panel_text(
+    paint: &Paint,
     summary: &str,
     settings: &Settings,
     steps: &[Reviewed],
@@ -459,9 +513,15 @@ fn panel(
         n => format!(", after {n} chat turns"),
     };
     let mut out = format!(
-        "oh-my-shell: plan from {} ({}{after}):\n  {}\n",
-        settings.kind.label(),
-        settings.model,
+        "oh-my-shell: {}:\n  {}\n",
+        paint.token(
+            Token::Ai,
+            &format!(
+                "plan from {} ({}{after})",
+                settings.kind.label(),
+                settings.model
+            )
+        ),
         shorten(summary)
     );
     if turns >= SOFT_TURN_LIMIT {
@@ -479,10 +539,13 @@ fn panel(
             ""
         };
         out.push_str(&format!(
-            "\n  {}. {}   [{}{note}]\n",
+            "\n  {}. {}   {}\n",
             index + 1,
             shorten(&step.title),
-            rating.level.name()
+            paint.token(
+                confirm::level_token(rating.level),
+                &format!("[{}{note}]", rating.level.name())
+            )
         ));
         block(&mut out, "     $ ", "       ", &step.command);
         if step.text.trim_end() != step.command.trim_end() {
@@ -500,13 +563,26 @@ fn panel(
             );
         }
         let mut counted = false;
+        // Whether the plan's `rm`s go through the trash decides what a delete's reason says.
+        let trash = if journal
+            && !step.analysis.deletes.is_empty()
+            && step
+                .analysis
+                .deletes
+                .iter()
+                .all(|site| site.trashable.is_ok())
+        {
+            Trash::Yes
+        } else {
+            Trash::No
+        };
         for (at, finding) in step.analysis.findings.iter().enumerate() {
             out.push_str("     - ");
-            out.push_str(&finding.reason);
+            out.push_str(&confirm::reason_text(finding, trash));
             out.push('\n');
             if let Some(target) = &finding.target {
                 out.push_str("       on: ");
-                out.push_str(&shorten(target));
+                out.push_str(&paint.token(Token::Path, &shorten(target)));
                 out.push('\n');
             }
             if let Some(Some(found)) = step.radii.get(at) {
@@ -514,7 +590,11 @@ fn panel(
                 let cwd = finding.files.as_ref().and_then(|f| f.cwd.as_deref());
                 for line in radius::lines(found, cwd, blast) {
                     out.push_str("       ");
-                    out.push_str(&line);
+                    if line.starts_with("for example:") {
+                        out.push_str(&paint.token(Token::Dim, &line));
+                    } else {
+                        out.push_str(&line);
+                    }
                     out.push('\n');
                 }
             }
@@ -522,7 +602,7 @@ fn panel(
         if counted && index > 0 {
             out.push_str("       (counted now, before the steps above have run)\n");
         }
-        undo_lines(&mut out, &step.analysis, journal);
+        undo_lines(paint, &mut out, &step.analysis, journal);
     }
     out.push('\n');
     out
@@ -530,7 +610,7 @@ fn panel(
 
 /// What `undo` can and cannot do for a step: which of its `rm`s go through the trash, and
 /// which `mkdir`, `mv` and redirections are followed.
-fn undo_lines(out: &mut String, analysis: &Analysis, journal: bool) {
+fn undo_lines(paint: &Paint, out: &mut String, analysis: &Analysis, journal: bool) {
     let mut trashed = false;
     for site in &analysis.deletes {
         match (&site.trashable, journal) {
@@ -538,17 +618,27 @@ fn undo_lines(out: &mut String, analysis: &Analysis, journal: bool) {
             (Ok(()), false) => {}
             (Err(why), _) => {
                 out.push_str(&format!(
-                    "     - deletes for good, not through the trash: {}\n",
+                    "     - {}: {}\n",
+                    paint.token(Token::Warning, "deletes for good, not through the trash"),
                     why.text()
                 ));
             }
         }
     }
     if !journal && analysis.deletes.iter().any(|site| site.trashable.is_ok()) {
-        out.push_str("     - deletes for good: the trash is not available in this shell\n");
+        out.push_str(&format!(
+            "     - {}: the trash is not available in this shell\n",
+            paint.token(Token::Warning, "deletes for good")
+        ));
     }
     if trashed {
-        out.push_str("     rm goes to the trash; undo can bring it back\n");
+        out.push_str(&format!(
+            "     {}\n",
+            paint.token(
+                Token::Success,
+                "rm goes to the trash; undo can bring it back"
+            )
+        ));
     }
     let mut followed = Vec::new();
     for change in &analysis.changes {
@@ -654,9 +744,9 @@ enum Choice {
 
 /// Waits for a key on the panel. Only Enter (or `y`) runs; `e` edits; `c` chats; `v` shows what
 /// was sent and goes on waiting; Esc, `n` and `q` cancel; any other key is ignored.
-fn choose(terminal: &mut dyn Terminal, steps: usize, view: &str) -> Choice {
+fn choose(terminal: &mut dyn Terminal, steps: usize, view: &str, paint: &Paint) -> Choice {
     loop {
-        match terminal.read_key(KEYS) {
+        match terminal.read_key(&keys_line(paint)) {
             Ok(Key::Enter | Key::Char('y' | 'Y')) => return Choice::Run,
             Ok(Key::Char('c' | 'C')) => return Choice::Chat,
             Ok(Key::Char('v' | 'V')) => terminal.err(view),
@@ -748,7 +838,7 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     let check = |answer: &str| check_answer(&checker, answer);
     let (outcome, sent) = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        ask(provider, &first, &check, &label, &mut *terminal)
+        ask(provider, &first, &check, &label, env.paint, &mut *terminal)
     };
     // What `[v]` shows: the request that was really sent last (a second try, if there was one).
     let mut view = sent_view(
@@ -785,6 +875,7 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     loop {
         let journal = env.undo.is_some() && env.shell.has_journal();
         let text = panel(
+            env.paint,
             &summary,
             &settings,
             &steps,
@@ -795,7 +886,7 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         let choice = {
             let mut terminal = env.tty.open(env.shell, env.files);
             terminal.err(&text);
-            choose(&mut *terminal, steps.len(), &view)
+            choose(&mut *terminal, steps.len(), &view, env.paint)
         };
         match choice {
             Choice::Run => break,
@@ -842,7 +933,7 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         let decision = {
             let mut terminal = env.tty.open(env.shell, env.files);
             terminal.err("oh-my-shell: this plan has a critical step\n");
-            confirm::ask(Level::Critical, &targets, &mut *terminal)
+            confirm::ask(Level::Critical, &targets, env.paint, &mut *terminal)
         };
         if let Decision::Cancel(code) = decision {
             return finish(env.shell, code);
@@ -856,7 +947,7 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
                 "oh-my-shell: this plan has a {} step\n",
                 top.name()
             ));
-            confirm::ask(top, &[], &mut *terminal)
+            confirm::ask(top, &[], env.paint, &mut *terminal)
         };
         if let Decision::Cancel(code) = decision {
             return finish(env.shell, code);
@@ -949,7 +1040,14 @@ fn chat_turn(
     let check = |answer: &str| check_answer(&checker, answer);
     let (outcome, sent) = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        ask(provider, &follow_up, &check, &label, &mut *terminal)
+        ask(
+            provider,
+            &follow_up,
+            &check,
+            &label,
+            env.paint,
+            &mut *terminal,
+        )
     };
     // `[v]` shows what was sent last, even if the answer was no good.
     if let Some(sent) = sent {
@@ -1029,15 +1127,18 @@ fn rechain(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], from: usize) {
 /// Runs the steps in order and stops at the first one that fails.
 fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
     let total = steps.len();
-    let (ok, failed) = if env.unicode {
-        ("✓", "✗")
-    } else {
-        ("ok", "failed")
-    };
+    let glyphs = env.paint.glyphs();
+    let ok = env.paint.token(Token::Success, glyphs.ok);
+    let failed = env.paint.token(Token::Danger, glyphs.fail);
     let mut last = 0_u8;
     for (index, step) in steps.iter().enumerate() {
         let number = index + 1;
-        let mut head = format!("\n[{number}/{total}] {}\n", shorten(&step.title));
+        let mut head = format!(
+            "\n{} {}\n",
+            env.paint
+                .token(Token::Accent, &format!("[{number}/{total}]")),
+            shorten(&step.title)
+        );
         block(&mut head, "  $ ", "    ", &step.command);
         say(env, &head);
 
@@ -1047,7 +1148,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
                 let why = message_of(&result);
                 say(env, &format!("  {failed}: {why}\n"));
                 last = ExitStatus::USAGE.0;
-                return stopped(env, number, total, last, false);
+                return stopped(env, steps, number, last, false);
             }
         };
         // An earlier step may have changed what this one touches.
@@ -1061,12 +1162,13 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
                     prepared.text(),
                     env.confirm,
                     Some(env.blast),
+                    env.paint,
                     &mut *terminal,
                 )
             };
             if let Decision::Cancel(code) = decision {
                 omsh_exec::clear_interrupt();
-                return stopped(env, number, total, code, false);
+                return stopped(env, steps, number, code, false);
             }
         }
 
@@ -1091,7 +1193,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
                                 env,
                                 &format!("  {failed}: could not prepare the move to the trash\n"),
                             );
-                            return stopped(env, number, total, ExitStatus::USAGE.0, false);
+                            return stopped(env, steps, number, ExitStatus::USAGE.0, false);
                         }
                     }
                 };
@@ -1149,14 +1251,20 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             // A step that ran and failed: offer the explanation (§13.6). Ctrl+C and a stop are
             // not failures to explain.
             let offer = last != INTERRUPTED && last != STOPPED;
-            return stopped(env, number, total, last, offer);
+            return stopped(env, steps, number, last, offer);
         }
     }
     say(
         env,
         &format!(
-            "\n{ok} plan done ({total} step{})\n",
-            if total == 1 { "" } else { "s" }
+            "\n{ok} {}\n",
+            env.paint.token(
+                Token::Success,
+                &format!(
+                    "plan done ({total} step{})",
+                    if total == 1 { "" } else { "s" }
+                )
+            )
         ),
     );
     finish(env.shell, last)
@@ -1167,12 +1275,25 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
 /// `offer` adds the line about `??` (the step ran and failed, so it is the last command).
 fn stopped(
     env: &mut PlanEnv<'_>,
+    steps: &[Reviewed],
     number: usize,
-    total: usize,
     status: u8,
     offer: bool,
 ) -> LineResult {
+    let total = steps.len();
     let left = total - number;
+    if left > 0 {
+        // The steps that never ran, one dim line each, so the end of the plan is plain to see.
+        let skip = env.paint.glyphs().skip;
+        let mut lines = String::from("\n");
+        for (index, step) in steps.iter().enumerate().skip(number) {
+            let line = format!("{skip} {}. {} (not run)", index + 1, shorten(&step.title));
+            lines.push_str("  ");
+            lines.push_str(&env.paint.token(Token::Dim, &line));
+            lines.push('\n');
+        }
+        say(env, &lines);
+    }
     let text = if left == 0 {
         format!("\noh-my-shell: step {number} did not succeed (status {status})\n")
     } else {

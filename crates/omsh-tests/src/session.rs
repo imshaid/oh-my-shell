@@ -177,7 +177,25 @@ impl Launch {
     /// Starts the program and waits for the shell's first prompt, `$ `.
     pub fn start(self) -> io::Result<Session> {
         let mut session = self.start_raw()?;
-        session.expect("$ ", SHORT);
+        // `$ `, or `❯ ` in a UTF-8 locale.
+        let end = Instant::now() + SHORT;
+        loop {
+            let rest = &session.transcript[session.cursor..];
+            let found = ["$ ", "❯ "]
+                .iter()
+                .filter_map(|symbol| rest.find(symbol).map(|at| at + symbol.len()))
+                .min();
+            if let Some(len) = found {
+                session.cursor += len;
+                break;
+            }
+            assert!(
+                Instant::now() < end,
+                "never saw the first prompt; the terminal showed:\n{}",
+                session.transcript
+            );
+            session.pump(Duration::from_millis(20));
+        }
         Ok(session)
     }
 
@@ -667,11 +685,17 @@ fn last_paint_is_the_empty_prompt(output: &str, plain_of: &dyn Fn(&str) -> Strin
     const HIDE: &str = "\x1b[?25l";
     const SHOW: &str = "\x1b[?25h";
     let Some(start) = output.rfind(HIDE) else {
-        return plain_of(output).ends_with("$ ");
+        return ends_with_symbol(&plain_of(output));
     };
     output[start..]
         .find(SHOW)
-        .is_some_and(|end| plain_of(&output[start..start + end]).ends_with("$ "))
+        .is_some_and(|end| ends_with_symbol(&plain_of(&output[start..start + end])))
+}
+
+/// The prompt's symbol: `$ ` in ASCII, `❯ ` where the terminal does Unicode (S26 tests that run
+/// in a UTF-8 locale see the second).
+fn ends_with_symbol(text: &str) -> bool {
+    text.ends_with("$ ") || text.ends_with("❯ ")
 }
 
 /// The output without what the editor draws away from the cursor: it saves the cursor

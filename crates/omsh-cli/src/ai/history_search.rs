@@ -13,6 +13,7 @@ use omsh_ai::{
 };
 use omsh_exec::{ExitStatus, Io, LineResult, Outcome, Shell, Trigger, trigger};
 use omsh_history::{Entry, Query, SETTLE};
+use omsh_ui::Paint;
 
 use super::plan::{Failure, PlanSetup, TerminalSource, ask, provider_for};
 use crate::history::{History, local_time, render};
@@ -48,6 +49,7 @@ pub struct SearchEnv<'a> {
     pub files: &'a mut Io,
     pub tty: &'a mut dyn TerminalSource,
     pub history: Option<&'a History>,
+    pub paint: &'a Paint,
 }
 
 fn say(env: &mut SearchEnv<'_>, text: &str) {
@@ -192,7 +194,7 @@ pub fn run(
     let check = |answer: &str| HistoryFilter::parse(answer);
     let (outcome, _) = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        ask(provider, &first, &check, &label, &mut *terminal)
+        ask(provider, &first, &check, &label, env.paint, &mut *terminal)
     };
     let filter = match outcome {
         Ok((filter, _)) => filter,
