@@ -222,6 +222,38 @@ fn a_git_that_hangs_does_not_hold_the_prompt_and_is_ended() {
     });
 }
 
+/// The shell ends while the prompt's `git` is still running (well before its 150 ms limit). `git`
+/// has a group of its own and the helper threads die with the process, so it used to be left
+/// behind; found by a CI test that quits right after a prompt (S19b).
+#[test]
+fn a_git_that_runs_when_the_shell_exits_is_ended_with_it() {
+    pty_test(BIN, |ctx| {
+        let repo = repo(ctx)?;
+        let bin = ctx.home().join("bin");
+        let pid_file = ctx.home().join("git-pid");
+        script(
+            &bin,
+            "git",
+            &format!("echo $$ > {}\nexec sleep 30", pid_file.display()),
+        )?;
+        write_config(ctx, WITH_GIT)?;
+        let mut term = launch(ctx, &bin).cwd(&repo).start()?;
+        let end = Instant::now() + SHORT;
+        while fs::read_to_string(&pid_file).map_or(true, |text| text.trim().is_empty()) {
+            assert!(Instant::now() < end, "git was never started");
+            term.pump(Duration::from_millis(5));
+        }
+        let pid = fs::read_to_string(&pid_file)?.trim().to_owned();
+        // Out at once, long before the deadline of the prompt's `git`.
+        term.quit()?;
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "git {pid} outlived the shell"
+        );
+        Ok(())
+    });
+}
+
 #[test]
 fn git_is_not_run_outside_a_repository_or_without_the_segment() {
     pty_test(BIN, |ctx| {

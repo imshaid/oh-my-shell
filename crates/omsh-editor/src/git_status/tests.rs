@@ -693,3 +693,64 @@ fn a_cancel_ends_git_at_once() {
     assert_eq!(answer, Dirtiness::Unknown);
     assert!(start.elapsed() < Duration::from_millis(1000));
 }
+
+/// The shell ends while `git` runs. The helper threads die with the process and `git` has a group
+/// of its own, so it used to be left behind (a CI test that quits right after a prompt found it).
+/// Dropping the watch must end `git` and collect it before it returns. The deadline is long, so
+/// that it is the drop and not the deadline that ends `git`.
+#[test]
+fn dropping_the_watch_ends_a_running_git_and_collects_it() {
+    let _one = lock(&SCRIPTS);
+    let s = Scratch::new("drop-git");
+    let root = s.repo();
+    let out = s.0.display();
+    let env = fake_git(&s, &format!("echo $$ > {out}/pid\nexec sleep 30"));
+    let (_, repaint) = counter();
+    let watch = GitWatch::with(Arc::new(ProcessRunner), repaint, LONG);
+    let _handle = watch.start(&root, &env);
+    until("git to start", || {
+        fs::read_to_string(s.0.join("pid")).is_ok_and(|text| !text.trim().is_empty())
+    });
+    let pid = fs::read_to_string(s.0.join("pid")).unwrap();
+    let pid = pid.trim();
+    assert!(Path::new(&format!("/proc/{pid}")).exists(), "git runs");
+
+    let before = Instant::now();
+    drop(watch);
+    let took = before.elapsed();
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "git {pid} was still there when the drop returned"
+    );
+    assert!(took < Duration::from_millis(500), "the drop took {took:?}");
+}
+
+#[test]
+fn dropping_a_watch_with_nothing_running_does_not_wait() {
+    let (_, repaint) = counter();
+    let watch = GitWatch::with(Fake::new(Dirtiness::Clean, None, false), repaint, LONG);
+    let before = Instant::now();
+    drop(watch);
+    assert!(before.elapsed() < Duration::from_millis(50));
+}
+
+/// A thread stuck in a call that does not return (a file system that does not answer) is waited
+/// for only up to the limit: the shell must still be able to end.
+#[test]
+fn dropping_the_watch_does_not_wait_for_ever_for_a_job_that_cannot_be_ended() {
+    let s = Scratch::new("drop-stuck");
+    let gate = Arc::new(Gate::default());
+    let fake = Fake::new(Dirtiness::Clean, Some(&gate), true);
+    let (_, repaint) = counter();
+    let watch = GitWatch::with(fake.clone(), repaint, LONG);
+    let _handle = watch.start(&s.repo(), &[]);
+    until("the job to start", || {
+        fake.calls.load(Ordering::SeqCst) == 1
+    });
+    let before = Instant::now();
+    drop(watch);
+    let took = before.elapsed();
+    assert!(took >= EXIT_WAIT, "it gave up too early: {took:?}");
+    assert!(took < EXIT_WAIT + Duration::from_millis(500), "{took:?}");
+    gate.open();
+}

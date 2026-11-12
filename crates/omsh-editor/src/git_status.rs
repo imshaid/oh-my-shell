@@ -9,6 +9,13 @@
 //! place. The whole job has a deadline of [`DEADLINE`]: `git` that is still running then is
 //! killed and the marker is left out (the branch alone is shown).
 //!
+//! **When the shell ends.** The helper threads die with the process, and `git` runs in a group of
+//! its own, so a `git` that was running at that moment used to be left behind (found by a CI test
+//! that quits right after a prompt, in a checkout where `git status` takes a few milliseconds).
+//! Dropping the [`GitWatch`] now cancels the job and waits (at most [`EXIT_WAIT`]) for the helper
+//! threads, which end `git` with its whole group and collect it, as they do at the deadline.
+//! `exec` replaces the process without dropping anything and is not covered (see the Open gaps).
+//!
 //! The rules for running `git`, all of them the owner's:
 //! - `-c core.fsmonitor=false` and no hooks: a repository can name a program in its own
 //!   configuration, and the prompt must not start one;
@@ -41,6 +48,11 @@ pub(crate) const DEADLINE: Duration = Duration::from_millis(150);
 
 /// How long the editor waits for the job before it draws the prompt without the rest.
 pub(crate) const FIRST_PAINT_WAIT: Duration = Duration::from_millis(20);
+
+/// How long the shell may wait, when it ends, for the helper threads to end `git`. A thread looks
+/// at its cancel flag every [`SLICE`], so this is a few slices; a thread that is stuck in a call
+/// that does not return (a file system that does not answer) is not waited for beyond it.
+pub(crate) const EXIT_WAIT: Duration = Duration::from_millis(100);
 
 /// How often the job looks at `git`'s pipe and at its cancel flag.
 const SLICE: Duration = Duration::from_millis(10);
@@ -318,6 +330,23 @@ impl GitWatch {
         }
     }
 
+    /// Cancels every job and waits, at most `limit`, until the helper threads have ended `git`
+    /// and collected it. Returns at once when no thread is running.
+    fn shut_down(&self, limit: Duration) {
+        {
+            let mut slot = lock(&self.shared.slot);
+            // A newer prompt than any job's: each job sees "cancelled" at its next look, ends
+            // `git` and its group, and publishes nothing.
+            slot.generation += 1;
+            slot.snapshot = Snapshot::nothing();
+            self.shared.changed.notify_all();
+        }
+        let end = Instant::now() + limit;
+        while self.shared.alive.load(Ordering::SeqCst) > 0 && Instant::now() < end {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// Waits until the job has said everything or `limit` has passed, and notes that the prompt
     /// is about to be drawn with what is known: from now on a change repaints.
     pub(crate) fn wait(&self, handle: &Handle, limit: Duration) {
@@ -343,6 +372,12 @@ impl GitWatch {
         if slot.generation == *generation {
             slot.painted = true;
         }
+    }
+}
+
+impl Drop for GitWatch {
+    fn drop(&mut self) {
+        self.shut_down(EXIT_WAIT);
     }
 }
 
