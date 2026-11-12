@@ -14,6 +14,8 @@ mod expansion;
 mod heredoc;
 mod position;
 
+use std::collections::HashMap;
+
 pub(crate) use events::{Close, Leaf, Open, Sink, WordClass};
 use heredoc::PendingHereDoc;
 pub(crate) use heredoc::cook_delimiter;
@@ -30,6 +32,7 @@ pub(crate) const MAX_NESTING: u32 = 64;
 /// count from the start of `src`, so the parser can lex the body of a `$(...)` by itself
 /// and still point at the right place.
 pub(crate) fn scan_range<S: Sink>(src: &str, range: Span, sink: &mut S) {
+    let mut memo = HashMap::new();
     let mut scanner = Scanner {
         src,
         bytes: src.as_bytes(),
@@ -39,6 +42,8 @@ pub(crate) fn scan_range<S: Sink>(src: &str, range: Span, sink: &mut S) {
         depth: 0,
         aborted: false,
         sink,
+        memo: &mut memo,
+        probe_answer: None,
     };
     scanner.scan_list(false);
 }
@@ -60,8 +65,9 @@ enum Ctx {
     },
     /// A here-document body. Ends at the limit.
     HereDoc { strip_tabs: bool, expand: bool },
-    /// Between `$((` and `))`.
-    Arithmetic,
+    /// Between `$((` and `))`. `probe` is set only while looking ahead to decide whether
+    /// `$((` is arithmetic at all (see `looks_like_arithmetic`).
+    Arithmetic { probe: bool },
 }
 
 impl Ctx {
@@ -72,7 +78,10 @@ impl Ctx {
             Self::Word | Self::ParamArg { in_dq: false, .. } => true,
             Self::DoubleQuote => dq_rule || next == b'"',
             Self::ParamArg { in_dq: true, .. } => dq_rule || matches!(next, b'"' | b'}'),
-            Self::HereDoc { .. } | Self::Arithmetic => dq_rule,
+            Self::HereDoc { .. } => dq_rule,
+            // The lookahead also lets a backslash protect a quote, as the flat scan it
+            // replaced did, so that `\'` does not start a quoted string there.
+            Self::Arithmetic { probe } => dq_rule || (probe && next == b'\''),
         }
     }
 
@@ -80,7 +89,11 @@ impl Ctx {
         match self {
             Self::Word => true,
             Self::ParamArg { single_quotes, .. } => single_quotes,
-            Self::DoubleQuote | Self::HereDoc { .. } | Self::Arithmetic => false,
+            // Quotes are not special in a real arithmetic body (dash quotes them; this lexer
+            // does not). The lookahead lets them hide a parenthesis, so `$((echo ')'))` stays
+            // arithmetic, which is what the flat scan it replaced did.
+            Self::Arithmetic { probe } => probe,
+            Self::DoubleQuote | Self::HereDoc { .. } => false,
         }
     }
 
@@ -152,6 +165,13 @@ struct Scanner<'a, S> {
     /// constructs still open close quietly as the recursion unwinds.
     aborted: bool,
     sink: &'a mut S,
+    /// What `looks_like_arithmetic` found, by position after `$((`, `limit` and depth. The
+    /// lookahead and the real scan both meet every nested `$((`; without this each level
+    /// would be scanned twice by its parent and the work would double per level.
+    memo: &'a mut HashMap<(usize, usize, u32), bool>,
+    /// Set by the lookahead scan when it reaches the `)` that matches the second `(`: whether
+    /// that `)` is followed by `)` or by the end of the input.
+    probe_answer: Option<bool>,
 }
 
 impl<S: Sink> Scanner<'_, S> {
@@ -399,22 +419,32 @@ impl<S: Sink> Scanner<'_, S> {
                 Ctx::ParamArg { .. } if b == b'}' => break true,
                 // A backslash protects a parenthesis here, as in dash and bash: `\)` is not a
                 // closing one, so `$((1\))` is unterminated. The pair stays in the literal
-                // text. `looks_like_arithmetic` already skips the byte after a backslash; the
-                // two have to agree, or an input is arithmetic to one and not to the other.
-                Ctx::Arithmetic
+                // text. The lookahead of `looks_like_arithmetic` is this same scan, so the two cannot
+                // disagree about it.
+                Ctx::Arithmetic { .. }
                     if b == b'\\' && matches!(self.at(self.pos + 1), Some(b'(' | b')')) =>
                 {
                     self.pos += 2;
                     continue;
                 }
-                Ctx::Arithmetic if b == b'(' => {
+                Ctx::Arithmetic { .. } if b == b'(' => {
                     parens += 1;
                     self.pos += 1;
                     continue;
                 }
-                Ctx::Arithmetic if b == b')' => {
-                    if parens == 0 && self.follows(self.pos + 1, b')').is_some() {
-                        break true;
+                Ctx::Arithmetic { probe } if b == b')' => {
+                    if parens == 0 {
+                        if probe {
+                            // The `)` that matches the second `(` of `$((`. The lookahead
+                            // stops here: arithmetic if `)` or the end follows, otherwise
+                            // a substitution that starts with a subshell.
+                            let next = self.at(self.skip_continuations(self.pos + 1));
+                            self.probe_answer = Some(matches!(next, None | Some(b')')));
+                            break true;
+                        }
+                        if self.follows(self.pos + 1, b')').is_some() {
+                            break true;
+                        }
                     }
                     parens = parens.saturating_sub(1);
                     self.pos += 1;

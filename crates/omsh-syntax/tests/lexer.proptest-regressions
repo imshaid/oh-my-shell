@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2f1fcbbe4272576d2c73d1b1a20011d9c19cc437e8d49be2325e12de222c09aa # shrinks to pieces = ["case x in x) echo 1;; esac\n"]

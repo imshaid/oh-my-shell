@@ -92,3 +92,15 @@ pub(crate) trait Sink {
     /// A problem.
     fn error(&mut self, error: LexError);
 }
+
+/// A sink that drops everything. The scanner uses it to look ahead with its own rules, when it
+/// only needs to know where a construct ends and not what is inside it.
+pub(crate) struct NullSink;
+
+impl Sink for NullSink {
+    fn simple(&mut self, _kind: TokenKind, _span: Span) {}
+    fn open(&mut self, _open: Open, _start: usize) {}
+    fn leaf(&mut self, _leaf: Leaf, _span: Span) {}
+    fn close(&mut self, _close: Close, _end: usize) {}
+    fn error(&mut self, _error: LexError) {}
+}

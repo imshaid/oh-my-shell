@@ -727,6 +727,14 @@ fn awkward_input_stays_fast() {
         "$((".repeat(63),
         "$((a) ".repeat(63),
         "$(( (".repeat(63),
+        // The lookahead of `$((` runs the arithmetic scan itself; nested levels must not make
+        // the work grow with the power of the depth.
+        "$(( $(".repeat(32),
+        "$(( `".repeat(63),
+        "$(( \"$((".repeat(32),
+        "$(( $(( ".repeat(63),
+        format!("{}1{}", "$(( $(( 1 + ".repeat(31), " )) )) ".repeat(31)),
+        format!("{}1{}", "$(( $(( 1 ) + ".repeat(31), " )) )) ".repeat(31)),
         "$((a)".repeat(20_000),
         "$((1)) ".repeat(20_000),
         "(".repeat(200_000),
@@ -1065,4 +1073,198 @@ fn a_space_and_a_line_feed_after_a_complete_command_change_nothing() {
             "{src:?}: alone {alone}, followed {followed}"
         );
     }
+}
+
+// ---- which `$((` is arithmetic -------------------------------------------------------------
+//
+// `$((` opens arithmetic, or a substitution that starts with a subshell (`$((a); (b))`). The
+// choice looks at the `)` that matches the second `(`: arithmetic unless something other than
+// `)` follows. That `)` has to be found the way the arithmetic scan finds it, so a parenthesis
+// inside a backtick body, a `$(...)` (with its `case` patterns and here-documents) or a double
+// quote does not count. It used to be found by a flat byte scan that counted them, so the same
+// tree decided differently depending on how it was written (a backtick body against the same
+// body in `$( )`). dash has no lookahead: `$((` is always arithmetic. Found by the round-trip
+// proptest on 100,000 and 1,000,000 cases.
+
+/// Whether the first word of `src` has an arithmetic expansion at the top level of its parts.
+fn is_arithmetic(src: &str) -> bool {
+    arithmetic_body(src).is_some()
+}
+
+#[test]
+fn a_parenthesis_inside_a_nested_construct_does_not_decide_the_expansion() {
+    let mut wrong = Vec::new();
+    for src in [
+        // A backtick body holds a `(` or a `)` of its own.
+        "$(( `echo \"(\"` + 2 ))",
+        "$(( `echo \")\"` + 2 ))",
+        "$(( `case x in x) echo 1;; esac` + 2 ))",
+        // The same inside `$(...)`, with a `case` pattern.
+        "$(( $(case x in x) echo 1;; esac) + 2 ))",
+        // A here-document inside a backtick body or a `$(...)`, holding a parenthesis.
+        "$((`<<EOF\ne=(cho 1` + 2))",
+        "$(( `cat <<EOF\n(\nEOF\n` + 2 ))",
+        "$(( $(cat <<EOF >/dev/null\n)\nEOF\n) 1 + 2 ))",
+        // A double quote holding a parenthesis around a substitution.
+        "$(( \"$(echo \")\")\" + 2 ))",
+        // The two shapes of the minimal input of the CI failure.
+        "$(( `<<EOF\necho \\\"1\\\" ))` ))",
+        // The same inputs as the round-trip printer writes them: the backtick body as `$( )`.
+        "$(( $( <<EOF\necho \"1\" ))\nEOF\n) ))\n",
+        "$(($( <<EOF\ne=(cho 1\nEOF\n) + 2))\n",
+    ] {
+        if !is_arithmetic(src) {
+            wrong.push(format!("{src:?} is not arithmetic"));
+        }
+        let highlighted: Vec<_> = lex_for_highlight(src)
+            .errors
+            .iter()
+            .map(|e| e.kind)
+            .collect();
+        if error_kinds(src) != highlighted {
+            wrong.push(format!("{src:?}: lex and lex_for_highlight disagree"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The same backtick body written as `$( ... )` is the same arithmetic: the choice cannot
+/// depend on how a nested construct is spelled.
+#[test]
+fn a_backtick_body_and_the_same_body_in_a_substitution_decide_alike() {
+    for body in ["echo \"(\"", "echo \")\"", "case x in x) echo 1;; esac"] {
+        let backtick = format!("$(( `{body}` + 2 ))");
+        let substitution = format!("$(( $({body}) + 2 ))");
+        assert_eq!(
+            is_arithmetic(&backtick),
+            is_arithmetic(&substitution),
+            "{body:?}"
+        );
+        assert!(is_arithmetic(&backtick), "{backtick:?}");
+    }
+}
+
+/// A `)` followed by something other than `)` still makes a substitution, and a parenthesis
+/// hidden by single quotes still does not count.
+#[test]
+fn the_rule_for_the_matching_parenthesis_is_unchanged() {
+    for src in [
+        "$((a); (b))",
+        "$((a) )",
+        "$((a) b)",
+        "$((echo a); (echo b))",
+    ] {
+        assert!(!is_arithmetic(src), "{src:?} should be a substitution");
+        assert_eq!(error_kinds(src), [], "{src:?}");
+    }
+    for src in ["$((echo ')'))", "$(( 1 + (2) ))", "$(( $(( 1 + 2 )) * 2 ))"] {
+        assert!(is_arithmetic(src), "{src:?} should be arithmetic");
+        assert_eq!(error_kinds(src), [], "{src:?}");
+    }
+}
+
+/// bash reads this as a substitution whose double quote never closes, and so does this lexer:
+/// the `)` that matches the second `(` is followed by a backslash. The line is incomplete. The
+/// first text is the source (a backtick body, which the old flat scan did not look into); the
+/// second is how the round-trip printer writes it.
+#[test]
+fn a_substitution_with_an_open_double_quote_is_incomplete() {
+    for src in [
+        "echo $(( `echo \\\"((1\\\"` )\\\"1\" ))",
+        "echo $(( $( echo \"((1\" ) )\\\"1\" ))",
+    ] {
+        assert!(!is_arithmetic(src), "{src:?} should be a substitution");
+        assert!(lex(src).is_incomplete(), "{src:?}");
+        let kinds = error_kinds(src);
+        assert!(
+            kinds.contains(&LexErrorKind::UnterminatedDoubleQuote)
+                && kinds.contains(&LexErrorKind::UnterminatedCommandSub),
+            "{src:?}: {kinds:?}"
+        );
+    }
+}
+
+/// Pieces of a command list that hold parentheses where a flat scan would count them: in
+/// quotes, in `case` patterns, in here-documents, in comments and in nested expansions. Each
+/// ends with a line feed, so they can be joined in any order and closed by a backtick or `)`.
+const PAREN_FRAGMENTS: &[&str] = &[
+    "echo 1\n",
+    "echo \"(\"\n",
+    "echo \")\"\n",
+    "echo ')'\n",
+    "echo '('\n",
+    "case x in x) echo 1;; esac\n",
+    "case x in (x) echo 1;; esac\n",
+    "cat <<EOF\n(\nEOF\n",
+    "cat <<EOF\n)\nEOF\n",
+    "cat <<'EOF'\n))\nEOF\n",
+    "echo a # )\n",
+    "echo $((1+2))\n",
+    "echo $(echo 1)\n",
+    "(echo 1)\n",
+    "{ echo 1; }\n",
+    "x=(\n",
+];
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(common::CASES))]
+
+    /// Whether `$((` is arithmetic cannot depend on how a nested list is written. The same
+    /// commands in a backtick body and in `$(...)` are the same expansion, so they must decide
+    /// alike, and since each list is balanced (its parentheses come in pairs, or hide in
+    /// quotes) the `)` after it is not the one that matches the second `(`. dash always reads
+    /// `$((` as arithmetic.
+    #[test]
+    fn the_choice_does_not_depend_on_how_a_nested_list_is_written(
+        pieces in prop::collection::vec(prop::sample::select(PAREN_FRAGMENTS.to_vec()), 1..5),
+    ) {
+        let body = pieces.concat();
+        // `x=(` has no closing parenthesis. In a backtick body that is only text to the
+        // lexer, but a `$(...)` would not close, so that form leaves it out.
+        let in_backticks = format!("$(( `{body}` + 2 ))");
+        prop_assert!(is_arithmetic(&in_backticks), "{in_backticks:?}");
+        if !body.contains("x=(") {
+            let in_substitution = format!("$(( $({body}) + 2 ))");
+            prop_assert!(is_arithmetic(&in_substitution), "{in_substitution:?}");
+            prop_assert_eq!(error_kinds(&in_substitution), vec![], "{:?}", in_substitution);
+        }
+    }
+}
+
+/// Two details of the lookahead that the mutation check showed were untested. A line
+/// continuation between the two closing parentheses is nothing (`$((1)\<LF>)` is `$((1))`),
+/// and a backslash before a single quote means the quote does not open a string, so it cannot
+/// hide the `)` that matches the second `(`.
+#[test]
+fn the_lookahead_skips_a_line_continuation_and_a_quote_after_a_backslash() {
+    assert_eq!(arithmetic_body("$((1)\\\n)").as_deref(), Some("1"));
+    assert_eq!(error_kinds("$((1)\\\n)"), []);
+    for src in ["$((\\';) )", "$(( \\' ) x ))", "$((\\')\\')"] {
+        assert!(!is_arithmetic(src), "{src:?} should be a substitution");
+    }
+    // Without the backslash the quote is a string, and it hides the parenthesis.
+    for src in ["$((' ) x '))", "$(( ')' ))"] {
+        assert!(is_arithmetic(src), "{src:?} should be arithmetic");
+    }
+}
+
+/// The lookahead of an outer `$((` walks over a here-document body as plain text, because
+/// `<<EOF` is not an operator inside arithmetic. When the outer expansion turns out to be a
+/// substitution, the body is scanned again, and this time it ends at its own last line. A `$((`
+/// in the body gets two lookaheads over the same position, with different ends of the input.
+/// An answer remembered for the first must not be used for the second: the body alone runs out
+/// before any `)`, so there it is an unfinished arithmetic expansion, as it was before.
+#[test]
+fn a_here_document_body_decides_its_own_expansions_by_its_own_end() {
+    let src = "$((cat <<EOF\n$((1\nEOF\n) x) ) y";
+    assert_eq!(error_kinds(src), [LexErrorKind::UnterminatedArithmetic]);
+    assert!(lex(src).is_incomplete());
+    assert_eq!(
+        lex_for_highlight(src)
+            .errors
+            .iter()
+            .map(|e| e.kind)
+            .collect::<Vec<_>>(),
+        [LexErrorKind::UnterminatedArithmetic]
+    );
 }

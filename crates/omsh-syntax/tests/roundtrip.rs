@@ -766,3 +766,72 @@ proptest! {
         }
     }
 }
+
+/// Whether `$((` is arithmetic must not depend on how a nested construct is written. The
+/// round-trip printer writes a backtick body as `$( ... )` and moves a here-document body to
+/// the line after, so a decision that counted the parentheses of those pieces gave the printed
+/// text another tree than the source had. Found by the proptest on 100,000 and 1,000,000
+/// cases. The first and second inputs below are the minimal inputs of the failures; the third
+/// is the one that does not parse (bash reads it as a substitution with an open quote).
+#[test]
+fn arithmetic_with_a_backtick_body_is_printed_so_that_it_parses_the_same() {
+    let dir = scratch_dir("arithmetic");
+    for src in [
+        "echo $(( `<<EOF\necho \\\"1\\\" ))` ))",
+        "echo $((`<<EOF\ne=(cho 1` + 2))",
+        "echo $(( `echo \")\"` + 2 ))",
+        "echo $(( `case x in x) echo 1;; esac` + 2 ))",
+    ] {
+        let list = parse(src).unwrap_or_else(|failure| panic!("{src:?} gave {failure:?}"));
+        let printed = print_tree(&list);
+        let again = parse(&printed)
+            .unwrap_or_else(|failure| panic!("{src:?} printed as {printed:?} gave {failure:?}"));
+        assert_eq!(print_tree(&again), printed, "{src:?} is not stable");
+        assert_eq!(
+            format!("{:?}", tree_shape(&list)),
+            format!("{:?}", tree_shape(&again)),
+            "{src:?} printed as {printed:?} has another tree"
+        );
+    }
+    // `/bin/sh` is dash: `$((` is always arithmetic there, and the printed text must agree.
+    for src in [
+        "echo $(( `echo 1` + 2 ))\n",
+        "echo $(( $(cat <<EOF\n1\nEOF\n) + 2 ))\n",
+    ] {
+        let list = parse(src).unwrap_or_else(|failure| panic!("{src:?} gave {failure:?}"));
+        let printed = print_tree(&list);
+        assert_same_behavior(src, &printed, &dir);
+    }
+    // The source with an open quote does not parse, as in bash.
+    assert!(parse("echo $(( `echo \\\"((1\\\"` )\\\"1\" ))").is_err());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The kind of every part at the top level of every word, so that two trees can be compared
+/// by shape without their spans.
+fn tree_shape(list: &List) -> Vec<String> {
+    fn words(list: &List, out: &mut Vec<String>) {
+        for item in &list.items {
+            for command in &item.and_or.first.commands {
+                if let CommandKind::Simple(SimpleCommand { words, .. }) = &command.kind {
+                    for word in words {
+                        for part in &word.parts {
+                            out.push(match &part.kind {
+                                PartKind::Arithmetic(_) => "arithmetic".to_owned(),
+                                PartKind::CommandSub(_) => "substitution".to_owned(),
+                                other => format!("{other:?}")
+                                    .split(|c: char| !c.is_alphanumeric())
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    words(list, &mut out);
+    out
+}

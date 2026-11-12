@@ -1,7 +1,7 @@
 //! Everything that starts with `$`: parameters, arithmetic and command substitution.
 
-use super::events::{Close, Open, ParamInfo, Sink};
-use super::{Ctx, Quote, Scanner, is_name_char, is_name_start, is_special_param};
+use super::events::{Close, NullSink, Open, ParamInfo, Sink};
+use super::{Ctx, MAX_NESTING, Quote, Scanner, is_name_char, is_name_start, is_special_param};
 use crate::span::Span;
 use crate::token::{LexErrorKind, ParamOp};
 
@@ -198,41 +198,43 @@ impl<S: Sink> Scanner<'_, S> {
     /// `$((echo a); (echo b))`. It is arithmetic unless the `)` matching the second `(`
     /// has something other than `)` after it.
     ///
-    /// This is a plain scan that does not recurse. Trying a full arithmetic scan first
-    /// and starting over on failure would double the work per nesting level.
-    fn looks_like_arithmetic(&self, inner: usize) -> bool {
-        let mut pos = inner;
-        let mut parens = 0_u32;
-        while let Some(b) = self.at(pos) {
-            match b {
-                b'\\' => pos += 1,
-                b'\'' => {
-                    pos += 1;
-                    while self.at(pos).is_some_and(|b| b != b'\'') {
-                        pos += 1;
-                    }
-                }
-                b'"' => {
-                    pos += 1;
-                    while let Some(b) = self.at(pos) {
-                        match b {
-                            b'"' => break,
-                            b'\\' => pos += 2,
-                            _ => pos += 1,
-                        }
-                    }
-                }
-                b'(' => parens += 1,
-                b')' if parens > 0 => parens -= 1,
-                b')' => {
-                    let next = self.at(self.skip_continuations(pos + 1));
-                    return matches!(next, None | Some(b')'));
-                }
-                _ => {}
-            }
-            pos += 1;
+    /// The `)` is found by the arithmetic scan itself, run on a sink that drops everything
+    /// (`Ctx::Arithmetic { probe: true }`). So a parenthesis inside a backtick body, a
+    /// `$(...)` with its `case` patterns and here-documents, or a double quote does not
+    /// count, exactly as in the real scan; two hand-written scans of the same text can
+    /// disagree, and a flat one did. The lookahead differs from the real scan in one rule:
+    /// single quotes hide a parenthesis (`$((echo ')'))` is arithmetic).
+    ///
+    /// Every nested `$((` is met by the lookahead and by the real scan, so an answer is
+    /// kept by position; otherwise the work would double at each level.
+    fn looks_like_arithmetic(&mut self, inner: usize) -> bool {
+        // Past the limit both paths end in the nesting error, whatever is decided here.
+        if self.depth >= MAX_NESTING {
+            return true;
         }
-        true
+        let key = (inner, self.limit, self.depth);
+        if let Some(&known) = self.memo.get(&key) {
+            return known;
+        }
+        let mut sink = NullSink;
+        let mut probe = Scanner {
+            src: self.src,
+            bytes: self.bytes,
+            pos: inner,
+            limit: self.limit,
+            end: self.end,
+            // The level `enter` gives to the arithmetic, if it is one.
+            depth: self.depth + 1,
+            aborted: false,
+            sink: &mut sink,
+            memo: &mut *self.memo,
+            probe_answer: None,
+        };
+        probe.scan_parts(Ctx::Arithmetic { probe: true });
+        // The input ran out before the `)`: the real scan reports the unfinished expansion.
+        let answer = probe.probe_answer.unwrap_or(true);
+        self.memo.insert(key, answer);
+        answer
     }
 
     fn scan_arithmetic(&mut self, start: usize, inner: usize) {
@@ -241,7 +243,7 @@ impl<S: Sink> Scanner<'_, S> {
         }
         self.sink.open(Open::Arithmetic, start);
         self.pos = inner;
-        let closed = self.scan_parts(Ctx::Arithmetic);
+        let closed = self.scan_parts(Ctx::Arithmetic { probe: false });
         let body = Span::new(inner, self.pos);
         if closed {
             self.pos = self.follows(self.pos + 1, b')').unwrap_or(self.pos + 1);
