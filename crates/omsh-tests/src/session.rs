@@ -651,6 +651,21 @@ impl Session {
         Ok(())
     }
 
+    /// Waits until the shell's history writer has opened the database, so that the history can be
+    /// read at once (`Ctrl+R`, `history`) and commands are written as they happen. The shell does
+    /// not wait for its writer before the first prompt, so a test that depends on the history right
+    /// after `ctx.start()` must call this first (see [`crate::files`]).
+    ///
+    /// It runs ` history -n 1` with a leading space: the `history` builtin waits for the writer
+    /// (at most the shell's own two seconds), and the default `[history] ignore` pattern keeps
+    /// a line that starts with a space out of the history, so the call changes nothing a test
+    /// counts. Do not use it in a test that sets its own `[history] ignore`.
+    pub fn wait_for_history(&mut self) -> io::Result<()> {
+        self.command(" history -n 1 >/dev/null")?;
+        self.prompt();
+        Ok(())
+    }
+
     /// Sends `command` again and again until the terminal shows `needle`. For things that happen
     /// a moment after the command that causes them.
     pub fn repeat_until(&mut self, command: &str, needle: &str) -> io::Result<()> {

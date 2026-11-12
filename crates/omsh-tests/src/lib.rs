@@ -27,9 +27,14 @@
 //! A test that cannot run here (for example SIGHUP is ignored) calls [`skip::skip`]: a visible
 //! note locally, a failure when `CI=true`, so CI never passes without running it.
 //!
+//! **A test that touches a file the shell makes on a background thread (the history database)
+//! must wait for it first**, with the helpers in [`files`] (`Ctx::wait_for_history_file`,
+//! `Session::wait_for_history`); see the rule at the top of that module.
+//!
 //! Needs Linux, `/proc` and `setsid` from util-linux.
 
 pub mod fakehttp;
+pub mod files;
 pub mod procfs;
 pub mod session;
 pub mod skip;

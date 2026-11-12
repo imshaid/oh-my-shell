@@ -52,6 +52,24 @@ impl Ctx {
     pub fn start(&self) -> io::Result<Session> {
         self.launch().start()
     }
+
+    /// Where the shell keeps its history database (`XDG_DATA_HOME` is `.local/share` under
+    /// [`Ctx::home`] for every launch).
+    pub fn history_file(&self) -> PathBuf {
+        self.home.join(".local/share/oh-my-shell/history.db")
+    }
+
+    /// Waits, for at most [`crate::SHORT`], until the shell's history writer has made the
+    /// database and switched it to WAL mode. **Call this before opening or reading the history
+    /// file from a test while the shell runs**: the shell makes the file on a thread of its own,
+    /// after the first prompt (see [`crate::files`]).
+    ///
+    /// # Panics
+    ///
+    /// When the file is not ready in time; the message says what is there.
+    pub fn wait_for_history_file(&self) {
+        crate::files::wait_for_wal_database(&self.history_file(), crate::SHORT);
+    }
 }
 
 /// Runs the body of a test, with the limit [`WHOLE_TEST`]. `bin` is the program under test:

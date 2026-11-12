@@ -124,6 +124,9 @@ fn a_chosen_command_goes_into_the_line_and_runs_only_after_enter() {
             ],
         )?;
         let mut term = ctx.start()?;
+        // The shell opens its history on a thread of its own, after the first prompt; Ctrl+R
+        // right away would find it not ready (see `omsh_tests::files`).
+        term.wait_for_history()?;
         open_view(&mut term)?;
         term.write_bytes(b"pick")?;
         term.write_bytes(b"\r")?;
@@ -151,6 +154,7 @@ fn ctrl_r_works_in_both_vi_modes() {
         fs::write(config.join("config.toml"), "[editor]\nmode = \"vi\"\n")?;
         seed(ctx, &[row("echo vi-$((3+4))", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         // Insert mode.
         open_view(&mut term)?;
         term.key(ESC)?;
@@ -177,6 +181,7 @@ fn a_chosen_command_replaces_what_was_typed() {
     pty_test(BIN, |ctx| {
         seed(ctx, &[row("echo xx-$((1+1))", "/x", 0), row("ls", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         term.write_bytes(b"xx")?;
         open_view(&mut term)?;
         term.write_bytes(b"\r")?;
@@ -204,6 +209,7 @@ fn text_typed_before_ctrl_r_is_the_first_query_and_escape_keeps_it() {
             ],
         )?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         term.write_bytes(b"dock")?;
         press_ctrl_r(&mut term)?;
         term.expect_plain("1 of 3", SHORT);
@@ -224,6 +230,7 @@ fn escape_and_ctrl_c_keep_the_line() {
     pty_test(BIN, |ctx| {
         seed(ctx, &[row("echo old", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         term.write_bytes(b"echo keep-$((2+3))")?;
         for (round, key) in [ESC, CTRL_C].into_iter().enumerate() {
             open_view(&mut term)?;
@@ -258,6 +265,7 @@ fn ctrl_r_inside_the_view_cycles_the_scope() {
             ],
         )?;
         let mut term = ctx.launch().cwd(&here).start()?;
+        term.wait_for_history()?;
 
         // All commands: three, and the newest is the best match.
         press_ctrl_r(&mut term)?;
@@ -315,6 +323,7 @@ fn a_command_that_ran_many_times_is_one_row_with_its_newest_run() {
             ],
         )?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         press_ctrl_r(&mut term)?;
         // Two commands, not three rows.
         term.expect_plain("2 of 2", SHORT);
@@ -343,6 +352,7 @@ fn a_query_and_enter_sent_together_pick_the_match() {
             ],
         )?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         open_view(&mut term)?;
         term.write_bytes(b"dkps\r")?;
         left_view(&mut term);
@@ -366,6 +376,7 @@ fn a_paste_goes_into_the_query_without_its_line_end() {
             ],
         )?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         open_view(&mut term)?;
         term.write_bytes(b"\x1b[200~dock\n\x1b[201~")?;
         // The newline did not pick anything: the view is still open.
@@ -387,6 +398,7 @@ fn ctrl_r_works_while_a_command_is_unfinished() {
     pty_test(BIN, |ctx| {
         seed(ctx, &[row("echo old", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         term.line("if true; then")?;
         term.expect("> ", SHORT);
         open_view(&mut term)?;
@@ -413,6 +425,7 @@ fn the_view_writes_nothing_to_the_history() {
             ],
         )?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         open_view(&mut term)?;
         term.write_bytes(b"two\r")?;
         left_view(&mut term);
@@ -435,6 +448,7 @@ fn leaving_the_view_gives_the_screen_and_the_terminal_mode_back() {
     pty_test(BIN, |ctx| {
         seed(ctx, &[row("echo a", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         term.sync("before")?;
         let before = term.termios()?.local_flags;
         for round in 1..=3 {
@@ -465,6 +479,7 @@ fn sighup_while_the_view_is_open_ends_the_shell_and_restores_the_terminal() {
     pty_test(BIN, |ctx| {
         seed(ctx, &[row("echo a", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         open_view(&mut term)?;
         term.signal_parent(Signal::SIGHUP)?;
         let status = term.wait_exit(SHORT);
@@ -485,6 +500,7 @@ fn closing_the_terminal_while_the_view_is_open_ends_the_shell() {
     pty_test(BIN, |ctx| {
         seed(ctx, &[row("echo a", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         open_view(&mut term)?;
         term.hang_up_terminal()?;
         let status = term.wait_exit(SHORT);
@@ -502,6 +518,7 @@ fn a_stored_escape_code_is_not_written_to_the_terminal() {
         // The command text holds a "clear screen" and a "set title" code.
         seed(ctx, &[row("echo \x1b[2J\x1b]0;pwned\x07 end", "/x", 0)])?;
         let mut term = ctx.start()?;
+        term.wait_for_history()?;
         open_view(&mut term)?;
         term.key(ESC)?;
         left_view(&mut term);

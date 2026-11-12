@@ -18,7 +18,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
 const UP: &[u8] = b"\x1b[A";
 
 fn database(ctx: &Ctx) -> PathBuf {
-    ctx.home().join(".local/share/oh-my-shell/history.db")
+    ctx.history_file()
 }
 
 /// Everything the database holds on disk: the file and its write-ahead log.
@@ -106,6 +106,10 @@ fn a_line_that_replaces_the_shell_is_stored() {
     pty_test(BIN, |ctx| {
         let mut first = ctx.start()?;
         first.sync("ready")?;
+        // The shell makes the data directory and the file on its writer thread, after the first
+        // prompt. Wait for them before opening the file from here (CI run 43245864003 opened it
+        // too early: "unable to open database file").
+        ctx.wait_for_history_file();
         let blocker = rusqlite::Connection::open(database(ctx)).expect("open the history file");
         blocker
             .execute_batch("BEGIN IMMEDIATE")
@@ -121,6 +125,46 @@ fn a_line_that_replaces_the_shell_is_stored() {
 
         let mut second = ctx.start()?;
         assert_eq!(count(&mut second, "kept", "", "exec [p]rintf")?, 1);
+        second.quit()
+    });
+}
+
+/// **Can a person hit the race that made `a_line_that_replaces_the_shell_is_stored` fail?** The
+/// shell does not wait for its history writer: the first prompt is drawn while the writer thread
+/// is still making the data directory and opening the file. A command typed at once is not lost,
+/// because it waits in the writer's queue. To make the state certain, the file is a database that
+/// another connection holds locked, so the writer is stuck in its first step while the prompt is
+/// drawn and the command runs; the lock is let go only after the command has finished.
+#[test]
+fn a_command_typed_at_once_is_stored_while_the_history_is_still_opening() {
+    pty_test(BIN, |ctx| {
+        fs::create_dir_all(ctx.history_file().parent().expect("a data folder"))?;
+        let blocker = rusqlite::Connection::open(ctx.history_file()).expect("make the file");
+        blocker
+            .execute_batch("CREATE TABLE unrelated (x); BEGIN EXCLUSIVE")
+            .expect("take the lock");
+
+        let mut first = ctx.start()?;
+        first.command("echo instant-$((1+1))")?;
+        first.expect("instant-2", SHORT);
+        first.prompt();
+        // The premise: the writer is still stuck, the file is not yet a WAL database.
+        assert!(
+            !omsh_tests::files::is_wal_database(&ctx.history_file()),
+            "the writer was not held back, so this test shows nothing:\n{}",
+            first.transcript()
+        );
+        blocker.execute_batch("COMMIT").expect("let go");
+        drop(blocker);
+        first.quit()?;
+
+        let mut second = ctx.start()?;
+        assert_eq!(
+            count(&mut second, "stored", "", "[i]nstant-")?,
+            1,
+            "the command typed before the history was open was lost:\n{}",
+            second.transcript()
+        );
         second.quit()
     });
 }
