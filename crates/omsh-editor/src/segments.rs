@@ -2,8 +2,8 @@
 //! environment, last status, last duration and the time.
 //!
 //! Everything here is plain text from plain facts, so that each rule can be tested. Nothing
-//! starts a process: the git branch is read from `.git/HEAD`. (S15 makes the git part
-//! asynchronous and adds the dirty marker.)
+//! starts a process: the git branch is read from `.git/HEAD`. (The dirty marker, which needs
+//! `git`, is `git_status.rs`.)
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -99,8 +99,8 @@ const HEAD_LIMIT: u64 = 4096;
 /// The branch of the repository that holds `dir`: the first `.git` found going up. A `.git`
 /// *file* (a worktree or submodule) says `gitdir: <path>`.
 ///
-/// A file system that does not answer can stall this; the time-limited, asynchronous version is
-/// S15's job.
+/// A file system that does not answer can stall this, so the prompt does not call it on the
+/// main thread (see `git_status.rs`).
 #[must_use]
 pub fn git_head(dir: &Path) -> Option<Head> {
     parse_head(&read_small(&git_dir(dir)?.join("HEAD"))?)
@@ -111,22 +111,49 @@ pub fn git_head(dir: &Path) -> Option<Head> {
 /// checked that the directory has a `HEAD`.
 #[must_use]
 pub(crate) fn git_dir(dir: &Path) -> Option<PathBuf> {
+    find_repo(dir).map(|repo| repo.git_dir)
+}
+
+/// A repository found from a directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Repo {
+    /// The directory that holds `.git` (the work tree).
+    pub(crate) root: PathBuf,
+    /// The git directory (see [`git_dir`]).
+    pub(crate) git_dir: PathBuf,
+}
+
+/// The repository that holds `dir`: the first `.git` found going up.
+#[must_use]
+pub(crate) fn find_repo(dir: &Path) -> Option<Repo> {
     for candidate in dir.ancestors() {
         let dot_git = candidate.join(".git");
         let Ok(meta) = fs::metadata(&dot_git) else {
             continue;
         };
         if meta.is_dir() {
-            return Some(dot_git);
+            return Some(Repo {
+                root: candidate.to_path_buf(),
+                git_dir: dot_git,
+            });
         }
         if meta.is_file() {
             let text = read_small(&dot_git)?;
             let target = text.trim().strip_prefix("gitdir:")?.trim();
-            return Some(candidate.join(target));
+            return Some(Repo {
+                root: candidate.to_path_buf(),
+                git_dir: candidate.join(target),
+            });
         }
         return None;
     }
     None
+}
+
+/// The head of a repository already found.
+#[must_use]
+pub(crate) fn head_of(repo: &Repo) -> Option<Head> {
+    parse_head(&read_small(&repo.git_dir.join("HEAD"))?)
 }
 
 /// Reads a regular file of at most [`HEAD_LIMIT`] bytes. A FIFO or a device is refused before it

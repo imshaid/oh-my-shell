@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 chrono.workspace = true
 crossterm.workspace = true
+nix.workspace = true
 nu-ansi-term.workspace = true
 omsh-config.workspace = true
 omsh-history.workspace = true

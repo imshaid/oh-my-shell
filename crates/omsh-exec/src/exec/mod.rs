@@ -512,6 +512,7 @@ impl Shell {
             }
             Lookup::NotFound => {
                 io.say(format!("oh-my-shell: {name}: not found"));
+                self.suggest_for(&name, &search_path, io);
                 return Err(ExitStatus::NOT_FOUND);
             }
         };

@@ -32,6 +32,7 @@ mod shell;
 mod signals;
 mod spawn;
 mod status;
+mod suggest;
 mod terminal;
 mod traps;
 mod user;
@@ -52,6 +53,7 @@ pub use signals::{
 };
 pub use spawn::{ChildGroup, ExecRequest, SpawnFailure, start, wait};
 pub use status::{ExitStatus, Termination};
+pub use suggest::CommandSuggest;
 pub use terminal::{release_terminal, start_interactive, terminal_gone, wait_for_input};
 pub use user::{effective_uid, is_root};
 pub use vars::{ReadOnly, Variables};

@@ -18,13 +18,13 @@ use std::time::{Duration, Instant};
 use omsh_config::{Config, Paths};
 use omsh_editor::{
     CommandLookup, Editor, Facts, PromptState, Read as Typed, Recall, fish_completion_directories,
-    working_directory,
+    passed_variables, suggest_command, working_directory,
 };
 use omsh_exec::{
-    DEFAULT_PATH, ExitStatus, HistoryCommand, Io, JournalCommand, JumpCommand, LineResult,
-    OmshCommand, Outcome, Shell, Trigger, builtin_names, find_program, hung_up, is_builtin,
-    is_root, note_inherited_signals, release_terminal, start_interactive, terminal_gone, trigger,
-    wait_for_input,
+    CommandSuggest, DEFAULT_PATH, ExitStatus, HistoryCommand, Io, JournalCommand, JumpCommand,
+    LineResult, OmshCommand, Outcome, Shell, Trigger, builtin_names, find_program, hung_up,
+    is_builtin, is_root, note_inherited_signals, release_terminal, start_interactive,
+    terminal_gone, trigger, wait_for_input,
 };
 use omsh_history::{Filter, Store};
 use omsh_ui::Theme;
@@ -150,6 +150,10 @@ fn run_on(
         // `exit` in the startup file.
         Err(status) => return finish(&mut shell, status, &files, None),
     };
+    // After the startup file: only the lines a person types get a "did you mean".
+    if interactive {
+        shell.set_suggest(Arc::new(Suggestions));
+    }
     let history = history.as_ref();
     if let Some(history) = history {
         shell.set_history(Arc::new(history.clone()) as Arc<dyn HistoryCommand>);
@@ -507,6 +511,16 @@ fn make_editor(
     ))
 }
 
+/// The "did you mean" line after `not found`: names close to the one typed, from the editor
+/// crate, which already knows the programs in `PATH`.
+struct Suggestions;
+
+impl CommandSuggest for Suggestions {
+    fn suggest(&self, name: &str, path: &[u8], shell_names: &[String]) -> Vec<String> {
+        suggest_command(name, path, shell_names)
+    }
+}
+
 /// What the shell can run, as it is when a prompt is drawn. The editor asks it to color command
 /// names (red when nothing would run). It is a copy, so the editor's thread needs no access to
 /// the shell, and a change made by the next command shows at the next prompt.
@@ -586,6 +600,14 @@ fn prompt_state(shell: &Shell, took: Option<Duration>) -> PromptState {
         last_status: shell.last_status().0,
         last_duration: took,
         root: is_root(),
+        // What `git` is given, taken from the shell's variables like everything else here.
+        git_env: passed_variables()
+            .iter()
+            .filter_map(|name| {
+                let value = shell.var(name)?;
+                Some((OsString::from(name), OsString::from_vec(value.to_vec())))
+            })
+            .collect(),
     }
 }
 

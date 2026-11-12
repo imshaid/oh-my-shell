@@ -188,7 +188,8 @@ fn a_variable_set_a_moment_ago_is_offered() {
 }
 
 /// `git checkout` offers the branches of the repository, read from its files. A `git` on the
-/// `PATH` that leaves a mark when it runs proves that the completion never starts it.
+/// `PATH` that writes down how it was called proves that the completion never starts it: the
+/// only calls are the prompt's own `git status` (S15b), and none of them is a branch listing.
 #[test]
 fn git_branches_are_read_from_the_repository_files_and_git_is_not_run() {
     pty_test(BIN, |ctx| {
@@ -198,8 +199,14 @@ fn git_branches_are_read_from_the_repository_files_and_git_is_not_run() {
         fs::write(repo.join(".git/refs/heads/main"), "")?;
         fs::write(repo.join(".git/refs/heads/feature/omshlogin"), "")?;
         let bin = ctx.home().join("bin");
-        let mark = ctx.home().join("git-was-run");
-        program(&bin, "git", &format!("touch {}", mark.display()))?;
+        let calls = ctx.home().join("git-calls");
+        fs::create_dir_all(&bin)?;
+        let path = bin.join("git");
+        fs::write(
+            &path,
+            format!("#!/bin/sh\necho \"$*\" >> {}\n", calls.display()),
+        )?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
         let mut term = start_in(with_path(ctx, &bin), &repo)?;
         term.prompt();
         term.write_bytes(b"git checkout feature/omshl")?;
@@ -212,8 +219,17 @@ fn git_branches_are_read_from_the_repository_files_and_git_is_not_run() {
         term.expect_plain("git checkout", SHORT);
         term.write_bytes(CTRL_U)?;
         term.sync("done")?;
-        assert!(!mark.exists(), "completion ran git");
-        term.quit()
+        term.quit()?;
+        // Every call was the prompt asking for changes. Completion would have asked for
+        // `branch`, `for-each-ref`, `rev-parse` or the like.
+        let calls = fs::read_to_string(&calls).unwrap_or_default();
+        for call in calls.lines() {
+            assert!(
+                call.contains(" status --porcelain"),
+                "completion ran git: {call:?} (all calls: {calls:?})"
+            );
+        }
+        Ok(())
     });
 }
 

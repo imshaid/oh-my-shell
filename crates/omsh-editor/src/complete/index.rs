@@ -153,6 +153,34 @@ impl PathIndex {
     }
 }
 
+impl PathIndex {
+    /// Every name once, in order. Some may not be programs (see [`Self::runs`]).
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        let mut last: Option<&str> = None;
+        self.names.iter().filter_map(move |(name, _)| {
+            let new = last != Some(name.as_str());
+            last = Some(name);
+            new.then_some(name.as_str())
+        })
+    }
+
+    /// True if `name` is a program in one of the directories: a regular file with an execute
+    /// bit (a link is followed).
+    pub(crate) fn runs(&self, name: &str) -> bool {
+        let at = self
+            .names
+            .partition_point(|(other, _)| other.as_str() < name);
+        self.names[at..]
+            .iter()
+            .take_while(|(other, _)| other == name)
+            .any(|(_, dir)| {
+                self.dirs
+                    .get(*dir as usize)
+                    .is_some_and(|dir| is_program(&dir.join(name)))
+            })
+    }
+}
+
 /// A regular file (a link is followed) that somebody may execute.
 fn is_program(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)

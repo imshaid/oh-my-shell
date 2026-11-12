@@ -127,6 +127,8 @@ pub struct Shell {
     pub(crate) history: crate::builtins::HistoryHook,
     /// What the `j` builtin asks (see `builtins/jump.rs`). Shared by every copy.
     pub(crate) jump: crate::builtins::JumpHook,
+    /// What names the "did you mean" line offers (see `suggest.rs`). Shared by every copy.
+    pub(crate) suggest: crate::suggest::SuggestHook,
     /// What the `omsh` builtin runs (see `builtins/omsh.rs`). Shared by every copy.
     pub(crate) omsh: crate::builtins::OmshHook,
     /// What `undo` and the trash do (see `builtins/journal.rs`). Shared by every copy.
@@ -233,6 +235,7 @@ impl Shell {
             color_probes: crate::color::ProbeCache::default(),
             history: crate::builtins::HistoryHook::default(),
             jump: crate::builtins::JumpHook::default(),
+            suggest: crate::suggest::SuggestHook::default(),
             omsh: crate::builtins::OmshHook::default(),
             journal: crate::builtins::JournalHook::default(),
             cwd_override: None,

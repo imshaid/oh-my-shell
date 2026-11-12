@@ -32,7 +32,7 @@ use std::thread;
 use reedline::{Completer, CompletionResult, CompletionStatus, Span, Suggestion};
 
 use self::fish::Flag;
-use self::index::PathIndex;
+pub(crate) use self::index::PathIndex;
 use self::site::{Site, Slot, render};
 
 pub use self::fish::directories as fish_completion_directories;

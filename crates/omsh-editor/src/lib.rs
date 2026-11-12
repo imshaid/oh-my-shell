@@ -15,12 +15,14 @@
 //! thread and returns [`Read::HungUp`], so that the shell can end properly.
 
 mod complete;
+mod git_status;
 mod highlight;
 mod hint;
 mod history;
 mod paste;
 mod prompt;
 mod segments;
+mod suggest;
 mod validator;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -42,10 +44,12 @@ use reedline::{
 };
 
 pub use complete::{Facts, Scene, ShellCompleter, fish_completion_directories};
+pub use git_status::passed_variables;
 pub use highlight::{CommandLookup, ShellHighlighter};
 pub use hint::{HintReset, HintSource, ShellHinter};
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
+pub use suggest::suggest_command;
 pub use validator::is_incomplete;
 
 /// How often a waiting shell looks at the hang-up flag and at the terminal. The same step as the
@@ -98,6 +102,9 @@ pub struct Editor {
     hints: Arc<Mutex<hint::HintState>>,
     /// What the completer knows about the shell; renewed for each prompt.
     scene: Arc<Mutex<complete::Scene>>,
+    /// Finds the branch and the dirty marker for each prompt; only when the prompt has a git
+    /// segment.
+    git: Option<git_status::GitWatch>,
     /// Asked while waiting: has the terminal gone away?
     terminal_gone: Box<dyn Fn() -> bool + Send>,
 }
@@ -213,12 +220,24 @@ impl Editor {
             let neutral = ShellPrompt::new(&look, &neutral_state(), segments::now).transient();
             engine = engine.with_transient_prompt(Box::new(neutral));
         }
+        // The helper thread asks the editor for a repaint when it learns something after the
+        // prompt was drawn.
+        let git = look
+            .left
+            .iter()
+            .chain(&look.right)
+            .any(|segment| *segment == Segment::Git)
+            .then(|| {
+                let signal = engine.repaint_signal();
+                git_status::GitWatch::new(Arc::new(move || signal.request_repaint()))
+            });
         Self {
             engine: Some(engine),
             look,
             context,
             hints,
             scene,
+            git,
             terminal_gone: Box::new(terminal_gone),
         }
     }
@@ -245,7 +264,14 @@ impl Editor {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .reset(state.cwd.to_string_lossy().into_owned());
-        let prompt = ShellPrompt::new(&self.look, state, segments::now);
+        let mut prompt = ShellPrompt::new(&self.look, state, segments::now);
+        if let Some(watch) = &self.git {
+            // Started now, read at every paint; the wait is short and bounded, so that a slow
+            // `git` never delays the prompt.
+            let handle = watch.start(&state.cwd, &state.git_env);
+            watch.wait(&handle, git_status::FIRST_PAINT_WAIT);
+            prompt = prompt.with_git(handle);
+        }
         self.read_with(prompt)
     }
 
@@ -389,6 +415,8 @@ fn names(configured: &[String]) -> Vec<Segment> {
         .collect()
 }
 
+/// The state the collapsed (transient) prompt is built from: it shows only the symbol, which is
+/// `#` for root, as in the live prompt.
 fn neutral_state() -> PromptState {
     PromptState {
         cwd: "/".into(),
@@ -397,7 +425,8 @@ fn neutral_state() -> PromptState {
         conda_env: None,
         last_status: 0,
         last_duration: None,
-        root: false,
+        root: nix::unistd::geteuid().is_root(),
+        git_env: Vec::new(),
     }
 }
 

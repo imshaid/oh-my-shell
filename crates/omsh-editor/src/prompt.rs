@@ -9,6 +9,7 @@
 //! red off and keeps bold and dim, which are not colors.
 
 use std::borrow::Cow;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use reedline::{
     Color, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, PromptViMode,
 };
 
+use crate::git_status::Handle;
 use crate::segments::{self, Segment};
 
 /// How the prompt is drawn.
@@ -49,13 +51,25 @@ pub struct PromptState {
     pub last_duration: Option<Duration>,
     /// The shell runs as root: the indicator is `#`.
     pub root: bool,
+    /// The shell's values of the variables that `git` is given (see
+    /// [`passed_variables`](crate::passed_variables)). Only the git segment reads them.
+    pub git_env: Vec<(OsString, OsString)>,
 }
 
-/// The prompt as text, built once for a line.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One part of a header: text that is known, or the git segment, which is read each time the
+/// prompt is drawn because the helper thread may have learned more since.
+#[derive(Clone, Debug)]
+enum Piece {
+    Text(String),
+    Git,
+}
+
+/// The prompt, built once for a line. Everything is fixed except the git segment.
+#[derive(Clone, Debug)]
 pub struct ShellPrompt {
-    left: String,
-    right: String,
+    left: Vec<Piece>,
+    right: Vec<Piece>,
+    git: Option<Handle>,
     indicator: String,
     vi_normal_indicator: String,
 }
@@ -70,25 +84,18 @@ fn styled(code: &str, text: &str) -> String {
     format!("\x1b[{code}m{text}{RESET}")
 }
 
-/// Joins the texts of the segments that have something to say, with one space between.
-fn join(texts: impl IntoIterator<Item = String>) -> String {
-    texts.into_iter().collect::<Vec<_>>().join(" ")
-}
-
 impl ShellPrompt {
-    /// Builds the prompt. `now` is the `HH:MM` text of the `time` segment.
+    /// Builds the prompt. `now` is the `HH:MM` text of the `time` segment. The git segment shows
+    /// nothing until [`with_git`](Self::with_git) says where to read it from.
     #[must_use]
     pub fn new(look: &Look, state: &PromptState, now: impl Fn() -> String) -> Self {
-        let text = |segment: Segment| -> Option<String> {
-            Some(match segment {
+        let piece = |segment: Segment| -> Option<Piece> {
+            Some(Piece::Text(match segment {
                 Segment::Cwd => styled(
                     BOLD,
                     &segments::cwd(&state.cwd, state.home.as_deref(), look.unicode),
                 ),
-                Segment::Git => {
-                    let head = segments::git_head(&state.cwd)?;
-                    styled(DIM, &format!("({})", head.label()))
-                }
+                Segment::Git => return Some(Piece::Git),
                 Segment::Venv => {
                     let name =
                         segments::venv(state.virtual_env.as_deref(), state.conda_env.as_deref())?;
@@ -97,14 +104,10 @@ impl ShellPrompt {
                 Segment::Status => styled(DIM, &segments::status(state.last_status, look.unicode)?),
                 Segment::Duration => styled(DIM, &segments::duration(state.last_duration?)?),
                 Segment::Time => styled(DIM, &now()),
-            })
+            }))
         };
-        // The header ends the first line; with nothing to show there is no first line.
-        let mut left = join(look.left.iter().filter_map(|s| text(*s)));
-        if !left.is_empty() {
-            left.push('\n');
-        }
-        let right = join(look.right.iter().filter_map(|s| text(*s)));
+        let left: Vec<Piece> = look.left.iter().filter_map(|s| piece(*s)).collect();
+        let right: Vec<Piece> = look.right.iter().filter_map(|s| piece(*s)).collect();
 
         let glyph = if state.root {
             "#"
@@ -125,20 +128,23 @@ impl ShellPrompt {
         Self {
             left,
             right,
+            git: None,
             indicator: symbol(format!("{glyph} ")),
             vi_normal_indicator: symbol(": ".to_owned()),
         }
     }
 
+    /// Where the git segment reads the branch and the marker from.
+    #[must_use]
+    pub(crate) fn with_git(mut self, git: Handle) -> Self {
+        self.git = Some(git);
+        self
+    }
+
     /// The prompt for the rest of a command that is not finished: only `> `.
     #[must_use]
     pub fn continuation() -> Self {
-        Self {
-            left: String::new(),
-            right: String::new(),
-            indicator: "> ".to_owned(),
-            vi_normal_indicator: "> ".to_owned(),
-        }
+        Self::only("> ".to_owned(), "> ".to_owned())
     }
 
     /// A prompt that is only a label, such as `edit> `, for asking about one thing (the
@@ -146,32 +152,54 @@ impl ShellPrompt {
     #[must_use]
     pub fn labeled(label: &str) -> Self {
         let indicator = format!("{label}> ");
+        Self::only(indicator.clone(), indicator)
+    }
+
+    fn only(indicator: String, vi_normal_indicator: String) -> Self {
         Self {
-            left: String::new(),
-            right: String::new(),
-            vi_normal_indicator: indicator.clone(),
+            left: Vec::new(),
+            right: Vec::new(),
+            git: None,
             indicator,
+            vi_normal_indicator,
         }
     }
 
     /// The prompt old lines collapse to (`[prompt] transient`): only the indicator.
     #[must_use]
     pub fn transient(&self) -> Self {
-        Self {
-            left: String::new(),
-            right: String::new(),
-            ..self.clone()
-        }
+        Self::only(self.indicator.clone(), self.vi_normal_indicator.clone())
+    }
+
+    /// The pieces joined with one space; the git segment is left out while it has nothing to say.
+    fn join(&self, pieces: &[Piece]) -> String {
+        let git = || {
+            let snapshot = self.git.as_ref()?.snapshot();
+            Some(styled(DIM, &snapshot.text()?))
+        };
+        pieces
+            .iter()
+            .filter_map(|piece| match piece {
+                Piece::Text(text) => Some(text.clone()),
+                Piece::Git => git(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
 impl Prompt for ShellPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.left)
+        // The header ends the first line; with nothing to show there is no first line.
+        let mut left = self.join(&self.left);
+        if !left.is_empty() {
+            left.push('\n');
+        }
+        Cow::Owned(left)
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.right)
+        Cow::Owned(self.join(&self.right))
     }
 
     fn render_prompt_indicator(&self, mode: PromptEditMode) -> Cow<'_, str> {
@@ -233,6 +261,7 @@ mod tests {
             last_status: 0,
             last_duration: None,
             root: false,
+            git_env: Vec::new(),
         }
     }
 
@@ -398,17 +427,65 @@ mod tests {
         );
     }
 
+    use crate::git_status::{Dirtiness, HeadState, Snapshot};
+    use crate::segments::Head;
+
+    fn with_git(head: HeadState, dirt: Dirtiness, left: &[Segment]) -> ShellPrompt {
+        build(&look(left, &[]), &state()).with_git(Handle::fixed(Snapshot { head, dirt }))
+    }
+
+    fn on(branch: &str) -> HeadState {
+        HeadState::Known(Head::Branch(branch.into()))
+    }
+
     #[test]
     fn the_git_branch_is_dim() {
-        let dir = std::env::temp_dir().join(format!("omsh-prompt-git-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join(".git")).unwrap();
-        std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/topic\n").unwrap();
-        let mut s = state();
-        s.cwd = dir.clone();
-        s.home = None;
-        let p = build(&look(&[Segment::Git], &[]), &s);
-        let _ = std::fs::remove_dir_all(&dir);
+        let p = with_git(on("topic"), Dirtiness::Clean, &[Segment::Git]);
         assert_eq!(p.render_prompt_left(), "\x1b[2m(topic)\x1b[0m\n");
+    }
+
+    #[test]
+    fn a_dirty_marker_follows_the_branch_only_for_a_known_change() {
+        let shown = |dirt| with_git(on("dev"), dirt, &[Segment::Cwd, Segment::Git]);
+        let text = |p: &ShellPrompt| plain(&p.render_prompt_left());
+        assert_eq!(text(&shown(Dirtiness::Dirty)), "~/code (dev*)\n");
+        assert_eq!(text(&shown(Dirtiness::Clean)), "~/code (dev)\n");
+        // Not known yet, or not known at all: the branch alone.
+        assert_eq!(text(&shown(Dirtiness::Pending)), "~/code (dev)\n");
+        assert_eq!(text(&shown(Dirtiness::Unknown)), "~/code (dev)\n");
+    }
+
+    #[test]
+    fn the_git_segment_shows_nothing_until_it_knows_and_never_leaves_a_gap() {
+        for head in [HeadState::Pending, HeadState::Absent] {
+            let p = with_git(
+                head,
+                Dirtiness::Dirty,
+                &[Segment::Cwd, Segment::Git, Segment::Venv],
+            );
+            assert_eq!(plain(&p.render_prompt_left()), "~/code\n");
+        }
+        // Without a source at all (the continuation and label prompts, a shell without a
+        // repository watch) it is the same.
+        let p = build(&look(&[Segment::Git], &[]), &state());
+        assert_eq!(
+            p.render_prompt_left(),
+            "",
+            "nothing, so no header line either"
+        );
+    }
+
+    #[test]
+    fn the_git_segment_keeps_its_place_between_the_others() {
+        let mut s = state();
+        s.conda_env = Some("base".into());
+        let p = build(&look(&[Segment::Cwd, Segment::Git, Segment::Venv], &[]), &s).with_git(
+            Handle::fixed(Snapshot {
+                head: on("main"),
+                dirt: Dirtiness::Dirty,
+            }),
+        );
+        assert_eq!(plain(&p.render_prompt_left()), "~/code (main*) [base]\n");
     }
 
     #[test]
@@ -483,6 +560,12 @@ mod tests {
         assert_eq!(p.render_prompt_left(), "");
         assert_eq!(p.render_prompt_right(), "");
         assert_eq!(indicator(&p), "❯ ");
+    }
+
+    #[test]
+    fn the_transient_prompt_has_no_git_part() {
+        let p = with_git(on("dev"), Dirtiness::Dirty, &[Segment::Git]).transient();
+        assert_eq!(p.render_prompt_left(), "");
     }
 
     #[test]

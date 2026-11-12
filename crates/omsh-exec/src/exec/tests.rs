@@ -3218,3 +3218,142 @@ mod jump {
         assert!(fake.asked.lock().unwrap().is_empty());
     }
 }
+
+mod suggest {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::CommandSuggest;
+
+    /// What one question was: the name, the `PATH`, the shell's own names.
+    type Asked = (String, Vec<u8>, Vec<String>);
+
+    /// Answers with a fixed list and remembers what it was asked.
+    struct Fake {
+        answer: Vec<String>,
+        asked: Mutex<Vec<Asked>>,
+    }
+
+    impl CommandSuggest for Fake {
+        fn suggest(&self, name: &str, path: &[u8], shell_names: &[String]) -> Vec<String> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((name.to_owned(), path.to_vec(), shell_names.to_vec()));
+            self.answer.clone()
+        }
+    }
+
+    fn with(answer: &[&str], interactive: bool) -> (Shell, Arc<Fake>) {
+        let fake = Arc::new(Fake {
+            answer: answer.iter().map(|name| (*name).to_owned()).collect(),
+            asked: Mutex::new(Vec::new()),
+        });
+        let mut sh = shell();
+        sh.interactive = interactive;
+        sh.set_suggest(Arc::clone(&fake) as Arc<dyn CommandSuggest>);
+        (sh, fake)
+    }
+
+    #[test]
+    fn a_name_that_is_not_found_is_followed_by_a_suggestion() {
+        let (mut sh, fake) = with(&["git"], true);
+        let done = run(&mut sh, "no-such-gti-omsh");
+        assert_eq!(done.status, 127);
+        assert_eq!(
+            done.err,
+            "oh-my-shell: no-such-gti-omsh: not found\noh-my-shell: did you mean git?\n"
+        );
+        let asked = fake.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0, "no-such-gti-omsh");
+        assert_eq!(asked[0].1, b"/usr/bin:/bin", "the PATH the lookup used");
+    }
+
+    #[test]
+    fn the_shells_own_names_are_offered_to_the_suggester() {
+        let (mut sh, fake) = with(&[], true);
+        run(&mut sh, "alias ll='ls -l'; greet() { :; }");
+        run(&mut sh, "no-such-omsh");
+        let asked = fake.asked.lock().unwrap();
+        let names = &asked[0].2;
+        for wanted in ["cd", "echo", "ll", "greet"] {
+            assert!(names.iter().any(|n| n == wanted), "{wanted} missing");
+        }
+        assert!(
+            !names.iter().any(|n| n.starts_with("__")),
+            "internal names stay out"
+        );
+    }
+
+    #[test]
+    fn two_and_three_names_are_joined_in_words() {
+        let (mut sh, _) = with(&["git", "gist"], true);
+        assert_eq!(
+            run(&mut sh, "no-such-omsh").err,
+            "oh-my-shell: no-such-omsh: not found\noh-my-shell: did you mean git or gist?\n"
+        );
+        let (mut sh, _) = with(&["git", "gist", "gitk", "gitg"], true);
+        assert_eq!(
+            run(&mut sh, "no-such-omsh").err,
+            "oh-my-shell: no-such-omsh: not found\noh-my-shell: did you mean git, gist or gitk?\n"
+        );
+    }
+
+    #[test]
+    fn nothing_close_prints_no_line() {
+        let (mut sh, fake) = with(&[], true);
+        let done = run(&mut sh, "no-such-omsh");
+        assert_eq!(done.err, "oh-my-shell: no-such-omsh: not found\n");
+        assert_eq!(fake.asked.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_shell_that_is_not_interactive_does_not_ask() {
+        let (mut sh, fake) = with(&["git"], false);
+        let done = run(&mut sh, "no-such-omsh");
+        assert_eq!(done.status, 127);
+        assert_eq!(done.err, "oh-my-shell: no-such-omsh: not found\n");
+        assert!(fake.asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn without_a_suggester_the_message_is_what_it_was() {
+        let mut sh = shell();
+        sh.interactive = true;
+        assert_eq!(
+            run(&mut sh, "no-such-omsh").err,
+            "oh-my-shell: no-such-omsh: not found\n"
+        );
+    }
+
+    #[test]
+    fn a_suggestion_with_a_control_character_or_the_name_itself_is_dropped() {
+        let (mut sh, _) = with(&["no-such-omsh", "g\x1b[31mit", "git"], true);
+        assert_eq!(
+            run(&mut sh, "no-such-omsh").err,
+            "oh-my-shell: no-such-omsh: not found\noh-my-shell: did you mean git?\n"
+        );
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_run_is_not_a_typo_and_asks_nothing() {
+        let (mut sh, fake) = with(&["git"], true);
+        let done = run(&mut sh, "./no-such-dir-omsh/prog");
+        assert_eq!(done.status, 127);
+        assert_eq!(
+            done.err,
+            "oh-my-shell: ./no-such-dir-omsh/prog: not found\n"
+        );
+        assert!(fake.asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn type_and_command_v_do_not_suggest() {
+        let (mut sh, fake) = with(&["git"], true);
+        let done = run(&mut sh, "type no-such-omsh; command -v no-such-omsh");
+        assert!(!done.err.contains("did you mean"), "{}", done.err);
+        assert!(!done.out.contains("did you mean"), "{}", done.out);
+        assert!(fake.asked.lock().unwrap().is_empty());
+    }
+}
