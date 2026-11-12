@@ -4,6 +4,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::fuzzy::{Haystack, Query};
+use crate::view::input::QueryLine;
+use crate::view::select::Selection;
 
 /// One command of the list: the newest run of a distinct command text.
 #[derive(Clone, Debug)]
@@ -97,9 +99,8 @@ pub enum Action {
 pub struct Model {
     items: Vec<Item>,
     folder: String,
-    /// The text typed, and where the cursor is in it (a count of characters).
-    typed: String,
-    cursor: usize,
+    /// The text typed, and where the cursor is in it.
+    line: QueryLine,
     query: Query,
     scope: Scope,
     /// The items that match the query in this scope, with their scores, in list order.
@@ -108,33 +109,25 @@ pub struct Model {
     matched_for: (Query, Scope),
     /// Items in the scope, before the query.
     in_scope: usize,
-    /// The chosen row, counted from the best match (0).
-    selected: usize,
-    /// The row at the bottom of the screen, counted from the best match.
-    offset: usize,
-    /// How many rows the list shows; set by the drawing.
-    page: usize,
+    /// The chosen row and the row at the bottom of the screen, counted from the best match (0).
+    selection: Selection,
 }
 
 impl Model {
     /// `typed` is the text of the query to start with (what was in the line).
     #[must_use]
     pub fn new(items: Vec<Item>, folder: String, typed: &str) -> Self {
-        let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
-        let cursor = typed.chars().count();
+        let line = QueryLine::new(typed);
         let mut model = Self {
             items,
             folder,
-            query: Query::parse(&typed),
+            query: Query::parse(line.text()),
             matched_for: (Query::parse(""), Scope::All),
-            cursor,
-            typed,
+            line,
             scope: Scope::All,
             matched: Vec::new(),
             in_scope: 0,
-            selected: 0,
-            offset: 0,
-            page: 10,
+            selection: Selection::new(),
         };
         model.search(false);
         model
@@ -142,13 +135,13 @@ impl Model {
 
     #[must_use]
     pub fn typed(&self) -> &str {
-        &self.typed
+        self.line.text()
     }
 
     /// The cursor, as a number of characters from the start of the text.
     #[must_use]
     pub fn cursor(&self) -> usize {
-        self.cursor
+        self.line.cursor()
     }
 
     #[must_use]
@@ -186,19 +179,19 @@ impl Model {
     /// The chosen row, counted from the best match.
     #[must_use]
     pub fn selected(&self) -> usize {
-        self.selected
+        self.selection.selected()
     }
 
     /// The row at the bottom of the screen, counted from the best match.
     #[must_use]
     pub fn offset(&self) -> usize {
-        self.offset
+        self.selection.offset()
     }
 
     /// The chosen command.
     #[must_use]
     pub fn current(&self) -> Option<&Item> {
-        self.row(self.selected)
+        self.row(self.selected())
     }
 
     /// The `n`-th best match (0 is the best).
@@ -209,15 +202,15 @@ impl Model {
 
     /// Tells the model how many rows the list has room for.
     pub fn set_page(&mut self, rows: usize) {
-        self.page = rows.max(1);
-        self.keep_selection_visible();
+        self.selection.set_page(rows);
     }
 
     /// Text pasted into the query (bracketed paste). Line ends and other control characters
     /// are dropped.
     pub fn paste(&mut self, text: &str) {
-        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
-        self.insert(&clean);
+        if self.line.paste(text) {
+            self.typed_changed();
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
@@ -225,7 +218,6 @@ impl Model {
             return Action::None;
         }
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Enter | KeyCode::Tab => self
                 .current()
@@ -241,122 +233,34 @@ impl Model {
             KeyCode::Char('p' | 'k') if control => self.step_older(1),
             KeyCode::Down => self.step_newer(1),
             KeyCode::Char('n' | 'j') if control => self.step_newer(1),
-            KeyCode::PageUp => self.step_older(self.page),
-            KeyCode::PageDown => self.step_newer(self.page),
+            KeyCode::PageUp => self.step_older(self.selection.page()),
+            KeyCode::PageDown => self.step_newer(self.selection.page()),
             KeyCode::Home => self.step_older(usize::MAX),
             KeyCode::End => self.step_newer(usize::MAX),
-            KeyCode::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
-                Action::None
-            }
-            KeyCode::Right => {
-                self.cursor = (self.cursor + 1).min(self.typed.chars().count());
-                Action::None
-            }
-            KeyCode::Char('a') if control => {
-                self.cursor = 0;
-                Action::None
-            }
-            KeyCode::Char('e') if control => {
-                self.cursor = self.typed.chars().count();
-                Action::None
-            }
-            KeyCode::Char('u') if control => {
-                self.delete_range(0, self.cursor);
-                Action::None
-            }
-            KeyCode::Char('w') if control => {
-                let start = self.word_start();
-                self.delete_range(start, self.cursor);
-                Action::None
-            }
-            KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    self.delete_range(self.cursor - 1, self.cursor);
+            _ => {
+                if self.line.edit(key) == Some(true) {
+                    self.typed_changed();
                 }
                 Action::None
             }
-            KeyCode::Delete => {
-                if self.cursor < self.typed.chars().count() {
-                    self.delete_range(self.cursor, self.cursor + 1);
-                }
-                Action::None
-            }
-            KeyCode::Char(c) if !control && !alt && !c.is_control() => {
-                let mut one = [0; 4];
-                self.insert(c.encode_utf8(&mut one));
-                Action::None
-            }
-            _ => Action::None,
         }
     }
 
     /// Toward worse and older matches (up the screen).
     fn step_older(&mut self, by: usize) -> Action {
-        let last = self.matched.len().saturating_sub(1);
-        self.selected = self.selected.saturating_add(by).min(last);
-        self.keep_selection_visible();
+        self.selection.forward(by, self.matched.len());
         Action::None
     }
 
     /// Toward the best match (down the screen).
     fn step_newer(&mut self, by: usize) -> Action {
-        self.selected = self.selected.saturating_sub(by);
-        self.keep_selection_visible();
+        self.selection.back(by);
         Action::None
     }
 
-    fn keep_selection_visible(&mut self) {
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + self.page {
-            self.offset = self.selected + 1 - self.page;
-        }
-    }
-
-    fn insert(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        let at = self.byte_of(self.cursor);
-        self.typed.insert_str(at, text);
-        self.cursor += text.chars().count();
-        self.typed_changed();
-    }
-
-    fn delete_range(&mut self, from: usize, to: usize) {
-        if from >= to {
-            return;
-        }
-        let (start, end) = (self.byte_of(from), self.byte_of(to));
-        self.typed.replace_range(start..end, "");
-        self.cursor = from;
-        self.typed_changed();
-    }
-
     fn typed_changed(&mut self) {
-        self.query = Query::parse(&self.typed);
+        self.query = Query::parse(self.line.text());
         self.search(true);
-    }
-
-    fn byte_of(&self, chars: usize) -> usize {
-        self.typed
-            .char_indices()
-            .nth(chars)
-            .map_or(self.typed.len(), |(byte, _)| byte)
-    }
-
-    /// The start of the word before the cursor (blanks, then the letters before them).
-    fn word_start(&self) -> usize {
-        let before: Vec<char> = self.typed.chars().take(self.cursor).collect();
-        let mut at = before.len();
-        while at > 0 && before[at - 1].is_whitespace() {
-            at -= 1;
-        }
-        while at > 0 && !before[at - 1].is_whitespace() {
-            at -= 1;
-        }
-        at
     }
 
     fn in_scope_item(&self, item: &Item) -> bool {
@@ -398,8 +302,7 @@ impl Model {
         found.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
         self.matched = found;
         self.matched_for = (self.query.clone(), self.scope);
-        self.selected = 0;
-        self.offset = 0;
+        self.selection.reset();
     }
 }
 

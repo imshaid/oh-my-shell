@@ -16,5 +16,9 @@ ratatui.workspace = true
 name = "explorer"
 harness = false
 
+[[bench]]
+name = "palette"
+harness = false
+
 [lints]
 workspace = true

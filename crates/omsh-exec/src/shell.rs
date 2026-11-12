@@ -314,6 +314,15 @@ impl Shell {
         self.aliases.keys().cloned().collect()
     }
 
+    /// The aliases defined so far, with their text, sorted by name.
+    #[must_use]
+    pub fn alias_list(&self) -> Vec<(String, String)> {
+        self.aliases
+            .iter()
+            .map(|(name, text)| (name.clone(), text.clone()))
+            .collect()
+    }
+
     /// Sets `$0`: the name the shell was started under (`-oh-my-shell` for a login shell).
     pub fn set_name(&mut self, name: &[u8]) {
         self.name = name.to_vec();

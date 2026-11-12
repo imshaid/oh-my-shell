@@ -9,26 +9,14 @@
 pub mod model;
 pub mod render;
 
-use std::io;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::thread;
-use std::time::Duration;
-
-use crossterm::event::{self, Event};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::Frame;
 
 pub use model::{Action, Item, Model, Scope};
 pub use render::{Context, Styles};
 
 use crate::look::Look;
-use crate::screen::FullScreen;
 use crate::theme::Theme;
-
-/// How long to wait for a key before asking whether the shell was told to hang up.
-const STEP: Duration = Duration::from_millis(100);
+use crate::view::run::{self, Step, View};
 
 /// What the view needs to open.
 pub struct Settings<'a> {
@@ -56,32 +44,38 @@ pub enum Outcome {
     /// The shell was told to hang up, or the terminal went away.
     HungUp,
     /// The terminal could not be taken (not a terminal, or no raw mode); nothing was shown.
-    Unavailable(io::Error),
+    Unavailable(std::io::Error),
 }
 
-/// How long a view that was told to stop gets to put the terminal back before it is given up
-/// on.
-const GRACE: Duration = Duration::from_millis(300);
+struct Explorer {
+    model: Model,
+    context: Context,
+}
+
+impl View for Explorer {
+    type Output = String;
+
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Step<String> {
+        match self.model.handle_key(key) {
+            Action::Pick(command) => Step::Done(command),
+            Action::Cancel => Step::Cancel,
+            Action::None => Step::Stay,
+        }
+    }
+
+    fn paste(&mut self, text: &str) {
+        self.model.paste(text);
+    }
+
+    fn draw(&mut self, frame: &mut Frame<'_>) {
+        render::draw(frame, &mut self.model, &self.context);
+    }
+}
 
 /// Opens the view and runs it until the person picks a command or leaves. `should_stop` is asked
 /// about every tenth of a second while no key comes: true ends the view with
-/// [`Outcome::HungUp`].
-///
-/// **Why the keys are read on a thread of their own.** The input library takes the end of input
-/// of a closed terminal for "try again", inside the very call that waits for a key, in a loop
-/// that never looks at the clock. A view that read keys on the calling thread would spin at full
-/// speed for ever when the terminal window is closed. So the keys are read on a helper thread and
-/// this one waits for it in short steps, asking `should_stop`; if the terminal is gone the helper
-/// is abandoned (it ends with the process), as the line editor's thread is.
+/// [`Outcome::HungUp`]. See [`run::run`] for why the keys are read on a thread of their own.
 pub fn run(settings: Settings<'_>, should_stop: &mut dyn FnMut() -> bool) -> Outcome {
-    let guard = match FullScreen::enter() {
-        Ok(guard) => guard,
-        Err(error) => return Outcome::Unavailable(error),
-    };
-    let terminal = match Terminal::new(CrosstermBackend::new(io::stderr())) {
-        Ok(terminal) => terminal,
-        Err(error) => return Outcome::Unavailable(error),
-    };
     let context = Context {
         styles: Styles::new(settings.theme, settings.look),
         window: settings.window,
@@ -89,96 +83,10 @@ pub fn run(settings: Settings<'_>, should_stop: &mut dyn FnMut() -> bool) -> Out
         now_ms: settings.now_ms,
     };
     let model = Model::new(settings.items, settings.folder, settings.typed);
-    let stop = Arc::new(AtomicBool::new(false));
-    let helper_stop = Arc::clone(&stop);
-    let (send, receive) = mpsc::channel();
-    let spawned = thread::Builder::new()
-        .name("history-explorer".to_owned())
-        .spawn(move || {
-            let (mut terminal, mut model) = (terminal, model);
-            let outcome = event_loop(&mut terminal, &mut model, &context, &helper_stop);
-            // The terminal comes back to be put away before the screen is given back.
-            let _ = send.send((outcome, terminal));
-        });
-    if let Err(error) = spawned {
-        return Outcome::Unavailable(error);
-    }
-    loop {
-        match receive.recv_timeout(STEP) {
-            Ok((outcome, terminal)) => {
-                drop(terminal);
-                drop(guard);
-                return outcome;
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if should_stop() {
-                    stop.store(true, Ordering::Relaxed);
-                    // A helper that is not stuck on a dead terminal ends within a step.
-                    if let Ok((_, terminal)) = receive.recv_timeout(GRACE) {
-                        drop(terminal);
-                    }
-                    drop(guard);
-                    return Outcome::HungUp;
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                // The helper panicked; the panic hook has given the screen back already.
-                drop(guard);
-                return Outcome::Unavailable(io::Error::other(
-                    "the history view stopped unexpectedly",
-                ));
-            }
-        }
-    }
-}
-
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stderr>>,
-    model: &mut Model,
-    context: &Context,
-    stop: &AtomicBool,
-) -> Outcome {
-    let mut dirty = true;
-    loop {
-        if dirty {
-            if terminal
-                .draw(|frame| render::draw(frame, model, context))
-                .is_err()
-            {
-                return Outcome::HungUp;
-            }
-            dirty = false;
-        }
-        if stop.load(Ordering::Relaxed) {
-            return Outcome::HungUp;
-        }
-        match event::poll(STEP) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(_) => return Outcome::HungUp,
-        }
-        // Everything that is ready is handled, in order, before the next drawing: keys that
-        // arrive together (a paste that is not bracketed, a script) are not lost or reordered.
-        loop {
-            match event::read() {
-                Err(_) => return Outcome::HungUp,
-                Ok(Event::Key(key)) => match model.handle_key(key) {
-                    Action::Pick(command) => return Outcome::Picked(command),
-                    Action::Cancel => return Outcome::Cancelled,
-                    Action::None => dirty = true,
-                },
-                Ok(Event::Paste(text)) => {
-                    model.paste(&text);
-                    dirty = true;
-                }
-                Ok(Event::Resize(..)) => dirty = true,
-                Ok(_) => {}
-            }
-            match event::poll(Duration::ZERO) {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(_) => return Outcome::HungUp,
-            }
-        }
+    match run::run("history-explorer", Explorer { model, context }, should_stop) {
+        run::Outcome::Done(command) => Outcome::Picked(command),
+        run::Outcome::Cancelled => Outcome::Cancelled,
+        run::Outcome::HungUp => Outcome::HungUp,
+        run::Outcome::Unavailable(error) => Outcome::Unavailable(error),
     }
 }

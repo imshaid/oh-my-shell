@@ -15,10 +15,13 @@ pub mod fuzzy;
 pub mod look;
 pub mod motion;
 pub mod paint;
+pub mod palette;
 pub mod screen;
+pub mod settings;
 pub mod style;
 pub mod theme;
 pub mod theme_file;
+pub mod view;
 
 pub use fuzzy::{Haystack, Query};
 pub use look::{Facts, Look};

@@ -46,6 +46,8 @@ const MAX_SUGGESTIONS: usize = 1000;
 pub struct Facts {
     pub functions: Vec<String>,
     pub aliases: Vec<String>,
+    /// The aliases with their text, for the command palette.
+    pub alias_text: Vec<(String, String)>,
     /// Builtins a person can type (not the internal ones).
     pub builtins: Vec<String>,
     /// Names of the shell variables that are set.
@@ -74,6 +76,11 @@ impl Scene {
         self.cwd = cwd;
         self.home = home;
         self.epoch += 1;
+    }
+
+    /// What the shell knew at the last prompt.
+    pub(crate) fn facts(&self) -> &Facts {
+        &self.facts
     }
 }
 

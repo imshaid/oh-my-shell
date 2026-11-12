@@ -20,6 +20,7 @@ mod git_status;
 mod highlight;
 mod hint;
 mod history;
+mod palette;
 mod paste;
 mod probe;
 mod prompt;
@@ -49,6 +50,7 @@ pub use complete::{Facts, Scene, ShellCompleter, fish_completion_directories};
 pub use git_status::passed_variables;
 pub use highlight::{CommandLookup, ShellHighlighter};
 pub use hint::{HintReset, HintSource, ShellHinter};
+pub use palette::BuiltinHelp;
 pub use probe::terminal_reports_cursor;
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
@@ -120,6 +122,12 @@ pub struct Editor {
     ui_look: omsh_ui::Look,
     /// The folder of the last prompt, for the explorer's "this folder" scope.
     cwd: String,
+    /// What this shell runs with, for the settings view and the abbreviations in the palette.
+    running: Config,
+    /// `config.toml`, or `None` when this shell reads none (`--no-config`).
+    config_file: Option<std::path::PathBuf>,
+    /// One line about each builtin, for the palette.
+    builtin_help: BuiltinHelp,
 }
 
 impl Editor {
@@ -221,6 +229,7 @@ impl Editor {
                 let mut keys = default_emacs_keybindings();
                 bind_explain(&mut keys);
                 bind_history(&mut keys);
+                bind_palette(&mut keys);
                 bind_completion(&mut keys);
                 engine.with_edit_mode(Box::new(paste::PasteMode::new(Box::new(Emacs::new(keys)))))
             }
@@ -229,10 +238,12 @@ impl Editor {
                 let mut normal = default_vi_normal_keybindings();
                 bind_explain(&mut insert);
                 bind_history(&mut insert);
+                bind_palette(&mut insert);
                 bind_completion(&mut insert);
                 let mut visual = default_vi_visual_keybindings();
                 bind_explain(&mut normal);
                 bind_history(&mut normal);
+                bind_palette(&mut normal);
                 bind_explain(&mut visual);
                 engine.with_edit_mode(Box::new(paste::PasteMode::new(Box::new(Vi::new(
                     insert, normal, visual,
@@ -272,7 +283,23 @@ impl Editor {
                 motion: omsh_config::Motion::Off,
             },
             cwd: String::new(),
+            running: config.clone(),
+            config_file: None,
+            builtin_help: |_| None,
         }
+    }
+
+    /// Tells the editor where `config.toml` is (the settings view writes there; `None` when
+    /// this shell reads no file) and how to describe a builtin (for the command palette).
+    #[must_use]
+    pub fn with_palette(
+        mut self,
+        config_file: Option<std::path::PathBuf>,
+        builtin_help: BuiltinHelp,
+    ) -> Self {
+        self.config_file = config_file;
+        self.builtin_help = builtin_help;
+        self
     }
 
     /// Shows the prompt and waits for a command. `lookup` answers which command names exist, for
@@ -377,12 +404,21 @@ impl Editor {
             };
             self.engine = Some(engine);
             prompt = back;
-            if matches!(&answer, Ok(Signal::HostCommand(name)) if name == SHOW_HISTORY) {
-                match self.explore_history() {
-                    Explored::Edits(more) => edits = more,
-                    Explored::HungUp => return Read::HungUp,
+            if let Ok(Signal::HostCommand(name)) = &answer {
+                let explored = match name.as_str() {
+                    SHOW_HISTORY => Some(self.explore_history()),
+                    SHOW_PALETTE => Some(self.open_palette()),
+                    _ => None,
+                };
+                if let Some(explored) = explored {
+                    match explored {
+                        Explored::Edits(more) => edits = more,
+                        Explored::HungUp => return Read::HungUp,
+                        // The buffer stays in the editor, as with `Alt+?`.
+                        Explored::ExplainLast => return Read::ExplainLast,
+                    }
+                    continue;
                 }
-                continue;
             }
             return classify(answer);
         }
@@ -425,13 +461,70 @@ impl Editor {
             }
         }
     }
+    /// `Ctrl+P`: the command palette takes the whole screen. What comes out is an edit of the
+    /// line (a name put in at the cursor), another view, or the explanation of the last failure.
+    fn open_palette(&mut self) -> Explored {
+        let entries = {
+            let scene = self.scene.lock().unwrap_or_else(PoisonError::into_inner);
+            palette::entries(
+                scene.facts(),
+                &self.running.editor.abbreviations,
+                self.config_file.as_deref(),
+                self.builtin_help,
+            )
+        };
+        let hang_up = Arc::clone(&self.hang_up);
+        let terminal_gone = &self.terminal_gone;
+        let mut should_stop = || {
+            let hung_up = hang_up.lock().unwrap_or_else(PoisonError::into_inner);
+            hung_up() || terminal_gone()
+        };
+        match omsh_ui::palette::run(entries, &self.theme, self.ui_look, &mut should_stop) {
+            omsh_ui::palette::Outcome::Chosen(effect) => match effect {
+                omsh_ui::palette::Effect::Insert(text) => {
+                    Explored::Edits(vec![EditCommand::InsertString(text)])
+                }
+                omsh_ui::palette::Effect::OpenHistory => self.explore_history(),
+                omsh_ui::palette::Effect::OpenSettings => self.open_settings(),
+                omsh_ui::palette::Effect::ExplainLast => Explored::ExplainLast,
+            },
+            omsh_ui::palette::Outcome::HungUp => Explored::HungUp,
+            omsh_ui::palette::Outcome::Cancelled | omsh_ui::palette::Outcome::Unavailable(_) => {
+                Explored::Edits(Vec::new())
+            }
+        }
+    }
+
+    /// The settings view. The line is left as it was.
+    fn open_settings(&mut self) -> Explored {
+        let hang_up = Arc::clone(&self.hang_up);
+        let terminal_gone = &self.terminal_gone;
+        let mut should_stop = || {
+            let hung_up = hang_up.lock().unwrap_or_else(PoisonError::into_inner);
+            hung_up() || terminal_gone()
+        };
+        match omsh_ui::settings::run(
+            self.running.clone(),
+            self.config_file.clone(),
+            &self.theme,
+            self.ui_look,
+            &mut should_stop,
+        ) {
+            omsh_ui::settings::Outcome::HungUp => Explored::HungUp,
+            omsh_ui::settings::Outcome::Closed | omsh_ui::settings::Outcome::Unavailable(_) => {
+                Explored::Edits(Vec::new())
+            }
+        }
+    }
 }
 
-/// How the history explorer ended, for the editor loop.
+/// How a full-screen view ended, for the editor loop.
 enum Explored {
     /// Edits to apply to the buffer before the editor reads again.
     Edits(Vec<EditCommand>),
     HungUp,
+    /// The person asked for the explanation of the last failure (the palette's entry for `Alt+?`).
+    ExplainLast,
 }
 
 /// The name of the menu that Tab opens.
@@ -492,6 +585,19 @@ fn bind_history(keys: &mut Keybindings) {
         KeyModifiers::CONTROL,
         KeyCode::Char('r'),
         ReedlineEvent::ExecuteHostCommand(SHOW_HISTORY.to_owned()),
+    );
+}
+
+/// The name the editor gives to `Ctrl+P` when it hands control back to open the command palette.
+const SHOW_PALETTE: &str = "omsh:palette";
+
+/// Binds `Ctrl+P` to the command palette, in place of "previous history line" (Up still does
+/// that).
+fn bind_palette(keys: &mut Keybindings) {
+    keys.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('p'),
+        ReedlineEvent::ExecuteHostCommand(SHOW_PALETTE.to_owned()),
     );
 }
 
@@ -602,6 +708,56 @@ mod tests {
             classify(Ok(Signal::HostCommand(SHOW_HISTORY.into()))),
             Read::Interrupted
         ));
+    }
+
+    #[test]
+    fn ctrl_p_opens_the_command_palette_in_every_mode() {
+        let is_palette = |keys: &Keybindings| {
+            matches!(
+                keys.find_binding(KeyModifiers::CONTROL, KeyCode::Char('p')),
+                Some(ReedlineEvent::ExecuteHostCommand(name)) if name == SHOW_PALETTE
+            )
+        };
+        // Before the binding, the key is "previous history line"; Up keeps doing that.
+        for mut keys in [
+            default_emacs_keybindings(),
+            default_vi_insert_keybindings(),
+            default_vi_normal_keybindings(),
+        ] {
+            assert!(!is_palette(&keys));
+            bind_palette(&mut keys);
+            assert!(is_palette(&keys));
+            assert!(!matches!(
+                keys.find_binding(KeyModifiers::NONE, KeyCode::Up),
+                Some(ReedlineEvent::ExecuteHostCommand(_))
+            ));
+        }
+        assert!(matches!(
+            classify(Ok(Signal::HostCommand(SHOW_PALETTE.into()))),
+            Read::Interrupted
+        ));
+    }
+
+    #[test]
+    fn the_editor_can_be_told_where_the_config_file_is() {
+        let editor = Editor::new(
+            &Config::default(),
+            &Theme::default(),
+            true,
+            true,
+            Recall {
+                store: Store::in_memory(),
+                filter: Filter::default(),
+            },
+            || false,
+            || false,
+        )
+        .with_palette(Some("/x/config.toml".into()), |_| Some("help"));
+        assert_eq!(
+            editor.config_file.as_deref(),
+            Some(std::path::Path::new("/x/config.toml"))
+        );
+        assert_eq!((editor.builtin_help)("cd"), Some("help"));
     }
 
     #[test]

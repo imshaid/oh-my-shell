@@ -16,9 +16,10 @@ mod load;
 mod paths;
 mod read;
 mod schema;
+pub mod settings;
 
 pub use ai_state::AiState;
-pub use edit::{AiChoice, EditError, Edited, set_ai};
+pub use edit::{AiChoice, Change, EditError, Edited, set_ai, set_setting};
 pub use first_run::{TEMPLATE, create as write_if_missing};
 pub use load::{Loaded, Parsed, Problem, Severity, check_url, load, parse};
 pub use paths::Paths;

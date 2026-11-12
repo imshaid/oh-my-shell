@@ -158,6 +158,119 @@ pub fn set_ai(path: &Path, choice: &AiChoice) -> Result<Edited, EditError> {
     Ok(Edited { switched_on })
 }
 
+/// A change to one key, as the settings view makes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    Bool(bool),
+    Text(String),
+    /// Take the key out of the file (the setting goes back to its default).
+    Remove,
+}
+
+impl Change {
+    fn value(&self) -> Option<Value> {
+        match self {
+            Self::Bool(on) => Some(Value::from(*on)),
+            Self::Text(text) => Some(Value::from(text.as_str())),
+            Self::Remove => None,
+        }
+    }
+}
+
+/// Changes one editable setting (`section.key`, see [`crate::settings`]) in the file, keeping
+/// the rest of it: comments, order and layout. Nothing but the one key changes. A missing file
+/// is created from the commented first-run text; a symbolic link is followed.
+///
+/// # Errors
+///
+/// [`EditError`] when the key is not one the settings view may change, the file cannot be read
+/// or written, or has a syntax error, or a table on the way is not a table. Nothing is written
+/// then.
+pub fn set_setting(path: &Path, key: &str, change: &Change) -> Result<(), EditError> {
+    if !crate::settings::find(key).is_some_and(|setting| setting.editable) {
+        return Err(EditError::NotUsable("that setting is not changed here"));
+    }
+    let (section, name) = key
+        .rsplit_once('.')
+        .ok_or(EditError::NotUsable("that setting is not changed here"))?;
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let (text, mode) = read(&target)?;
+    let mut document: DocumentMut = text.parse().map_err(|error: toml_edit::TomlError| {
+        let at = error
+            .span()
+            .map(|span| position(&text, span.start))
+            .unwrap_or_default();
+        EditError::Syntax(format!("{at}{}", error.message()))
+    })?;
+
+    // Walk to the section's table. A missing part means the section is not in the file.
+    let parts: Vec<&str> = section.split('.').collect();
+    let found = descend(document.as_table_mut(), &parts)?;
+    let missing = found.is_none();
+    let mut table = found;
+
+    if missing {
+        // Nothing to take out of a section that is not there.
+        let Some(value) = change.value() else {
+            return Ok(());
+        };
+        // Appended after the old text, byte for byte (see `set_ai`).
+        let mut appended = text.clone();
+        if !appended.is_empty() && !appended.ends_with('\n') {
+            appended.push('\n');
+        }
+        if !appended.is_empty() && !appended.ends_with("\n\n") {
+            appended.push('\n');
+        }
+        appended.push_str(&format!("[{section}]\n"));
+        push_value(&mut appended, name, &value);
+        appended
+            .parse::<DocumentMut>()
+            .map_err(|error| EditError::Syntax(error.message().to_owned()))?;
+        write(&target, &appended, mode)?;
+        return Ok(());
+    }
+
+    let Some(table) = table.take() else {
+        return Err(EditError::NotATable);
+    };
+    match change.value() {
+        Some(value) => set_item(table, name, value),
+        None => {
+            table.remove(name);
+        }
+    }
+    write(&target, &document.to_string(), mode)
+}
+
+/// The table `parts` name below `table`, or `None` if one of them is not in the file.
+fn descend<'a>(
+    table: &'a mut dyn TableLike,
+    parts: &[&str],
+) -> Result<Option<&'a mut dyn TableLike>, EditError> {
+    let Some((first, rest)) = parts.split_first() else {
+        return Ok(Some(table));
+    };
+    let Some(item) = table.get_mut(first) else {
+        return Ok(None);
+    };
+    // A table that only held a sub-table is "implicit" and prints no header; the one that gets a
+    // key must have its header.
+    if rest.is_empty()
+        && let Item::Table(found) = item
+    {
+        found.set_implicit(false);
+    }
+    descend(item.as_table_like_mut().ok_or(EditError::NotATable)?, rest)
+}
+
+fn push_value(text: &mut String, key: &str, value: &Value) {
+    text.push_str(key);
+    text.push_str(" = ");
+    text.push_str(&value.to_string());
+    text.push('\n');
+}
+
 /// "line 3, column 5: " for the byte offset `at`, or nothing.
 fn position(text: &str, at: usize) -> String {
     let before = text.get(..at).unwrap_or_default();
@@ -481,5 +594,197 @@ mod tests {
         assert_eq!(config.ai.provider, Some(c.provider));
         assert_eq!(config.ai.model.as_deref(), Some(c.model.as_str()));
         assert_eq!(config.ai.base_url, c.base_url);
+    }
+
+    fn setting_of(path: &Path) -> Config {
+        parse(&fs::read_to_string(path).unwrap()).config
+    }
+
+    #[test]
+    fn a_switch_is_changed_in_place_and_its_comments_stay() {
+        let dir = Scratch::new();
+        let original = "# my notes\n[editor]\n# hints below\nhints = true # on\nmode = \"vi\"\n";
+        let path = dir.file(original);
+        set_setting(&path, "editor.hints", &Change::Bool(false)).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            original.replace("hints = true", "hints = false")
+        );
+    }
+
+    #[test]
+    fn a_section_that_is_not_in_the_file_is_added_after_the_old_text() {
+        let dir = Scratch::new();
+        let original = "# my notes\n[history]\nsize = 5\n";
+        let path = dir.file(original);
+        set_setting(&path, "editor.mode", &Change::Text("vi".into())).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text, format!("{original}\n[editor]\nmode = \"vi\"\n"));
+        assert_eq!(setting_of(&path).editor.mode, crate::EditMode::Vi);
+        assert_eq!(setting_of(&path).history.size, 5);
+    }
+
+    #[test]
+    fn a_key_missing_from_an_existing_section_is_added_to_it() {
+        let dir = Scratch::new();
+        let path = dir.file("[editor]\nmode = \"vi\"\n\n[history]\nsize = 5\n");
+        set_setting(&path, "editor.hints", &Change::Bool(false)).unwrap();
+        let config = setting_of(&path);
+        assert!(!config.editor.hints);
+        assert_eq!(config.editor.mode, crate::EditMode::Vi);
+        assert_eq!(config.history.size, 5);
+    }
+
+    #[test]
+    fn a_nested_section_is_written_under_its_own_header() {
+        let dir = Scratch::new();
+        let path = dir.file("[ai]\nprovider = \"ollama\"\nmodel = \"m\"\n");
+        set_setting(&path, "ai.context.git", &Change::Bool(false)).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[ai.context]\ngit = false"), "{text}");
+        let config = setting_of(&path);
+        assert!(!config.ai.context.git && config.ai.context.os);
+        assert_eq!(config.ai.model.as_deref(), Some("m"));
+        // And once it is there, the same key is changed in place.
+        set_setting(&path, "ai.context.git", &Change::Bool(true)).unwrap();
+        assert!(setting_of(&path).ai.context.git);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().matches("git =").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_table_that_held_only_a_subtable_keeps_its_other_content_when_one_key_changes() {
+        let dir = Scratch::new();
+        let path = dir.file("[ai.context]\nos = false\n");
+        set_setting(&path, "ai.context.git", &Change::Bool(false)).unwrap();
+        // No empty `[ai]` header appears: only the one key was added.
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ai.context]\nos = false\ngit = false\n"
+        );
+    }
+
+    #[test]
+    fn removing_a_key_puts_it_back_to_its_default() {
+        let dir = Scratch::new();
+        let path = dir.file("[ui]\nmotion = \"off\" # quiet\nicons = \"ascii\"\n");
+        set_setting(&path, "ui.motion", &Change::Remove).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[ui]\nicons = \"ascii\"\n"
+        );
+        assert_eq!(setting_of(&path).ui.motion, None);
+        // A key or a section that is not there: nothing to do, and the file is not rewritten.
+        let before = fs::read_to_string(&path).unwrap();
+        set_setting(&path, "ui.motion", &Change::Remove).unwrap();
+        set_setting(&path, "editor.mode", &Change::Remove).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn only_the_settings_the_view_changes_are_written() {
+        let dir = Scratch::new();
+        let original = "[safety]\nconfirm = \"critical\"\n";
+        let path = dir.file(original);
+        for key in [
+            "safety.confirm",
+            "history.size",
+            "ai.provider",
+            "ui.theme",
+            "nope",
+            "x.y",
+        ] {
+            let result = set_setting(&path, key, &Change::Text("caution".into()));
+            assert!(matches!(result, Err(EditError::NotUsable(_))), "{key}");
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn a_broken_file_or_a_section_that_is_not_a_table_is_not_touched() {
+        let dir = Scratch::new();
+        let path = dir.file("[editor\nhints = true\n");
+        let result = set_setting(&path, "editor.hints", &Change::Bool(false));
+        assert!(matches!(result, Err(EditError::Syntax(_))));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[editor\nhints = true\n"
+        );
+        let path = dir.file("editor = 3\n");
+        let result = set_setting(&path, "editor.hints", &Change::Bool(false));
+        assert!(matches!(result, Err(EditError::NotATable)));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "editor = 3\n");
+    }
+
+    #[test]
+    fn a_missing_file_is_made_from_the_first_run_text_and_then_changed() {
+        let dir = Scratch::new();
+        let path = dir.0.join("config.toml");
+        set_setting(&path, "prompt.transient", &Change::Bool(true)).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(TEMPLATE.trim_end()), "the template stays");
+        assert!(setting_of(&path).prompt.transient);
+    }
+
+    #[test]
+    fn a_symbolic_link_stays_a_link_when_a_setting_changes() {
+        let dir = Scratch::new();
+        let real = dir.0.join("dotfiles.toml");
+        fs::write(&real, "[editor]\nhints = true\n").unwrap();
+        let link = dir.0.join("config.toml");
+        symlink(&real, &link).unwrap();
+        set_setting(&link, "editor.hints", &Change::Bool(false)).unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!setting_of(&real).editor.hints);
+    }
+
+    #[test]
+    fn the_mode_of_the_file_is_kept_when_a_setting_changes() {
+        let dir = Scratch::new();
+        let path = dir.file("[editor]\nhints = true\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        set_setting(&path, "editor.hints", &Change::Bool(false)).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn every_cycle_the_view_makes_parses_back_to_the_value_it_means() {
+        // The settings view writes what `cycle` says; the loader must read it as the next word.
+        for setting in crate::settings::SETTINGS.iter().filter(|s| s.editable) {
+            let dir = Scratch::new();
+            let path = dir.file("");
+            let mut current = crate::settings::display(&Config::default(), setting.key);
+            for _ in 0..4 {
+                let change = crate::settings::cycle(setting.key, &current, true).unwrap();
+                set_setting(&path, setting.key, &change).unwrap();
+                let parsed = parse(&fs::read_to_string(&path).unwrap());
+                assert!(parsed.problems.is_empty(), "{}", setting.key);
+                let shown = crate::settings::display(&parsed.config, setting.key);
+                assert_ne!(shown, current, "{} did not move", setting.key);
+                current = shown;
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_of_a_table_that_only_held_a_subtable_gets_its_header() {
+        // `[ai.context]` alone makes `ai` an implicit table with no header of its own; a key
+        // written into it without a header would land at the top of the file.
+        let dir = Scratch::new();
+        let path = dir.file("[ai.context]\nos = false\n");
+        set_setting(&path, "ai.enabled", &Change::Bool(false)).unwrap();
+        let parsed = parse(&fs::read_to_string(&path).unwrap());
+        assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
+        assert!(!parsed.config.ai.enabled && !parsed.config.ai.context.os);
     }
 }

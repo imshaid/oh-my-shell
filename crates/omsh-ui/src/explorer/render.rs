@@ -13,56 +13,15 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::model::{Item, Model};
-use crate::look::Look;
-use crate::style::style;
-use crate::theme::{Role, Theme, Token};
-
-/// Narrower or lower than this and the view only says so.
-pub const MIN_WIDTH: u16 = 30;
-pub const MIN_HEIGHT: u16 = 7;
+pub use crate::view::draw::{MIN_HEIGHT, MIN_WIDTH, Styles, group};
+use crate::view::draw::{clean, footer_line, query_row, spans_with_matches, title_row};
 
 /// The fixed rows around the list: title, detail, note, query, footer.
 const FRAME_ROWS: u16 = 5;
-
-/// How the view looks: colors from the theme, glyphs from the look.
-#[derive(Clone, Debug)]
-pub struct Styles {
-    pub plain: Style,
-    pub dim: Style,
-    pub accent: Style,
-    pub danger: Style,
-    pub selected: Style,
-    pub unicode: bool,
-}
-
-impl Styles {
-    /// Without color in `look`, colors are dropped and the attributes (reverse, dim) stay.
-    #[must_use]
-    pub fn new(theme: &Theme, look: Look) -> Self {
-        let theme = if look.color {
-            theme.clone()
-        } else {
-            theme.without_color()
-        };
-        Self {
-            plain: Style::default(),
-            dim: style(theme.token(Token::Dim)),
-            accent: style(theme.token(Token::Accent)),
-            danger: style(theme.token(Token::Danger)),
-            selected: style(theme.get(Role::Selection)),
-            unicode: look.unicode,
-        }
-    }
-
-    fn glyph(&self, unicode: &'static str, ascii: &'static str) -> &'static str {
-        if self.unicode { unicode } else { ascii }
-    }
-}
 
 /// What the drawing needs besides the model.
 #[derive(Clone, Debug)]
@@ -91,7 +50,7 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, context: &Context) {
     let detail = row(1 + list_rows, 1);
     let note = row(2 + list_rows, 1);
     let query = row(3 + list_rows, 1);
-    let footer = row(4 + list_rows, 1);
+    let footer_area = row(4 + list_rows, 1);
 
     frame.render_widget(Paragraph::new(title_line(model, styles, width)), title);
 
@@ -146,26 +105,10 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, context: &Context) {
         note,
     );
 
-    let typed = clean(model.typed(), styles);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("> ", styles.accent),
-            Span::raw(typed),
-        ])),
-        query,
-    );
-    frame.render_widget(Paragraph::new(footer_line(styles)), footer);
-
-    let before: String = clean(
-        &model
-            .typed()
-            .chars()
-            .take(model.cursor())
-            .collect::<String>(),
-        styles,
-    );
-    let x = (2 + Span::raw(before).width()).min(usize::from(width - 1));
-    frame.set_cursor_position((area.x + u16::try_from(x).unwrap_or(0), query.y));
+    let (query_line, x) = query_row(styles, model.typed(), model.cursor(), width);
+    frame.render_widget(Paragraph::new(query_line), query);
+    frame.render_widget(Paragraph::new(footer(styles)), footer_area);
+    frame.set_cursor_position((area.x + x, query.y));
 }
 
 /// The one line that says what the list is made of. It always says it, whether or not there is
@@ -190,7 +133,6 @@ pub fn note_for_width(window: usize, width: usize) -> String {
 }
 
 fn title_line(model: &Model, styles: &Styles, width: u16) -> Line<'static> {
-    let left = "History";
     let right = format!(
         "{} {} {} of {}",
         model.scope().label(),
@@ -198,31 +140,19 @@ fn title_line(model: &Model, styles: &Styles, width: u16) -> Line<'static> {
         group(model.matches()),
         group(model.in_scope())
     );
-    let used = left.chars().count() + right.chars().count();
-    let pad = usize::from(width).saturating_sub(used).max(1);
-    Line::from(vec![
-        Span::styled(left, styles.accent),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(right, styles.dim),
-    ])
+    title_row(styles, "History", &right, width)
 }
 
-fn footer_line(styles: &Styles) -> Line<'static> {
-    let keys = [
-        ("Enter", "use"),
-        ("Esc", "cancel"),
-        ("Ctrl+R", "scope"),
-        (styles.glyph("↑↓", "Up/Down"), "move"),
-    ];
-    let mut spans = Vec::new();
-    for (index, (key, what)) in keys.into_iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled(key, styles.accent));
-        spans.push(Span::styled(format!(" {what}"), styles.dim));
-    }
-    Line::from(spans)
+fn footer(styles: &Styles) -> Line<'static> {
+    footer_line(
+        styles,
+        &[
+            ("Enter", "use"),
+            ("Esc", "cancel"),
+            ("Ctrl+R", "scope"),
+            (styles.glyph("↑↓", "Up/Down"), "move"),
+        ],
+    )
 }
 
 fn detail_line(item: &Item, context: &Context) -> String {
@@ -274,83 +204,8 @@ fn row_line(
         Span::styled(sign, styles.danger),
         Span::styled(age, styles.dim),
     ];
-    spans.extend(command_spans(&item.command, places, room, styles));
+    spans.extend(spans_with_matches(&item.command, places, room, styles));
     Line::from(spans)
-}
-
-/// The command as spans: control and invisible characters made harmless, the matched letters
-/// in the accent style, cut with an ellipsis if it does not fit in `room` columns.
-fn command_spans(
-    command: &str,
-    places: &[usize],
-    room: usize,
-    styles: &Styles,
-) -> Vec<Span<'static>> {
-    let shown: Vec<(String, bool)> = command
-        .chars()
-        .enumerate()
-        .map(|(index, c)| (show(c, styles), places.binary_search(&index).is_ok()))
-        .collect();
-    let total: usize = shown
-        .iter()
-        .map(|(text, _)| Span::raw(text.clone()).width())
-        .sum();
-    let ellipsis = styles.glyph("…", "~");
-    let (limit, cut) = if total <= room {
-        (room, false)
-    } else {
-        (room.saturating_sub(1), true)
-    };
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut run = String::new();
-    let mut run_matched = false;
-    let mut used = 0;
-    let flush = |spans: &mut Vec<Span<'static>>, run: &mut String, matched: bool| {
-        if !run.is_empty() {
-            let look = if matched { styles.accent } else { styles.plain };
-            spans.push(Span::styled(std::mem::take(run), look));
-        }
-    };
-    for (text, matched) in &shown {
-        let width = Span::raw(text.clone()).width();
-        if used + width > limit {
-            break;
-        }
-        if *matched != run_matched {
-            flush(&mut spans, &mut run, run_matched);
-            run_matched = *matched;
-        }
-        run.push_str(text);
-        used += width;
-    }
-    flush(&mut spans, &mut run, run_matched);
-    if cut {
-        spans.push(Span::styled(ellipsis, styles.dim));
-    }
-    spans
-}
-
-/// What is drawn for one character of a stored command: itself, unless it could change what the
-/// person reads (control characters, line ends, text-direction and zero-width characters).
-fn show(c: char, styles: &Styles) -> String {
-    match c {
-        '\n' => styles.glyph("↵", "\\n").to_owned(),
-        '\t' => " ".to_owned(),
-        c if c.is_control() || is_invisible(c) => "?".to_owned(),
-        c => c.to_string(),
-    }
-}
-
-fn is_invisible(c: char) -> bool {
-    matches!(c,
-        '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
-}
-
-/// A text for one line: every character made harmless.
-fn clean(text: &str, styles: &Styles) -> String {
-    text.chars().map(|c| show(c, styles)).collect()
 }
 
 /// "3m ago", or "just now" when it is under a second (never "now ago").
@@ -373,20 +228,6 @@ pub fn age(milliseconds: i64) -> String {
         86_400..=31_535_999 => format!("{}d", seconds / 86_400),
         _ => format!("{}y", seconds / 31_536_000),
     }
-}
-
-/// `4210` as `4,210`.
-#[must_use]
-pub fn group(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (index, c) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(test)]

@@ -40,7 +40,7 @@ mod vars;
 
 pub use builtins::{
     BuiltinOutput, HistoryCommand, JournalCommand, JumpCommand, Key, OmshCommand, ReadError, TRASH,
-    Terminal, builtin_names, is_builtin,
+    Terminal, builtin_names, is_builtin, summary as builtin_summary,
 };
 pub use check::NotYet;
 pub use expand::glob;

@@ -116,6 +116,53 @@ pub fn builtin_names() -> Vec<&'static str> {
     names
 }
 
+/// One line that says what the builtin `name` does, for the command palette. `None` for a name
+/// that is not a builtin a person can type.
+#[must_use]
+pub fn summary(name: &str) -> Option<&'static str> {
+    Some(match name {
+        ":" => "Do nothing and succeed.",
+        "." | "source" => "Run the commands of a file in this shell.",
+        "[" | "test" => "Check a condition about files, text or numbers.",
+        "alias" => "Define or list aliases.",
+        "bg" => "Continue a stopped job in the background.",
+        "break" => "Leave a loop.",
+        "cd" => "Change the current folder.",
+        "command" => "Run a command, skipping functions and aliases, or describe it.",
+        "continue" => "Go on with the next round of a loop.",
+        "disown" => "Forget a job; the shell no longer waits for it.",
+        "echo" => "Print the arguments.",
+        "eval" => "Run the arguments as a command line.",
+        "exec" => "Replace the shell by a program.",
+        "exit" => "Leave the shell.",
+        "export" => "Put variables in the environment of programs.",
+        "false" => "Do nothing and fail.",
+        "fg" => "Bring a job to the foreground.",
+        "hash" => "Remember or forget where programs are.",
+        "history" => "List, search or delete stored commands.",
+        "j" => "Jump to a folder you have been in before.",
+        "jobs" => "List background and stopped jobs.",
+        "kill" => "Send a signal to a process or job.",
+        "omsh" => "The shell's own commands, such as `omsh ai setup`.",
+        "printf" => "Print formatted text.",
+        "pwd" => "Print the current folder.",
+        "read" => "Read a line into variables.",
+        "readonly" => "Make variables read-only.",
+        "return" => "Leave a function or a sourced file.",
+        "set" => "Set shell options and the positional arguments.",
+        "shift" => "Drop the first positional arguments.",
+        "trap" => "Run a command when a signal arrives or the shell exits.",
+        "true" => "Do nothing and succeed.",
+        "type" => "Say how a name would be run.",
+        "umask" => "Show or set the mask for new files' permissions.",
+        "unalias" => "Remove aliases.",
+        "undo" => "Put back files that a deletion moved to the trash.",
+        "unset" => "Remove variables or functions.",
+        "wait" => "Wait for background jobs to end.",
+        _ => return None,
+    })
+}
+
 /// Runs the builtin `name` with `args` (the words after the name). `name` must be one that
 /// [`classify`] knows.
 pub(crate) fn run(shell: &mut Shell, name: &[u8], args: &[Vec<u8>], io: &Io) -> Flow {
@@ -240,5 +287,27 @@ mod name_tests {
         assert!(classify(b"").is_none());
         assert_eq!(classify(b"export"), Some(Class::Special));
         assert_eq!(classify(b"cd"), Some(Class::Regular));
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    #[test]
+    fn every_builtin_a_person_can_type_has_a_one_line_summary() {
+        for name in builtin_names() {
+            let text = summary(name).unwrap_or_else(|| panic!("no summary for {name}"));
+            assert!(
+                text.ends_with('.') && !text.contains('\n'),
+                "{name}: {text}"
+            );
+            assert!(
+                text.chars().count() <= 70,
+                "{name} is too long for a palette row"
+            );
+        }
+        assert_eq!(summary("__omsh_trash"), None);
+        assert_eq!(summary("nope"), None);
     }
 }

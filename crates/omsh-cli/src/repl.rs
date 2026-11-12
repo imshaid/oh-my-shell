@@ -22,8 +22,8 @@ use omsh_editor::{
 };
 use omsh_exec::{
     CommandSuggest, DEFAULT_PATH, ExitStatus, HistoryCommand, Io, JournalCommand, JumpCommand,
-    LineResult, OmshCommand, Outcome, Shell, Trigger, builtin_names, find_program, hung_up,
-    is_builtin, is_root, note_inherited_signals, release_terminal, start_interactive,
+    LineResult, OmshCommand, Outcome, Shell, Trigger, builtin_names, builtin_summary, find_program,
+    hung_up, is_builtin, is_root, note_inherited_signals, release_terminal, start_interactive,
     terminal_gone, trigger, wait_for_input,
 };
 use omsh_history::{Filter, Store};
@@ -146,6 +146,7 @@ fn run_on(
         history,
         ai,
         undo,
+        config_file,
     } = match start_up(&mut shell, &mut files, options) {
         Ok(started) => started,
         // `exit` in the startup file.
@@ -175,6 +176,7 @@ fn run_on(
             style,
             interactive && terminals,
             history,
+            config_file,
         )
     });
     // The lines read so far for the command being typed: more than one when it is unfinished.
@@ -517,6 +519,7 @@ fn make_editor(
     style: Style,
     terminals: bool,
     history: &History,
+    config_file: Option<PathBuf>,
 ) -> Option<Editor> {
     if !should_edit(terminals, shell.var("TERM"), shell.var("INSIDE_EMACS")) {
         return None;
@@ -536,18 +539,21 @@ fn make_editor(
     // A panic while a full-screen view (Ctrl+R) is open gives the terminal back first, so that
     // the message is readable. Costs nothing until a view opens.
     omsh_ui::install_panic_restore();
-    Some(Editor::new(
-        config,
-        theme,
-        unicode,
-        color,
-        Recall {
-            store: history.store.clone(),
-            filter: history.filter.clone(),
-        },
-        hung_up,
-        || terminal_gone(io::stdin()),
-    ))
+    Some(
+        Editor::new(
+            config,
+            theme,
+            unicode,
+            color,
+            Recall {
+                store: history.store.clone(),
+                filter: history.filter.clone(),
+            },
+            hung_up,
+            || terminal_gone(io::stdin()),
+        )
+        .with_palette(config_file, builtin_summary),
+    )
 }
 
 /// The "did you mean" line after `not found`: names close to the one typed, from the editor
@@ -605,6 +611,7 @@ fn completion_facts(shell: &Shell) -> Facts {
     Facts {
         functions: shell.function_names(),
         aliases: shell.alias_names(),
+        alias_text: shell.alias_list(),
         builtins: builtin_names().into_iter().map(str::to_owned).collect(),
         variables: shell.variable_names(),
         path: shell
@@ -703,6 +710,8 @@ struct Started {
     ai: Option<Arc<ai::AiSession>>,
     /// The trash and `undo` (S18). None under `--no-config` and without a data directory.
     undo: Option<Arc<Undo>>,
+    /// `config.toml`, for the settings view (S27b). None under `--no-config`.
+    config_file: Option<PathBuf>,
 }
 
 /// How many lines of problems with `config.toml` are shown before "... and N more".
@@ -726,6 +735,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             history: None,
             ai: None,
             undo: None,
+            config_file: None,
         });
     }
     // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
@@ -750,6 +760,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             history: Some(history),
             ai: Some(ai),
             undo: None,
+            config_file: None,
         });
     }
     let loaded = omsh_config::load(&paths);
@@ -795,6 +806,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
         history: Some(history),
         ai: Some(ai),
         undo,
+        config_file: paths.config_file(),
     })
 }
 
