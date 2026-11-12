@@ -16,11 +16,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omsh_config::{Config, Paths};
-use omsh_editor::{CommandLookup, Editor, PromptState, Read as Typed, Recall, working_directory};
+use omsh_editor::{
+    CommandLookup, Editor, Facts, PromptState, Read as Typed, Recall, fish_completion_directories,
+    working_directory,
+};
 use omsh_exec::{
     DEFAULT_PATH, ExitStatus, HistoryCommand, Io, JournalCommand, JumpCommand, LineResult,
-    OmshCommand, Outcome, Shell, Trigger, find_program, hung_up, is_builtin, is_root,
-    note_inherited_signals, release_terminal, start_interactive, terminal_gone, trigger,
+    OmshCommand, Outcome, Shell, Trigger, builtin_names, find_program, hung_up, is_builtin,
+    is_root, note_inherited_signals, release_terminal, start_interactive, terminal_gone, trigger,
     wait_for_input,
 };
 use omsh_history::{Filter, Store};
@@ -534,6 +537,35 @@ impl CommandLookup for ShellCommands {
     }
 }
 
+/// What Tab completion offers, as the shell is when a prompt is drawn: its functions, aliases,
+/// variables and builtins, `PATH`, and where fish's completion files would be.
+fn completion_facts(shell: &Shell) -> Facts {
+    let text = |name: &str| {
+        shell
+            .var(name)
+            .and_then(|value| std::str::from_utf8(value).ok())
+    };
+    let home = shell
+        .var("HOME")
+        .filter(|value| !value.is_empty())
+        .map(|value| PathBuf::from(OsStr::from_bytes(value)));
+    Facts {
+        functions: shell.function_names(),
+        aliases: shell.alias_names(),
+        builtins: builtin_names().into_iter().map(str::to_owned).collect(),
+        variables: shell.variable_names(),
+        path: shell
+            .var("PATH")
+            .map_or_else(|| DEFAULT_PATH.as_bytes().to_vec(), <[u8]>::to_vec),
+        fish_dirs: fish_completion_directories(
+            home.as_deref(),
+            text("XDG_CONFIG_HOME"),
+            text("XDG_DATA_HOME"),
+            text("XDG_DATA_DIRS"),
+        ),
+    }
+}
+
 /// Everything the prompt shows, taken from the shell's own variables (not the process
 /// environment, which a `cd` or `export` does not change).
 fn prompt_state(shell: &Shell, took: Option<Duration>) -> PromptState {
@@ -562,6 +594,7 @@ fn read_edited(editor: &mut Editor, shell: &Shell, pending: &str, took: Option<D
         editor.read(
             &prompt_state(shell, took),
             Box::new(ShellCommands::of(shell)),
+            completion_facts(shell),
         )
     } else {
         editor.read_more()

@@ -192,7 +192,7 @@ fn role_of(kind: HighlightKind) -> Role {
 /// What a word says when its quotes and escapes are taken away, if that can be known from the
 /// text alone: `None` when it holds a `$`, a backtick or a `$'...'` outside single quotes.
 /// An unfinished quote simply runs to the end.
-fn literal_value(word: &str) -> Option<String> {
+pub(crate) fn literal_value(word: &str) -> Option<String> {
     let mut out = String::with_capacity(word.len());
     let mut chars = word.chars().peekable();
     while let Some(c) = chars.next() {

@@ -14,6 +14,7 @@
 //! helper thread and waits for it in short steps; if the terminal is gone it gives up on that
 //! thread and returns [`Read::HungUp`], so that the shell can end properly.
 
+mod complete;
 mod highlight;
 mod hint;
 mod history;
@@ -30,15 +31,17 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use nu_ansi_term::Style;
 use omsh_config::{Config, EditMode as ConfigMode};
 use omsh_history::{Filter, Store};
 use omsh_ui::{Role, Theme};
 use reedline::{
-    EditCommand, Emacs, KeyCode, KeyModifiers, Keybindings, Reedline, ReedlineEvent, Signal, Vi,
-    default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
-    default_vi_visual_keybindings,
+    ColumnarMenu, EditCommand, Emacs, KeyCode, KeyModifiers, Keybindings, MenuBuilder, Reedline,
+    ReedlineEvent, ReedlineMenu, Signal, Vi, default_emacs_keybindings,
+    default_vi_insert_keybindings, default_vi_normal_keybindings, default_vi_visual_keybindings,
 };
 
+pub use complete::{Facts, Scene, ShellCompleter, fish_completion_directories};
 pub use highlight::{CommandLookup, ShellHighlighter};
 pub use hint::{HintReset, HintSource, ShellHinter};
 pub use prompt::{Look, PromptState, ShellPrompt};
@@ -93,6 +96,8 @@ pub struct Editor {
     context: Arc<Mutex<highlight::Context>>,
     /// What the hinter knows about the prompt; renewed for each prompt.
     hints: Arc<Mutex<hint::HintState>>,
+    /// What the completer knows about the shell; renewed for each prompt.
+    scene: Arc<Mutex<complete::Scene>>,
     /// Asked while waiting: has the terminal gone away?
     terminal_gone: Box<dyn Fn() -> bool + Send>,
 }
@@ -141,6 +146,7 @@ impl Editor {
         );
         let context = Arc::new(Mutex::new(facts));
         let hints = Arc::new(Mutex::new(hint::HintState::default()));
+        let scene = Arc::new(Mutex::new(complete::Scene::default()));
         let flag = Arc::new(AtomicBool::new(false));
         let raise = Arc::clone(&flag);
         let hint_source = recall.store.clone();
@@ -166,7 +172,15 @@ impl Editor {
             .with_history_session_id(Some(session))
             // A paste is inserted into the line, not run line by line (see `paste.rs`).
             .use_bracketed_paste(true)
-            .with_abbreviations(abbreviations(&config.editor.abbreviations));
+            .with_abbreviations(abbreviations(&config.editor.abbreviations))
+            // Tab: the common start of the choices goes into the line, and the choices are
+            // listed (see `complete`). A single choice is taken at once.
+            .with_completer(Box::new(ShellCompleter::new(Arc::clone(&scene))))
+            .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu(
+                &theme,
+            ))))
+            .with_quick_completions(true)
+            .with_partial_completions(true);
         if config.editor.hints {
             let style = highlight::to_style(theme.get(Role::Autosuggestion));
             engine = engine.with_hinter(Box::new(ShellHinter::new(
@@ -179,12 +193,14 @@ impl Editor {
             ConfigMode::Emacs => {
                 let mut keys = default_emacs_keybindings();
                 bind_explain(&mut keys);
+                bind_completion(&mut keys);
                 engine.with_edit_mode(Box::new(paste::PasteMode::new(Box::new(Emacs::new(keys)))))
             }
             ConfigMode::Vi => {
                 let mut insert = default_vi_insert_keybindings();
                 let mut normal = default_vi_normal_keybindings();
                 bind_explain(&mut insert);
+                bind_completion(&mut insert);
                 let mut visual = default_vi_visual_keybindings();
                 bind_explain(&mut normal);
                 bind_explain(&mut visual);
@@ -202,13 +218,24 @@ impl Editor {
             look,
             context,
             hints,
+            scene,
             terminal_gone: Box::new(terminal_gone),
         }
     }
 
     /// Shows the prompt and waits for a command. `lookup` answers which command names exist, for
-    /// the colors; what it and the file system said earlier is forgotten first.
-    pub fn read(&mut self, state: &PromptState, lookup: Box<dyn CommandLookup>) -> Read {
+    /// the colors; what it and the file system said earlier is forgotten first. `facts` is what
+    /// Tab completion offers (function and variable names, `PATH`).
+    pub fn read(
+        &mut self,
+        state: &PromptState,
+        lookup: Box<dyn CommandLookup>,
+        facts: Facts,
+    ) -> Read {
+        self.scene
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reset(facts, state.cwd.clone(), state.home.clone());
         self.context
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -283,6 +310,41 @@ impl Editor {
             }
         }
     }
+}
+
+/// The name of the menu that Tab opens.
+const COMPLETION_MENU: &str = "completion_menu";
+
+/// The menu of choices: names in columns, with a description beside a name that has one. The
+/// chosen one is shown with the `selection` role of the theme (reverse video), the description is
+/// dim; no other color is set.
+fn completion_menu(theme: &Theme) -> ColumnarMenu {
+    let selected = highlight::to_style(theme.get(Role::Selection));
+    ColumnarMenu::default()
+        .with_name(COMPLETION_MENU)
+        .with_text_style(Style::default())
+        .with_selected_text_style(selected)
+        .with_description_text_style(Style::new().dimmed())
+        .with_match_text_style(Style::default())
+        .with_selected_match_text_style(selected)
+}
+
+/// Binds Tab to the completion menu (Tab again moves to the next choice) and Shift+Tab to the
+/// previous choice.
+fn bind_completion(keys: &mut Keybindings) {
+    keys.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu(COMPLETION_MENU.to_owned()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+    keys.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
 }
 
 /// The name the editor gives to `Alt+?` when it hands control back to the shell.

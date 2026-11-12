@@ -287,6 +287,18 @@ impl Shell {
         self.vars.get(name)
     }
 
+    /// The names of the variables that are set (a name that is only exported, with no value,
+    /// is left out), sorted. Names that are not valid UTF-8 are left out too.
+    #[must_use]
+    pub fn variable_names(&self) -> Vec<String> {
+        self.vars
+            .sorted()
+            .into_iter()
+            .filter(|(_, value, _)| value.is_some())
+            .filter_map(|(name, ..)| std::str::from_utf8(name).ok().map(str::to_owned))
+            .collect()
+    }
+
     /// The names of the functions defined so far.
     #[must_use]
     pub fn function_names(&self) -> Vec<String> {
@@ -602,6 +614,22 @@ mod tests {
             LineResult::Ran(Outcome::Continue(s) | Outcome::Exit(s)) => (s.code(), err),
             other => panic!("not run: {other:?}"),
         }
+    }
+
+    #[test]
+    fn variable_names_lists_set_variables_sorted_and_not_bare_exports() {
+        let mut sh = shell();
+        let _ = status_of(&mut sh, "zeta=1; alpha=2; export bare");
+        let names = sh.variable_names();
+        assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(names.contains(&"alpha".to_owned()) && names.contains(&"zeta".to_owned()));
+        assert!(names.contains(&"PATH".to_owned()));
+        assert!(
+            !names.contains(&"bare".to_owned()),
+            "exported with no value is not set"
+        );
+        let _ = status_of(&mut sh, "unset alpha");
+        assert!(!sh.variable_names().contains(&"alpha".to_owned()));
     }
 
     #[test]

@@ -47,23 +47,73 @@ pub(crate) enum Class {
     Regular,
 }
 
+/// The special builtins (POSIX 2.14).
+const SPECIAL: &[&str] = &[
+    ":", ".", "break", "continue", "eval", "exec", "exit", "export", "return", "readonly", "set",
+    "shift", "trap", "unset",
+];
+
+/// The regular builtins.
+const REGULAR: &[&str] = &[
+    "[",
+    "__omsh_trash",
+    "alias",
+    "bg",
+    "cd",
+    "echo",
+    "command",
+    "disown",
+    "false",
+    "fg",
+    "hash",
+    "history",
+    "j",
+    "jobs",
+    "kill",
+    "omsh",
+    "printf",
+    "pwd",
+    "read",
+    "source",
+    "test",
+    "true",
+    "type",
+    "umask",
+    "unalias",
+    "undo",
+    "wait",
+];
+
 /// Says whether `name` is a builtin, and which kind.
 pub(crate) fn classify(name: &[u8]) -> Option<Class> {
-    Some(match name {
-        b":" | b"." | b"break" | b"continue" | b"eval" | b"exec" | b"exit" | b"export"
-        | b"return" | b"readonly" | b"set" | b"shift" | b"trap" | b"unset" => Class::Special,
-        b"[" | b"__omsh_trash" | b"alias" | b"bg" | b"cd" | b"echo" | b"command" | b"disown"
-        | b"false" | b"fg" | b"hash" | b"history" | b"j" | b"jobs" | b"kill" | b"omsh"
-        | b"printf" | b"pwd" | b"read" | b"source" | b"test" | b"true" | b"type" | b"umask"
-        | b"unalias" | b"undo" | b"wait" => Class::Regular,
-        _ => return None,
-    })
+    let is = |list: &[&str]| list.iter().any(|known| known.as_bytes() == name);
+    if is(SPECIAL) {
+        Some(Class::Special)
+    } else if is(REGULAR) {
+        Some(Class::Regular)
+    } else {
+        None
+    }
 }
 
 /// True if `name` is a builtin of the shell.
 #[must_use]
 pub fn is_builtin(name: &str) -> bool {
     classify(name.as_bytes()).is_some() || name == crate::color::INTERNAL
+}
+
+/// The builtins a person can type, sorted: every builtin except the internal ones (names that
+/// start with `__`). The completer offers these.
+#[must_use]
+pub fn builtin_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = SPECIAL
+        .iter()
+        .chain(REGULAR)
+        .copied()
+        .filter(|name| !name.starts_with("__"))
+        .collect();
+    names.sort_unstable();
+    names
 }
 
 /// Runs the builtin `name` with `args` (the words after the name). `name` must be one that
@@ -163,4 +213,32 @@ pub(crate) fn quote(text: &[u8]) -> Vec<u8> {
     }
     out.push(b'\'');
     out
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn every_listed_name_is_a_builtin_and_internal_ones_are_left_out() {
+        let names = builtin_names();
+        assert!(names.iter().all(|name| is_builtin(name)));
+        assert!(names.contains(&"cd") && names.contains(&"export") && names.contains(&"["));
+        assert!(!names.iter().any(|name| name.starts_with("__")));
+        assert!(is_builtin("__omsh_trash"), "internal ones still run");
+    }
+
+    #[test]
+    fn the_list_is_sorted_and_has_no_duplicates() {
+        let names = builtin_names();
+        assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_builtin_is_refused() {
+        assert!(classify(b"ls").is_none());
+        assert!(classify(b"").is_none());
+        assert_eq!(classify(b"export"), Some(Class::Special));
+        assert_eq!(classify(b"cd"), Some(Class::Regular));
+    }
 }

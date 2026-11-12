@@ -131,6 +131,24 @@ fn session_of_ordinary_work(term: &mut Session, ctx: &Ctx) -> io::Result<()> {
     // Alt+? is not a line, so the harness cannot tell when the editor is back: give it a moment
     // before the next line is typed.
     term.pump(Duration::from_millis(500));
+    // S15a: Tab completion lists `PATH` on a helper thread, reads folders and fish completion
+    // files, and reads the references of a repository from its files. None of it may open a
+    // socket. Each Tab is given time to finish, and the line is dropped with Ctrl+U.
+    for typed in [
+        &b"ec\t"[..],
+        b"ls re\t",
+        b"ls --al\t",
+        b"cd repo\r",
+        b"git ch\t",
+        b"git checkout \t",
+        b"echo $HO\t",
+    ] {
+        term.prompt();
+        term.write_bytes(typed)?;
+        term.pump(Duration::from_millis(500));
+        term.write_bytes(b"\x15")?;
+        term.pump(Duration::from_millis(100));
+    }
     term.sync("done")
 }
 

@@ -103,21 +103,28 @@ const HEAD_LIMIT: u64 = 4096;
 /// S15's job.
 #[must_use]
 pub fn git_head(dir: &Path) -> Option<Head> {
+    parse_head(&read_small(&git_dir(dir)?.join("HEAD"))?)
+}
+
+/// The git directory of the repository that holds `dir`: the first `.git` found going up, or
+/// the place a `.git` *file* (`gitdir: <path>`, a worktree or submodule) points to. It is not
+/// checked that the directory has a `HEAD`.
+#[must_use]
+pub(crate) fn git_dir(dir: &Path) -> Option<PathBuf> {
     for candidate in dir.ancestors() {
         let dot_git = candidate.join(".git");
         let Ok(meta) = fs::metadata(&dot_git) else {
             continue;
         };
-        let git_dir = if meta.is_dir() {
-            dot_git
-        } else if meta.is_file() {
+        if meta.is_dir() {
+            return Some(dot_git);
+        }
+        if meta.is_file() {
             let text = read_small(&dot_git)?;
             let target = text.trim().strip_prefix("gitdir:")?.trim();
-            candidate.join(target)
-        } else {
-            return None;
-        };
-        return parse_head(&read_small(&git_dir.join("HEAD"))?);
+            return Some(candidate.join(target));
+        }
+        return None;
     }
     None
 }
