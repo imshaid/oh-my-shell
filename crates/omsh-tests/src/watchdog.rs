@@ -82,8 +82,14 @@ pub fn pty_test_within(
         let _ = done.send(outcome);
     });
     let outcome = result.recv_timeout(limit);
-    // The body has dropped its terminals by now, unless it timed out.
-    let left = clean_up(&sessions);
+    // The body has dropped its terminals by now, unless it timed out. Whatever is still alive
+    // after a short window is a leftover; a body that timed out has live processes by design.
+    let window = if outcome.is_err() {
+        Duration::ZERO
+    } else {
+        LEFTOVER_WINDOW
+    };
+    let left = clean_up(&sessions, window);
     match outcome {
         Ok(Ok(Ok(()))) => {
             let _ = thread.join();
@@ -119,17 +125,46 @@ impl Drop for HomeDir {
     }
 }
 
-/// Kills every process of every session in `sessions`, waits until they are gone, and returns
-/// a description of what was alive when it started (nothing, if the test cleaned up itself),
-/// plus anything that would not die.
-fn clean_up(sessions: &Registry) -> Vec<String> {
+/// How long the watchdog gives the processes of a finished test to be gone before it calls any of
+/// them a leftover. The harness kills the whole session when a terminal is dropped, but a killed
+/// process does not vanish at that instant: it may be in the middle of a system call, or be a
+/// zombie that its parent has not collected yet, or be created by a program that was killed while
+/// it was forking. Looking at one instant reported such a process as left behind, and CI failed
+/// once on a `git` (S19b follow-up). A process that is still alive after this time is real.
+pub const LEFTOVER_WINDOW: Duration = Duration::from_secs(1);
+
+/// How often [`leftovers`] looks.
+const LEFTOVER_STEP: Duration = Duration::from_millis(10);
+
+/// The processes of `ids` (session ids) that are still alive when `window` has passed, as
+/// `name (pid)`. Looks every [`LEFTOVER_STEP`] and returns as soon as none is alive, so a test that
+/// cleaned up after itself costs nothing. Zombies do not count (see [`procfs::live_members`]).
+/// Nothing is killed here.
+pub(crate) fn leftovers(ids: &[u32], window: Duration) -> Vec<String> {
+    let end = Instant::now() + window;
+    loop {
+        let alive: Vec<String> = ids
+            .iter()
+            .flat_map(|id| procfs::live_members(*id))
+            .map(|member| format!("{} ({})", member.name, member.pid))
+            .collect();
+        if alive.is_empty() || Instant::now() >= end {
+            return alive;
+        }
+        thread::sleep(LEFTOVER_STEP);
+    }
+}
+
+/// Reports what is still alive in the sessions of `sessions` after `window` (see [`leftovers`]),
+/// then kills it and waits until it is gone, plus anything that would not die. The window is
+/// zero when the body timed out: its processes are expected to be alive then.
+fn clean_up(sessions: &Registry, window: Duration) -> Vec<String> {
     let ids = sessions
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
+    let mut found = leftovers(&ids, window);
     let end = Instant::now() + Duration::from_secs(5);
-    let mut found = Vec::new();
-    let mut first_pass = true;
     loop {
         let mut alive = Vec::new();
         for id in &ids {
@@ -137,10 +172,6 @@ fn clean_up(sessions: &Registry) -> Vec<String> {
                 let _ = kill(member.pid, Signal::SIGKILL);
                 alive.push(format!("{} ({})", member.name, member.pid));
             }
-        }
-        if first_pass {
-            found.clone_from(&alive);
-            first_pass = false;
         }
         if alive.is_empty() {
             return found;

@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 use nix::sys::termios::LocalFlags;
 
 use crate::procfs::live_members;
+use crate::session::Launch;
 use crate::session::SHORT;
-use crate::watchdog::{pty_test, pty_test_within};
+use crate::watchdog::{leftovers, pty_test, pty_test_within};
 
 fn message(panic: &Box<dyn Any + Send>) -> String {
     panic
@@ -122,6 +123,19 @@ fn a_body_that_leaves_a_process_behind_is_caught() {
     );
 }
 
+/// The point of the window: a process that is on its way out when the body returns (a killed
+/// process that has not vanished yet looks the same) is not a leftover. Here nothing kills it; it
+/// ends by itself 300 ms after the body, which a single look at the end of the body would call a
+/// leftover.
+#[test]
+fn a_process_that_ends_by_itself_just_after_the_body_is_not_a_leftover() {
+    pty_test("/bin/sh", |ctx| {
+        let term = ctx.launch().arg("-c").arg("sleep 0.3").start_raw()?;
+        std::mem::forget(term);
+        Ok(())
+    });
+}
+
 #[test]
 fn typing_at_a_program_that_does_not_read_cannot_block_for_ever() {
     pty_test("/bin/sh", |ctx| {
@@ -211,4 +225,69 @@ fn prompt_panics_at_the_limit_when_no_prompt_comes() {
         assert!(message(&panic).contains("never saw the prompt"));
         Ok(())
     });
+}
+
+/// The session id of a program started on a terminal, and the terminal (dropping it kills the
+/// session).
+fn started(command: &str) -> (u32, crate::session::Session) {
+    let term = Launch::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .start_raw()
+        .expect("start the program");
+    (term.parent_pid(), term)
+}
+
+#[test]
+fn a_process_that_outlives_the_window_is_a_leftover() {
+    let (id, _term) = started("sleep 100");
+    let window = Duration::from_millis(300);
+    let begin = Instant::now();
+    let found = leftovers(&[id], window);
+    assert!(
+        found.iter().any(|name| name.starts_with("sleep (")),
+        "{found:?}"
+    );
+    // It was looked at for the whole window, not once.
+    assert!(begin.elapsed() >= window, "{:?}", begin.elapsed());
+}
+
+#[test]
+fn a_process_that_dies_inside_the_window_is_not_reported_and_the_wait_ends_early() {
+    // `sleep 0.3` ends by itself, as a killed process ends a moment after the kill.
+    let (id, _term) = started("sleep 0.3");
+    assert!(!live_members(id).is_empty(), "the program is not running");
+    let window = Duration::from_secs(5);
+    let begin = Instant::now();
+    let found = leftovers(&[id], window);
+    assert!(found.is_empty(), "{found:?}");
+    let took = begin.elapsed();
+    assert!(took >= Duration::from_millis(200), "{took:?}");
+    assert!(took < window, "it waited for the whole window: {took:?}");
+}
+
+#[test]
+fn a_zombie_is_not_reported() {
+    use std::process::Command;
+
+    use crate::procfs::session_members;
+
+    // `setsid` makes the child the leader of a session of its own; the child exits at once and,
+    // as nobody has called `wait` yet, stays a zombie of this process, still in that session.
+    let mut child = Command::new("setsid")
+        .args(["sh", "-c", "exit 0"])
+        .spawn()
+        .expect("start setsid");
+    let id = child.id();
+    let end = Instant::now() + Duration::from_secs(5);
+    while !session_members(id).iter().any(|member| member.state == 'Z') {
+        assert!(
+            Instant::now() < end,
+            "no zombie appeared: {:?}",
+            session_members(id)
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(leftovers(&[id], Duration::from_millis(100)).is_empty());
+    child.wait().expect("collect the zombie");
 }
