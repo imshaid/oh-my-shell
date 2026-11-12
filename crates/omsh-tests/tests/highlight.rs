@@ -13,7 +13,6 @@ use omsh_tests::{Ctx, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
 
-const CTRL_C: u8 = 3;
 const RED: &str = "\x1b[31m";
 const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
@@ -53,11 +52,11 @@ fn type_and_see(term: &mut Session, text: &str, shown: &str) -> io::Result<Strin
     Ok(term.transcript()[mark..].to_owned())
 }
 
-/// Throws the typed text away (Ctrl+C) and waits for the next prompt.
+/// Throws the typed text away (Ctrl+C) and waits until the next prompt is completely drawn. (A
+/// search for `$ ` is not enough: every redraw of the typed line has one, so it could end before
+/// the Ctrl+C was read, and the next key would then arrive in the same read and be lost.)
 fn clear(term: &mut Session) -> io::Result<()> {
-    term.key(CTRL_C)?;
-    term.expect("$ ", SHORT);
-    Ok(())
+    term.cancel_line()
 }
 
 /// Ends a test: the half-typed line must go first, or `exit` would be typed after it.

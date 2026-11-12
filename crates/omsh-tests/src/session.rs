@@ -33,6 +33,28 @@ static START: Mutex<()> = Mutex::new(());
 /// How long to wait for something the shell should do at once.
 pub const SHORT: Duration = Duration::from_secs(10);
 
+/// The editor hides the cursor when it starts to draw and shows it when it is done.
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
+/// The editor turns bracketed paste off when it leaves a read (Enter, Ctrl+C, Ctrl+D).
+const LEFT_READ: &str = "\x1b[?2004l";
+
+/// The shortest time between a write of Ctrl+C or Ctrl+D and the next write. Keys that reach the
+/// editor in one read with the key that ends it are dropped (reedline reads a batch of events and
+/// returns at the first one that ends the line; the rest of the batch is lost). A person cannot
+/// type that fast, a terminal that sends several keys at once can, and so can this harness. 2 ms
+/// was enough in every measurement (S26 notes); this leaves a margin.
+///
+/// Enter is left out on purpose. After Enter the editor runs the command and only then reads
+/// again, so the keys that follow are type-ahead for the next prompt, and tests rely on how
+/// that behaves: two `line` calls in a row arrive together, as before. Spacing them would let the
+/// terminal echo the second line in cooked mode, which `prompt` takes for the line being shown.
+pub(crate) const READ_END_GAP: Duration = Duration::from_millis(5);
+
+/// The longest a send waits for the editor to finish drawing. Not an error when it runs out: a
+/// program may hide the cursor and keep it hidden.
+pub(crate) const PAINT_WAIT: Duration = Duration::from_secs(1);
+
 /// The session ids of every terminal a test has started, so that the watchdog can clean up after
 /// a test whose thread is stuck.
 pub type Registry = Arc<Mutex<Vec<u32>>>;
@@ -265,6 +287,7 @@ impl Launch {
             answer_cursor_queries: self.answer_cursor_queries,
             scanned: 0,
             submitted: None,
+            last_ender: None,
         })
     }
 }
@@ -282,6 +305,8 @@ pub struct Session {
     scanned: usize,
     /// The last line that was submitted (Enter was typed), if any.
     submitted: Option<Submitted>,
+    /// When the last write of Ctrl+C or Ctrl+D was made.
+    last_ender: Option<Instant>,
 }
 
 /// A line that was submitted: how much the terminal had shown by then, and its text if the
@@ -471,7 +496,13 @@ impl Session {
     /// Types raw bytes. The terminal can refuse input while nobody reads it (its buffer is
     /// small). Then this keeps reading the output, which may be what blocks the program, and
     /// panics after [`SHORT`] instead of waiting for ever.
+    ///
+    /// Before anything is written the harness waits for two things, so that no key is sent while
+    /// the editor is in the middle of a repaint, or in the same read as the key before it:
+    /// the editor must not be half way through drawing (cursor hidden, not yet shown again), and
+    /// at least [`READ_END_GAP`] must have passed since a Ctrl+C or Ctrl+D.
     pub fn write_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.settle_before_send();
         let end = Instant::now() + SHORT;
         let mut sent = 0;
         while sent < bytes.len() {
@@ -489,6 +520,9 @@ impl Session {
                 Err(e) => return Err(e),
             }
         }
+        if bytes.iter().any(|b| matches!(b, 3 | 4)) {
+            self.last_ender = Some(Instant::now());
+        }
         if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
             self.submitted = Some(Submitted {
                 length: self.transcript.len(),
@@ -496,6 +530,62 @@ impl Session {
             });
         }
         Ok(())
+    }
+
+    /// True while the editor is drawing: it hid the cursor and has not shown it again.
+    fn editor_is_painting(&self) -> bool {
+        match (
+            self.transcript.rfind(HIDE_CURSOR),
+            self.transcript.rfind(SHOW_CURSOR),
+        ) {
+            (Some(hide), Some(show)) => hide > show,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+
+    /// Waits, while still reading the output (and so answering cursor questions), until it is
+    /// safe to send: the gap after Ctrl+C or Ctrl+D has passed and the editor has finished
+    /// drawing. Gives up quietly after [`PAINT_WAIT`].
+    fn settle_before_send(&mut self) {
+        if let Some(at) = self.last_ender {
+            let left = READ_END_GAP.saturating_sub(at.elapsed());
+            if !left.is_zero() {
+                self.pump(left);
+            }
+        }
+        let end = Instant::now() + PAINT_WAIT;
+        while self.editor_is_painting() && Instant::now() < end {
+            self.pump(Duration::from_millis(5));
+        }
+    }
+
+    /// Presses Ctrl+C at the editor and waits until the editor has left its read and drawn a new,
+    /// empty prompt, completely. Use it instead of `key(3)` followed by a search for `$ `: that
+    /// text is also in every redraw of the line that was being typed, so the search can end before
+    /// Ctrl+C has had any effect, and the next key then reaches the editor in the same read as
+    /// the Ctrl+C and is lost. Afterwards the search position is at the end of everything shown.
+    pub fn cancel_line(&mut self) -> io::Result<()> {
+        let mark = self.transcript.len();
+        self.key(3)?;
+        let end = Instant::now() + SHORT;
+        loop {
+            let tail = &self.transcript[mark..];
+            if let Some(left) = tail.find(LEFT_READ) {
+                let after = &tail[left..];
+                let plain_of = |text: &str| strip_escapes(&without_side_drawing(text)).0;
+                if last_paint_is_the_empty_prompt(after, &plain_of) {
+                    self.cursor = self.transcript.len();
+                    return Ok(());
+                }
+            }
+            assert!(
+                Instant::now() < end,
+                "never saw a new prompt after Ctrl+C; the terminal showed:\n{}",
+                self.transcript
+            );
+            self.pump(Duration::from_millis(10));
+        }
     }
 
     /// True if the shell is back at its prompt after the last line that was submitted.
@@ -682,13 +772,11 @@ impl Drop for Session {
 /// (`ESC [ ? 25 l`) when it starts a paint and shows it (`ESC [ ? 25 h`) when it is done; a
 /// reader that paints nothing (the plain one) is judged by the end of the output.
 fn last_paint_is_the_empty_prompt(output: &str, plain_of: &dyn Fn(&str) -> String) -> bool {
-    const HIDE: &str = "\x1b[?25l";
-    const SHOW: &str = "\x1b[?25h";
-    let Some(start) = output.rfind(HIDE) else {
+    let Some(start) = output.rfind(HIDE_CURSOR) else {
         return ends_with_symbol(&plain_of(output));
     };
     output[start..]
-        .find(SHOW)
+        .find(SHOW_CURSOR)
         .is_some_and(|end| ends_with_symbol(&plain_of(&output[start..start + end])))
 }
 

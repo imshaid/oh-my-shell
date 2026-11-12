@@ -12,7 +12,7 @@ use nix::sys::termios::LocalFlags;
 
 use crate::procfs::live_members;
 use crate::session::Launch;
-use crate::session::SHORT;
+use crate::session::{PAINT_WAIT, READ_END_GAP, SHORT};
 use crate::watchdog::{leftovers, pty_test, pty_test_within};
 
 fn message(panic: &Box<dyn Any + Send>) -> String {
@@ -290,4 +290,78 @@ fn a_zombie_is_not_reported() {
     }
     assert!(leftovers(&[id], Duration::from_millis(100)).is_empty());
     child.wait().expect("collect the zombie");
+}
+
+#[test]
+fn a_write_after_ctrl_c_waits_for_the_gap_and_one_after_enter_does_not() {
+    pty_test("/bin/sh", |ctx| {
+        // Ignores Ctrl+C, so that the program lives on to be written to.
+        let mut term = ctx
+            .launch()
+            .arg("-c")
+            .arg("trap '' INT; exec cat")
+            .start_raw()?;
+        let before = Instant::now();
+        term.key(3)?;
+        term.key(b'x')?;
+        assert!(
+            before.elapsed() >= READ_END_GAP,
+            "the second write came after {:?}",
+            before.elapsed()
+        );
+        // Enter is not delayed, and nor is an ordinary key: type-ahead stays type-ahead.
+        let before = Instant::now();
+        term.key(b'\r')?;
+        term.key(b'a')?;
+        term.key(b'b')?;
+        assert!(before.elapsed() < READ_END_GAP, "{:?}", before.elapsed());
+        Ok(())
+    });
+}
+
+#[test]
+fn a_send_waits_for_the_editor_to_finish_drawing() {
+    pty_test("/bin/sh", |ctx| {
+        // A complete paint, then a repaint that hides the cursor at 0.2 s and shows it at 0.7 s,
+        // as the editor does each time it redraws.
+        let mut term = ctx
+            .launch()
+            .arg("-c")
+            .arg(
+                "printf '\\033[?25l\\033[?25h'; sleep 0.2; printf '\\033[?25l'; sleep 0.5; \
+                 printf '\\033[?25h'; exec cat",
+            )
+            .start_raw()?;
+        term.expect("\x1b[?25h", SHORT);
+        // The repaint has begun (the earlier show must not make the harness think it is done).
+        term.pump(Duration::from_millis(350));
+        let before = Instant::now();
+        term.line("typed-after-the-paint")?;
+        assert!(
+            before.elapsed() >= Duration::from_millis(200),
+            "sent after only {:?}, while the cursor was hidden",
+            before.elapsed()
+        );
+        term.expect("typed-after-the-paint", SHORT);
+        Ok(())
+    });
+}
+
+#[test]
+fn a_cursor_that_stays_hidden_delays_a_send_by_the_limit_and_no_more() {
+    pty_test("/bin/sh", |ctx| {
+        let mut term = ctx
+            .launch()
+            .arg("-c")
+            .arg("printf '\\033[?25l'; exec cat")
+            .start_raw()?;
+        term.expect("\x1b[?25l", SHORT);
+        let before = Instant::now();
+        term.line("still-sent")?;
+        let waited = before.elapsed();
+        assert!(waited >= PAINT_WAIT, "{waited:?}");
+        assert!(waited < PAINT_WAIT + Duration::from_secs(3), "{waited:?}");
+        term.expect("still-sent", SHORT);
+        Ok(())
+    });
 }

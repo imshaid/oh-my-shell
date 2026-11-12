@@ -182,8 +182,7 @@ fn ctrl_c_drops_the_line_and_keeps_the_status() {
         term.sync("one")?;
         // Typed, not run: `gone-2` would be the output.
         term.write_bytes(b"echo gone-$((1+1))")?;
-        term.key(CTRL_C)?;
-        term.pump(Duration::from_millis(300));
+        term.cancel_line()?;
         term.line("echo st-$?")?;
         term.expect("st-0", SHORT);
         assert!(
@@ -202,8 +201,7 @@ fn ctrl_c_drops_an_unfinished_command() {
         let mut term = ctx.start()?;
         term.line("if true; then")?;
         term.expect("> ", SHORT);
-        term.key(CTRL_C)?;
-        term.pump(Duration::from_millis(300));
+        term.cancel_line()?;
         // If `if true; then` were still pending, this would be part of it.
         term.line("echo fresh-$((1+1))")?;
         term.expect("fresh-2", SHORT);
