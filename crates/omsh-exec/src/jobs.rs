@@ -376,6 +376,25 @@ impl Job {
         self.ring();
     }
 
+    /// Looks at the kernel again for a job that is recorded as stopped: a program continued from
+    /// outside (`kill -CONT` from another shell) is not reported by the waits, so the record
+    /// can be out of date. Rings the bell if the phase changed. It only looks (see
+    /// [`spawn::still_stopped`]), so it is cheap and safe to call where jobs are shown.
+    pub(crate) fn recheck(&self) {
+        let mut state = self.state();
+        // Nothing to ask the kernel about: a finished job, or one with no program.
+        if matches!(state.phase, Phase::Finished(_)) || state.live.is_empty() {
+            return;
+        }
+        let before = state.phase;
+        Self::refresh(&mut state);
+        let changed = state.phase != before;
+        drop(state);
+        if changed {
+            self.ring();
+        }
+    }
+
     /// The programs of the job that are running.
     #[cfg(test)]
     pub(crate) fn live_pids(&self) -> Vec<Pid> {
@@ -464,12 +483,32 @@ impl Job {
                 other => other,
             }
         };
-        send(signal)?;
         if signal == Signal::SIGCONT {
+            // Write "continued" into the record *before* the signal goes out. The program may
+            // run on and stop again before this thread gets another turn, and the waiter
+            // records that new stop; marking afterwards would erase it and leave a job that
+            // reads `Running` with every program stopped (the flake of
+            // `a_job_can_be_stopped_and_continued_again`).
             self.mark_continued();
-        } else if stopped && matches!(signal, Signal::SIGTERM | Signal::SIGHUP) {
-            send(Signal::SIGCONT)?;
+            let sent = send(signal);
+            #[cfg(test)]
+            tests::pause_after_send();
+            if sent.is_err() {
+                self.recheck();
+            }
+            return sent;
+        }
+        send(signal)?;
+        if stopped && matches!(signal, Signal::SIGTERM | Signal::SIGHUP) {
+            // Same order: the record first, then the continue that lets the signal act.
             self.mark_continued();
+            let sent = send(Signal::SIGCONT);
+            #[cfg(test)]
+            tests::pause_after_send();
+            if sent.is_err() {
+                self.recheck();
+            }
+            sent?;
         } else {
             self.ring();
         }
@@ -623,12 +662,31 @@ impl Drop for Job {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::cell::Cell;
     use std::time::Instant;
 
     use super::*;
     use crate::jobtable::Jobs;
     use crate::status::ExitStatus;
+
+    thread_local! {
+        /// How long `Job::signal` waits after it has sent a signal, on this thread only. Tests
+        /// use it to make the program run on (and stop again) before the job's record changes.
+        static PAUSE_AFTER_SEND: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    }
+
+    /// Makes the signals sent from this thread wait `pause` after the send.
+    pub(crate) fn set_pause_after_send(pause: Duration) {
+        PAUSE_AFTER_SEND.with(|cell| cell.set(pause));
+    }
+
+    pub(super) fn pause_after_send() {
+        let pause = PAUSE_AFTER_SEND.with(Cell::get);
+        if !pause.is_zero() {
+            std::thread::sleep(pause);
+        }
+    }
 
     #[test]
     fn shell_code_of_a_stopped_job_sleeps_until_it_runs_again() {

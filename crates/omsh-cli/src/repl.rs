@@ -484,6 +484,11 @@ pub(crate) fn directory(shell: &Shell) -> String {
         .into_owned()
 }
 
+/// How long the terminal has to answer the cursor question. Real terminals answer in well under
+/// a millisecond, and a slow link in tens of milliseconds; the limit is long enough that a
+/// satellite link is not mistaken for a silent terminal.
+const CURSOR_ANSWER_LIMIT: Duration = Duration::from_millis(500);
+
 fn make_editor(
     shell: &Shell,
     config: &Config,
@@ -497,6 +502,15 @@ fn make_editor(
     let Style::Graphical { color, unicode } = style else {
         return None;
     };
+    // The editor asks the terminal where the cursor is at every prompt, and waits 2 seconds
+    // for each answer it does not get. Ask once, here: a terminal that stays silent gets the
+    // plain reader, and the person is told.
+    if !omsh_editor::terminal_reports_cursor(CURSOR_ANSWER_LIMIT) {
+        eprintln!(
+            "oh-my-shell: the terminal does not report the cursor position; line editing is off"
+        );
+        return None;
+    }
     Some(Editor::new(
         config,
         &Theme::default(),

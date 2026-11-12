@@ -541,17 +541,60 @@ fn prompt_settings_come_from_the_configuration() {
     });
 }
 
-/// A terminal that never answers the cursor question is slow (the editor waits two seconds for
-/// each question) but not stuck: the prompt comes, commands run, and a program in front gets
-/// its lines. Real terminals answer; this pins that a broken one does not hang the shell.
+/// A terminal that never answers the cursor question would make every prompt take seconds (the
+/// editor waits two seconds for each answer). The shell asks once at the start; with no answer it
+/// says so and uses the plain reader, which is fast and works.
 #[test]
-fn a_terminal_that_never_answers_the_cursor_question_is_slow_but_works() {
+fn a_terminal_that_never_answers_the_cursor_question_gets_the_plain_reader() {
     pty_test(BIN, |ctx| {
+        let started = std::time::Instant::now();
         let mut term = ctx.launch().no_cursor_replies().start_raw()?;
         term.expect_plain("$ ", SHORT);
+        let transcript = term.transcript().to_owned();
+        assert!(
+            transcript
+                .contains("the terminal does not report the cursor position; line editing is off"),
+            "{transcript}"
+        );
+        // The wait is the probe's limit, once; not two seconds for every prompt.
+        assert!(
+            started.elapsed() < Duration::from_millis(1800),
+            "{:?}",
+            started.elapsed()
+        );
+        // Plain reader: no cursor question was ever sent after the probe, and commands run.
         term.line("echo plain-$((2*3))")?;
         term.expect("plain-6", SHORT);
+        let prompt_wait = std::time::Instant::now();
         term.expect_plain("$ ", SHORT);
+        assert!(prompt_wait.elapsed() < Duration::from_millis(1000));
+        assert_eq!(
+            term.transcript().matches("\x1b[6n").count(),
+            1,
+            "only the probe asks: {:?}",
+            term.transcript()
+        );
+        term.quit()
+    });
+}
+
+/// A terminal that answers gets the editor, and is asked the cursor question as before (the
+/// answer to the probe must not be left over for the editor to trip on).
+#[test]
+fn a_terminal_that_answers_gets_the_editor_and_no_message() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        assert!(
+            !term.transcript().contains("line editing is off"),
+            "{}",
+            term.transcript()
+        );
+        // The editor is running: it asked for the cursor more than the probe did.
+        assert!(
+            term.transcript().matches("\x1b[6n").count() >= 2,
+            "{:?}",
+            term.transcript()
+        );
         term.quit()
     });
 }

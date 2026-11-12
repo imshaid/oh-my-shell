@@ -5,6 +5,11 @@ use std::time::Duration;
 
 use crate::error::ProviderError;
 
+/// The longest `Retry-After` that is waited out. A server that asks for more (a quota that
+/// resets in an hour) is not waited for: sitting at a prompt for minutes is worse than the error
+/// line, which says how long the server asked.
+pub const LONGEST_WAIT: Duration = Duration::from_secs(10);
+
 /// How many tries, and how long to wait between them.
 #[derive(Clone, Debug)]
 pub struct Policy {
@@ -44,6 +49,18 @@ impl Policy {
     }
 }
 
+/// How long to wait before the next try after `failures` failures, or `None` when the server
+/// asked for more than [`LONGEST_WAIT`] and the failure should be reported instead. The
+/// server's request is a floor: the policy's own pause is used when it is longer.
+pub(crate) fn wait_before_retry(
+    policy: &Policy,
+    failures: u32,
+    error: &ProviderError,
+) -> Option<Duration> {
+    let asked = error.retry_after.unwrap_or_default();
+    (asked <= LONGEST_WAIT).then(|| policy.pause(failures).max(asked))
+}
+
 /// Runs `attempt` until it works, fails for good, or the tries are used up. Only a failure
 /// that [`ProviderError::is_transient`] is tried again; a wrong key or a Ctrl+C returns at
 /// once. The last error is returned.
@@ -65,7 +82,10 @@ where
                 if !error.is_transient() || failures >= policy.attempts.max(1) {
                     return Err(error);
                 }
-                tokio::time::sleep(policy.pause(failures)).await;
+                let Some(wait) = wait_before_retry(policy, failures, &error) else {
+                    return Err(error);
+                };
+                tokio::time::sleep(wait).await;
             }
         }
     }
@@ -147,6 +167,84 @@ mod tests {
             assert_eq!(result.unwrap_err().kind, kind);
             assert_eq!(calls.get(), 1, "{kind:?} is tried once");
         }
+    }
+
+    fn rate_limited(wait: Option<Duration>) -> ProviderError {
+        ProviderError::new(ErrorKind::RateLimited, "HTTP 429").with_retry_after(wait)
+    }
+
+    #[test]
+    fn a_retry_after_longer_than_the_pause_is_waited_out() {
+        let calls = Cell::new(0);
+        let start = std::time::Instant::now();
+        let result = run(retry(&fast(), || {
+            calls.set(calls.get() + 1);
+            let r = if calls.get() < 2 {
+                Err(rate_limited(Some(Duration::from_millis(120))))
+            } else {
+                Ok(calls.get())
+            };
+            async move { r }
+        }));
+        assert_eq!(result, Ok(2));
+        // The policy's own pause is zero here, so the whole wait is the server's.
+        assert!(
+            start.elapsed() >= Duration::from_millis(120),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_retry_after_shorter_than_the_pause_does_not_shorten_it() {
+        let slow = Policy {
+            attempts: 2,
+            pauses: vec![Duration::from_millis(120)],
+        };
+        let calls = Cell::new(0);
+        let start = std::time::Instant::now();
+        let _ = run(retry(&slow, || {
+            calls.set(calls.get() + 1);
+            let r = if calls.get() < 2 {
+                Err(rate_limited(Some(Duration::from_millis(1))))
+            } else {
+                Ok(())
+            };
+            async move { r }
+        }));
+        assert!(start.elapsed() >= Duration::from_millis(120));
+    }
+
+    #[test]
+    fn a_retry_after_over_the_limit_is_not_waited_for() {
+        let calls = Cell::new(0);
+        let start = std::time::Instant::now();
+        let error = run(retry(&fast(), || {
+            calls.set(calls.get() + 1);
+            async { Err::<(), _>(rate_limited(Some(LONGEST_WAIT + Duration::from_secs(1)))) }
+        }))
+        .unwrap_err();
+        assert_eq!(calls.get(), 1, "no second try");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // The error still carries the wait, so the line can say it.
+        assert_eq!(
+            error.retry_after,
+            Some(LONGEST_WAIT + Duration::from_secs(1))
+        );
+        // Exactly the limit is still waited for (a zero pause here keeps the test quick, so
+        // only the decision is looked at: the second try happens).
+        let calls = Cell::new(0);
+        let _ = run(retry(
+            &Policy {
+                attempts: 2,
+                pauses: vec![Duration::ZERO],
+            },
+            || {
+                calls.set(calls.get() + 1);
+                async { Err::<(), _>(rate_limited(Some(Duration::from_millis(1)))) }
+            },
+        ));
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

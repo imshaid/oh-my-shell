@@ -308,6 +308,12 @@ impl JumpCommand for History {
 }
 
 impl HistoryCommand for History {
+    fn before_replace(&self) {
+        // `exec` ends this process: the writer thread must have written the `exec` line first.
+        // Settle, not close: if the program does not start, the shell goes on with its store.
+        self.store.settle(SETTLE);
+    }
+
     fn run(
         &self,
         args: &[Vec<u8>],

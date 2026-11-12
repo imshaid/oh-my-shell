@@ -353,3 +353,52 @@ fn a_failed_plan_step_offers_the_explanation() {
         Ok(())
     });
 }
+
+/// A 429 that says `Retry-After: 1` is waited out: the second request comes at least a second
+/// after the first (the shell's own pause is half a second), and the answer is shown.
+#[test]
+fn a_rate_limit_with_retry_after_is_waited_out() {
+    pty_test(BIN, |ctx| {
+        let server = Server::start_answering(
+            Duration::ZERO,
+            false,
+            &["@error 429 retry-after=1", "Waited and answered."],
+        )?;
+        configure(ctx, &server, "")?;
+        let mut term = launch(ctx).start()?;
+        term.command("?? touch marker")?;
+        term.expect("Waited and answered.", SHORT);
+        term.prompt();
+        let chats: Vec<_> = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.path().ends_with("/chat/completions"))
+            .collect();
+        assert_eq!(chats.len(), 2, "one failure, one answer");
+        let gap = chats[1].at.duration_since(chats[0].at);
+        assert!(gap >= Duration::from_millis(950), "{gap:?}");
+        term.quit()
+    });
+}
+
+/// A server that asks for a long wait is not waited for: one request, and the line says how long
+/// it asked.
+#[test]
+fn a_retry_after_over_ten_seconds_is_reported_and_not_waited_for() {
+    pty_test(BIN, |ctx| {
+        let server =
+            Server::start_answering(Duration::ZERO, false, &["@error 429 retry-after=90"])?;
+        configure(ctx, &server, "")?;
+        let mut term = launch(ctx).start()?;
+        term.command("?? touch marker")?;
+        term.expect("it asks to wait 90 s", SHORT);
+        term.prompt();
+        let chats = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.path().ends_with("/chat/completions"))
+            .count();
+        assert_eq!(chats, 1, "no second try");
+        term.quit()
+    });
+}

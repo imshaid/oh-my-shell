@@ -22,5 +22,9 @@ omsh-cli = { path = "../omsh-cli" }
 omsh-history.workspace = true
 nix.workspace = true
 
+[dev-dependencies]
+# One test holds a write lock on the history database to slow the shell's writer down.
+rusqlite.workspace = true
+
 [lints]
 workspace = true

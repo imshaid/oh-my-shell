@@ -2168,6 +2168,48 @@ mod background {
         });
     }
 
+    /// Regression test for the flake of `a_job_can_be_stopped_and_continued_again`: `fg` sent
+    /// `SIGCONT` and only then wrote "continued" into the job. A program that ran on and
+    /// stopped again in between had its new stop erased, the job read `Running` while every
+    /// program was stopped, and `fg` waited for ever. The pause makes that window 300 ms wide.
+    #[test]
+    fn a_program_that_stops_again_at_once_is_not_taken_for_running() {
+        guarded(true, |sh| {
+            crate::jobs::tests::set_pause_after_send(Duration::from_millis(300));
+            let file = Scratch::new("again-at-once");
+            run(
+                sh,
+                &format!(
+                    "sh -c 'kill -STOP $$; echo one >> {0}; kill -STOP $$; echo two >> {0}'",
+                    file.path()
+                ),
+            );
+            let second = run(sh, "fg");
+            assert_eq!(second.status, 147, "{}", second.err);
+            assert_eq!(file.text(), "one\n");
+            assert!(run(sh, "jobs").out.contains("Stopped"));
+        });
+    }
+
+    /// A job continued from outside (`kill -CONT` from another shell) is listed as running,
+    /// not as stopped until some other event wakes the record.
+    #[test]
+    fn a_job_continued_from_outside_is_listed_as_running() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 & kill -STOP $!; wait $! ; :");
+            // `wait` returns on a stop with 128 + the signal; the job is stopped now.
+            eventually("the job to read as stopped", || {
+                run(sh, "jobs").out.contains("Stopped")
+            });
+            let pid = run(sh, "jobs -p").out;
+            run(sh, &format!("/bin/kill -CONT {}", pid.trim()));
+            eventually("the job to read as running", || {
+                run(sh, "jobs").out.contains("Running")
+            });
+            assert!(!run(sh, "jobs").out.contains("Stopped"));
+        });
+    }
+
     #[test]
     fn bg_continues_a_stopped_job_in_the_background() {
         guarded(true, |sh| {

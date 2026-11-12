@@ -821,6 +821,35 @@ fn notes_words(notes: &[RestoreNote]) -> String {
     out
 }
 
+/// Whether the file now at the new name is the one that was moved there.
+///
+/// Device and inode alone are not enough: a file system may hand the number of a deleted file
+/// to the next file it creates (ext4 does it at once), so a file that someone deleted and
+/// replaced would pass. The **birth time** tells them apart: the file that was moved existed
+/// before the action was recorded (`at_ms`), a replacement was born after it. The 1 ms is
+/// because `at_ms` is cut to whole milliseconds. A file edited after the move keeps its birth
+/// time, so it still goes back.
+///
+/// Where the file system has no birth time the answer comes from the modification time that
+/// was recorded: a file edited after the move is then refused too (the safe side).
+fn is_same_file(
+    now: &trash::Meta,
+    then: &trash::Meta,
+    born: &std::io::Result<SystemTime>,
+    at_ms: i64,
+) -> bool {
+    if now.dev != then.dev || now.ino != then.ino {
+        return false;
+    }
+    match born {
+        Ok(born) => {
+            let limit = UNIX_EPOCH + Duration::from_millis(u64::try_from(at_ms).unwrap_or(0) + 1);
+            *born <= limit
+        }
+        Err(_) => now.mtime_s == then.mtime_s && now.mtime_ns == then.mtime_ns,
+    }
+}
+
 fn undo_item(
     connection: &Connection,
     root: &Path,
@@ -861,7 +890,10 @@ fn undo_item(
             let same = trash::meta(to)
                 .ok()
                 .zip(item.meta.as_ref())
-                .is_some_and(|(now, then)| now.dev == then.dev && now.ino == then.ino);
+                .is_some_and(|(now, then)| {
+                    let born = fs::symlink_metadata(to).and_then(|data| data.created());
+                    is_same_file(&now, then, &born, info.at_ms)
+                });
             if !same {
                 return ItemResult::no(format!(
                     "not renamed back: {} is not the file that was moved there",

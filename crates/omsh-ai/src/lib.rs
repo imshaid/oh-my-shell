@@ -30,6 +30,7 @@ mod plan;
 mod prompt;
 mod provider;
 mod retry;
+mod retry_after;
 mod secret;
 
 pub mod fake;

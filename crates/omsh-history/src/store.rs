@@ -119,6 +119,58 @@ pub struct Entry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NotReady;
 
+/// The commands a hint may suggest, best first, for one folder at one moment: what
+/// [`Store::hint_ranking`] returns. The rank of a command does not depend on what is typed, so
+/// the answer for any text is the first command in the list that starts with it, which is the
+/// same answer [`Store::hint`] gives from the database, without asking the database.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ranking {
+    commands: Vec<String>,
+    /// False if the list was cut: commands beyond it exist. A text that matches nothing in a
+    /// cut list is then unknown, not "nothing".
+    complete: bool,
+}
+
+impl Ranking {
+    /// A ranking made from `commands`, best first. `complete` says that nothing was left out.
+    /// For sources other than the database, and for tests.
+    #[must_use]
+    pub const fn from_commands(commands: Vec<String>, complete: bool) -> Self {
+        Self { commands, complete }
+    }
+
+    /// The hint for `prefix` as [`Store::hint`] would give it: `Some(Some(command))`,
+    /// `Some(None)` for "nothing to suggest", or `None` when this list cannot tell (it was cut
+    /// and holds no match).
+    #[must_use]
+    pub fn best(&self, prefix: &str) -> Option<Option<&str>> {
+        if prefix.is_empty() {
+            return Some(None);
+        }
+        let found = self
+            .commands
+            .iter()
+            .map(String::as_str)
+            .find(|command| command.len() > prefix.len() && command.starts_with(prefix));
+        match found {
+            Some(command) => Some(Some(command)),
+            None if self.complete => Some(None),
+            None => None,
+        }
+    }
+
+    /// How many commands the list holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.commands.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+    }
+}
+
 /// A folder the shell has been in, for `j`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dir {
@@ -469,6 +521,49 @@ impl Store {
             // Busy, locked, or a read that failed: no answer is not the same as "nothing".
             Err(_) => Err(NotReady),
         }
+    }
+
+    /// The best `limit` commands for hints in `cwd`, in the order of [`Store::hint`]: the same
+    /// rows (the newest [`HINT_WINDOW`], no several-line commands, no status 127), the same
+    /// groups and the same order, with no text to match. One question that costs as much as the
+    /// slowest `hint` (it groups the whole window), asked once for a prompt, so that the first
+    /// keys of that prompt are answered from memory.
+    ///
+    /// # Errors
+    ///
+    /// [`NotReady`] when the history cannot be read at this moment.
+    pub fn hint_ranking(&self, cwd: &str, now_ms: i64, limit: usize) -> Result<Ranking, NotReady> {
+        let guard = lock(&self.inner.shared.reader);
+        let connection = guard.as_ref().ok_or(NotReady)?;
+        let asked = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+        let values = [
+            Value::Integer(HINT_WINDOW),
+            Value::Text(cwd.to_owned()),
+            Value::Integer(now_ms.saturating_sub(HOUR_MS)),
+            Value::Integer(now_ms.saturating_sub(DAY_MS)),
+            Value::Integer(now_ms.saturating_sub(WEEK_MS)),
+            Value::Integer(asked),
+        ];
+        let read = || -> rusqlite::Result<Vec<String>> {
+            let mut statement = connection.prepare(
+                "SELECT command FROM history \
+                 WHERE id > (SELECT max(id) FROM history) - ? \
+                   AND instr(command, char(10)) = 0 \
+                   AND (exit_status IS NULL OR exit_status <> 127) \
+                 GROUP BY command \
+                 ORDER BY max(cwd = ?) DESC, \
+                   sum(CASE WHEN started_at >= ? THEN 4.0 WHEN started_at >= ? THEN 2.0 \
+                            WHEN started_at >= ? THEN 1.0 ELSE 0.25 END) DESC, \
+                   max(id) DESC \
+                 LIMIT ?",
+            )?;
+            let rows = statement.query_map(params_from_iter(values.iter()), |row| row.get(0))?;
+            rows.collect()
+        };
+        let mut commands = read().map_err(|_| NotReady)?;
+        let complete = commands.len() <= limit;
+        commands.truncate(limit);
+        Ok(Ranking { commands, complete })
     }
 
     /// The entries that fit `query`. Empty if the database cannot be read right now: history

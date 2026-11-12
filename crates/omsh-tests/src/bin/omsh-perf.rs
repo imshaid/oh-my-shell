@@ -9,9 +9,10 @@
 //! - one keystroke to the end of the redraw, typing lines of 100 and 499 characters with a history
 //!   file of 100,000 commands, at 11 prompts each (a new prompt is made with Ctrl+C). This includes
 //!   the editor's own painting, which the benchmark in `omsh-editor` does not. Three checks:
-//!   the 99th percentile of every key except the first of a prompt (budget 5 ms); the median of
-//!   the first keys of all prompts (budget 10 ms: the first key after a prompt costs more, see
-//!   `FIRST_KEY_BUDGET`); and a cap of 25 ms on the slowest key of all.
+//!   the 99th percentile of every key, the first key of each prompt included (budget 5 ms), and a
+//!   cap of 25 ms on the slowest key of all. The first key of a prompt used to cost 3 to 6 ms
+//!   (the hinter's first database question) and had a budget of its own; since S19b the hinter
+//!   makes its list when the prompt is drawn, and the first key is measured like the others.
 //!
 //! `--version` and `-c true` are measured by `hyperfine` in `scripts/perf-gate.sh`.
 //!
@@ -36,13 +37,8 @@ type Failure = Box<dyn Error>;
 const START_BUDGET: Duration = Duration::from_millis(30);
 const RSS_BUDGET_KB: u64 = 15 * 1024;
 /// Blueprint section 16: keystroke to redraw, p99, for lines under 500 characters. Measured over
-/// every key of a prompt except the first one (see `FIRST_KEY_BUDGET`).
+/// every key, the first key of each prompt included.
 const KEYSTROKE_BUDGET: Duration = Duration::from_millis(5);
-/// The first key after a prompt costs more (about 4 to 6 ms on the development machine: the
-/// editor and the hinter do work once per prompt; the cause is a guess, see the Decision Log). It
-/// is not in the p99 above and has a looser budget of its own, on the **median** of the first keys
-/// of `PROMPTS` prompts per line length, because a single sample is too noisy (CI: max 8.5 ms).
-const FIRST_KEY_BUDGET: Duration = Duration::from_millis(10);
 /// A loose cap on the slowest key of all, first keys included: it catches a real stall.
 const MAX_KEY_CAP: Duration = Duration::from_millis(25);
 /// Prompts per line length: each is a new prompt (Ctrl+C), and the line is typed again.
@@ -445,21 +441,24 @@ fn keystrokes(
         }
         others.sort_unstable();
         firsts_here.sort_unstable();
-        let p99 = percentile(&others, 0.99);
+        let mut every_key = others.clone();
+        every_key.extend_from_slice(&firsts_here);
+        every_key.sort_unstable();
+        let p99 = percentile(&every_key, 0.99);
         worst = worst.max(p99);
         report.note(
             &format!(
-                "keystroke, {len}-character line, {} keys after the first of {PROMPTS} prompts: p50 {}, p99.9 {}, max {}",
-                others.len(),
-                ms(percentile(&others, 0.5)),
-                ms(percentile(&others, 0.999)),
-                ms(others[others.len() - 1])
+                "keystroke, {len}-character line, {} keys of {PROMPTS} prompts: p50 {}, p99.9 {}, max {}",
+                every_key.len(),
+                ms(percentile(&every_key, 0.5)),
+                ms(percentile(&every_key, 0.999)),
+                ms(every_key[every_key.len() - 1])
             ),
             format!("p99 {}", ms(p99)),
         );
         report.note(
             &format!(
-                "first key after a prompt, {len}-character line, {PROMPTS} prompts: min {}, max {}",
+                "of which the first key after a prompt, {len}-character line, {PROMPTS} prompts: min {}, max {}",
                 ms(firsts_here[0]),
                 ms(firsts_here[firsts_here.len() - 1])
             ),
@@ -474,7 +473,7 @@ fn keystrokes(
     );
     let budget = KEYSTROKE_BUDGET.mul_f64(scale);
     report.add(
-        "keystroke to end of redraw, worst p99 (first key of a prompt excluded)",
+        "keystroke to end of redraw, worst p99 (every key, first keys included)",
         ms(worst),
         ms(budget),
         worst < budget,
@@ -486,17 +485,6 @@ fn keystrokes(
             firsts.len()
         ),
         ms(firsts[firsts.len() - 1]),
-    );
-    let median = percentile(&firsts, 0.5);
-    let first_budget = FIRST_KEY_BUDGET.mul_f64(scale);
-    report.add(
-        &format!(
-            "first key after a prompt, median of {} prompts",
-            firsts.len()
-        ),
-        ms(median),
-        ms(first_budget),
-        median < first_budget,
     );
     let cap = MAX_KEY_CAP.mul_f64(scale);
     report.add(

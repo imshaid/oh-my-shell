@@ -39,6 +39,12 @@ pub trait HistoryCommand: Send + Sync {
         to_terminal: bool,
         sink: &mut dyn FnMut(&[u8]) -> bool,
     ) -> BuiltinOutput;
+
+    /// Called just before `exec command` replaces the whole shell. The process image is gone
+    /// the moment it succeeds, and with it any thread that has not written yet, so a store
+    /// that writes in the background must catch up here. The call may fail to replace the
+    /// shell (no such program): the shell then goes on. The default does nothing.
+    fn before_replace(&self) {}
 }
 
 /// The shell's handle on its history command. Shared by every copy of the shell.

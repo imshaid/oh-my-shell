@@ -240,10 +240,22 @@ fn short(_error: &genai::Error) -> &'static str {
 pub fn map_error(error: &genai::Error) -> ProviderError {
     use genai::Error as E;
     if let Some(status) = error.status() {
+        let wait = error.headers().and_then(|headers| {
+            crate::retry_after::from_headers(
+                |name| {
+                    headers
+                        .get(name)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned)
+                },
+                std::time::SystemTime::now(),
+            )
+        });
         return ProviderError::from_status(
             status.as_u16(),
             status.canonical_reason().unwrap_or(""),
-        );
+        )
+        .with_retry_after(wait);
     }
     match error {
         E::RequiresApiKey { .. } | E::NoAuthData { .. } | E::NoAuthResolver { .. } => {
@@ -332,5 +344,45 @@ fn connect_detail(error: &reqwest::Error) -> &'static str {
         "the name could not be resolved"
     } else {
         "could not connect"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    use super::*;
+
+    fn failed(status: u16, headers: &[(&'static str, &'static str)]) -> genai::Error {
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(*name, HeaderValue::from_static(value));
+        }
+        genai::Error::HttpError {
+            status: reqwest::StatusCode::from_u16(status).unwrap(),
+            canonical_reason: String::new(),
+            body: "SECRET BODY".to_owned(),
+            headers: Box::new(map),
+        }
+    }
+
+    #[test]
+    fn a_retry_after_header_of_a_failed_answer_reaches_the_error() {
+        let error = map_error(&failed(429, &[("retry-after", "2")]));
+        assert_eq!(error.kind, ErrorKind::RateLimited);
+        assert_eq!(error.retry_after, Some(Duration::from_secs(2)));
+        let error = map_error(&failed(503, &[("retry-after-ms", "40")]));
+        assert_eq!(error.kind, ErrorKind::Server);
+        assert_eq!(error.retry_after, Some(Duration::from_millis(40)));
+    }
+
+    #[test]
+    fn a_missing_or_senseless_header_gives_no_wait_and_the_body_never_shows() {
+        let error = map_error(&failed(429, &[("retry-after", "soon")]));
+        assert_eq!(error.retry_after, None);
+        assert!(!error.detail.contains("SECRET"), "{}", error.detail);
+        assert_eq!(map_error(&failed(429, &[])).retry_after, None);
     }
 }

@@ -11,7 +11,7 @@ use futures::{Stream, StreamExt};
 use omsh_config::Provider as Kind;
 
 use crate::error::ProviderError;
-use crate::retry::{Policy, retry};
+use crate::retry::{Policy, retry, wait_before_retry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -199,7 +199,10 @@ pub async fn stream_text(
                 if passed_on || !error.is_transient() || failures >= policy.attempts.max(1) {
                     return Err(error);
                 }
-                tokio::time::sleep(policy.pause(failures)).await;
+                let Some(wait) = wait_before_retry(policy, failures, &error) else {
+                    return Err(error);
+                };
+                tokio::time::sleep(wait).await;
             }
         }
     }
@@ -386,6 +389,30 @@ mod tests {
         let (result, _) = streamed(&fake, &fast_retries());
         assert_eq!(result.unwrap_err().detail, "3");
         assert_eq!(fake.requests().len(), 3);
+    }
+
+    #[test]
+    fn a_stream_honors_the_wait_the_server_asked_for() {
+        let limited = |wait| {
+            ProviderError::new(ErrorKind::RateLimited, "HTTP 429").with_retry_after(Some(wait))
+        };
+        // Short: waited out, then the second try is made.
+        let fake = FakeProvider::new(Kind::Ollama)
+            .fails(limited(Duration::from_millis(100)))
+            .says(&["fine"]);
+        let start = std::time::Instant::now();
+        let (result, _) = streamed(&fake, &fast_retries());
+        assert_eq!(result.unwrap(), "fine");
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        // Long: reported at once, with one request only.
+        let fake = FakeProvider::new(Kind::Ollama)
+            .fails(limited(crate::retry::LONGEST_WAIT + Duration::from_secs(1)))
+            .says(&["never"]);
+        let start = std::time::Instant::now();
+        let (result, _) = streamed(&fake, &fast_retries());
+        assert_eq!(result.unwrap_err().kind, ErrorKind::RateLimited);
+        assert_eq!(fake.requests().len(), 1);
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

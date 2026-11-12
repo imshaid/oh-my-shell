@@ -562,6 +562,10 @@ impl Shell {
         if self.in_subshell {
             return Err(Unwind::Exit(boundary(self.run_program(&program, io))));
         }
+        if let Some(history) = &self.history.0 {
+            // The command line of this `exec` is on its way to the history; let it land.
+            history.before_replace();
+        }
         let mut plan = io.plan();
         // The program takes the shell's place, so it must be in the group that owns the
         // terminal when the shell started, or it would be stopped when it reads.

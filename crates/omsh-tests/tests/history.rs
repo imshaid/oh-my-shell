@@ -97,6 +97,34 @@ fn history_survives_a_restart() {
     });
 }
 
+/// `exec cmd` replaces the whole process, and the history writer thread with it. The line of
+/// the `exec` must be written first. To make the loss certain without the fix, another
+/// connection holds the database's write lock for a while, so the writer is still waiting when
+/// `exec` runs.
+#[test]
+fn a_line_that_replaces_the_shell_is_stored() {
+    pty_test(BIN, |ctx| {
+        let mut first = ctx.start()?;
+        first.sync("ready")?;
+        let blocker = rusqlite::Connection::open(database(ctx)).expect("open the history file");
+        blocker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("take the write lock");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            blocker.execute_batch("COMMIT").expect("release the lock");
+        });
+        first.command("exec printf 'swapped-%s\\n' 1")?;
+        first.expect("swapped-1", SHORT);
+        first.wait_exit(SHORT);
+        release.join().expect("the lock holder ended");
+
+        let mut second = ctx.start()?;
+        assert_eq!(count(&mut second, "kept", "", "exec [p]rintf")?, 1);
+        second.quit()
+    });
+}
+
 /// Done when: concurrent shells don't corrupt the DB. Two shells write at the same time; a
 /// third finds every command of both.
 #[test]

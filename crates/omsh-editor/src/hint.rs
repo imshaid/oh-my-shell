@@ -14,6 +14,14 @@
 //! - **a wait for the writer** at the first question of a prompt (a short limit), so the
 //!   command that just ran can be suggested.
 //!
+//! **The first key of a prompt** used to cost 3 to 6 ms: the first question has the shortest
+//! text, so the database groups its whole window for a prefix that matches thousands of rows
+//! (measured with a timer around each step: the highlighter 25 us, the wait for the writer
+//! 0.1 to 0.2 ms, the question 2.3 to 3.6 ms). The ranking of a command does not depend on what
+//! is typed, so as soon as a prompt is drawn a helper thread asks the database once for the
+//! best commands in order ([`Store::hint_ranking`]) and the first keys are answered from that
+//! list. A key typed before the list is ready is answered by the question as before.
+//!
 //! **What may be remembered.** "Nothing to suggest" is an answer only when the history is up to
 //! date: the writer has stored what was typed before this prompt, and the database could be
 //! read. If the wait for the writer timed out (a slow disk, another shell holding the database),
@@ -30,7 +38,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use omsh_history::{NotReady, Store, now_ms};
+use omsh_history::{NotReady, Ranking, Store, now_ms};
 use omsh_syntax::trigger;
 use reedline::{Hinter, History};
 
@@ -41,8 +49,13 @@ const FIRST_WAIT: Duration = Duration::from_millis(50);
 /// is on the path of a keystroke, and a writer that is that far behind is held up for a while.
 const RETRY_WAIT: Duration = Duration::from_millis(2);
 
+/// How many commands the ranking of a prompt holds at most. A text that matches none of them is
+/// asked of the database (see [`Ranking::best`]), so the number only trades memory (about
+/// 200 KB at the limit) against how often that happens.
+const RANKING_LIMIT: usize = 5_000;
+
 /// Where hints come from. [`Store`] is the real one; tests use fakes.
-pub trait HintSource: Send {
+pub trait HintSource: Send + Sync {
     /// Waits for at most `limit` until the commands that just ran are readable. True if they
     /// are.
     fn settle(&self, limit: Duration) -> bool;
@@ -53,6 +66,12 @@ pub trait HintSource: Send {
     ///
     /// [`NotReady`] when the history cannot be read at this moment.
     fn best(&self, prefix: &str, cwd: &str) -> Result<Option<String>, NotReady>;
+    /// The best commands for `cwd` in order, if the source can give them and the history is up
+    /// to date (it may wait for the writer). Asked once for each prompt, on a helper thread. The
+    /// default gives none, and every question goes to [`HintSource::best`].
+    fn ranking(&self, _cwd: &str) -> Option<Ranking> {
+        None
+    }
 }
 
 impl HintSource for Store {
@@ -63,6 +82,14 @@ impl HintSource for Store {
     fn best(&self, prefix: &str, cwd: &str) -> Result<Option<String>, NotReady> {
         self.hint(prefix, cwd, now_ms())
     }
+
+    fn ranking(&self, cwd: &str) -> Option<Ranking> {
+        // A list made before the writer caught up could miss the command that just ran.
+        if !Store::settle(self, FIRST_WAIT) {
+            return None;
+        }
+        self.hint_ranking(cwd, now_ms(), RANKING_LIMIT).ok()
+    }
 }
 
 /// What the hinter knows about the prompt being typed at. Renewed by [`Editor::read`].
@@ -71,6 +98,13 @@ impl HintSource for Store {
 #[derive(Default)]
 pub(crate) struct HintState {
     cwd: String,
+    /// Where the helper thread of [`start_ranking`] asks. Set when the hinter is made.
+    source: Option<Arc<dyn HintSource>>,
+    /// The number of this prompt. A ranking from an older prompt is thrown away.
+    generation: u64,
+    /// The commands in order of rank, once the helper thread has made them for this prompt. A
+    /// ranking is only made after the writer caught up, so its answers may be remembered.
+    ranking: Option<Arc<Ranking>>,
     /// True once the writer has been seen to catch up at this prompt. Until then no answer is
     /// remembered.
     settled: bool,
@@ -85,6 +119,8 @@ pub(crate) struct HintState {
 impl HintState {
     pub(crate) fn reset(&mut self, cwd: String) {
         self.cwd = cwd;
+        self.generation += 1;
+        self.ranking = None;
         self.settled = false;
         self.waited = false;
         self.answers.clear();
@@ -94,7 +130,7 @@ impl HintState {
 
 /// The hinter that `reedline` calls.
 pub struct ShellHinter {
-    source: Box<dyn HintSource>,
+    source: Arc<dyn HintSource>,
     state: Arc<Mutex<HintState>>,
     style: nu_ansi_term::Style,
     /// What `handle` returned last, unstyled: what Right and Alt+F bring into the line.
@@ -107,6 +143,8 @@ impl ShellHinter {
         state: Arc<Mutex<HintState>>,
         style: nu_ansi_term::Style,
     ) -> Self {
+        let source: Arc<dyn HintSource> = Arc::from(source);
+        state.lock().unwrap_or_else(PoisonError::into_inner).source = Some(Arc::clone(&source));
         Self {
             source,
             state,
@@ -151,6 +189,13 @@ impl ShellHinter {
         let answer = match reused {
             Some(answer) => answer,
             None => {
+                // The list for this prompt, if the helper has made it: no question needed.
+                if let Some(told) = state.ranking.as_ref().and_then(|r| r.best(line)) {
+                    let answer = told.map(str::to_owned);
+                    state.answers.insert(line.to_owned(), answer.clone());
+                    state.previous = Some((line.to_owned(), answer.clone()));
+                    return answer;
+                }
                 if !state.settled {
                     let limit = if state.waited { RETRY_WAIT } else { FIRST_WAIT };
                     state.waited = true;
@@ -171,6 +216,34 @@ impl ShellHinter {
         state.previous = Some((line.to_owned(), answer.clone()));
         answer
     }
+}
+
+/// Starts the helper thread that makes the ranking for the prompt that has just been reset.
+/// Nothing happens if the hinter is off (no source) or the thread cannot be made: the questions
+/// are then asked one by one.
+pub(crate) fn start_ranking(state: &Arc<Mutex<HintState>>) {
+    let (source, cwd, generation) = {
+        let locked = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(source) = locked.source.clone() else {
+            return;
+        };
+        (source, locked.cwd.clone(), locked.generation)
+    };
+    let state = Arc::clone(state);
+    let _ = std::thread::Builder::new()
+        .name("hint-ranking".into())
+        .spawn(move || {
+            let Some(ranking) = source.ranking(&cwd) else {
+                return;
+            };
+            let mut locked = state.lock().unwrap_or_else(PoisonError::into_inner);
+            // The prompt may be over: its answers belong to it alone.
+            if locked.generation == generation {
+                locked.ranking = Some(Arc::new(ranking));
+                // The writer had caught up when the list was made.
+                locked.settled = true;
+            }
+        });
 }
 
 /// Starts a new prompt for a [`ShellHinter::standalone`] (the benchmark's worst case).
@@ -242,6 +315,10 @@ mod tests {
         commands: Vec<&'static str>,
         asked: Arc<AtomicUsize>,
         settled: Arc<AtomicUsize>,
+        /// The list the helper thread gets, once `gate` is open (none: the source has no list).
+        ranking: Option<Ranking>,
+        /// The helper thread waits here until the test opens it.
+        gate: Option<Arc<(Mutex<bool>, std::sync::Condvar)>>,
     }
 
     impl HintSource for Fake {
@@ -257,6 +334,17 @@ mod tests {
                 .iter()
                 .find(|command| command.starts_with(prefix) && command.len() > prefix.len())
                 .map(|command| (*command).to_owned()))
+        }
+
+        fn ranking(&self, _cwd: &str) -> Option<Ranking> {
+            if let Some(gate) = &self.gate {
+                let (open, bell) = &**gate;
+                let mut open = open.lock().unwrap();
+                while !*open {
+                    open = bell.wait(open).unwrap();
+                }
+            }
+            self.ranking.clone()
         }
     }
 
@@ -275,6 +363,8 @@ mod tests {
             commands: commands.to_vec(),
             asked: Arc::clone(&asked),
             settled: Arc::clone(&settled),
+            ranking: None,
+            gate: None,
         };
         Rig {
             hinter: ShellHinter::new(Box::new(source), Arc::clone(&state), style),
@@ -543,5 +633,174 @@ mod tests {
         reset.new_prompt();
         let history = reedline::FileBackedHistory::default();
         assert_eq!(hinter.handle("git s", 5, &history, false, "/"), "tatus");
+    }
+}
+
+#[cfg(test)]
+mod ranking_tests {
+    use std::sync::Condvar;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
+    use nu_ansi_term::Style;
+
+    use super::*;
+
+    type Gate = Arc<(Mutex<bool>, Condvar)>;
+
+    /// A source that counts its questions and hands out a list after a gate is opened.
+    struct Listed {
+        asked: Arc<AtomicUsize>,
+        ranking: Option<Ranking>,
+        gate: Gate,
+    }
+
+    impl HintSource for Listed {
+        fn settle(&self, _limit: Duration) -> bool {
+            true
+        }
+
+        fn best(&self, prefix: &str, _cwd: &str) -> Result<Option<String>, NotReady> {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            // The database would say this; the list says the same for "git" and "ls".
+            Ok(["git status", "ls -la"]
+                .iter()
+                .find(|c| c.starts_with(prefix) && c.len() > prefix.len())
+                .map(|c| (*c).to_owned()))
+        }
+
+        fn ranking(&self, _cwd: &str) -> Option<Ranking> {
+            let (open, bell) = &*self.gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = bell.wait(open).unwrap();
+            }
+            self.ranking.clone()
+        }
+    }
+
+    struct Rig {
+        hinter: ShellHinter,
+        state: Arc<Mutex<HintState>>,
+        asked: Arc<AtomicUsize>,
+        gate: Gate,
+    }
+
+    fn rig(ranking: Option<Ranking>) -> Rig {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let gate: Gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let state = Arc::new(Mutex::new(HintState::default()));
+        let source = Listed {
+            asked: Arc::clone(&asked),
+            ranking,
+            gate: Arc::clone(&gate),
+        };
+        let hinter = ShellHinter::new(Box::new(source), Arc::clone(&state), Style::new());
+        Rig {
+            hinter,
+            state,
+            asked,
+            gate,
+        }
+    }
+
+    fn list(commands: &[&str], complete: bool) -> Option<Ranking> {
+        Some(Ranking::from_commands(
+            commands.iter().map(|c| (*c).to_owned()).collect(),
+            complete,
+        ))
+    }
+
+    impl Rig {
+        fn new_prompt(&self) {
+            self.state.lock().unwrap().reset("/".to_owned());
+            start_ranking(&self.state);
+        }
+
+        fn open_gate(&self) {
+            let (open, bell) = &*self.gate;
+            *open.lock().unwrap() = true;
+            bell.notify_all();
+        }
+
+        fn wait_for_list(&self) {
+            let end = Instant::now() + Duration::from_secs(5);
+            while self.state.lock().unwrap().ranking.is_none() {
+                assert!(Instant::now() < end, "the list never came");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        fn hint(&mut self, line: &str) -> String {
+            let history = reedline::FileBackedHistory::default();
+            self.hinter.handle(line, line.len(), &history, false, "/")
+        }
+    }
+
+    #[test]
+    fn once_the_list_is_there_the_first_keys_ask_nobody() {
+        let mut rig = rig(list(&["git status", "ls -la"], true));
+        rig.new_prompt();
+        rig.open_gate();
+        rig.wait_for_list();
+        assert_eq!(rig.hint("g"), "it status");
+        assert_eq!(rig.hint("l"), "s -la");
+        assert_eq!(rig.hint("x"), "", "a complete list can say nothing");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 0);
+        // It also counts as an up-to-date answer: remembered for a backspace.
+        assert!(rig.state.lock().unwrap().settled);
+        assert_eq!(rig.hint("g"), "it status");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_key_typed_before_the_list_is_ready_is_answered_by_the_question() {
+        let mut rig = rig(list(&["git status", "ls -la"], true));
+        rig.new_prompt();
+        assert_eq!(rig.hint("g"), "it status");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 1);
+        // Later the list arrives and takes over for texts not asked yet.
+        rig.open_gate();
+        rig.wait_for_list();
+        assert_eq!(rig.hint("l"), "s -la");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_list_made_for_an_earlier_prompt_is_not_used_at_the_next() {
+        let mut rig = rig(list(&["git status", "ls -la"], true));
+        rig.new_prompt(); // prompt 1: the helper waits at the gate
+        rig.state.lock().unwrap().reset("/".to_owned()); // prompt 2 starts, no helper for it
+        rig.open_gate();
+        // Give the old helper time to finish and (wrongly) publish.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(rig.state.lock().unwrap().ranking.is_none());
+        assert_eq!(rig.hint("g"), "it status");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 1, "asked, not listed");
+    }
+
+    #[test]
+    fn a_source_with_no_list_is_asked_as_before() {
+        let mut rig = rig(None);
+        rig.new_prompt();
+        rig.open_gate();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(rig.state.lock().unwrap().ranking.is_none());
+        assert_eq!(rig.hint("g"), "it status");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_cut_list_that_cannot_tell_hands_the_question_to_the_source() {
+        let mut rig = rig(list(&["ls -la"], false));
+        rig.new_prompt();
+        rig.open_gate();
+        rig.wait_for_list();
+        // The list holds a match for "l": no question.
+        assert_eq!(rig.hint("l"), "s -la");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 0);
+        // It holds none for "g" and was cut, so it cannot say "nothing": the source is asked.
+        assert_eq!(rig.hint("g"), "it status");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 1);
     }
 }

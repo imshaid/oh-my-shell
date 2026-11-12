@@ -190,6 +190,8 @@ impl Table {
     }
 
     fn view(&self, entry: &Entry) -> View {
+        // A stopped job may have been continued from outside; ask the kernel before showing it.
+        entry.job.recheck();
         let (current, previous) = self.marks();
         let mark = if Some(entry.number) == current {
             '+'
@@ -347,10 +349,10 @@ impl Jobs {
 
     /// True if some job is stopped.
     pub(crate) fn has_stopped(&self) -> bool {
-        self.table()
-            .entries
-            .iter()
-            .any(|e| matches!(e.job.phase(), Phase::Stopped(_)))
+        self.table().entries.iter().any(|e| {
+            e.job.recheck();
+            matches!(e.job.phase(), Phase::Stopped(_))
+        })
     }
 
     /// Takes a job out of the table.

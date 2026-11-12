@@ -20,6 +20,7 @@ mod highlight;
 mod hint;
 mod history;
 mod paste;
+mod probe;
 mod prompt;
 mod segments;
 mod suggest;
@@ -47,6 +48,7 @@ pub use complete::{Facts, Scene, ShellCompleter, fish_completion_directories};
 pub use git_status::passed_variables;
 pub use highlight::{CommandLookup, ShellHighlighter};
 pub use hint::{HintReset, HintSource, ShellHinter};
+pub use probe::terminal_reports_cursor;
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
 pub use suggest::suggest_command;
@@ -264,6 +266,7 @@ impl Editor {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .reset(state.cwd.to_string_lossy().into_owned());
+        hint::start_ranking(&self.hints);
         let mut prompt = ShellPrompt::new(&self.look, state, segments::now);
         if let Some(watch) = &self.git {
             // Started now, read at every paint; the wait is short and bounded, so that a slow

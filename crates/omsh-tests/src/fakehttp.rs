@@ -20,6 +20,8 @@ pub struct Seen {
     /// Header names in lower case.
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// When the request was read.
+    pub at: std::time::Instant,
 }
 
 impl Seen {
@@ -196,6 +198,7 @@ fn serve_one(
         line: line.trim_end().to_owned(),
         headers,
         body: String::from_utf8_lossy(&body).into_owned(),
+        at: std::time::Instant::now(),
     };
     let is_chat = seen.path().ends_with("/chat/completions");
     record
@@ -212,6 +215,24 @@ fn serve_one(
         } else {
             answers.front().cloned().unwrap_or_default()
         };
+        // `@error 429 retry-after=1`: an HTTP failure with that header instead of an answer.
+        if let Some(spec) = content.strip_prefix("@error ") {
+            let mut words = spec.split_whitespace();
+            let status = words.next().unwrap_or("500");
+            let extra: String = words
+                .filter_map(|word| word.split_once('='))
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect();
+            let body = "{\"error\":{\"message\":\"fake failure\"}}";
+            let sent = write!(
+                out,
+                "HTTP/1.1 {status} Fake\r\nContent-Type: application/json\r\n{extra}\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = (sent.is_ok(), out.flush());
+            return false;
+        }
         ("text/event-stream", chat_body(&content))
     } else {
         ("application/json", MODELS.to_owned())

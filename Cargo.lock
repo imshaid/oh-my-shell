@@ -1797,6 +1797,7 @@ dependencies = [
  "nix",
  "omsh-cli",
  "omsh-history",
+ "rusqlite",
 ]
 
 [[package]]

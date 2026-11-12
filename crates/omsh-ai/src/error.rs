@@ -5,6 +5,7 @@
 //! [`ProviderError`] has a kind and a short detail made here (an HTTP status, never a body).
 
 use std::fmt;
+use std::time::Duration;
 
 use omsh_config::Provider;
 
@@ -44,6 +45,8 @@ pub struct ProviderError {
     /// A few words about the cause: "HTTP 401 Unauthorized", "connection refused". Never a
     /// response body, never an address, never a key.
     pub detail: String,
+    /// How long the server asked us to wait (`Retry-After`), if the answer said.
+    pub retry_after: Option<Duration>,
 }
 
 impl ProviderError {
@@ -52,7 +55,15 @@ impl ProviderError {
         Self {
             kind,
             detail: detail.into(),
+            retry_after: None,
         }
+    }
+
+    /// The same error with the wait the server asked for.
+    #[must_use]
+    pub const fn with_retry_after(mut self, wait: Option<Duration>) -> Self {
+        self.retry_after = wait;
+        self
     }
 
     /// Whether trying again soon may work. A refused connection is not retried: it answers at
@@ -84,9 +95,13 @@ impl ProviderError {
             ErrorKind::Auth => {
                 format!("{name} did not accept the key ({detail}); run `omsh ai setup` again")
             }
-            ErrorKind::RateLimited => {
-                format!("{name} says there are too many requests ({detail}); wait a moment")
-            }
+            ErrorKind::RateLimited => match self.retry_after {
+                Some(wait) if !wait.is_zero() => format!(
+                    "{name} says there are too many requests ({detail}); it asks to wait {}",
+                    words(wait)
+                ),
+                _ => format!("{name} says there are too many requests ({detail}); wait a moment"),
+            },
             ErrorKind::Server => format!("{name} had an error on its side ({detail})"),
             ErrorKind::NotFound => format!(
                 "{name} does not know this model or address ({detail}); check `omsh ai status`"
@@ -119,6 +134,20 @@ impl ProviderError {
             kind,
             format!("HTTP {status} {reason}").trim_end().to_owned(),
         )
+    }
+}
+
+/// A wait in words: `250 ms`, `3 s`, `2 min`, `1 h`. Rounded up, so it is never too short.
+fn words(wait: Duration) -> String {
+    let ms = wait.as_millis();
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else if wait.as_secs() < 120 {
+        format!("{} s", wait.as_secs() + u64::from(wait.subsec_nanos() > 0))
+    } else if wait.as_secs() < 2 * 3600 {
+        format!("{} min", wait.as_secs().div_ceil(60))
+    } else {
+        format!("{} h", wait.as_secs().div_ceil(3600))
     }
 }
 
@@ -200,5 +229,20 @@ mod tests {
                 assert!(!line.is_empty() && !line.contains('\n'), "{kind:?}: {line}");
             }
         }
+    }
+
+    #[test]
+    fn a_rate_limit_line_says_how_long_the_server_asked() {
+        let error = |wait| {
+            ProviderError::new(ErrorKind::RateLimited, "HTTP 429 Too Many Requests")
+                .with_retry_after(wait)
+        };
+        let line = |wait| error(wait).one_line(Provider::OpenAi);
+        assert!(line(None).ends_with("wait a moment"), "{}", line(None));
+        assert!(line(Some(Duration::ZERO)).ends_with("wait a moment"));
+        assert!(line(Some(Duration::from_millis(250))).ends_with("it asks to wait 250 ms"));
+        assert!(line(Some(Duration::from_millis(2100))).ends_with("it asks to wait 3 s"));
+        assert!(line(Some(Duration::from_secs(600))).ends_with("it asks to wait 10 min"));
+        assert!(line(Some(Duration::from_secs(86_400))).ends_with("it asks to wait 24 h"));
     }
 }

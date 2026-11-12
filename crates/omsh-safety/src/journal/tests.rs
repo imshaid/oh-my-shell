@@ -2,8 +2,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use super::{ItemKind, Journal, Origin, UndoError};
+use super::{ItemKind, Journal, Origin, UndoError, is_same_file};
 use crate::trash::{self, meta};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NEVER: &dyn Fn() -> bool = &|| false;
 
@@ -294,6 +295,114 @@ fn mkdir_undo_keeps_a_folder_that_has_files_now() {
     assert_eq!(report.failed, 1);
     assert!(report.lines[0].contains("not empty"), "{:?}", report.lines);
     assert!(work.join("out/precious").exists());
+}
+
+fn some_meta(ino: u64, mtime_s: i64) -> trash::Meta {
+    trash::Meta {
+        kind: trash::Kind::File,
+        mode: 0o644,
+        uid: 1000,
+        gid: 1000,
+        mtime_s,
+        mtime_ns: 5,
+        dev: 7,
+        ino,
+    }
+}
+
+#[test]
+fn the_birth_time_tells_a_replacement_with_the_same_inode_from_the_moved_file() {
+    let at_ms = 1_700_000_000_000_i64;
+    let at = UNIX_EPOCH + Duration::from_millis(at_ms as u64);
+    let then = some_meta(42, 100);
+    let ok = |born| is_same_file(&then, &then, &born, at_ms);
+    // Born long before the action, at the same moment (cut to a millisecond), 1 ms after.
+    assert!(ok(Ok(at - Duration::from_secs(3600))));
+    assert!(ok(Ok(at)));
+    assert!(ok(Ok(at + Duration::from_millis(1))));
+    // A file born after the action is a new file that got the old number.
+    assert!(!ok(Ok(at + Duration::from_millis(2))));
+    assert!(!ok(Ok(at + Duration::from_secs(60))));
+    // The inode and the device still have to match.
+    let other = some_meta(43, 100);
+    assert!(!is_same_file(&other, &then, &Ok(at), at_ms));
+    let mut other_device = then;
+    other_device.dev = 8;
+    assert!(!is_same_file(&other_device, &then, &Ok(at), at_ms));
+}
+
+#[test]
+fn a_file_system_without_birth_times_falls_back_to_the_modification_time() {
+    let gone = || Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+    let then = some_meta(42, 100);
+    assert!(is_same_file(&then, &then, &gone(), 1));
+    // Edited after the move: refused here, because without a birth time it cannot be told
+    // from a replacement.
+    assert!(!is_same_file(&some_meta(42, 101), &then, &gone(), 1));
+    let mut nanos = then;
+    nanos.mtime_ns += 1;
+    assert!(!is_same_file(&nanos, &then, &gone(), 1));
+}
+
+#[test]
+fn rename_undo_refuses_a_file_born_after_the_action() {
+    let dir = Scratch::new();
+    let journal = dir.journal();
+    let work = dir.path("work");
+    write_with_mode(&work.join("a"), "a", 0o644);
+    let action = journal.begin(&work, "mv a b", Origin::Plan).unwrap();
+    fs::rename(work.join("a"), work.join("b")).unwrap();
+    journal
+        .note_rename(&action, &work.join("a"), &work.join("b"))
+        .unwrap();
+    journal.finish(&action);
+    // Edited after the move: the same file, so it goes back.
+    fs::write(work.join("b"), "edited later").unwrap();
+    // Now the journal says the action was recorded an hour before this file was born, which is
+    // what a replacement that took over the inode number looks like.
+    let hour_ago = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+        - 3_600_000;
+    journal
+        .lock()
+        .execute(
+            "UPDATE action SET at_ms = ?1 WHERE id = ?2",
+            rusqlite::params![hour_ago, action.id],
+        )
+        .unwrap();
+    let report = journal.undo(action.id, NEVER).unwrap();
+    assert_eq!(report.failed, 1, "{:?}", report.lines);
+    assert!(
+        report.lines[0].contains("not the file that was moved"),
+        "{:?}",
+        report.lines
+    );
+    assert!(work.join("b").exists());
+    assert!(!work.join("a").exists());
+}
+
+#[test]
+fn rename_undo_takes_back_a_file_edited_after_the_move() {
+    let dir = Scratch::new();
+    let journal = dir.journal();
+    let work = dir.path("work");
+    write_with_mode(&work.join("a"), "a", 0o644);
+    let action = journal.begin(&work, "mv a b", Origin::Plan).unwrap();
+    fs::rename(work.join("a"), work.join("b")).unwrap();
+    journal
+        .note_rename(&action, &work.join("a"), &work.join("b"))
+        .unwrap();
+    journal.finish(&action);
+    std::thread::sleep(Duration::from_millis(5));
+    fs::write(work.join("b"), "edited later").unwrap();
+    let report = journal.undo(action.id, NEVER).unwrap();
+    assert_eq!((report.undone, report.failed), (1, 0), "{:?}", report.lines);
+    assert_eq!(fs::read_to_string(work.join("a")).unwrap(), "edited later");
 }
 
 #[test]

@@ -1114,3 +1114,108 @@ fn query_each_on_an_empty_store_calls_nothing() {
     let store = Store::in_memory();
     assert!(each(&store, &Query::default()).is_empty());
 }
+
+/// A history with ties, folders, repeats, mistyped names, several-line commands, prefixes of one
+/// another and different ages, to compare the ranking with the database question.
+fn mixed_history() -> Store {
+    let store = Store::in_memory();
+    for (command, cwd, status) in [
+        ("git status", "/a", 0),
+        ("git status", "/b", 0),
+        ("git stash", "/b", 0),
+        ("git s", "/a", 0),
+        ("git sttaus", "/a", 127),
+        ("ls", "/a", 0),
+        ("ls -la", "/b", 0),
+        ("ls -la", "/b", 0),
+        ("make test", "/a", 0),
+        ("make build", "/b", 0),
+        ("make", "/b", 0),
+        ("echo 'a\nb'", "/a", 0),
+        ("grep -r foo .", "/a", 1),
+        ("grep -r foo .", "/a", 1),
+        ("cargo build --release", "/a", 0),
+        ("cargo b", "/b", 0),
+        ("é\u{301}cho", "/a", 0),
+        ("ünïcode test", "/a", 0),
+    ] {
+        record(&store, command, cwd, status);
+    }
+    assert!(store.settle(PATIENT));
+    store
+}
+
+/// Every prefix (at character boundaries) of the commands of `mixed_history`, and some that match
+/// nothing.
+fn prefixes_of_mixed_history() -> Vec<String> {
+    let mut prefixes: Vec<String> = ["z", "gitx", "é", "ü"].map(String::from).to_vec();
+    for command in [
+        "git status",
+        "ls -la",
+        "make build",
+        "cargo build --release",
+        "grep -r foo .",
+        "echo 'a\nb'",
+        "é\u{301}cho",
+        "git sttaus",
+    ] {
+        for end in 0..=command.len() {
+            if command.is_char_boundary(end) {
+                prefixes.push(command[..end].to_owned());
+            }
+        }
+    }
+    prefixes
+}
+
+#[test]
+fn the_ranking_answers_every_prefix_as_the_database_question_does() {
+    let store = mixed_history();
+    let now = now_ms();
+    for cwd in ["/a", "/b", "/nowhere"] {
+        let ranking = store.hint_ranking(cwd, now, 1000).expect("ready");
+        for prefix in prefixes_of_mixed_history() {
+            let from_ranking = ranking.best(&prefix).expect("a complete ranking can tell");
+            let from_database = hint_of(&store, &prefix, cwd, now);
+            assert_eq!(
+                from_ranking,
+                from_database.as_deref(),
+                "prefix {prefix:?} in {cwd}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_cut_ranking_never_gives_a_wrong_answer_and_says_unknown_when_it_cannot_tell() {
+    let store = mixed_history();
+    let now = now_ms();
+    let full = store.hint_ranking("/a", now, 1000).expect("ready");
+    assert!(full.len() > 6);
+    let cut = store.hint_ranking("/a", now, 3).expect("ready");
+    assert_eq!(cut.len(), 3);
+    let (mut told, mut unknown) = (0, 0);
+    for prefix in prefixes_of_mixed_history() {
+        match cut.best(&prefix) {
+            // Whatever the cut list says, the full list says the same.
+            Some(answer) => {
+                assert_eq!(Some(answer), full.best(&prefix), "prefix {prefix:?}");
+                told += 1;
+            }
+            None => unknown += 1,
+        }
+    }
+    // Both outcomes happen with this history, so the test looks at both.
+    assert!(told > 0 && unknown > 0, "told {told}, unknown {unknown}");
+    // A complete list can say "nothing"; a cut one cannot.
+    assert_eq!(full.best("zzzz"), Some(None));
+    assert_eq!(cut.best("zzzz"), None);
+}
+
+#[test]
+fn the_ranking_is_not_ready_when_the_database_is_not() {
+    let scratch = Scratch::new();
+    std::fs::create_dir_all(scratch.db()).unwrap(); // a directory where the file should be
+    let store = Store::open(&scratch.db(), 1000);
+    assert_eq!(store.hint_ranking("/p", now_ms(), 10), Err(NotReady));
+}
