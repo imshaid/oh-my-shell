@@ -20,8 +20,8 @@ use toml::de::{DeTable, DeValue};
 use crate::first_run;
 use crate::paths::Paths;
 use crate::schema::{
-    Ai, AiLanguage, Channel, Config, ConfirmLevel, EditMode, Icons, Motion, PROMPT_SEGMENTS,
-    Provider, SECTIONS, Ui,
+    Ai, AiLanguage, Channel, Config, ConfirmLevel, EditMode, Icons, Motion, Notify,
+    PROMPT_SEGMENTS, Provider, SECTIONS, Ui,
 };
 
 /// A file larger than this is not a configuration file.
@@ -540,6 +540,9 @@ fn read_config(r: &mut Reader<'_>, root: &DeTable<'_>) -> Config {
     if let Some(table) = r.section(root, "", "ai") {
         read_ai(r, table, &mut config.ai);
     }
+    if let Some(table) = r.section(root, "", "notify") {
+        read_notify(r, table, &mut config.notify);
+    }
     if let Some(table) = r.section(root, "", "update") {
         r.unknown(table, "update");
         if let Some(check) = r.boolean(table, "update", "check") {
@@ -692,6 +695,19 @@ fn read_safety(r: &mut Reader<'_>, table: &DeTable<'_>, config: &mut Config) {
     }
     if let Some(ms) = r.integer(table, "safety", "blast_radius_max_ms", 1..=60_000) {
         safety.blast_radius_max_ms = ms;
+    }
+}
+
+fn read_notify(r: &mut Reader<'_>, table: &DeTable<'_>, notify: &mut Notify) {
+    r.unknown(table, "notify");
+    if let Some(enabled) = r.boolean(table, "notify", "enabled") {
+        notify.enabled = enabled;
+    }
+    if let Some(seconds) = r.integer(table, "notify", "min_seconds", 1..=86_400) {
+        notify.min_seconds = seconds;
+    }
+    if let Some(items) = r.strings(table, "notify", "ignore") {
+        notify.ignore = items.iter().map(|(text, _)| (*text).to_owned()).collect();
     }
 }
 

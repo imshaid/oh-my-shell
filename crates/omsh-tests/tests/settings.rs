@@ -219,3 +219,45 @@ fn sighup_while_the_settings_view_is_open_ends_the_shell() {
         Ok(())
     });
 }
+
+/// Closing the view with a change that waits for the next start puts a one-line toast above the
+/// prompt, and the next line that is submitted takes it away.
+#[test]
+fn a_change_that_waits_for_the_next_start_is_said_in_a_toast() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        open_settings(&mut term)?;
+        term.write_bytes(b"editor.hints\r")?;
+        term.key(ESC)?;
+        left_view(&mut term);
+        term.expect_plain("1 setting changes at the next start", SHORT);
+        // The next line submitted ends the toast: the prompt drawn after it has none.
+        term.sync("gone")?;
+        let tail = term
+            .since_cursor()
+            .rsplit("gone-2")
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        assert!(!tail.contains("next start"), "the toast stayed:\n{tail}");
+        term.quit()
+    });
+}
+
+/// A view closed without a change says nothing.
+#[test]
+fn no_toast_when_nothing_waits_for_the_next_start() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        open_settings(&mut term)?;
+        term.key(ESC)?;
+        left_view(&mut term);
+        term.sync("quiet")?;
+        assert!(
+            !term.since_cursor().contains("next start"),
+            "{}",
+            term.since_cursor()
+        );
+        term.quit()
+    });
+}

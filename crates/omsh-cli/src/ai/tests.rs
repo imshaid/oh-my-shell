@@ -1119,8 +1119,17 @@ fn help_and_mistakes() {
     assert_eq!(world.run(&["ai", "frobnicate"], &mut t), 2);
     assert!(t.err.contains("frobnicate: unknown command"), "{}", t.err);
     let mut t = Scripted::new(&[]);
-    assert_eq!(world.run(&["tour"], &mut t), 2);
-    assert!(t.err.contains("tour: unknown command"), "{}", t.err);
+    assert_eq!(world.run(&["frobnicate"], &mut t), 2);
+    assert!(t.err.contains("frobnicate: unknown command"), "{}", t.err);
+    // The usage lists the tour.
+    let mut t = Scripted::new(&[]);
+    assert_eq!(world.run(&[], &mut t), 0);
+    assert!(t.out.contains("tour"), "{}", t.out);
+    // The tour itself, with no terminal: all six pages, no question, status 0.
+    let mut t = Scripted::new(&[]);
+    t.is_terminal = false;
+    assert_eq!(world.run(&["tour"], &mut t), 0);
+    assert!(t.out.contains("(6 of 6)"), "{}", t.out);
     assert!(!world.keyring_was_used());
 }
 

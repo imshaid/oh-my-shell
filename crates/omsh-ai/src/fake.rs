@@ -10,13 +10,14 @@ use omsh_config::Provider as Kind;
 
 use crate::error::ProviderError;
 use crate::keys::{KeyError, KeyStore};
-use crate::provider::{ChatEvent, ChatRequest, EventStream, Provider};
+use crate::provider::{ChatEvent, ChatRequest, EventStream, Provider, Usage};
 use crate::secret::Secret;
 
 /// What the fake does for one `chat` call.
 enum Script {
-    /// These events, in order; an `Err` ends the stream.
-    Events(Vec<Result<ChatEvent, ProviderError>>),
+    /// These events, in order; an `Err` ends the stream. The usage is what the server "reports"
+    /// for this answer, if anything.
+    Events(Vec<Result<ChatEvent, ProviderError>>, Option<Usage>),
 }
 
 /// A provider that answers each `chat` call with the next scripted answer, and remembers the
@@ -26,6 +27,8 @@ pub struct FakeProvider {
     script: Mutex<VecDeque<Script>>,
     seen: Mutex<Vec<ChatRequest>>,
     models: Vec<String>,
+    /// What `take_usage` gives, set when a request starts.
+    usage: Mutex<Option<Usage>>,
 }
 
 impl FakeProvider {
@@ -36,6 +39,7 @@ impl FakeProvider {
             script: Mutex::default(),
             seen: Mutex::default(),
             models: Vec::new(),
+            usage: Mutex::default(),
         }
     }
 
@@ -50,7 +54,19 @@ impl FakeProvider {
         self.script
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push_back(Script::Events(events.into_iter().map(Ok).collect()));
+            .push_back(Script::Events(events.into_iter().map(Ok).collect(), None));
+        self
+    }
+
+    /// The tokens the server "reports" for the answer added last. Without a call an answer
+    /// reports none, like a server that sends no counts.
+    #[must_use]
+    pub fn reporting(self, usage: Usage) -> Self {
+        let mut script = self.script.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(Script::Events(_, slot)) = script.back_mut() {
+            *slot = Some(usage);
+        }
+        drop(script);
         self
     }
 
@@ -60,7 +76,7 @@ impl FakeProvider {
         self.script
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push_back(Script::Events(vec![Err(error)]));
+            .push_back(Script::Events(vec![Err(error)], None));
         self
     }
 
@@ -76,7 +92,7 @@ impl FakeProvider {
         self.script
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push_back(Script::Events(events));
+            .push_back(Script::Events(events, None));
         self
     }
 
@@ -113,15 +129,29 @@ impl Provider for FakeProvider {
             .unwrap_or_else(PoisonError::into_inner)
             .pop_front();
         match next {
-            Some(Script::Events(events)) => stream::iter(events).boxed(),
-            None => stream::once(async {
-                Err(ProviderError::new(
-                    crate::error::ErrorKind::Internal,
-                    "the fake has no more answers",
-                ))
-            })
-            .boxed(),
+            Some(Script::Events(events, usage)) => {
+                // A new request forgets the number of the one before.
+                *self.usage.lock().unwrap_or_else(PoisonError::into_inner) = usage;
+                stream::iter(events).boxed()
+            }
+            None => {
+                *self.usage.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                stream::once(async {
+                    Err(ProviderError::new(
+                        crate::error::ErrorKind::Internal,
+                        "the fake has no more answers",
+                    ))
+                })
+                .boxed()
+            }
         }
+    }
+
+    fn take_usage(&self) -> Option<Usage> {
+        self.usage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>> {

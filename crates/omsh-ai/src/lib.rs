@@ -60,7 +60,7 @@ pub use plan::{
 };
 pub use prompt::{PLAN_MAX_TOKENS, PlanRequest, hides_secret, plan_request, retry_request};
 pub use provider::{
-    ChatEvent, ChatRequest, EventStream, Message, Provider, Role, collect_text,
+    ChatEvent, ChatRequest, EventStream, Message, Provider, Role, Usage, collect_text,
     collect_text_counting, stream_text, verify,
 };
 pub use retry::{Policy, retry};

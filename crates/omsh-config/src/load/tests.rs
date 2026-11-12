@@ -81,6 +81,10 @@ os = false
 cwd = false
 git = false
 recent_commands = false
+[notify]
+enabled = false
+min_seconds = 3
+ignore = ["make"]
 [update]
 check = true
 channel = "stable"
@@ -102,6 +106,9 @@ channel = "stable"
     assert_eq!(c.safety.trash_retention_days, 30);
     assert_eq!(c.safety.blast_radius_max_entries, 1000);
     assert_eq!(c.safety.blast_radius_max_ms, 50);
+    assert!(!c.notify.enabled);
+    assert_eq!(c.notify.min_seconds, 3);
+    assert_eq!(c.notify.ignore, ["make"]);
     assert!(!c.ai.enabled);
     assert_eq!(c.ai.provider, Some(Provider::OpenAiCompatible));
     assert_eq!(c.ai.model.as_deref(), Some("m"));
@@ -171,6 +178,14 @@ fn each_kind_of_wrong_value_names_its_setting() {
         (
             "[prompt]\nright = [\"nope\"]",
             "prompt.right has an unknown segment \"nope\"",
+        ),
+        (
+            "[notify]\nmin_seconds = 0",
+            "notify.min_seconds must be a whole number from 1 to 86400, not 0",
+        ),
+        (
+            "[notify]\nenabled = \"yes\"",
+            "notify.enabled must be true or false",
         ),
         (
             "[safety]\nconfirm = \"never\"",
@@ -603,4 +618,19 @@ fn a_path_through_a_regular_file_is_one_error_and_the_defaults() {
     assert_eq!(loaded.config, Config::default());
     assert_eq!(loaded.problems.len(), 1);
     assert!(loaded.problems[0].message.contains("cannot read the file"));
+}
+
+#[test]
+fn notifications_are_on_after_ten_seconds_and_skip_the_interactive_programs() {
+    let c = Config::default();
+    assert!(c.notify.enabled);
+    assert_eq!(c.notify.min_seconds, 10);
+    for name in ["vim", "less", "ssh", "tmux", "man", "htop", "bash"] {
+        assert!(c.notify.ignore.iter().any(|n| n == name), "{name}");
+    }
+    // A bad list keeps the default for that key only.
+    let parsed = parse("[notify]\nignore = 3\nmin_seconds = 5\n");
+    assert_eq!(parsed.config.notify.min_seconds, 5);
+    assert_eq!(parsed.config.notify.ignore, Config::default().notify.ignore);
+    assert_eq!(parsed.problems.len(), 1);
 }

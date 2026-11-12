@@ -105,6 +105,11 @@ fn actions(config_file: Option<&Path>) -> Vec<Entry> {
             "Choose a provider, a model and a key.",
             "omsh ai setup",
         ),
+        command(
+            "Tour",
+            "A one-minute walk through what the shell does.",
+            "omsh tour",
+        ),
     ];
     if let Some(file) = config_file {
         out.push(command(
@@ -210,10 +215,16 @@ mod tests {
                 "Undo the last deletion",
                 "Jobs",
                 "AI status",
-                "AI setup"
+                "AI setup",
+                "Tour"
             ]
         );
         assert_eq!(find(&entries, "Settings").effect, Effect::OpenSettings);
+        // The tour is put in the line, never run for the person.
+        assert_eq!(
+            find(&entries, "Tour").effect,
+            Effect::Insert("omsh tour".to_owned())
+        );
         assert_eq!(
             find(&entries, "History explorer").key.as_deref(),
             Some("Ctrl+R")

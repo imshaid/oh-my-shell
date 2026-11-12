@@ -72,8 +72,16 @@ fn a_broken_config_still_starts_with_the_defaults_and_a_clear_error() {
 fn the_first_run_creates_the_commented_file_once() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.start()?;
+        // The first start writes the file and says so once, in the three-line welcome (S28):
+        // the file's place, and nothing about a problem with it.
         assert!(
-            !term.transcript().contains("config.toml"),
+            term.transcript()
+                .contains("Settings: ~/.config/oh-my-shell/config.toml"),
+            "{}",
+            term.transcript()
+        );
+        assert!(
+            !term.transcript().contains("oh-my-shell: "),
             "{}",
             term.transcript()
         );

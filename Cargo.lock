@@ -1844,6 +1844,7 @@ dependencies = [
  "chrono",
  "clap",
  "miette",
+ "nix",
  "omsh-ai",
  "omsh-config",
  "omsh-editor",
@@ -1851,6 +1852,7 @@ dependencies = [
  "omsh-history",
  "omsh-safety",
  "omsh-secrets",
+ "omsh-syntax",
  "omsh-ui",
 ]
 

@@ -115,6 +115,18 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #git = true
 #recent_commands = true
 
+#[notify]
+# A desktop notification when a command that ran a while has ended, so that you can look away
+# from the terminal. It is made with the `notify-send` program (package libnotify-bin) and only
+# in a desktop session; over ssh, or without that program, nothing is shown and the shell says
+# so once. Commands ended with Ctrl+C or stopped with Ctrl+Z, and `?` requests, never notify.
+#enabled = true
+# A command notifies when it ran at least this many seconds (1 to 86400).
+#min_seconds = 10
+# Programs that never notify, because a long run is a person working in them. A command line
+# is skipped when any of its command names (also after sudo, env, command, time) is listed.
+#ignore = ["vi", "vim", "nvim", "nano", "emacs", "micro", "hx", "less", "more", "most", "man", "info", "ssh", "mosh", "top", "htop", "btop", "tmux", "screen", "watch", "sh", "bash", "zsh", "fish", "oh-my-shell"]
+
 #[update]
 # Look for a new release when the shell starts. Off, because it needs the network.
 # (not used yet)

@@ -79,6 +79,28 @@ impl WaitLine {
         self.last_draw.set(Some(elapsed));
     }
 
+    /// After the answer: one dim line with the real time it took and the tokens the server
+    /// counted, e.g. `  3.2 s, 1,204 tokens in, 310 out`. Nothing is printed when the server
+    /// reported no tokens: a number that is not known is not made up (§15.2). Call it after
+    /// [`clear`](Self::clear).
+    pub fn report(&self, terminal: &mut dyn Terminal, usage: Option<omsh_ai::Usage>) {
+        if let Some(line) = self.report_line(self.started.elapsed(), usage) {
+            terminal.err(&line);
+        }
+    }
+
+    /// The text [`report`](Self::report) prints, for a given elapsed time.
+    fn report_line(&self, elapsed: Duration, usage: Option<omsh_ai::Usage>) -> Option<String> {
+        let tokens = usage?.describe()?;
+        Some(format!(
+            "{}\n",
+            self.paint.token(
+                Token::Dim,
+                &format!("  {:.1} s, {tokens}", elapsed.as_secs_f64())
+            )
+        ))
+    }
+
     /// Erases the line, if one was drawn.
     pub fn clear(&self, terminal: &mut dyn Terminal) {
         if self.last_draw.take().is_some() {
@@ -136,6 +158,42 @@ mod tests {
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
+    }
+
+    fn usage(input: u32, output: u32) -> Option<omsh_ai::Usage> {
+        Some(omsh_ai::Usage {
+            input: Some(input),
+            output: Some(output),
+        })
+    }
+
+    #[test]
+    fn the_report_line_has_the_real_time_and_the_tokens_the_server_counted() {
+        let mut tty = Recorder::default();
+        let wait = WaitLine::start("A", &paint(Motion::Full, true, true), &mut tty);
+        assert_eq!(
+            wait.report_line(ms(3_240), usage(1204, 310)).as_deref(),
+            Some("\x1b[2;90m  3.2 s, 1,204 tokens in, 310 out\x1b[0m\n")
+        );
+        let plain = WaitLine::start("A", &Paint::plain(), &mut tty);
+        assert_eq!(
+            plain.report_line(ms(12_000), usage(5, 6)).as_deref(),
+            Some("  12.0 s, 5 tokens in, 6 out\n")
+        );
+    }
+
+    #[test]
+    fn nothing_is_printed_when_the_server_reported_no_tokens() {
+        let mut tty = Recorder::default();
+        let wait = WaitLine::start("A", &Paint::plain(), &mut tty);
+        assert_eq!(wait.report_line(ms(1_000), None), None);
+        assert_eq!(
+            wait.report_line(ms(1_000), Some(omsh_ai::Usage::default())),
+            None
+        );
+        let before = tty.err.clone();
+        wait.report(&mut tty, None);
+        assert_eq!(tty.err, before, "report(None) writes nothing");
     }
 
     #[test]

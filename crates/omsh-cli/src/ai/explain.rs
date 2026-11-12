@@ -130,17 +130,23 @@ fn stream_answer(
         async {
             let policy = Policy::standard();
             let result = stream_text(provider.as_ref(), request, &policy, &mut on_piece).await;
+            let usage = provider.take_usage();
             // Inside the runtime, so that no connection outlives the request (S20).
             drop(provider);
-            result
+            (result, usage)
         },
         &watch,
     );
+    let (outcome, usage) = match outcome {
+        Ok((result, usage)) => (Ok(result), usage),
+        Err(error) => (Err(error), None),
+    };
     wait.clear(&mut **terminal.borrow_mut());
     let mut terminal = terminal.borrow_mut();
     if shown.get() && !ended_with_newline.get() {
         terminal.out("\n");
     }
+    wait.report(&mut **terminal, usage);
     match outcome {
         Ok(Ok(text)) if text.trim().is_empty() => Ended::Failed("the model gave no answer".into()),
         Ok(Ok(_)) => Ended::Answered,

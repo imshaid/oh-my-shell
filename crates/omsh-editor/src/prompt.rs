@@ -19,6 +19,7 @@ use reedline::{
 
 use crate::git_status::Handle;
 use crate::segments::{self, Segment};
+use crate::toast::{self, ToastHandle};
 
 /// How the prompt is drawn.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +74,11 @@ pub struct ShellPrompt {
     left: Vec<Piece>,
     right: Vec<Piece>,
     git: Option<Handle>,
+    /// The toast, read each time the prompt is drawn: it can appear and expire while the prompt
+    /// is on the screen. Only the main prompt has one.
+    toast: Option<ToastHandle>,
+    /// Unicode or ASCII bullet for the toast.
+    unicode: bool,
     indicator: String,
     vi_normal_indicator: String,
 }
@@ -128,6 +134,8 @@ impl ShellPrompt {
             left,
             right,
             git: None,
+            toast: None,
+            unicode: look.unicode,
             indicator: symbol(format!("{glyph} ")),
             vi_normal_indicator: symbol(": ".to_owned()),
         }
@@ -137,6 +145,13 @@ impl ShellPrompt {
     #[must_use]
     pub(crate) fn with_git(mut self, git: Handle) -> Self {
         self.git = Some(git);
+        self
+    }
+
+    /// Where the toast line above the header is read from.
+    #[must_use]
+    pub fn with_toast(mut self, toast: ToastHandle) -> Self {
+        self.toast = Some(toast);
         self
     }
 
@@ -159,6 +174,8 @@ impl ShellPrompt {
             left: Vec::new(),
             right: Vec::new(),
             git: None,
+            toast: None,
+            unicode: false,
             indicator,
             vi_normal_indicator,
         }
@@ -189,9 +206,16 @@ impl ShellPrompt {
 
 impl Prompt for ShellPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        // The header ends the first line; with nothing to show there is no first line.
+        // The header ends the first line (the right side is drawn on it); with nothing to show
+        // there is no first line.
         let mut left = self.join(&self.left);
         if !left.is_empty() {
+            left.push('\n');
+        }
+        // A toast is a line of its own between the header and the symbol, so that the header
+        // keeps its place (and the right side with it) while the toast comes and goes.
+        if let Some(text) = self.toast.as_ref().and_then(ToastHandle::current) {
+            left.push_str(&toast::line(&text, self.unicode));
             left.push('\n');
         }
         Cow::Owned(left)
@@ -425,6 +449,54 @@ mod tests {
             p.render_prompt_right(),
             "\x1b[2m✘ 2\x1b[0m \x1b[2m5s\x1b[0m \x1b[2m12:34\x1b[0m"
         );
+    }
+
+    fn toast_handle() -> ToastHandle {
+        ToastHandle::with_lifetime(
+            std::sync::Arc::new(|| {}),
+            std::time::Duration::from_secs(60),
+        )
+    }
+
+    #[test]
+    fn a_toast_is_a_line_between_the_header_and_the_symbol() {
+        let toast = toast_handle();
+        let p = build(&look(&[Segment::Cwd], &[]), &state()).with_toast(toast.clone());
+        assert_eq!(left(&p), "~/code\n", "no toast yet");
+        toast.post("2 settings change at the next start");
+        assert_eq!(left(&p), "~/code\n• 2 settings change at the next start\n");
+        toast.clear();
+        assert_eq!(left(&p), "~/code\n", "gone once cleared");
+    }
+
+    #[test]
+    fn a_toast_without_a_header_still_gets_its_own_line() {
+        let toast = toast_handle();
+        let p = build(&look(&[], &[]), &state()).with_toast(toast.clone());
+        toast.post("hello");
+        assert_eq!(left(&p), "• hello\n");
+        toast.clear();
+        assert_eq!(left(&p), "");
+    }
+
+    #[test]
+    fn the_toast_bullet_is_ascii_without_unicode() {
+        let toast = toast_handle();
+        let mut l = look(&[Segment::Cwd], &[]);
+        l.unicode = false;
+        let p = build(&l, &state()).with_toast(toast.clone());
+        toast.post("hello");
+        assert_eq!(left(&p), "~/code\n* hello\n");
+    }
+
+    #[test]
+    fn the_continuation_the_label_and_the_transient_prompt_never_show_a_toast() {
+        let toast = toast_handle();
+        toast.post("hello");
+        let main = build(&look(&[Segment::Cwd], &[]), &state()).with_toast(toast);
+        assert_eq!(main.transient().render_prompt_left(), "");
+        assert_eq!(ShellPrompt::continuation().render_prompt_left(), "");
+        assert_eq!(ShellPrompt::labeled("edit").render_prompt_left(), "");
     }
 
     use crate::git_status::{Dirtiness, HeadState, Snapshot};

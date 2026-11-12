@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use omsh_ai::{
     ChatEvent, ChatRequest, ErrorKind, GenaiProvider, Policy, Provider, ProviderError, Secret,
-    Settings, collect_text, runtime, verify,
+    Settings, Usage, collect_text, runtime, verify,
 };
 use omsh_config::Provider as Kind;
 
@@ -216,6 +216,28 @@ fn openai_stream() -> Canned {
     )
 }
 
+/// Like [`openai_stream`], with the final chunk that carries the token counts, as a server does
+/// when it was asked for them (`stream_options.include_usage`).
+fn openai_stream_with_usage() -> Canned {
+    let chunk = |delta: &str, finish: &str| {
+        format!(
+            "data: {{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\
+             \"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{delta},\
+             \"finish_reason\":{finish}}}]}}\n\n"
+        )
+    };
+    ok(
+        SSE,
+        &(chunk("{\"role\":\"assistant\",\"content\":\"O\"}", "null")
+            + &chunk("{\"content\":\"K\"}", "null")
+            + &chunk("{}", "\"stop\"")
+            + "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\
+               \"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":1204,\
+               \"completion_tokens\":310,\"total_tokens\":1514}}\n\n"
+            + "data: [DONE]\n\n"),
+    )
+}
+
 fn anthropic_stream() -> Canned {
     ok(
         SSE,
@@ -335,6 +357,49 @@ fn every_form(error: &ProviderError) -> String {
 }
 
 // -- one test per protocol --------------------------------------------------------------
+
+#[test]
+fn the_tokens_the_server_reports_are_kept_once_and_a_server_that_reports_none_gives_none() {
+    let server = Server::start(vec![openai_stream_with_usage(), openai_stream()]);
+    let p = provider(Kind::OpenAiCompatible, server.url("/v1"), true);
+    assert_eq!(p.take_usage(), None, "nothing before a request");
+    events(&p).unwrap();
+    assert_eq!(
+        p.take_usage(),
+        Some(Usage {
+            input: Some(1204),
+            output: Some(310)
+        })
+    );
+    assert_eq!(p.take_usage(), None, "taken once");
+    // The next request reports nothing: the number of the one before is not shown again.
+    events(&p).unwrap();
+    assert_eq!(p.take_usage(), None);
+}
+
+#[test]
+fn counts_from_anthropic_and_gemini_are_read_too() {
+    let server = Server::start(vec![anthropic_stream()]);
+    let p = provider(Kind::Anthropic, server.url(""), true);
+    events(&p).unwrap();
+    let usage = p.take_usage().expect("anthropic reports tokens");
+    assert!(usage.input.is_some() && usage.output.is_some(), "{usage:?}");
+
+    let server = Server::start(vec![gemini_stream()]);
+    let p = provider(Kind::Gemini, server.url(""), true);
+    events(&p).unwrap();
+    assert!(p.take_usage().is_some());
+}
+
+#[test]
+fn a_failed_request_reports_no_tokens() {
+    let server = Server::start(vec![openai_stream_with_usage(), status(500, "{}")]);
+    let p = provider(Kind::OpenAiCompatible, server.url("/v1"), true);
+    events(&p).unwrap();
+    // The number of the first request is not left behind when the second one fails.
+    assert!(events(&p).is_err());
+    assert_eq!(p.take_usage(), None);
+}
 
 #[test]
 fn openai_compatible_server() {

@@ -254,6 +254,54 @@ fn ghp() -> String {
     format!("ghp_{}", "a1B2".repeat(9))
 }
 
+// -- the tokens line (S28) -----------------------------------------------------------------
+
+#[test]
+fn the_tokens_the_server_reported_are_shown_after_the_answer_with_the_real_time() {
+    let ran = go(
+        FakeProvider::new(Kind::Ollama)
+            .says(&["It lists files."])
+            .reporting(omsh_ai::Usage {
+                input: Some(1204),
+                output: Some(310),
+            }),
+        Flow::Command("ls"),
+        Setup::default(),
+    );
+    assert_eq!(ran.status(), 0);
+    // The answer is on standard output, the figures on standard error.
+    assert_eq!(ran.out, "It lists files.\n");
+    let line = ran.err.lines().last().expect("a line on standard error");
+    assert!(
+        line.starts_with("  ") && line.ends_with(" s, 1,204 tokens in, 310 out"),
+        "{:?}",
+        ran.err
+    );
+    assert_eq!(ran.alive, 0);
+}
+
+#[test]
+fn a_server_that_reports_no_tokens_gets_no_tokens_line() {
+    let ran = go(
+        says(&["It lists files."]),
+        Flow::Command("ls"),
+        Setup::default(),
+    );
+    assert_eq!(ran.status(), 0);
+    assert!(!ran.err.contains("tokens"), "{:?}", ran.err);
+    assert!(!ran.err.contains(" s,"), "{:?}", ran.err);
+}
+
+#[test]
+fn a_failed_request_shows_no_tokens() {
+    let ran = go(
+        FakeProvider::new(Kind::Ollama).fails(ProviderError::new(ErrorKind::Auth, "401")),
+        Flow::Command("ls"),
+        Setup::default(),
+    );
+    assert!(!ran.err.contains("tokens"), "{:?}", ran.err);
+}
+
 // -- ?? <command or topic> -------------------------------------------------------------------
 
 #[test]

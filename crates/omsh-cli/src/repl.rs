@@ -32,6 +32,7 @@ use omsh_ui::{Look, Paint, Theme};
 use crate::ai;
 use crate::confirm;
 use crate::history::History;
+use crate::notify::{self, Notifier};
 use crate::radius::BlastLimits;
 use crate::report::{self, Style};
 use crate::undo::{self, Undo};
@@ -179,6 +180,9 @@ fn run_on(
             config_file,
         )
     });
+    // The desktop notification after a long command. Its "could not be shown" message goes to
+    // the editor's toast, or waits for the next prompt of the plain reader.
+    let notifier = interactive.then(|| Notifier::new(editor.as_ref().map(Editor::toast)));
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     // How long the last command took, for the prompt.
@@ -202,6 +206,9 @@ fn run_on(
                 // late can be lost (see `omsh-history`).
                 if let Some(problem) = history.and_then(History::problem) {
                     say(&format!("oh-my-shell: {problem}"));
+                }
+                if let Some(message) = notifier.as_ref().and_then(Notifier::take_message) {
+                    say(&format!("oh-my-shell: {message}"));
                 }
             }
         }
@@ -334,8 +341,11 @@ fn run_on(
         match result {
             LineResult::Incomplete => {}
             LineResult::Ran(Outcome::Continue(_)) => {
-                pending.clear();
                 took = Some(started.elapsed());
+                if let (Some(notifier), Some(took)) = (&notifier, took) {
+                    notify_if_due(notifier, &shell, &pending, took, &config, look.unicode);
+                }
+                pending.clear();
             }
             LineResult::Ran(Outcome::Exit(status)) => {
                 return finish(&mut shell, status, &files, history);
@@ -351,6 +361,35 @@ fn run_on(
             return finish(&mut shell, status, &files, history);
         }
     }
+}
+
+/// After a typed line that ran: a desktop notification if `[notify]` says one is due. The
+/// variables it needs are read from the shell now, so a `DISPLAY` exported in this session counts.
+fn notify_if_due(
+    notifier: &Notifier,
+    shell: &Shell,
+    line: &str,
+    took: Duration,
+    config: &Config,
+    unicode: bool,
+) {
+    // Cheap checks first: most lines are far shorter than the limit.
+    if !config.notify.enabled || took < Duration::from_secs(u64::from(config.notify.min_seconds)) {
+        return;
+    }
+    let status = shell.last_status().0;
+    let aliases = shell.alias_list();
+    let Some(note) = notify::decide(line, took, status, &config.notify, &aliases, unicode) else {
+        return;
+    };
+    let vars: Vec<(OsString, OsString)> = notify::VARIABLES
+        .iter()
+        .filter_map(|name| {
+            let value = shell.var(name)?;
+            Some((OsString::from(name), OsString::from_vec(value.to_vec())))
+        })
+        .collect();
+    notifier.send(note, &vars);
 }
 
 /// `Alt+?` in the editor: why did the last command fail? Prints below the prompt line; the
@@ -766,6 +805,16 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
     let loaded = omsh_config::load(&paths);
     for line in loaded.report(MAX_CONFIG_LINES) {
         say(&format!("oh-my-shell: {line}"));
+    }
+    // Only the start that wrote the first-run file, and only for a person at a terminal: the
+    // three-line welcome (§15.5). A pipe or a script gets the file and no words.
+    if loaded.created && io::stderr().is_terminal() {
+        let home = shell
+            .var("HOME")
+            .map(|home| PathBuf::from(OsString::from_vec(home.to_vec())));
+        for line in crate::tour::welcome(paths.config_file().as_deref(), home.as_deref()) {
+            say(&line);
+        }
     }
     if let Some(init) = paths.init_file()
         && let Outcome::Exit(status) = shell.run_startup_file(&init, files)

@@ -588,6 +588,44 @@ mod chat;
 // -- asking ---------------------------------------------------------------------------------
 
 #[test]
+fn the_tokens_the_server_reported_are_shown_once_after_the_wait_and_never_made_up() {
+    let dir = Dir::new();
+    let plan = json(&[("Touch", &format!("echo x > {}", dir.file("m")), "low")]);
+    let fake = FakeProvider::new(Kind::Ollama)
+        .says(&[&plan])
+        .reporting(omsh_ai::Usage {
+            input: Some(2048),
+            output: Some(96),
+        });
+    let ran = go(
+        fake,
+        "make a file",
+        Setup {
+            keys: vec![enter()],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(
+        ran.err.matches("2,048 tokens in, 96 out").count(),
+        1,
+        "{}",
+        ran.err
+    );
+    // Without a report there is no figure at all.
+    let dir = Dir::new();
+    let plan = json(&[("Touch", &format!("echo x > {}", dir.file("m")), "low")]);
+    let ran = go(
+        says(&plan),
+        "make a file",
+        Setup {
+            keys: vec![enter()],
+            ..Setup::default()
+        },
+    );
+    assert!(!ran.err.contains("tokens"), "{}", ran.err);
+}
+
+#[test]
 fn a_bad_answer_is_asked_again_with_the_reason() {
     let dir = Dir::new();
     let good = json(&[("Touch", &format!("echo x > {}", dir.file("m")), "low")]);

@@ -16,6 +16,9 @@ chrono.workspace = true
 clap.workspace = true
 # `fancy-no-syscall` brings the graphical report renderer without the crates that probe the
 # terminal; the shell does that itself, in `report.rs`.
+# Ends the notification program with its group when it hangs (the same call as the prompt's
+# `git`).
+nix.workspace = true
 miette = { workspace = true, features = ["fancy-no-syscall"] }
 omsh-ai.workspace = true
 omsh-config.workspace = true
@@ -25,6 +28,8 @@ omsh-history.workspace = true
 omsh-safety.workspace = true
 # Masks secrets in the line kept in the undo journal.
 omsh-secrets.workspace = true
+# Reads the command names of a typed line for the notification skip list.
+omsh-syntax.workspace = true
 omsh-ui.workspace = true
 
 [lints]

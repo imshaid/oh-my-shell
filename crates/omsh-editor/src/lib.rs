@@ -26,6 +26,7 @@ mod probe;
 mod prompt;
 mod segments;
 mod suggest;
+mod toast;
 mod validator;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -55,6 +56,7 @@ pub use probe::terminal_reports_cursor;
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
 pub use suggest::suggest_command;
+pub use toast::ToastHandle;
 pub use validator::is_incomplete;
 
 /// How often a waiting shell looks at the hang-up flag and at the terminal. The same step as the
@@ -110,6 +112,8 @@ pub struct Editor {
     /// Finds the branch and the dirty marker for each prompt; only when the prompt has a git
     /// segment.
     git: Option<git_status::GitWatch>,
+    /// The line above the prompt that goes away by itself (see `toast.rs`).
+    toast: ToastHandle,
     /// Asked while waiting: has the terminal gone away?
     terminal_gone: Box<dyn Fn() -> bool + Send>,
     /// Asked while waiting: was the shell told to hang up? Shared with the engine's idle
@@ -265,6 +269,10 @@ impl Editor {
                 let signal = engine.repaint_signal();
                 git_status::GitWatch::new(Arc::new(move || signal.request_repaint()))
             });
+        let toast = {
+            let signal = engine.repaint_signal();
+            ToastHandle::new(Arc::new(move || signal.request_repaint()))
+        };
         Self {
             engine: Some(engine),
             look,
@@ -272,6 +280,7 @@ impl Editor {
             hints,
             scene,
             git,
+            toast,
             terminal_gone: Box::new(terminal_gone),
             hang_up,
             store: explorer_store,
@@ -287,6 +296,13 @@ impl Editor {
             config_file: None,
             builtin_help: |_| None,
         }
+    }
+
+    /// The handle for posting a toast: a line above the prompt that goes away after a few
+    /// seconds, or when the next line is submitted. Usable from any thread.
+    #[must_use]
+    pub fn toast(&self) -> ToastHandle {
+        self.toast.clone()
     }
 
     /// Tells the editor where `config.toml` is (the settings view writes there; `None` when
@@ -326,7 +342,8 @@ impl Editor {
             .unwrap_or_else(PoisonError::into_inner)
             .reset(state.cwd.to_string_lossy().into_owned());
         hint::start_ranking(&self.hints);
-        let mut prompt = ShellPrompt::new(&self.look, state, segments::now);
+        let mut prompt =
+            ShellPrompt::new(&self.look, state, segments::now).with_toast(self.toast.clone());
         if let Some(watch) = &self.git {
             // Started now, read at every paint; the wait is short and bounded, so that a slow
             // `git` never delays the prompt.
@@ -420,6 +437,8 @@ impl Editor {
                     continue;
                 }
             }
+            // A submitted line (or Ctrl+C, Ctrl+D) ends the toast.
+            self.toast.clear();
             return classify(answer);
         }
     }
@@ -511,10 +530,36 @@ impl Editor {
             &mut should_stop,
         ) {
             omsh_ui::settings::Outcome::HungUp => Explored::HungUp,
-            omsh_ui::settings::Outcome::Closed | omsh_ui::settings::Outcome::Unavailable(_) => {
+            omsh_ui::settings::Outcome::Closed => {
+                self.say_what_waits_for_the_next_start();
                 Explored::Edits(Vec::new())
             }
+            omsh_ui::settings::Outcome::Unavailable(_) => Explored::Edits(Vec::new()),
         }
+    }
+
+    /// After the settings view: a toast if the file now holds values this shell does not run.
+    fn say_what_waits_for_the_next_start(&self) {
+        let Some(path) = &self.config_file else {
+            return;
+        };
+        let text = omsh_config::read_text_file(path).ok().flatten();
+        let waiting = omsh_config::settings::rows(&self.running, text.as_deref())
+            .iter()
+            .filter(|row| row.pending())
+            .count();
+        if let Some(message) = toast_for_pending(waiting) {
+            self.toast.post(&message);
+        }
+    }
+}
+
+/// The toast after the settings view, or nothing when no setting waits.
+fn toast_for_pending(waiting: usize) -> Option<String> {
+    match waiting {
+        0 => None,
+        1 => Some("1 setting changes at the next start".to_owned()),
+        n => Some(format!("{n} settings change at the next start")),
     }
 }
 
@@ -646,6 +691,19 @@ fn neutral_state() -> PromptState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_toast_after_the_settings_view_counts_what_waits_for_the_next_start() {
+        assert_eq!(super::toast_for_pending(0), None);
+        assert_eq!(
+            super::toast_for_pending(1).as_deref(),
+            Some("1 setting changes at the next start")
+        );
+        assert_eq!(
+            super::toast_for_pending(3).as_deref(),
+            Some("3 settings change at the next start")
+        );
+    }
+
     use super::*;
 
     #[test]

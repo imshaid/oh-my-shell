@@ -80,6 +80,46 @@ pub enum ChatEvent {
 
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ProviderError>> + Send>>;
 
+/// The tokens a server says a request used. Only what the server reported: nothing is estimated,
+/// and a server that reports nothing gives no `Usage` at all (§15.2: real numbers only).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// Tokens the server counted in the request.
+    pub input: Option<u32>,
+    /// Tokens the server counted in the answer.
+    pub output: Option<u32>,
+}
+
+impl Usage {
+    /// `1,204 tokens in, 310 out`, `310 tokens out`, or `None` when nothing is known.
+    #[must_use]
+    pub fn describe(&self) -> Option<String> {
+        match (self.input, self.output) {
+            (Some(input), Some(output)) => Some(format!(
+                "{} tokens in, {} out",
+                thousands(input),
+                thousands(output)
+            )),
+            (Some(input), None) => Some(format!("{} tokens in", thousands(input))),
+            (None, Some(output)) => Some(format!("{} tokens out", thousands(output))),
+            (None, None) => None,
+        }
+    }
+}
+
+/// `1204` as `1,204`.
+fn thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// A model reachable over some protocol.
 pub trait Provider: Send + Sync {
     /// Which provider this is.
@@ -92,6 +132,13 @@ pub trait Provider: Send + Sync {
 
     /// The model names the server offers, to help choose one in the setup wizard.
     fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>>;
+
+    /// The tokens the server reported for the last request that finished, once. `None` when it
+    /// reported none, when the request failed, or when this provider does not know (the default).
+    /// Asked after the answer has arrived; a new request forgets the number of the one before.
+    fn take_usage(&self) -> Option<Usage> {
+        None
+    }
 }
 
 /// A provider that is shared keeps working as one (a test keeps a handle on the fake it hands
@@ -107,6 +154,10 @@ impl<T: Provider + ?Sized> Provider for std::sync::Arc<T> {
 
     fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>> {
         (**self).models()
+    }
+
+    fn take_usage(&self) -> Option<Usage> {
+        (**self).take_usage()
     }
 }
 
@@ -222,6 +273,80 @@ pub async fn verify(provider: &dyn Provider, policy: &Policy) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_is_described_with_thousands_and_only_what_is_known() {
+        let both = Usage {
+            input: Some(1204),
+            output: Some(310),
+        };
+        assert_eq!(both.describe().as_deref(), Some("1,204 tokens in, 310 out"));
+        let big = Usage {
+            input: Some(1_234_567),
+            output: Some(0),
+        };
+        assert_eq!(
+            big.describe().as_deref(),
+            Some("1,234,567 tokens in, 0 out")
+        );
+        let only_out = Usage {
+            input: None,
+            output: Some(12),
+        };
+        assert_eq!(only_out.describe().as_deref(), Some("12 tokens out"));
+        let only_in = Usage {
+            input: Some(1000),
+            output: None,
+        };
+        assert_eq!(only_in.describe().as_deref(), Some("1,000 tokens in"));
+        assert_eq!(Usage::default().describe(), None);
+    }
+
+    #[test]
+    fn thousands_groups_by_three_from_the_right() {
+        for (n, text) in [
+            (0, "0"),
+            (999, "999"),
+            (1000, "1,000"),
+            (12_345, "12,345"),
+            (100_000, "100,000"),
+            (4_294_967_295, "4,294,967,295"),
+        ] {
+            assert_eq!(thousands(n), text);
+        }
+    }
+
+    #[test]
+    fn a_fake_reports_tokens_only_for_the_answer_that_has_them_and_only_once() {
+        let fake = FakeProvider::new(Kind::Ollama)
+            .says(&["a"])
+            .reporting(Usage {
+                input: Some(5),
+                output: Some(1),
+            })
+            .says(&["b"]);
+        run(collect_text(
+            &fake,
+            &ChatRequest::ask("x", 8),
+            &Policy::once(),
+        ))
+        .unwrap();
+        assert_eq!(
+            fake.take_usage(),
+            Some(Usage {
+                input: Some(5),
+                output: Some(1)
+            })
+        );
+        assert_eq!(fake.take_usage(), None, "taken once");
+        run(collect_text(
+            &fake,
+            &ChatRequest::ask("x", 8),
+            &Policy::once(),
+        ))
+        .unwrap();
+        assert_eq!(fake.take_usage(), None, "the second answer reports none");
+    }
+
     use std::time::Duration;
 
     use omsh_config::Provider as Kind;

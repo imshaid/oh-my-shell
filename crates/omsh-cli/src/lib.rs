@@ -29,10 +29,12 @@ mod ai;
 mod confirm;
 mod handoff;
 mod history;
+mod notify;
 mod probe;
 mod radius;
 mod repl;
 mod report;
+mod tour;
 mod undo;
 
 use std::ffi::OsString;

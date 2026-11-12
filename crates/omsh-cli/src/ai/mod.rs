@@ -109,6 +109,7 @@ usage: omsh ai <command>
 const OMSH_USAGE: &str = "\
 usage: omsh <command>
   ai       set up and check the AI layer (omsh ai for the list)
+  tour     a one-minute walk through what the shell does
 ";
 
 /// Exit status of a command that was used wrongly (as the other builtins).
@@ -128,6 +129,7 @@ impl OmshCommand for AiSession {
                 terminal.out(OMSH_USAGE);
                 0
             }
+            ["tour"] => crate::tour::run(terminal),
             ["ai"] | ["ai", "help" | "--help" | "-h"] => {
                 terminal.out(USAGE);
                 0

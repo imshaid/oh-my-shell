@@ -360,7 +360,7 @@ async fn attempts<T>(
     received: &AtomicUsize,
     tries: &AtomicUsize,
     sent: &RefCell<Option<Sent>>,
-) -> Result<(T, String), Failure> {
+) -> (Result<(T, String), Failure>, Option<omsh_ai::Usage>) {
     let policy = Policy::standard();
     let mut request = first.clone();
     let mut first_answer_chars = None;
@@ -391,8 +391,10 @@ async fn attempts<T>(
             Err(error) => outcome = Err(Failure::Invalid(error)),
         }
     }
+    // What the server counted for the last answer, before the provider goes.
+    let usage = provider.take_usage();
     drop(provider);
-    outcome
+    (outcome, usage)
 }
 
 /// Runs [`attempts`] and shows the wait: on a terminal one line that is redrawn with the real
@@ -431,10 +433,11 @@ pub(crate) fn ask<T>(
         &watch,
     );
     wait.clear(&mut **terminal.borrow_mut());
-    let result = match outcome {
-        Ok(result) => result,
-        Err(error) => Err(Failure::Provider(error)),
+    let (result, usage) = match outcome {
+        Ok((result, usage)) => (result, usage),
+        Err(error) => (Err(Failure::Provider(error)), None),
     };
+    wait.report(&mut **terminal.borrow_mut(), usage);
     (result, sent.into_inner())
 }
 

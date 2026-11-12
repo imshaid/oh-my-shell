@@ -15,6 +15,7 @@ pub struct Config {
     pub history: History,
     pub safety: Safety,
     pub ai: Ai,
+    pub notify: Notify,
     pub update: Update,
 }
 
@@ -262,6 +263,56 @@ impl Default for AiContext {
     }
 }
 
+/// `[notify]`: the desktop notification after a long command (§15.3, S28).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notify {
+    pub enabled: bool,
+    /// A command that ran at least this many seconds notifies.
+    pub min_seconds: u32,
+    /// Names of programs that never notify: interactive ones, where a long run is a person
+    /// working in them. Compared with the program's file name.
+    pub ignore: Vec<String>,
+}
+
+/// The programs that do not notify by default.
+pub const NOTIFY_IGNORE: &[&str] = &[
+    "vi",
+    "vim",
+    "nvim",
+    "nano",
+    "emacs",
+    "micro",
+    "hx",
+    "less",
+    "more",
+    "most",
+    "man",
+    "info",
+    "ssh",
+    "mosh",
+    "top",
+    "htop",
+    "btop",
+    "tmux",
+    "screen",
+    "watch",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "oh-my-shell",
+];
+
+impl Default for Notify {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_seconds: 10,
+            ignore: strings(NOTIFY_IGNORE),
+        }
+    }
+}
+
 /// `[update]`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Update {
@@ -315,5 +366,6 @@ pub const SECTIONS: &[(&str, &[&str])] = &[
         ],
     ),
     ("ai.context", &["os", "cwd", "git", "recent_commands"]),
+    ("notify", &["enabled", "min_seconds", "ignore"]),
     ("update", &["check", "channel"]),
 ];

@@ -5,7 +5,7 @@
 //! `OPENAI_API_KEY`, so there is one place a key can come from), the timeouts; and it turns
 //! genai's errors into [`ProviderError`]s with short fixed wording.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 use crate::destination::{key_may_go_to, server_of};
 use crate::error::{ErrorKind, ProviderError};
-use crate::provider::{ChatEvent, ChatRequest, EventStream, Provider, Role};
+use crate::provider::{ChatEvent, ChatRequest, EventStream, Provider, Role, Usage};
 use crate::runtime::prepare_tls;
 use crate::secret::Secret;
 
@@ -70,6 +70,8 @@ pub struct GenaiProvider {
     adapter: AdapterKind,
     endpoint: Arc<str>,
     key: Option<Arc<Zeroizing<String>>>,
+    /// What the server said the last request used; see [`Provider::take_usage`].
+    usage: Arc<Mutex<Option<Usage>>>,
 }
 
 const fn adapter_for(kind: Kind) -> AdapterKind {
@@ -146,6 +148,7 @@ impl GenaiProvider {
             adapter,
             endpoint,
             key,
+            usage: Arc::default(),
         })
     }
 }
@@ -159,6 +162,9 @@ impl Provider for GenaiProvider {
         let client = self.client.clone();
         let model = self.settings.model.clone();
         let (request, options) = to_genai(request);
+        // A new request forgets the number of the one before.
+        *self.usage.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let usage = Arc::clone(&self.usage);
         let events = stream::once(async move {
             match client
                 .exec_chat_stream(model.as_str(), request, Some(&options))
@@ -174,8 +180,10 @@ impl Provider for GenaiProvider {
             .filter_map(move |item| {
                 let out = match item {
                     Ok(ChatStreamEvent::Chunk(chunk)) => Some(Ok(ChatEvent::Text(chunk.content))),
-                    Ok(ChatStreamEvent::End(_)) if !finished => {
+                    Ok(ChatStreamEvent::End(end)) if !finished => {
                         finished = true;
+                        *usage.lock().unwrap_or_else(PoisonError::into_inner) =
+                            end.captured_usage.as_ref().and_then(usage_of);
                         Some(Ok(ChatEvent::Done))
                     }
                     Ok(_) => None,
@@ -184,6 +192,13 @@ impl Provider for GenaiProvider {
                 std::future::ready(out)
             })
             .boxed()
+    }
+
+    fn take_usage(&self) -> Option<Usage> {
+        self.usage
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>> {
@@ -222,11 +237,25 @@ fn to_genai(request: ChatRequest) -> Pieces {
             Role::Assistant => ChatMessage::assistant(message.text),
         });
     }
-    let mut options = ChatOptions::default().with_max_tokens(request.max_tokens);
+    // The server's own token counts, for the line after the answer.
+    let mut options = ChatOptions::default()
+        .with_max_tokens(request.max_tokens)
+        .with_capture_usage(true);
     if request.json {
         options = options.with_response_format(ChatResponseFormat::JsonMode);
     }
     (out, options)
+}
+
+/// What genai captured, as ours. A count that is missing or not a positive number is left out; a
+/// report with neither count is no report.
+fn usage_of(usage: &genai::chat::Usage) -> Option<Usage> {
+    let count = |n: Option<i32>| n.and_then(|n| u32::try_from(n).ok());
+    let usage = Usage {
+        input: count(usage.prompt_tokens),
+        output: count(usage.completion_tokens),
+    };
+    (usage != Usage::default()).then_some(usage)
 }
 
 /// Short wording for a genai error. genai's own text can hold the request, the response body
