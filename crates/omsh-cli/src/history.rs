@@ -235,15 +235,59 @@ pub(crate) fn render(newest_first: &[Entry], time: impl Fn(i64) -> String) -> St
         .unwrap_or(1);
     let mut out = String::new();
     for entry in newest_first.iter().rev() {
-        let _ = writeln!(
-            out,
-            "{:>width$}  {}  {}",
-            entry.id,
-            time(entry.started_ms),
-            entry.command
-        );
+        push_line(&mut out, width, entry, &time);
     }
     out
+}
+
+/// How much of a long listing is collected before it is written.
+const PIECE: usize = 64 * 1024;
+
+/// A listing without a limit, oldest first, written to `sink` in pieces of about [`PIECE`] bytes
+/// as the rows are read. The text is the same as [`render`] makes. The numbers are lined up to
+/// the width of the newest one, found first with a query for that one row.
+fn stream(
+    store: &Store,
+    query: Query,
+    time: impl Fn(i64) -> String,
+    sink: &mut dyn FnMut(&[u8]) -> bool,
+) {
+    let width = store
+        .query(&Query {
+            limit: Some(1),
+            ..query.clone()
+        })
+        .first()
+        .map_or(1, |entry| entry.id.to_string().len());
+    let mut piece = String::new();
+    let mut going = true;
+    store.query_each(
+        &Query {
+            newest_first: false,
+            ..query
+        },
+        |entry| {
+            push_line(&mut piece, width, &entry, &time);
+            if piece.len() >= PIECE {
+                going = sink(piece.as_bytes());
+                piece.clear();
+            }
+            going
+        },
+    );
+    if going && !piece.is_empty() {
+        sink(piece.as_bytes());
+    }
+}
+
+fn push_line(out: &mut String, width: usize, entry: &Entry, time: &impl Fn(i64) -> String) {
+    let _ = writeln!(
+        out,
+        "{:>width$}  {}  {}",
+        entry.id,
+        time(entry.started_ms),
+        entry.command
+    );
 }
 
 fn failure(message: &str, status: u8) -> BuiltinOutput {
@@ -264,7 +308,13 @@ impl JumpCommand for History {
 }
 
 impl HistoryCommand for History {
-    fn run(&self, args: &[Vec<u8>], cwd: &[u8], to_terminal: bool) -> BuiltinOutput {
+    fn run(
+        &self,
+        args: &[Vec<u8>],
+        cwd: &[u8],
+        to_terminal: bool,
+        sink: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> BuiltinOutput {
         let args: Vec<String> = args
             .iter()
             .map(|arg| String::from_utf8_lossy(arg).into_owned())
@@ -283,6 +333,11 @@ impl HistoryCommand for History {
                 self.store.settle(SETTLE);
                 let cwd = String::from_utf8_lossy(cwd);
                 let query = query_for(&listing, &cwd, to_terminal, now_ms());
+                if query.limit.is_none() {
+                    // Everything: read and written in pieces, never all in memory.
+                    stream(&self.store, query, local_time, sink);
+                    return BuiltinOutput::default();
+                }
                 BuiltinOutput {
                     out: render(&self.store.query(&query), local_time).into_bytes(),
                     ..BuiltinOutput::default()
@@ -497,9 +552,14 @@ mod tests {
 
     fn run(history: &History, line: &str, cwd: &str, to_terminal: bool) -> (String, String, u8) {
         let args: Vec<Vec<u8>> = words(line).into_iter().map(String::into_bytes).collect();
-        let output = history.run(&args, cwd.as_bytes(), to_terminal);
+        let mut streamed = Vec::new();
+        let output = history.run(&args, cwd.as_bytes(), to_terminal, &mut |piece| {
+            streamed.extend_from_slice(piece);
+            true
+        });
+        streamed.extend_from_slice(&output.out);
         (
-            String::from_utf8(output.out).unwrap(),
+            String::from_utf8(streamed).unwrap(),
             String::from_utf8(output.err).unwrap(),
             output.status,
         )
@@ -599,5 +659,60 @@ mod tests {
         let (out, err, status) = run(&history(), "--help", "/", false);
         assert!(out.starts_with("usage: history"));
         assert_eq!((err.as_str(), status), ("", 0));
+    }
+
+    /// The pieces a streamed listing is written in, and whether it was asked to go on.
+    fn pieces(history: &History, line: &str, stop_after: usize) -> Vec<String> {
+        let args: Vec<Vec<u8>> = words(line).into_iter().map(String::into_bytes).collect();
+        let mut seen = Vec::new();
+        history.run(&args, b"/p", false, &mut |piece| {
+            seen.push(String::from_utf8(piece.to_vec()).unwrap());
+            seen.len() < stop_after
+        });
+        seen
+    }
+
+    fn filled(history: &History, rows: usize) {
+        for n in 0..rows {
+            let token = history
+                .store
+                .start(&format!("cmd-{n} {}", "x".repeat(40)), "/p");
+            history.store.finish(token, 0, Duration::from_millis(1));
+        }
+        assert!(history.store.settle(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_long_listing_arrives_in_several_pieces_and_adds_up_to_the_whole() {
+        let history = history();
+        filled(&history, 5_000);
+        let seen = pieces(&history, "--all", usize::MAX);
+        assert!(seen.len() > 1, "{} piece(s)", seen.len());
+        assert!(seen.iter().all(|piece| piece.len() < PIECE + 200));
+        let all: String = seen.concat();
+        let lines: Vec<&str> = all.lines().collect();
+        assert_eq!(lines.len(), 5_000);
+        // Oldest first, and the same text that `render` makes from the same rows.
+        assert!(lines[0].ends_with("cmd-0 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
+        let (text, _, status) = run(&history, "--all", "/p", false);
+        assert_eq!((text, status), (all, 0));
+    }
+
+    #[test]
+    fn a_listing_stops_when_the_reader_has_gone() {
+        let history = history();
+        filled(&history, 5_000);
+        let seen = pieces(&history, "--all", 1);
+        assert_eq!(seen.len(), 1, "no piece after the sink said stop");
+    }
+
+    #[test]
+    fn a_listing_with_a_limit_is_not_streamed() {
+        let history = history();
+        filled(&history, 50);
+        let seen = pieces(&history, "-n5", usize::MAX);
+        assert!(seen.is_empty(), "{seen:?}");
+        let (text, _, _) = run(&history, "-n5", "/p", false);
+        assert_eq!(text.lines().count(), 5);
     }
 }

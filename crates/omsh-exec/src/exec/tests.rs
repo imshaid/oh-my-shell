@@ -2713,7 +2713,13 @@ mod history {
     }
 
     impl HistoryCommand for Recorder {
-        fn run(&self, args: &[Vec<u8>], cwd: &[u8], to_terminal: bool) -> BuiltinOutput {
+        fn run(
+            &self,
+            args: &[Vec<u8>],
+            cwd: &[u8],
+            to_terminal: bool,
+            sink: &mut dyn FnMut(&[u8]) -> bool,
+        ) -> BuiltinOutput {
             let args: Vec<String> = args
                 .iter()
                 .map(|arg| String::from_utf8_lossy(arg).into_owned())
@@ -2723,6 +2729,25 @@ mod history {
                 .lock()
                 .unwrap()
                 .push((args.clone(), cwd, to_terminal));
+            if args.first().is_some_and(|arg| arg == "stream") {
+                // `stream FILE COUNT`: COUNT pieces of 1 KiB, or until the sink says stop. How
+                // many were delivered is written to FILE (the pipeline may be a separate process).
+                let count: usize = args[2].parse().unwrap();
+                let mut delivered = 0;
+                while delivered < count {
+                    delivered += 1;
+                    let line = format!("piece {delivered:07}{}\n", "x".repeat(1000));
+                    if !sink(line.as_bytes()) {
+                        break;
+                    }
+                }
+                std::fs::write(&args[1], delivered.to_string()).unwrap();
+                return BuiltinOutput {
+                    out: b"tail\n".to_vec(),
+                    err: Vec::new(),
+                    status: 3,
+                };
+            }
             if args.first().is_some_and(|arg| arg == "bad") {
                 return BuiltinOutput {
                     out: Vec::new(),
@@ -2772,6 +2797,45 @@ mod history {
         assert_eq!(calls[0].1, dir.path().display().to_string());
         // The test's output is captured in a file, which is not a terminal.
         assert!(!calls[0].2);
+    }
+
+    #[test]
+    fn pieces_given_to_the_sink_are_written_in_order_before_the_rest_of_the_output() {
+        let (mut sh, _) = shell_with_history();
+        let dir = Dir::new();
+        let marker = dir.path().join("delivered");
+        let done = run(
+            &mut sh,
+            &format!("history stream {} 3; echo status $?", marker.display()),
+        );
+        assert_eq!(done.err, "");
+        let lines: Vec<&str> = done.out.lines().collect();
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!(lines[0].starts_with("piece 0000001"));
+        assert!(lines[2].starts_with("piece 0000003"));
+        assert_eq!(&lines[3..], ["tail", "status 3"]);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "3");
+    }
+
+    #[test]
+    fn a_listing_stops_when_the_reader_of_the_pipe_has_gone() {
+        let (mut sh, _) = shell_with_history();
+        let dir = Dir::new();
+        let marker = dir.path().join("delivered");
+        // Without the stop this would write 100 MB.
+        let done = run(
+            &mut sh,
+            &format!(
+                "history stream {} 100000 | /usr/bin/head -n 1",
+                marker.display()
+            ),
+        );
+        assert!(done.out.starts_with("piece 0000001"), "{}", done.out);
+        let delivered: usize = std::fs::read_to_string(&marker).unwrap().parse().unwrap();
+        assert!(
+            delivered < 2_000,
+            "{delivered} pieces were written to a closed pipe"
+        );
     }
 
     #[test]

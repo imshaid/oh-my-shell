@@ -274,7 +274,32 @@ pub fn wait_for_input(input: impl AsFd) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nix::unistd::{pipe, write};
+    use nix::fcntl::OFlag;
+    use nix::unistd::{pipe2, write};
+    use std::os::fd::OwnedFd;
+    use std::time::Instant;
+
+    /// A pipe that a program started by another test does not inherit. Tests run in parallel in
+    /// one process: with a plain `pipe`, a child forked by another test holds a copy of the write
+    /// end until it calls `exec`, and the read end is not "gone" until then (found by CI).
+    fn pipe() -> nix::Result<(OwnedFd, OwnedFd)> {
+        pipe2(OFlag::O_CLOEXEC)
+    }
+
+    /// True if `fd` is reported gone within a second. Even a close-on-exec pipe can be held for
+    /// a moment: the child exists between `fork` and `exec` (the two calls are not one step).
+    fn gone_soon(fd: &OwnedFd) -> bool {
+        let end = Instant::now() + Duration::from_secs(1);
+        loop {
+            if terminal_gone(fd) {
+                return true;
+            }
+            if Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 
     #[test]
     fn a_live_descriptor_is_not_gone_whether_or_not_it_has_data() {
@@ -288,7 +313,7 @@ mod tests {
     fn a_descriptor_whose_other_end_closed_is_gone() {
         let (read, write_end) = pipe().unwrap();
         drop(write_end);
-        assert!(terminal_gone(&read));
+        assert!(gone_soon(&read));
     }
 
     #[test]
@@ -296,8 +321,21 @@ mod tests {
         let (read, write_end) = pipe().unwrap();
         write(&write_end, b"abc").unwrap();
         drop(write_end);
-        assert!(terminal_gone(&read));
+        assert!(gone_soon(&read));
         let mut buffer = [0_u8; 8];
         assert_eq!(nix::unistd::read(&read, &mut buffer).unwrap(), 3);
+    }
+
+    #[test]
+    fn a_copy_of_the_write_end_that_closes_a_moment_later_is_waited_for() {
+        // What a child forked by another test does: it holds the write end for a short time.
+        let (read, write_end) = pipe().unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(write_end);
+        });
+        assert!(!terminal_gone(&read), "the copy is still open");
+        assert!(gone_soon(&read), "and goes within a second");
+        holder.join().unwrap();
     }
 }

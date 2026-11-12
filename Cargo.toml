@@ -13,20 +13,23 @@ repository = "https://github.com/imshaid/oh-my-shell"
 #   cli    -> editor, exec, ui, ai, safety, history, config, secrets
 #   editor -> syntax, history, ui, config
 #   exec   -> syntax, config
-#   tests  -> cli (development only: the end-to-end tests run the shell's entry function)
+#   tests  -> cli, history (development only: the end-to-end tests run the shell's entry function;
+#             `omsh-perf` fills a history file)
 #   safety -> syntax
 #   ai     -> config, secrets
 #   history -> secrets
 #   ui     -> config
-omsh-ai = { path = "crates/omsh-ai" }
-omsh-config = { path = "crates/omsh-config" }
-omsh-editor = { path = "crates/omsh-editor" }
-omsh-exec = { path = "crates/omsh-exec" }
-omsh-history = { path = "crates/omsh-history" }
-omsh-safety = { path = "crates/omsh-safety" }
-omsh-secrets = { path = "crates/omsh-secrets" }
-omsh-syntax = { path = "crates/omsh-syntax" }
-omsh-ui = { path = "crates/omsh-ui" }
+# The version is repeated next to each path (keep it equal to `workspace.package.version`):
+# `cargo deny` reads a path-only dependency of a publishable crate as a wildcard.
+omsh-ai = { path = "crates/omsh-ai", version = "0.1.0" }
+omsh-config = { path = "crates/omsh-config", version = "0.1.0" }
+omsh-editor = { path = "crates/omsh-editor", version = "0.1.0" }
+omsh-exec = { path = "crates/omsh-exec", version = "0.1.0" }
+omsh-history = { path = "crates/omsh-history", version = "0.1.0" }
+omsh-safety = { path = "crates/omsh-safety", version = "0.1.0" }
+omsh-secrets = { path = "crates/omsh-secrets", version = "0.1.0" }
+omsh-syntax = { path = "crates/omsh-syntax", version = "0.1.0" }
+omsh-ui = { path = "crates/omsh-ui", version = "0.1.0" }
 
 # External crates.
 # clap's `color` feature is left out on purpose: plain help text does not need the
@@ -114,3 +117,13 @@ unwrap_used = "deny"
 allow_attributes_without_reason = "deny"
 # Every `unsafe` block needs a `// SAFETY:` comment.
 undocumented_unsafe_blocks = "deny"
+
+# The release binary (S19a). Measured on 2026-11-12 with `oh-my-shell` only: no LTO, no strip
+# 20.8 MB (clean build 53 s); strip 16.0 MB; thin LTO + strip 15.8 MB (53 s); fat LTO + one
+# codegen unit + strip 12.7 MB (99 s). Start, `--version` and idle memory did not differ beyond
+# the noise of the runs, so size and build time decided. `panic` stays "unwind": the editor's
+# thread is joined and its death is reported, and the tests use `catch_unwind`.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

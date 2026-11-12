@@ -666,139 +666,6 @@ fn sessions_differ() {
     assert_eq!(a.clone().session(), a.session());
 }
 
-/// A measurement, not a check: how long the queries of the editor and of the `history`
-/// builtin take on 100,000 commands (the budget of blueprint §16 is 20 ms). Run it with
-/// `cargo test -p omsh-history --release -- --ignored --nocapture timing`.
-#[test]
-#[ignore = "a measurement; S19 turns the budget into a gate"]
-fn timing_of_queries_on_a_hundred_thousand_commands() {
-    const ROWS: usize = 100_000;
-    let scratch = Scratch::new();
-    let store = Store::open(&scratch.db(), 1_000_000);
-    let filling = Instant::now();
-    for n in 0..ROWS {
-        let cwd = format!("/home/user/project-{}", n % 50);
-        let command = format!(
-            "command-{} --flag value-{n} some/path/file-{n}.txt",
-            n % 997
-        );
-        record(&store, &command, &cwd, i32::from(n % 10 == 0));
-    }
-    assert!(store.settle(Duration::from_secs(120)));
-    println!("filled {ROWS} rows in {:?}", filling.elapsed());
-    assert_eq!(store.count(&Query::default()), ROWS as u64);
-    let newest = store.query(&Query {
-        newest_first: true,
-        limit: Some(1),
-        ..Query::default()
-    })[0]
-        .id;
-
-    let cases: Vec<(&str, Query)> = vec![
-        (
-            "Up, first press",
-            Query {
-                own_or_older: true,
-                newest_first: true,
-                limit: Some(1),
-                ..Query::default()
-            },
-        ),
-        (
-            "Up, next press (skips repeats)",
-            Query {
-                own_or_older: true,
-                newest_first: true,
-                limit: Some(1),
-                below_id: Some(newest),
-                unlike: Some(newest),
-                ..Query::default()
-            },
-        ),
-        (
-            "Up with a prefix that is found",
-            Query {
-                own_or_older: true,
-                newest_first: true,
-                limit: Some(1),
-                prefix: Some("command-500 ".to_owned()),
-                ..Query::default()
-            },
-        ),
-        (
-            "Up with a prefix that nothing has (reads every row)",
-            Query {
-                own_or_older: true,
-                newest_first: true,
-                limit: Some(1),
-                prefix: Some("zzz".to_owned()),
-                ..Query::default()
-            },
-        ),
-        (
-            "search for a text that nothing has (reads every row)",
-            Query {
-                newest_first: true,
-                limit: Some(100),
-                contains: Some("zzz".to_owned()),
-                ..Query::default()
-            },
-        ),
-        (
-            "history (newest 100)",
-            Query {
-                newest_first: true,
-                limit: Some(100),
-                ..Query::default()
-            },
-        ),
-        (
-            "history --here (newest 100 of 2,000)",
-            Query {
-                newest_first: true,
-                limit: Some(100),
-                cwd: Some("/home/user/project-7".to_owned()),
-                ..Query::default()
-            },
-        ),
-        (
-            "history --failed (newest 100)",
-            Query {
-                newest_first: true,
-                limit: Some(100),
-                failed: true,
-                ..Query::default()
-            },
-        ),
-        (
-            "history --since (newest 100)",
-            Query {
-                newest_first: true,
-                limit: Some(100),
-                since_ms: Some(0),
-                ..Query::default()
-            },
-        ),
-        (
-            "history --all (all 100,000 rows)",
-            Query {
-                newest_first: true,
-                ..Query::default()
-            },
-        ),
-    ];
-    for (name, query) in cases {
-        let mut worst = Duration::ZERO;
-        let mut found = 0;
-        for _ in 0..20 {
-            let started = Instant::now();
-            found = store.query(&query).len();
-            worst = worst.max(started.elapsed());
-        }
-        println!("{worst:>12.3?}  worst of 20  {name}  ({found} rows)");
-    }
-}
-
 /// A database that is slow to open (another process holds it for a while) is waited for by
 /// whoever needs to read, and then read. (CI found this: on a slow disk the first Up arrow
 /// came back empty, because the reader gave up after 250 ms.)
@@ -1167,4 +1034,83 @@ fn a_hint_whose_query_fails_is_not_ready() {
     let other = Connection::open(scratch.db()).unwrap();
     other.execute_batch("DROP TABLE history").unwrap();
     assert_eq!(store.hint("make", "/p", now_ms()), Err(NotReady));
+}
+
+/// A store with `rows` commands, `one-<n>`, every third one failed.
+fn filled(rows: usize) -> Store {
+    let store = Store::in_memory();
+    for n in 0..rows {
+        record(&store, &format!("one-{n}"), "/p", i32::from(n % 3 == 0));
+    }
+    assert!(store.settle(Duration::from_secs(30)));
+    store
+}
+
+fn each(store: &Store, query: &Query) -> Vec<Entry> {
+    let mut seen = Vec::new();
+    store.query_each(query, |entry| {
+        seen.push(entry);
+        true
+    });
+    seen
+}
+
+#[test]
+fn query_each_gives_the_same_rows_as_query_in_both_orders_across_pages() {
+    // 4,500 rows are three pages of 2,000.
+    let store = filled(4_500);
+    for newest_first in [false, true] {
+        let query = Query {
+            newest_first,
+            ..Query::default()
+        };
+        assert_eq!(each(&store, &query), store.query(&query), "{newest_first}");
+    }
+}
+
+#[test]
+fn query_each_respects_a_limit_that_ends_inside_or_on_a_page() {
+    let store = filled(4_500);
+    for limit in [0, 1, 1_999, 2_000, 2_001, 4_000, 4_500, 9_000] {
+        for newest_first in [false, true] {
+            let query = Query {
+                newest_first,
+                limit: Some(limit),
+                ..Query::default()
+            };
+            let seen = each(&store, &query);
+            assert_eq!(seen, store.query(&query), "limit {limit} {newest_first}");
+            assert_eq!(seen.len(), (limit as usize).min(4_500));
+        }
+    }
+}
+
+#[test]
+fn query_each_keeps_the_filters_of_the_query_on_every_page() {
+    let store = filled(4_500);
+    let query = Query {
+        failed: true,
+        ..Query::default()
+    };
+    let seen = each(&store, &query);
+    assert_eq!(seen.len(), 1_500);
+    assert!(seen.iter().all(|entry| entry.exit_status == Some(1)));
+    assert_eq!(seen, store.query(&query));
+}
+
+#[test]
+fn query_each_stops_when_asked() {
+    let store = filled(4_500);
+    let mut calls = 0;
+    store.query_each(&Query::default(), |_| {
+        calls += 1;
+        calls < 3
+    });
+    assert_eq!(calls, 3);
+}
+
+#[test]
+fn query_each_on_an_empty_store_calls_nothing() {
+    let store = Store::in_memory();
+    assert!(each(&store, &Query::default()).is_empty());
 }

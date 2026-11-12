@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bench]]
+name = "parse"
+harness = false
+
 [lints]
 workspace = true
 

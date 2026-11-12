@@ -123,3 +123,13 @@ pub fn ignored_signals(pid: u32) -> u64 {
 pub fn hup_is_ignored() -> bool {
     ignored_signals(std::process::id()) & 1 != 0
 }
+
+/// A number from `/proc/<pid>/status`, such as `VmRSS` (in kB) or `Threads`. `None` if the
+/// process is gone or the field is missing.
+pub fn status_number(pid: u32, field: &str) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(field)?.strip_prefix(':'))
+        .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
+}

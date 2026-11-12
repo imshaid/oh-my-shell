@@ -11,9 +11,15 @@ publish = false
 name = "omsh-pty-shell"
 path = "src/bin/omsh-pty-shell.rs"
 
+[[bin]]
+name = "omsh-perf"
+path = "src/bin/omsh-perf.rs"
+
 [dependencies]
 # The shell under test. Its entry function is what the test binary calls.
 omsh-cli = { path = "../omsh-cli" }
+# `omsh-perf` makes a history file of 100,000 commands for the keystroke measurement.
+omsh-history.workspace = true
 nix.workspace = true
 
 [lints]

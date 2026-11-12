@@ -17,8 +17,8 @@
 //!
 //! "First" is the first in this process; the file system's own cache is warm (a run first lists
 //! everything once), as it is for a person who has used the machine for a while. Run with
-//! `cargo bench -p omsh-editor --bench completion`. A plain program with no benchmark framework;
-//! CI gating with criterion is S19's job. It exits with an error when a p99 passes the budget.
+//! `cargo bench -p omsh-editor --bench completion`. A plain program with no benchmark framework.
+//! It exits with status 1 when a p99 passes the budget, which is how CI gates it (`scripts/perf-gate.sh`).
 
 #![expect(
     clippy::expect_used,

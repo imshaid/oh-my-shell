@@ -16,8 +16,9 @@
 //! does before it redraws.
 //!
 //! The command lookup is a real search of `$PATH` with `stat`, like the shell's own. Run with
-//! `cargo bench -p omsh-editor`. This is a plain program with no benchmark framework; CI gating
-//! with criterion is S19's job.
+//! `cargo bench -p omsh-editor`. This is a plain program with no benchmark framework. It exits with
+//! status 1 when the worst warm p99 is over the budget, which is how CI gates it
+//! (`scripts/perf-gate.sh`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -217,4 +218,15 @@ fn main() {
     drop(typing);
     store.close(Duration::from_secs(5));
     let _ = fs::remove_dir_all(&dir);
+    // The gate (S19a): the warm case is what typing is. The cold case is far worse than typing
+    // really is and is only reported.
+    if worst > BUDGET {
+        eprintln!(
+            "keystroke benchmark: worst warm p99 {worst:.1?} is over the budget of {BUDGET:?}"
+        );
+        std::process::exit(1);
+    }
 }
+
+/// Blueprint section 16: keystroke to redraw, highlight and hint, p99.
+const BUDGET: Duration = Duration::from_millis(5);

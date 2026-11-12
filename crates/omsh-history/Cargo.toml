@@ -10,5 +10,9 @@ repository.workspace = true
 omsh-secrets.workspace = true
 rusqlite.workspace = true
 
+[[bench]]
+name = "query"
+harness = false
+
 [lints]
 workspace = true

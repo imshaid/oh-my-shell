@@ -98,3 +98,55 @@ jobs:
           command -v strace && command -v bash && command -v sudo && command -v unshare && command -v setpriv && command -v ip && command -v getent
       - name: Run every test with the network off
         run: scripts/test-offline.sh
+
+  perf:
+    name: Performance gate
+    # Blueprint section 16 / Gate B: every budget is measured on the runner and the job fails when
+    # one is missed (scripts/perf-gate.sh). Timing on a shared runner is noisy, so the budgets are
+    # the blueprint's own and the numbers are printed in the job summary. A failure here is a
+    # question for the owner, not a reason to rerun the job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Install hyperfine and check the tools
+        # The pty measurements start the shell with `setsid -c`, read `/proc` and make a git
+        # repository; the gate script reads hyperfine's JSON with python3.
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends hyperfine
+          command -v hyperfine && command -v setsid && command -v git && command -v python3
+          test -r /proc/self/stat
+      - name: Run the performance gate
+        run: scripts/perf-gate.sh
+
+  deny:
+    name: Dependencies (cargo deny)
+    # Licenses, bans and sources fail the job. Advisories only warn: a new advisory must not turn
+    # a build red on its own (the same reason the Rust toolchain is pinned); they show in the log.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # From https://github.com/EmbarkStudios/cargo-deny/releases (the .sha256 file of the asset).
+      CARGO_DENY_VERSION: "0.20.2"
+      CARGO_DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        # cargo-deny reads the dependency tree with `cargo metadata`.
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Install cargo-deny
+        run: |
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/$name.tar.gz"
+          echo "${CARGO_DENY_SHA256}  $RUNNER_TEMP/$name.tar.gz" | sha256sum --check -
+          mkdir "$RUNNER_TEMP/cargo-deny"
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP/cargo-deny" --strip-components=1
+          echo "$RUNNER_TEMP/cargo-deny" >> "$GITHUB_PATH"
+      - name: Licenses, bans and sources
+        run: cargo-deny --locked check licenses bans sources
+      - name: Advisories (only warns)
+        continue-on-error: true
+        run: cargo-deny --locked check advisories

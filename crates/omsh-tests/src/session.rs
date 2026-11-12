@@ -347,6 +347,27 @@ impl Session {
         }
     }
 
+    /// Waits at most `wait` for the terminal to show something, reads what is there and returns
+    /// at once (unlike [`Session::pump`], which always waits for the whole time). True if bytes
+    /// were read. For measuring: the caller loops and keeps its own clock.
+    pub fn read_some(&mut self, wait: Duration) -> bool {
+        let mut buffer = [0_u8; 4096];
+        let step = PollTimeout::try_from(wait).unwrap_or(PollTimeout::from(50_u16));
+        let mut fds = [PollFd::new(self.master.as_fd(), PollFlags::POLLIN)];
+        if !poll(&mut fds, step).is_ok_and(|n| n > 0) {
+            return false;
+        }
+        match self.master.read(&mut buffer) {
+            Ok(n) if n > 0 => {
+                self.transcript
+                    .push_str(&String::from_utf8_lossy(&buffer[..n]));
+                self.answer_cursor_queries();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Answers each new "where is the cursor?" question in the output, as a terminal does.
     fn answer_cursor_queries(&mut self) {
         let bytes = self.transcript.as_bytes();

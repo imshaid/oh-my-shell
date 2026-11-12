@@ -490,6 +490,44 @@ impl Store {
         read_entries(connection, &sql, &values).unwrap_or_default()
     }
 
+    /// Hands the entries that fit `query` to `each`, one after the other, in the order and
+    /// within the limit of the query, and stops when `each` returns `false`. Unlike [`Store::query`]
+    /// the whole answer is never in memory: the rows are read in pages of 2,000 by their ids, and
+    /// the reader is free between two pages, so a slow consumer (a pager) does not hold the
+    /// database. `below_id` and `above_id` of the query are kept; the paging moves the one on the
+    /// side the walk comes from.
+    pub fn query_each(&self, query: &Query, mut each: impl FnMut(Entry) -> bool) {
+        const PAGE: u32 = 2_000;
+        let mut page_query = query.clone();
+        let mut left = query.limit;
+        loop {
+            let size = left.map_or(PAGE, |left| left.min(PAGE));
+            if size == 0 {
+                return;
+            }
+            page_query.limit = Some(size);
+            let rows = self.query(&page_query);
+            let count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+            let Some(last) = rows.last().map(|entry| entry.id) else {
+                return;
+            };
+            for entry in rows {
+                if !each(entry) {
+                    return;
+                }
+            }
+            if count < size {
+                return;
+            }
+            if query.newest_first {
+                page_query.below_id = Some(last);
+            } else {
+                page_query.above_id = Some(last);
+            }
+            left = left.map(|left| left - count);
+        }
+    }
+
     /// How many entries fit `query` (its limit and order do not count).
     #[must_use]
     pub fn count(&self, query: &Query) -> u64 {

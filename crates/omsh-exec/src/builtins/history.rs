@@ -28,7 +28,17 @@ pub struct BuiltinOutput {
 pub trait HistoryCommand: Send + Sync {
     /// `args` are the words after `history`, `cwd` is the shell's working directory, and
     /// `to_terminal` says whether the output goes to a terminal.
-    fn run(&self, args: &[Vec<u8>], cwd: &[u8], to_terminal: bool) -> BuiltinOutput;
+    ///
+    /// A long listing is not built in memory: it is passed to `sink` in pieces as it is read, and
+    /// the listing stops when `sink` returns `false` (the reader of the pipe has gone). Whatever
+    /// is in the returned `out` is written after that, as before.
+    fn run(
+        &self,
+        args: &[Vec<u8>],
+        cwd: &[u8],
+        to_terminal: bool,
+        sink: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> BuiltinOutput;
 }
 
 /// The shell's handle on its history command. Shared by every copy of the shell.
@@ -60,7 +70,23 @@ pub(super) fn history(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     };
     let cwd = shell.logical_cwd();
     let to_terminal = io.get(1).is_some_and(|slot| slot.as_fd().is_terminal());
-    let output = command.run(args, cwd.as_os_str().as_encoded_bytes(), to_terminal);
+    // The first write that fails (or ends a subshell) stops the listing; its outcome is returned.
+    let mut stopped: Option<Flow> = None;
+    let output = command.run(
+        args,
+        cwd.as_os_str().as_encoded_bytes(),
+        to_terminal,
+        &mut |piece| match shell.emit(io, 1, piece) {
+            Ok(status) if status == ExitStatus::SUCCESS => true,
+            other => {
+                stopped = Some(other);
+                false
+            }
+        },
+    );
+    if let Some(outcome) = stopped {
+        return outcome;
+    }
     if !output.err.is_empty() {
         io.say(output.err.strip_suffix(b"\n").unwrap_or(&output.err));
     }
