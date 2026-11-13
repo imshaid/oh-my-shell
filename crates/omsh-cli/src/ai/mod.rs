@@ -98,6 +98,11 @@ impl AiSession {
     }
 }
 
+/// The words that can follow `omsh ai`, in the order [`USAGE`] lists them. A test keeps this list,
+/// the usage text, the dispatch in `OmshCommand::run` and `docs/commands.md` in step.
+#[cfg(test)]
+pub(crate) const AI_COMMANDS: &[&str] = &["setup", "status", "test", "forget"];
+
 const USAGE: &str = "\
 usage: omsh ai <command>
   setup    choose a provider and a model, store the key, check that it works

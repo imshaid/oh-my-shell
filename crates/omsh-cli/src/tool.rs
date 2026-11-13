@@ -82,3 +82,25 @@ const MAX_CONFIG_LINES: usize = 10;
 fn say(text: &str) {
     let _ = writeln!(io::stderr(), "{text}");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TOOLS;
+
+    #[test]
+    fn every_command_of_omsh_has_an_entry_in_the_command_reference() {
+        let page = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/commands.md"),
+        )
+        .unwrap();
+        // `omsh ai` is described by its four commands (`omsh ai setup` and so on, checked in
+        // `ai/tests.rs`); every other command has a heading of its own.
+        for tool in TOOLS.iter().filter(|tool| **tool != "ai") {
+            assert!(
+                page.contains(&format!("### `omsh {tool}")),
+                "docs/commands.md has no entry for `omsh {tool}`"
+            );
+        }
+        assert!(page.contains("### `omsh ai setup`"));
+    }
+}

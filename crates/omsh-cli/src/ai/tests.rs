@@ -1152,3 +1152,37 @@ fn a_poisoned_lock_does_not_lock_the_commands_out() {
         t.everything()
     );
 }
+
+// -- the list of commands and the documentation ----------------------------------------
+
+#[test]
+fn the_list_of_ai_commands_matches_the_usage_text_the_dispatch_and_the_reference() {
+    // The usage text lists exactly the commands of the constant, in the same order.
+    let listed: Vec<&str> = super::USAGE
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(listed, super::AI_COMMANDS);
+
+    let page = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/commands.md"),
+    )
+    .unwrap();
+    for word in super::AI_COMMANDS {
+        // Each word reaches a command: none of them is answered as an unknown one.
+        let world = Setup::default().build();
+        let mut t = Scripted::new(&[END, END, END]);
+        world.run(&["ai", word], &mut t);
+        assert!(
+            !t.everything().contains("unknown command"),
+            "omsh ai {word} is not dispatched: {}",
+            t.everything()
+        );
+        // And each one has its entry in the command reference.
+        assert!(
+            page.contains(&format!("### `omsh ai {word}`")),
+            "docs/commands.md has no entry for `omsh ai {word}`"
+        );
+    }
+}
