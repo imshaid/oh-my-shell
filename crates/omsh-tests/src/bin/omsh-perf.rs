@@ -5,7 +5,11 @@
 //!
 //! - start to first prompt (budget 30 ms), in a folder with no repository, in a repository with
 //!   the real `git`, and in a repository whose `git` never answers;
-//! - idle memory (RSS) at the prompt (budget 15 MB);
+//! - idle memory (RSS) at the prompt (budget 15 MB), with an empty history and with a history file
+//!   of 100,000 commands (S28b: the budget of 15 MB and a regression line of 13 MB; the case reads
+//!   the memory at the first prompt and after ten more prompts, which each make a new hint
+//!   ranking), and with a history whose newest 20,000 commands are all different (the worst case
+//!   for the hint ranking; the budget of 15 MB only);
 //! - one keystroke to the end of the redraw, typing lines of 100 and 499 characters with a history
 //!   file of 100,000 commands, at 11 prompts each (a new prompt is made with Ctrl+C). This includes
 //!   the editor's own painting, which the benchmark in `omsh-editor` does not. Three checks:
@@ -36,6 +40,10 @@ type Failure = Box<dyn Error>;
 
 const START_BUDGET: Duration = Duration::from_millis(30);
 const RSS_BUDGET_KB: u64 = 15 * 1024;
+/// A regression line under the 15 MB budget for the idle shell with a 100,000-row history (S28b):
+/// the shell was at 13.6 to 14.1 MB there before S28b, so the budget alone left no room to see
+/// growth. The line fails the gate too.
+const RSS_BIG_LINE_KB: u64 = 13 * 1024;
 /// Blueprint section 16: keystroke to redraw, p99, for lines under 500 characters. Measured over
 /// every key, the first key of each prompt included.
 const KEYSTROKE_BUDGET: Duration = Duration::from_millis(5);
@@ -44,6 +52,54 @@ const MAX_KEY_CAP: Duration = Duration::from_millis(25);
 /// Prompts per line length: each is a new prompt (Ctrl+C), and the line is typed again.
 const PROMPTS: usize = 11;
 const HISTORY_ROWS: usize = 100_000;
+/// The hint ranking looks at this many of the newest rows (`omsh_history::HINT_WINDOW`).
+const HINT_WINDOW_ROWS: usize = 20_000;
+
+/// What the commands of the big history look like.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    /// Six kinds of command that repeat: about 3,700 distinct ones.
+    Repeating,
+    /// The worst case for the hint ranking: the newest 20,000 rows are all different commands
+    /// (the older rows repeat three kinds).
+    Distinct,
+}
+
+impl Shape {
+    /// The folder names under the scratch folder: home and working folder.
+    fn folders(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Repeating => ("khome", "kwork"),
+            Self::Distinct => ("dhome", "dwork"),
+        }
+    }
+
+    fn command(self, i: usize) -> String {
+        if self == Self::Distinct {
+            return if i < HISTORY_ROWS - HINT_WINDOW_ROWS {
+                match i % 3 {
+                    0 => "cargo build --release".to_owned(),
+                    1 => format!("cd /home/me/src/project{}", i % 50),
+                    _ => format!("make test{}", i % 20),
+                }
+            } else {
+                // About 100 characters, like a long real command.
+                format!(
+                    "git commit -m 'change number {i}: update the parser and the tests for case {}' --author=dev{i}",
+                    i * 7919 % 100_003
+                )
+            };
+        }
+        match i % 6 {
+            0 => format!("git commit -m 'change number {i}'"),
+            1 => "cargo build --release".to_owned(),
+            2 => format!("cd /home/me/src/project{}", i % 50),
+            3 => format!("ls -la /usr/lib/x{}", i % 300),
+            4 => format!("ssh host{}.example.org", i % 40),
+            _ => format!("make test{}", i % 20),
+        }
+    }
+}
 /// Marks the end of one paint of the line editor (it shows the cursor again).
 const PAINT_DONE: &str = "\x1b[?25h";
 const PAINT_START: &str = "\x1b[?25l";
@@ -335,8 +391,115 @@ fn measure(
     );
     drop(session);
 
+    let big_line = (RSS_BIG_LINE_KB as f64 * scale) as u64;
+    for shape in [Shape::Repeating, Shape::Distinct] {
+        idle_with_big_history(bin, scratch, &mut report, shape, (rss_budget_kb, big_line))?;
+    }
     keystrokes(bin, scratch, &mut report, scale, trace)?;
     Ok(report)
+}
+
+/// Makes (or reuses) the home with a history file of [`HISTORY_ROWS`] commands, plus the `typed`
+/// lines, and returns the home and the working folder. The keystroke case and the idle memory
+/// case share it, so the file is made once.
+fn seed_history(
+    scratch: &Path,
+    typed: &[String],
+    shape: Shape,
+) -> Result<(PathBuf, PathBuf), Failure> {
+    let (home, work) = shape.folders();
+    let (home, work) = (scratch.join(home), scratch.join(work));
+    if home.join(".local/share/oh-my-shell/history.db").is_file() {
+        return Ok((home, work));
+    }
+    fs::create_dir_all(&work)?;
+    let data = home.join(".local/share/oh-my-shell");
+    fs::create_dir_all(&data)?;
+    let cwd = work.to_string_lossy().into_owned();
+    let store = Store::open(&data.join("history.db"), u32::MAX);
+    let folders = [cwd.as_str(), "/home/me/src/web", "/home/me", "/etc", "/tmp"];
+    for i in 0..HISTORY_ROWS {
+        let command = shape.command(i);
+        let token = store.start(&command, folders[i % folders.len()]);
+        store.finish(token, i32::from(i % 17 == 0), Duration::from_millis(5));
+    }
+    for line in typed {
+        let token = store.start(line, &cwd);
+        store.finish(token, 0, Duration::from_millis(5));
+    }
+    if !store.settle(Duration::from_secs(120)) {
+        return Err("the history file was not written in time".into());
+    }
+    store.close(Duration::from_secs(5));
+    Ok((home, work))
+}
+
+/// Idle memory with a history file of 100,000 commands (S28b), of the given `shape`. The
+/// empty-history case above cannot see what the history costs: SQLite's page cache, the hint
+/// ranking and the reader.
+/// Reads the memory at the first prompt and again after ten more prompts (each makes a new hint
+/// ranking), and judges the larger one.
+fn idle_with_big_history(
+    bin: &str,
+    scratch: &Path,
+    report: &mut Report,
+    shape: Shape,
+    (budget_kb, line_kb): (u64, u64),
+) -> Result<(), Failure> {
+    let typed = vec![line_of(100), line_of(499)];
+    let (home, work) = seed_history(scratch, &typed, shape)?;
+    let place = Place {
+        dir: work,
+        path: "/usr/bin:/bin".to_owned(),
+    };
+    let (_, mut session) = first_prompt(bin, &home, &place)?;
+    // Waits for the history writer (the `history` builtin settles it); a leading blank keeps the
+    // line out of the history.
+    session.command(" history -n 1 >/dev/null")?;
+    session.pump(Duration::from_millis(500));
+    let pid = session.shell_pid();
+    let first = procfs::status_number(pid, "VmRSS").ok_or("no VmRSS in /proc")?;
+    for _ in 0..10 {
+        session.command(" true")?;
+        session.pump(Duration::from_millis(100));
+    }
+    session.pump(Duration::from_millis(400));
+    let later = procfs::status_number(pid, "VmRSS").ok_or("no VmRSS in /proc")?;
+    let anon = procfs::status_number(pid, "RssAnon").unwrap_or(0);
+    let file = procfs::status_number(pid, "RssFile").unwrap_or(0);
+    let worst = first.max(later);
+    let mb = |kb: u64| format!("{:.2} MB", kb as f64 / 1024.0);
+    let what = match shape {
+        Shape::Repeating => format!("{HISTORY_ROWS}-row history"),
+        Shape::Distinct => format!(
+            "{HISTORY_ROWS}-row history, the newest {HINT_WINDOW_ROWS} all different commands"
+        ),
+    };
+    report.add(
+        &format!(
+            "idle RSS, {what} (first prompt {}, after 10 prompts {})",
+            mb(first),
+            mb(later)
+        ),
+        mb(worst),
+        mb(budget_kb),
+        worst < budget_kb,
+    );
+    // The regression line belongs to the ordinary history; the worst case has the budget only.
+    if shape == Shape::Repeating {
+        report.add(
+            "idle RSS, 100,000-row history, regression line",
+            mb(worst),
+            mb(line_kb),
+            worst < line_kb,
+        );
+    }
+    report.note(
+        "of which RssAnon / RssFile (after 10 prompts)",
+        format!("{} / {}", mb(anon), mb(file)),
+    );
+    drop(session);
+    Ok(())
 }
 
 /// Types lines one key at a time and times each key until the editor has finished painting.
@@ -347,38 +510,9 @@ fn keystrokes(
     scale: f64,
     trace: bool,
 ) -> Result<(), Failure> {
-    let home = scratch.join("khome");
-    let work = scratch.join("kwork");
-    fs::create_dir_all(&work)?;
-    let data = home.join(".local/share/oh-my-shell");
-    fs::create_dir_all(&data)?;
     let lengths = [100_usize, 499];
     let typed: Vec<String> = lengths.iter().map(|len| line_of(*len)).collect();
-    let cwd = work.to_string_lossy().into_owned();
-    {
-        let store = Store::open(&data.join("history.db"), u32::MAX);
-        let folders = [cwd.as_str(), "/home/me/src/web", "/home/me", "/etc", "/tmp"];
-        for i in 0..HISTORY_ROWS {
-            let command = match i % 6 {
-                0 => format!("git commit -m 'change number {i}'"),
-                1 => "cargo build --release".to_owned(),
-                2 => format!("cd /home/me/src/project{}", i % 50),
-                3 => format!("ls -la /usr/lib/x{}", i % 300),
-                4 => format!("ssh host{}.example.org", i % 40),
-                _ => format!("make test{}", i % 20),
-            };
-            let token = store.start(&command, folders[i % folders.len()]);
-            store.finish(token, i32::from(i % 17 == 0), Duration::from_millis(5));
-        }
-        for line in &typed {
-            let token = store.start(line, &cwd);
-            store.finish(token, 0, Duration::from_millis(5));
-        }
-        if !store.settle(Duration::from_secs(120)) {
-            return Err("the history file was not written in time".into());
-        }
-        store.close(Duration::from_secs(5));
-    }
+    let (home, work) = seed_history(scratch, &typed, Shape::Repeating)?;
     let place = Place {
         dir: work,
         path: "/usr/bin:/bin".to_owned(),

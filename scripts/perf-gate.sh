@@ -3,7 +3,7 @@
 # every budget and exits with status 1 if any of them is missed. Everything is measured and
 # printed before it exits, so one run shows all that is wrong.
 #
-#   start to first prompt, idle memory, keystroke to redraw (the real shell on a pty)  omsh-perf
+#   start to first prompt, idle memory (empty, 100,000-row and worst-case history), keystroke to redraw (the real shell on a pty)  omsh-perf
 #   `--version` under 10 ms, `-c true` within 5 ms of `/bin/sh -c true`                hyperfine
 #   keystroke: highlight + hint under 5 ms p99                                          omsh-editor bench
 #   completion menu under 50 ms                                                         omsh-editor bench

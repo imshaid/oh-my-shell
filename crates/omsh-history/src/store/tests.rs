@@ -1212,6 +1212,363 @@ fn a_cut_ranking_never_gives_a_wrong_answer_and_says_unknown_when_it_cannot_tell
     assert_eq!(cut.best("zzzz"), None);
 }
 
+/// Sets the age of every run of `command`: `ago_ms` before `now`.
+fn age(path: &Path, command: &str, now: i64, ago_ms: i64) {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute(
+            "UPDATE history SET started_at = ? WHERE command = ?",
+            params![now - ago_ms, command],
+        )
+        .unwrap();
+}
+
+#[test]
+fn the_ranking_orders_by_folder_then_score_by_age_then_newest() {
+    let scratch = Scratch::new();
+    let store = Store::open(&scratch.db(), 1000);
+    // Oldest first, so that the newest run has the biggest id.
+    for (command, cwd, times) in [
+        ("w old17", "/x", 17), // 17 old runs: 17 quarters
+        ("w week3", "/x", 3),  // 3 runs in the last week: 12 quarters
+        ("w hour1", "/x", 1),  // 1 run in the last hour: 16 quarters
+        ("w day2", "/x", 2),   // 2 runs in the last day: 16 quarters, newer than w hour1
+        ("w other", "/y", 40), // only in /y: after everything run in /x
+    ] {
+        for _ in 0..times {
+            record(&store, command, cwd, 0);
+        }
+    }
+    // Equal scores: the command whose newest run is newer comes first, however the runs mix.
+    for command in ["w tieA", "w tieB", "w tieB", "w tieA"] {
+        record(&store, command, "/x", 0);
+    }
+    assert!(store.settle(PATIENT));
+    store.close(PATIENT);
+    let now = now_ms();
+    let path = scratch.db();
+    age(&path, "w old17", now, 30 * DAY_MS);
+    age(&path, "w week3", now, 2 * DAY_MS);
+    age(&path, "w hour1", now, 60_000);
+    age(&path, "w day2", now, 2 * HOUR_MS);
+    age(&path, "w other", now, 30 * DAY_MS);
+    age(&path, "w tieA", now, 30 * DAY_MS);
+    age(&path, "w tieB", now, 30 * DAY_MS);
+    let store = Store::open(&path, 1000);
+    assert!(store.settle(PATIENT));
+    let order =
+        |cwd: &str| -> Vec<String> { store.hint_ranking(cwd, now, 100).expect("ready").commands };
+    assert_eq!(
+        order("/x"),
+        [
+            "w old17", "w day2", "w hour1", "w week3", "w tieA", "w tieB", "w other"
+        ],
+        "17 > 16 (newer) > 16 > 12 > 2 (newer) > 2, and a command never run here is last"
+    );
+    assert_eq!(
+        order("/y")[0],
+        "w other",
+        "the folder comes before the score"
+    );
+    // The same rows, the same order, as the database question gives one prefix at a time.
+    for cwd in ["/x", "/y", "/nowhere"] {
+        let ranking = store.hint_ranking(cwd, now, 100).expect("ready");
+        for prefix in ["w", "w o", "w h", "w d", "w w", "w ot"] {
+            assert_eq!(
+                ranking.best(prefix).expect("complete"),
+                hint_of(&store, prefix, cwd, now).as_deref(),
+                "prefix {prefix:?} in {cwd}"
+            );
+        }
+    }
+}
+
+/// The ranking as the shell made it before S28b: one SQL question that groups, orders and cuts
+/// (the question of [`Store::hint`] without the text to match). The new code must give the same
+/// list.
+fn reference_ranking(store: &Store, cwd: &str, now: i64, limit: usize) -> Ranking {
+    let guard = lock(&store.inner.shared.reader);
+    let connection = guard.as_ref().expect("the reader is open");
+    let mut statement = connection
+        .prepare(
+            "SELECT command FROM history \
+             WHERE id > (SELECT max(id) FROM history) - ? \
+               AND instr(command, char(10)) = 0 \
+               AND (exit_status IS NULL OR exit_status <> 127) \
+             GROUP BY command \
+             ORDER BY max(cwd = ?) DESC, \
+               sum(CASE WHEN started_at >= ? THEN 4.0 WHEN started_at >= ? THEN 2.0 \
+                        WHEN started_at >= ? THEN 1.0 ELSE 0.25 END) DESC, \
+               max(id) DESC \
+             LIMIT ?",
+        )
+        .unwrap();
+    let asked = i64::try_from(limit + 1).unwrap();
+    let mut commands: Vec<String> = statement
+        .query_map(
+            params![
+                HINT_WINDOW,
+                cwd,
+                now - HOUR_MS,
+                now - DAY_MS,
+                now - WEEK_MS,
+                asked
+            ],
+            |row| row.get(0),
+        )
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let complete = commands.len() <= limit;
+    commands.truncate(limit);
+    Ranking::from_commands(commands, complete)
+}
+
+/// A small generator, so that the test is the same on every run.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self, below: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % below
+    }
+}
+
+#[test]
+fn the_ranking_is_the_list_the_database_question_gave_before() {
+    let scratch = Scratch::new();
+    let path = scratch.db();
+    let store = Store::open(&path, u32::MAX);
+    let mut random = Lcg(7);
+    // 60 commands (some with a line feed), 5 folders, 900 runs: many repeats and many ties.
+    let commands: Vec<String> = (0..60)
+        .map(|n| match n % 10 {
+            0 => format!("echo 'a\nb {n}'"),
+            1 => format!("git status {n}"),
+            _ => format!("cmd {n}"),
+        })
+        .collect();
+    let folders = ["/a", "/b", "/c", "/d", "/e"];
+    for _ in 0..900 {
+        let command = &commands[usize::try_from(random.next(60)).unwrap()];
+        let folder = folders[usize::try_from(random.next(5)).unwrap()];
+        record(&store, command, folder, 0);
+    }
+    assert!(store.settle(PATIENT));
+    store.close(PATIENT);
+    let now = now_ms();
+    {
+        // Ages in all four tiers, a few mistyped (127) runs, a few that never ended (no status).
+        let raw = Connection::open(&path).unwrap();
+        let ids: Vec<i64> = raw
+            .prepare("SELECT id FROM history")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for id in ids {
+            let ago = [30_000, 3 * HOUR_MS, 3 * DAY_MS, 20 * DAY_MS]
+                [usize::try_from(random.next(4)).unwrap()];
+            let status = match random.next(12) {
+                0 => Some(127),
+                1 => None,
+                _ => Some(0),
+            };
+            raw.execute(
+                "UPDATE history SET started_at = ?, exit_status = ? WHERE id = ?",
+                params![now - ago, status, id],
+            )
+            .unwrap();
+        }
+    }
+    let store = Store::open(&path, u32::MAX);
+    assert!(store.settle(PATIENT));
+    let mut compared = 0;
+    for later in [0, 2 * HOUR_MS, 3 * DAY_MS, 25 * DAY_MS] {
+        for cwd in ["/a", "/b", "/e", "/nowhere"] {
+            for limit in [0, 1, 2, 3, 10, 40, 1000] {
+                let got = store.hint_ranking(cwd, now + later, limit).expect("ready");
+                let want = reference_ranking(&store, cwd, now + later, limit);
+                assert_eq!(got, want, "folder {cwd}, {later} ms later, limit {limit}");
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 4 * 4 * 7);
+    // The history really has what the test says it has.
+    let full = store.hint_ranking("/a", now, 1000).expect("ready");
+    assert!(
+        full.len() > 40 && full.len() < 60,
+        "{} commands",
+        full.len()
+    );
+    assert!(full.best("cmd").is_some());
+}
+
+fn run(hash: u64, newest: i64, quarters: u32, here: bool) -> Counter {
+    Counter {
+        hash,
+        newest,
+        quarters,
+        here,
+    }
+}
+
+#[test]
+fn runs_with_one_hash_become_one_command_and_only_the_best_are_kept() {
+    // Hash 1: three runs (here only in one, scores 16 + 4 + 1, newest id 9). Hash 2: one run
+    // here. Hashes 3 to 8: one run each, scores 8 down to 1, not here.
+    let mut runs = vec![
+        run(1, 5, 16, false),
+        run(3, 6, 8, false),
+        run(1, 9, 4, true),
+        run(2, 4, 1, true),
+        run(1, 2, 1, false),
+        run(4, 7, 8, false),
+        run(5, 8, 4, false),
+        run(6, 10, 4, false),
+        run(7, 11, 2, false),
+        run(8, 12, 1, false),
+    ];
+    let all = best_commands(runs.clone(), 100);
+    // Run here first (hash 1 and 2: score 21 before 1), then by score, then the newest run.
+    let order: Vec<(u64, u32, i64)> = all.iter().map(|c| (c.hash, c.quarters, c.newest)).collect();
+    assert_eq!(
+        order,
+        [
+            (1, 21, 9),
+            (2, 1, 4),
+            (4, 8, 7),
+            (3, 8, 6),
+            (6, 4, 10),
+            (5, 4, 8),
+            (7, 2, 11),
+            (8, 1, 12)
+        ]
+    );
+    // Cut: exactly `wanted` are left, and they are the first of the full list, in order.
+    for wanted in 1..=8 {
+        let cut = best_commands(runs.clone(), wanted);
+        assert_eq!(cut.len(), wanted, "wanted {wanted}");
+        let hashes: Vec<u64> = cut.iter().map(|c| c.hash).collect();
+        let first: Vec<u64> = all.iter().take(wanted).map(|c| c.hash).collect();
+        assert_eq!(hashes, first, "wanted {wanted}");
+    }
+    // More wanted than there are commands: all of them, and the input order does not matter.
+    runs.reverse();
+    assert_eq!(best_commands(runs, 50).len(), 8);
+    assert!(best_commands(Vec::new(), 3).is_empty());
+
+    // Many commands, so that the cut is a real selection and not a sort of a few: the first
+    // `wanted` must be exactly the first of the full list, in the same order.
+    let mut random = Lcg(11);
+    let mut many = Vec::new();
+    for id in 1..=3000_i64 {
+        let hash = random.next(700); // about 700 commands, with 4 runs each on average
+        let quarters = [16, 8, 4, 1][usize::try_from(random.next(4)).unwrap()];
+        many.push(run(hash, id, quarters, random.next(5) == 0));
+    }
+    let full = best_commands(many.clone(), usize::MAX);
+    assert!(full.len() > 600);
+    for wanted in [1, 2, 3, 17, 100, 599, 600] {
+        let cut = best_commands(many.clone(), wanted);
+        let got: Vec<u64> = cut.iter().map(|c| c.hash).collect();
+        let want: Vec<u64> = full.iter().take(wanted).map(|c| c.hash).collect();
+        assert_eq!(got, want, "wanted {wanted}");
+    }
+}
+
+#[test]
+fn merging_while_the_list_fills_gives_the_same_commands_as_merging_at_the_end() {
+    let mut random = Lcg(23);
+    let runs: Vec<Counter> = (1..=5000_i64)
+        .map(|id| {
+            let hash = random.next(900);
+            let quarters = [16, 8, 4, 1][usize::try_from(random.next(4)).unwrap()];
+            run(hash, id, quarters, random.next(6) == 0)
+        })
+        .collect();
+    let at_the_end = best_commands(runs.clone(), 300);
+    for merge_at in [2, 3, 7, 64, 1000, 5000, 100_000] {
+        let mut counters = Counters::new(merge_at, 0);
+        let mut longest = 0;
+        for counter in &runs {
+            counters.push(*counter);
+            longest = longest.max(counters.list.len());
+        }
+        let got = counters.best(300);
+        assert_eq!(got.len(), at_the_end.len(), "merge_at {merge_at}");
+        for (a, b) in got.iter().zip(&at_the_end) {
+            assert_eq!(
+                (a.hash, a.newest, a.quarters, a.here),
+                (b.hash, b.newest, b.quarters, b.here),
+                "merge_at {merge_at}"
+            );
+        }
+        // The list follows the number of different commands (900), not the number of runs: it
+        // can be up to 4 times as long (the room doubles when a merge leaves it half full).
+        if merge_at <= 1000 {
+            assert!(
+                longest <= 4 * 900 + merge_at,
+                "merge_at {merge_at}: {longest}"
+            );
+        }
+    }
+    // Only different commands: the list may grow, and nothing is lost on the way.
+    let mut counters = Counters::new(4, 0);
+    for id in 1..=100_i64 {
+        counters.push(run(u64::try_from(id).unwrap(), id, 1, false));
+    }
+    // The room doubles each time, so there are few merges (without that: one for every run).
+    assert!(counters.merges <= 8, "{} merges", counters.merges);
+    // The room doubles each time, so there are few merges (without that: one for every run).
+    assert!(counters.merges <= 8, "{} merges", counters.merges);
+    assert_eq!(counters.best(1000).len(), 100);
+}
+
+#[test]
+fn the_ranking_looks_at_the_newest_window_of_rows_only() {
+    let store = Store::in_memory();
+    for _ in 0..10 {
+        record(&store, "only in the oldest rows", "/w", 0);
+    }
+    // 10 more than the window, so the oldest 10 rows are outside it.
+    let filler = usize::try_from(HINT_WINDOW).unwrap();
+    for i in 0..filler {
+        record(&store, &format!("filler {}", i % 7), "/w", 0);
+    }
+    assert!(store.settle(PATIENT));
+    let ranking = store.hint_ranking("/w", now_ms(), 100).expect("ready");
+    assert!(
+        !ranking
+            .commands
+            .iter()
+            .any(|c| c == "only in the oldest rows")
+    );
+    assert_eq!(ranking.len(), 7);
+    assert_eq!(ranking.best("only"), Some(None));
+}
+
+#[test]
+fn the_page_cache_of_both_connections_is_limited() {
+    let scratch = Scratch::new();
+    let (writer, reader) = open_file(&scratch.db(), 1000).unwrap_or_else(|_| panic!("opens"));
+    for (name, connection, kib) in [
+        ("writer", &writer, WRITER_CACHE_KIB),
+        ("reader", &reader, READER_CACHE_KIB),
+    ] {
+        let size: i64 = connection
+            .query_row("PRAGMA cache_size", [], |row| row.get(0))
+            .unwrap();
+        // Negative: KiB (positive would be pages).
+        assert_eq!(size, -kib, "the {name}");
+    }
+}
+
 #[test]
 fn the_ranking_is_not_ready_when_the_database_is_not() {
     let scratch = Scratch::new();

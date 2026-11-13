@@ -169,6 +169,23 @@ fn main() {
         times[times.len() - 1]
     );
 
+    // The hint ranking the editor asks for once for each prompt (5,000 commands of the newest
+    // 20,000 rows; here every command is different, the worst case for its memory). It runs on a
+    // helper thread, but the first keys of a prompt wait for it, so it is gated with the lookups.
+    let (times, found) = time(|| {
+        store
+            .hint_ranking("/home/user/project-7", now_ms(), 5_000)
+            .map_or(0, |ranking| ranking.len())
+    });
+    assert_eq!(found, 5_000, "the ranking holds the 5,000 best commands");
+    let p99 = percentile(&times, 0.99);
+    worst = worst.max(p99);
+    println!(
+        "{:>10.3?} {p99:>10.3?} {:>10.3?}  hint ranking, 20,000 rows, 5,000 kept ({found} commands)",
+        percentile(&times, 0.5),
+        times[times.len() - 1]
+    );
+
     // The history explorer's list (Ctrl+R): the distinct commands among the newest 10,000 runs, asked once when
     // the view opens. Gated with the lookups.
     let (times, found) = time(|| {

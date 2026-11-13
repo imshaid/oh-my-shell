@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::fs::{DirBuilder, Permissions};
+use std::hash::{BuildHasher, RandomState};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,6 +77,14 @@ const CREATE: &str = "
 /// A hint looks only at this many of the newest rows, so that its cost has a ceiling whatever
 /// the typed text is (blueprint §16: a keystroke is under 5 ms).
 pub const HINT_WINDOW: i64 = 20_000;
+
+/// The page cache of each connection, in KiB. SQLite's own default is 2,048 KiB per connection,
+/// and with a 100,000-row history two full caches were about 4 MB of the shell's idle memory
+/// (S28b). The pages are in the operating system's file cache anyway, so a smaller cache costs a
+/// little copying, not disk reads. The writer touches few pages at a time; the reader scans for
+/// `history search` and the explorer, so it gets more (the benchmark `query` shows the cost).
+const WRITER_CACHE_KIB: i64 = 256;
+const READER_CACHE_KIB: i64 = 256;
 
 /// How many visited folders `j` remembers. The least recently visited are removed when a shell
 /// starts.
@@ -189,6 +198,31 @@ impl Ranking {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
+    }
+}
+
+/// [`Counters`] merge the runs of one command for the first time at this many entries.
+const MERGE_RUNS_AT: usize = 4096;
+
+/// What [`Store::hint_ranking`] keeps for a run, and then for a command: a 64-bit hash of the
+/// text and three counters, 24 bytes, never the text.
+#[derive(Clone, Copy)]
+struct Counter {
+    /// Hash of the command text (with a key that is new for each call).
+    hash: u64,
+    /// The id of the newest run.
+    newest: i64,
+    /// Four times the score of the hint rule (4, 2, 1 and 0.25 per use), to stay in integers.
+    quarters: u32,
+    /// Run in the folder asked about at least once.
+    here: bool,
+}
+
+impl Counter {
+    /// The order of the ranking, best first: run here, then the score, then the newest run.
+    /// `newest` is the id of a row, so no two commands are equal.
+    fn best_first(a: &Self, b: &Self) -> std::cmp::Ordering {
+        (b.here, b.quarters, b.newest).cmp(&(a.here, a.quarters, a.newest))
     }
 }
 
@@ -547,8 +581,15 @@ impl Store {
     /// The best `limit` commands for hints in `cwd`, in the order of [`Store::hint`]: the same
     /// rows (the newest [`HINT_WINDOW`], no several-line commands, no status 127), the same
     /// groups and the same order, with no text to match. One question that costs as much as the
-    /// slowest `hint` (it groups the whole window), asked once for a prompt, so that the first
+    /// slowest `hint` (it reads the whole window), asked once for a prompt, so that the first
     /// keys of that prompt are answered from memory.
+    ///
+    /// The grouping is done here, in one pass over the rows, and not by SQL's `GROUP BY`: SQLite
+    /// sorts every row of a `GROUP BY` first, and with a window of 20,000 rows that sorter (and the
+    /// memory the allocator then kept) was most of the idle memory of a shell with a long history
+    /// (S28b: 18 MB before, 11.5 MB after). Only one entry per distinct command is held. The
+    /// scores are kept as quarters (16, 8, 4 and 1 for the 4, 2, 1 and 0.25 of [`Store::hint`]),
+    /// which are exact, so the order is the same as the database question gives.
     ///
     /// # Errors
     ///
@@ -556,30 +597,61 @@ impl Store {
     pub fn hint_ranking(&self, cwd: &str, now_ms: i64, limit: usize) -> Result<Ranking, NotReady> {
         let guard = lock(&self.inner.shared.reader);
         let connection = guard.as_ref().ok_or(NotReady)?;
-        let asked = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
-        let values = [
-            Value::Integer(HINT_WINDOW),
-            Value::Text(cwd.to_owned()),
-            Value::Integer(now_ms.saturating_sub(HOUR_MS)),
-            Value::Integer(now_ms.saturating_sub(DAY_MS)),
-            Value::Integer(now_ms.saturating_sub(WEEK_MS)),
-            Value::Integer(asked),
-        ];
+        // Memory is the point of this function (S28b). SQL's `GROUP BY` sorts all the rows of the
+        // window (20,000 rows of text); a map from text to counters holds every distinct text.
+        // Both made the idle shell big with a long history, and the allocator kept what they
+        // used. So: (1) one pass that keeps, for each run, only a hash of its text and three
+        // counters; (2) sort by hash and add the runs of one command together; (3) cut to the
+        // best `limit + 1`; (4) read the text of those few by the id of their newest run. Both
+        // passes see the same data (one read transaction). The order is the one the database
+        // question of [`Store::hint`] gives; two different texts with the same 64-bit hash would
+        // be taken for one command (a chance of about 1 in 10^10 for 20,000 distinct commands,
+        // and the key of the hash differs from call to call).
         let read = || -> rusqlite::Result<Vec<String>> {
-            let mut statement = connection.prepare(
-                "SELECT command FROM history \
-                 WHERE id > (SELECT max(id) FROM history) - ? \
-                   AND instr(command, char(10)) = 0 \
-                   AND (exit_status IS NULL OR exit_status <> 127) \
-                 GROUP BY command \
-                 ORDER BY max(cwd = ?) DESC, \
-                   sum(CASE WHEN started_at >= ? THEN 4.0 WHEN started_at >= ? THEN 2.0 \
-                            WHEN started_at >= ? THEN 1.0 ELSE 0.25 END) DESC, \
-                   max(id) DESC \
-                 LIMIT ?",
-            )?;
-            let rows = statement.query_map(params_from_iter(values.iter()), |row| row.get(0))?;
-            rows.collect()
+            let snapshot = begin_read(connection)?;
+            let (hour, day, week) = (
+                now_ms.saturating_sub(HOUR_MS),
+                now_ms.saturating_sub(DAY_MS),
+                now_ms.saturating_sub(WEEK_MS),
+            );
+            let key = RandomState::new();
+            let mut counters = Counters::new(
+                MERGE_RUNS_AT,
+                usize::try_from(HINT_WINDOW).unwrap_or(MERGE_RUNS_AT),
+            );
+            {
+                let mut statement = snapshot.prepare(
+                    "SELECT command, cwd = ?, started_at, id FROM history \
+                     WHERE id > (SELECT max(id) FROM history) - ? \
+                       AND instr(command, char(10)) = 0 \
+                       AND (exit_status IS NULL OR exit_status <> 127)",
+                )?;
+                let mut rows = statement.query(params![cwd, HINT_WINDOW])?;
+                while let Some(row) = rows.next()? {
+                    let started: i64 = row.get(2)?;
+                    counters.push(Counter {
+                        hash: key.hash_one(row.get_ref(0)?.as_str()?),
+                        newest: row.get(3)?,
+                        quarters: if started >= hour {
+                            16
+                        } else if started >= day {
+                            8
+                        } else if started >= week {
+                            4
+                        } else {
+                            1
+                        },
+                        here: row.get(1)?,
+                    });
+                }
+            }
+            let counters = counters.best(limit.saturating_add(1));
+            let mut text = snapshot.prepare("SELECT command FROM history WHERE id = ?")?;
+            let mut commands = Vec::with_capacity(counters.len());
+            for counter in &counters {
+                commands.push(text.query_row([counter.newest], |row| row.get::<_, String>(0))?);
+            }
+            Ok(commands)
         };
         let mut commands = read().map_err(|_| NotReady)?;
         let complete = commands.len() <= limit;
@@ -961,6 +1033,92 @@ fn begin(connection: &Connection) -> rusqlite::Result<Transaction<'_>> {
     Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
 }
 
+/// Adds up the counters of one command (same hash) in place, so that `counters` holds one per
+/// command. The order of `counters` is lost.
+fn merge_runs(counters: &mut Vec<Counter>) {
+    // Runs of one command are next to each other once sorted by hash.
+    counters.sort_unstable_by_key(|counter| counter.hash);
+    let mut kept = 0;
+    for next in 0..counters.len() {
+        let run = counters[next];
+        if kept > 0 && counters[kept - 1].hash == run.hash {
+            let command = &mut counters[kept - 1];
+            command.here |= run.here;
+            command.quarters += run.quarters;
+            command.newest = command.newest.max(run.newest);
+        } else {
+            counters[kept] = run;
+            kept += 1;
+        }
+    }
+    counters.truncate(kept);
+}
+
+/// From one [`Counter`] per run to one per command, the best `wanted` of them, best first: runs
+/// with the same hash are added together, then the rest is cut with a selection, not a full sort
+/// (the text of each one kept is read afterwards, so the cut is what keeps that read small).
+fn best_commands(mut counters: Vec<Counter>, wanted: usize) -> Vec<Counter> {
+    merge_runs(&mut counters);
+    if counters.len() > wanted {
+        counters.select_nth_unstable_by(wanted - 1, Counter::best_first);
+        counters.truncate(wanted);
+    }
+    counters.sort_unstable_by(Counter::best_first);
+    counters
+}
+
+/// The counters of the runs read so far. Whenever the list is full it is merged to one entry per
+/// command, so its size follows the number of different commands and not the number of runs: a
+/// history that repeats the same few thousand commands keeps a list of that size.
+struct Counters {
+    list: Vec<Counter>,
+    /// Merge when the list reaches this length.
+    merge_at: usize,
+    /// How often the list was merged: the tests look at it, so that merging at every run (slow,
+    /// and the same answer) does not go unseen.
+    #[cfg(test)]
+    merges: usize,
+}
+
+impl Counters {
+    /// `room` is the most the list can hold without growing (it is only address space until the
+    /// list really fills it: pages that are never written to are not in memory; growing the list
+    /// in steps instead left the freed smaller buffers behind in the allocator).
+    fn new(merge_at: usize, room: usize) -> Self {
+        Self {
+            list: Vec::with_capacity(room.max(merge_at)),
+            merge_at,
+            #[cfg(test)]
+            merges: 0,
+        }
+    }
+
+    fn push(&mut self, counter: Counter) {
+        self.list.push(counter);
+        if self.list.len() >= self.merge_at {
+            merge_runs(&mut self.list);
+            #[cfg(test)]
+            {
+                self.merges += 1;
+            }
+            // Mostly different commands: more room, so that this does not merge at every run.
+            if self.list.len() * 2 > self.merge_at {
+                self.merge_at *= 2;
+            }
+        }
+    }
+
+    fn best(self, wanted: usize) -> Vec<Counter> {
+        best_commands(self.list, wanted)
+    }
+}
+
+/// Starts a transaction that only reads: everything asked inside it sees the database as it was at
+/// the first question.
+fn begin_read(connection: &Connection) -> rusqlite::Result<Transaction<'_>> {
+    Transaction::new_unchecked(connection, TransactionBehavior::Deferred)
+}
+
 /// Opens (and creates) the database file: a connection to write with, one to read with.
 fn open_file(path: &Path, size: u32) -> Result<(Connection, Connection), Failure> {
     let unusable = |error: std::io::Error| Failure::Unusable(error.to_string());
@@ -1004,13 +1162,21 @@ fn open_file(path: &Path, size: u32) -> Result<(Connection, Connection), Failure
     // With WAL, NORMAL cannot corrupt the file; a power cut may lose the last commands.
     writer.pragma_update(None, "synchronous", "NORMAL")?;
     prepare(&writer)?;
+    set_cache(&writer, WRITER_CACHE_KIB)?;
     prune(&writer, size)?;
     let reader = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     reader.busy_timeout(READ_PATIENCE)?;
+    set_cache(&reader, READER_CACHE_KIB)?;
     Ok((writer, reader))
+}
+
+/// Limits the page cache of `connection` to `kib` KiB (see [`WRITER_CACHE_KIB`]). A negative
+/// `cache_size` means KiB; a positive one means pages.
+fn set_cache(connection: &Connection, kib: i64) -> rusqlite::Result<()> {
+    connection.pragma_update(None, "cache_size", -kib)
 }
 
 fn open_memory() -> Result<Connection, String> {
