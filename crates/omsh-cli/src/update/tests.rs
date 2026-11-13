@@ -49,6 +49,7 @@ impl Screen {
 /// Downloads from a table; counts the asks.
 struct Table {
     files: HashMap<String, Vec<u8>>,
+    redirects: HashMap<String, String>,
     asked: Mutex<Vec<String>>,
     count: AtomicUsize,
 }
@@ -57,12 +58,17 @@ impl Table {
     fn new() -> Self {
         Self {
             files: HashMap::new(),
+            redirects: HashMap::new(),
             asked: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
         }
     }
     fn with(mut self, url: &str, body: &[u8]) -> Self {
         self.files.insert(url.to_owned(), body.to_vec());
+        self
+    }
+    fn with_redirect(mut self, url: &str, target: &str) -> Self {
+        self.redirects.insert(url.to_owned(), target.to_owned());
         self
     }
     fn requests(&self) -> usize {
@@ -89,6 +95,20 @@ impl Fetch for Table {
                 "HTTP 404 Not Found",
             )),
         }
+    }
+
+    fn location(
+        &self,
+        url: &str,
+        _: Duration,
+        _: &dyn Fn() -> bool,
+    ) -> Result<String, ProviderError> {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        self.asked.lock().unwrap().push(url.to_owned());
+        self.redirects
+            .get(url)
+            .cloned()
+            .ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "HTTP 404 Not Found"))
     }
 }
 
@@ -117,7 +137,6 @@ const NAME: &str = "oh-my-shell-x86_64-unknown-linux-gnu.tar.gz";
 
 fn origin() -> Origin {
     Origin {
-        api: API.to_owned(),
         web: API.to_owned(),
     }
 }
@@ -132,11 +151,12 @@ fn env(dir: &Folder) -> UpdateEnv {
 }
 
 fn latest_url() -> String {
-    format!("{API}/repos/{REPO}/releases/latest")
+    format!("{API}/{REPO}/releases/latest")
 }
 
-fn release_json(tag: &str) -> Vec<u8> {
-    format!(r#"{{"tag_name":"{tag}"}}"#).into_bytes()
+/// Where `releases/latest` redirects to when `tag` is the newest release.
+fn latest_target(tag: &str) -> String {
+    format!("{API}/{REPO}/releases/tag/{tag}")
 }
 
 /// A tar.gz with the program at the place a release has it.
@@ -166,7 +186,7 @@ fn release(tag: &str, program: &[u8]) -> Table {
     let archive = archive_with(program);
     let sums = format!("{}  {NAME}\n", archive::sha256_hex(&archive));
     Table::new()
-        .with(&latest_url(), &release_json(tag))
+        .with_redirect(&latest_url(), &latest_target(tag))
         .with(
             &format!("{API}/{REPO}/releases/download/{tag}/{NAME}"),
             &archive,
@@ -236,7 +256,7 @@ fn a_wrong_checksum_changes_nothing() {
     let exe = install_old(&dir);
     let archive = archive_with(&script("9.9.9"));
     let table = Table::new()
-        .with(&latest_url(), &release_json("v9.9.9"))
+        .with_redirect(&latest_url(), &latest_target("v9.9.9"))
         .with(
             &format!("{API}/{REPO}/releases/download/v9.9.9/{NAME}"),
             &archive,
@@ -258,7 +278,7 @@ fn a_sum_file_that_does_not_list_the_archive_changes_nothing() {
     let exe = install_old(&dir);
     let archive = archive_with(&script("9.9.9"));
     let table = Table::new()
-        .with(&latest_url(), &release_json("v9.9.9"))
+        .with_redirect(&latest_url(), &latest_target("v9.9.9"))
         .with(
             &format!("{API}/{REPO}/releases/download/v9.9.9/{NAME}"),
             &archive,
@@ -313,7 +333,7 @@ fn an_archive_without_the_program_changes_nothing() {
     archive.truncate(10); // not a gzip any more
     let sums = format!("{}  {NAME}\n", archive::sha256_hex(&archive));
     let table = Table::new()
-        .with(&latest_url(), &release_json("v9.9.9"))
+        .with_redirect(&latest_url(), &latest_target("v9.9.9"))
         .with(
             &format!("{API}/{REPO}/releases/download/v9.9.9/{NAME}"),
             &archive,
@@ -423,6 +443,36 @@ fn a_refused_server_setting_asks_nothing() {
 }
 
 #[test]
+fn the_latest_release_is_the_redirect_of_releases_latest_and_not_the_api() {
+    let dir = Folder::new("redirect");
+    let exe = install_old(&dir);
+    let table = table_with_latest("v9.9.9");
+    let (status, screen) = run_update(&["--check"], &env(&dir), &exe, &table);
+    assert_eq!(status, 0, "{}", screen.all());
+    assert!(screen.all().contains("9.9.9"), "{}", screen.all());
+    assert_eq!(
+        *table.asked.lock().unwrap(),
+        vec![format!("{API}/{REPO}/releases/latest")],
+        "one lookup, at the web address (the API allows 60 requests an hour)"
+    );
+}
+
+#[test]
+fn a_repository_with_no_release_is_said_in_words() {
+    // github.com redirects `releases/latest` to `.../releases` when there is no release.
+    let dir = Folder::new("norelease");
+    let exe = install_old(&dir);
+    let table = Table::new().with_redirect(&latest_url(), &format!("{API}/{REPO}/releases"));
+    let (status, screen) = run_update(&["--check"], &env(&dir), &exe, &table);
+    assert_eq!(status, 1);
+    assert!(
+        screen.err.contains("could not be read (is there one yet?)"),
+        "{}",
+        screen.all()
+    );
+}
+
+#[test]
 fn a_lookup_that_fails_is_said_in_words() {
     let dir = Folder::new("lookup");
     let exe = install_old(&dir);
@@ -444,7 +494,7 @@ fn a_lookup_that_fails_is_said_in_words() {
 fn a_tag_that_is_not_a_version_is_refused() {
     let dir = Folder::new("badtag");
     let exe = install_old(&dir);
-    let table = Table::new().with(&latest_url(), &release_json("nightly"));
+    let table = Table::new().with_redirect(&latest_url(), &latest_target("nightly"));
     let (status, screen) = run_update(&[], &env(&dir), &exe, &table);
     assert_eq!(status, 1);
     assert!(
@@ -498,7 +548,7 @@ fn the_archive_name_follows_the_cpu() {
 // -- the daily check ----------------------------------------------------------------------
 
 fn table_with_latest(tag: &str) -> Table {
-    Table::new().with(&latest_url(), &release_json(tag))
+    Table::new().with_redirect(&latest_url(), &latest_target(tag))
 }
 
 #[test]

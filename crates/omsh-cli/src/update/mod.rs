@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use omsh_ai::download::{self, ACCEPT_ANY, ACCEPT_JSON, Origin};
+use omsh_ai::download::{self, ACCEPT_ANY, Origin};
 use omsh_ai::{ErrorKind, ProviderError};
 use omsh_exec::Terminal;
 
@@ -35,8 +35,6 @@ use self::version::Version;
 /// The repository releases come from.
 pub const REPO: &str = "imshaid/oh-my-shell";
 
-/// The most a `releases/latest` answer may be.
-const MAX_JSON: usize = 1024 * 1024;
 /// The most a `sha256.sum` may be.
 const MAX_SUMS: usize = 64 * 1024;
 /// The most a release archive may be (the real one is about 5 MB).
@@ -80,6 +78,19 @@ pub trait Fetch: Send + Sync {
         timeout: Duration,
         interrupted: &dyn Fn() -> bool,
     ) -> Result<Vec<u8>, ProviderError>;
+
+    /// One GET that is not followed: the address a redirect points to. This is how the latest
+    /// release is found (`releases/latest` redirects to `releases/tag/<tag>`).
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError`] on a network failure, an answer that is not a redirect, or a Ctrl+C.
+    fn location(
+        &self,
+        url: &str,
+        timeout: Duration,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<String, ProviderError>;
 }
 
 /// The network, on the shared runtime (a command a person waits for).
@@ -96,6 +107,15 @@ impl Fetch for Network {
     ) -> Result<Vec<u8>, ProviderError> {
         download::get(url, accept, max_bytes, timeout, interrupted)
     }
+
+    fn location(
+        &self,
+        url: &str,
+        timeout: Duration,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<String, ProviderError> {
+        download::location(url, timeout, interrupted)
+    }
 }
 
 /// The network, on a runtime of its own (the background check; it cannot be interrupted).
@@ -111,6 +131,15 @@ impl Fetch for DetachedNetwork {
         _interrupted: &dyn Fn() -> bool,
     ) -> Result<Vec<u8>, ProviderError> {
         download::get_detached(url, accept, max_bytes, timeout)
+    }
+
+    fn location(
+        &self,
+        url: &str,
+        timeout: Duration,
+        _interrupted: &dyn Fn() -> bool,
+    ) -> Result<String, ProviderError> {
+        download::location_detached(url, timeout)
     }
 }
 
@@ -132,11 +161,6 @@ pub fn describe(error: &ProviderError) -> String {
     }
 }
 
-/// The latest release's tag from the answer of `releases/latest`, if it has one.
-fn tag_of(body: &[u8]) -> Option<String> {
-    omsh_ai::download::tag_name(body)
-}
-
 /// The latest release, as a tag and a version.
 ///
 /// # Errors
@@ -147,11 +171,14 @@ pub fn latest(
     fetch: &dyn Fetch,
     interrupted: &dyn Fn() -> bool,
 ) -> Result<(String, Version), String> {
-    let url = format!("{}/repos/{REPO}/releases/latest", origin.api);
-    let body = fetch
-        .get(&url, ACCEPT_JSON, MAX_JSON, LOOKUP_TIME, interrupted)
+    // Not the GitHub API (60 requests an hour for an address): the web address redirects to
+    // the newest release, and the tag is in the address it redirects to.
+    let url = format!("{}/{REPO}/releases/latest", origin.web);
+    let location = fetch
+        .location(&url, LOOKUP_TIME, interrupted)
         .map_err(|error| describe(&error))?;
-    let tag = tag_of(&body).ok_or("the latest release could not be read (is there one yet?)")?;
+    let tag = download::tag_from_location(&location)
+        .ok_or("the latest release could not be read (is there one yet?)")?;
     let version = Version::parse(&tag).ok_or_else(|| {
         format!("the latest release has a tag that is not a version number ({tag})")
     })?;

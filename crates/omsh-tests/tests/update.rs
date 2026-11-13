@@ -294,7 +294,7 @@ fn the_daily_check_shows_a_toast_once_and_then_stays_quiet_for_a_day() {
         }
         assert_eq!(
             server.requests(),
-            vec!["GET /repos/imshaid/oh-my-shell/releases/latest".to_owned()],
+            vec!["GET /imshaid/oh-my-shell/releases/latest".to_owned()],
             "one lookup, and no download"
         );
         let stamp = fs::read_to_string(state_dir(ctx).join("update-check"))?;

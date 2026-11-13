@@ -20,25 +20,22 @@ use crate::destination::this_machine_origin;
 use crate::error::{ErrorKind, ProviderError};
 use crate::runtime::{block_on, prepare_tls};
 
-/// The GitHub API, where `releases/latest` is asked.
-pub const GITHUB_API: &str = "https://api.github.com";
-/// GitHub's web address, where the release files are downloaded from.
+/// GitHub's web address. The latest release is found by asking `<web>/<repo>/releases/latest`
+/// for its redirect (not the API, which allows an address only 60 requests an hour), and the
+/// release files are downloaded from the same place.
 pub const GITHUB_WEB: &str = "https://github.com";
 /// The test hook: a server on this machine that stands in for GitHub. It is not documented for
 /// users, and any value that is not a loopback address is refused.
 pub const SERVER_VARIABLE: &str = "OMSH_RELEASE_SERVER";
 
-/// The `Accept` header for the GitHub API.
-pub const ACCEPT_JSON: &str = "application/vnd.github+json";
 /// The `Accept` header for a file.
 pub const ACCEPT_ANY: &str = "*/*";
 
 /// Where releases are looked up and downloaded from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Origin {
-    /// Where `/repos/<owner>/<name>/releases/latest` is asked.
-    pub api: String,
-    /// Where `/<owner>/<name>/releases/download/<tag>/<file>` is downloaded.
+    /// Where `/<owner>/<name>/releases/latest` is asked (it redirects to the newest tag) and
+    /// `/<owner>/<name>/releases/download/<tag>/<file>` is downloaded.
     pub web: String,
 }
 
@@ -47,15 +44,14 @@ impl Origin {
     #[must_use]
     pub fn github() -> Self {
         Self {
-            api: GITHUB_API.to_owned(),
             web: GITHUB_WEB.to_owned(),
         }
     }
 }
 
 /// The server to use. `value` is what [`SERVER_VARIABLE`] holds, if it is set. Unset gives
-/// GitHub; a loopback address (`localhost`, `127.0.0.1`, `::1`, http or https) replaces both
-/// addresses; anything else is an error, so the variable can never point updates at a remote
+/// GitHub; a loopback address (`localhost`, `127.0.0.1`, `::1`, http or https) replaces it;
+/// anything else is an error, so the variable can never point updates at a remote
 /// server.
 ///
 /// # Errors
@@ -66,10 +62,7 @@ pub fn release_origin(value: Option<&str>) -> Result<Origin, String> {
         return Ok(Origin::github());
     };
     match this_machine_origin(value) {
-        Some(origin) => Ok(Origin {
-            api: origin.clone(),
-            web: origin,
-        }),
+        Some(origin) => Ok(Origin { web: origin }),
         None => Err(format!(
             "{SERVER_VARIABLE} is set, but it is not a server on this computer \
              (localhost, 127.0.0.1 or ::1); the real release server is not replaced"
@@ -77,12 +70,14 @@ pub fn release_origin(value: Option<&str>) -> Result<Origin, String> {
     }
 }
 
-/// The `tag_name` of a GitHub release, from the JSON of `releases/latest`.
+/// The tag in the address that `releases/latest` redirects to: `.../releases/tag/v0.1.1` gives
+/// `v0.1.1`. `None` for any other address (a repository with no release redirects to
+/// `.../releases`) and for a tag that is not a short plain word, so a tag can never change the
+/// path of a download address.
 #[must_use]
-pub fn tag_name(body: &[u8]) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let tag = value.get("tag_name")?.as_str()?;
-    // A tag is a short plain word; anything else is not used as a path in an address.
+pub fn tag_from_location(location: &str) -> Option<String> {
+    let path = location.split(['?', '#']).next().unwrap_or_default();
+    let tag = path.rsplit_once("/releases/tag/")?.1;
     let plain = !tag.is_empty()
         && tag.len() <= 64
         && tag
@@ -178,6 +173,84 @@ fn too_big() -> ProviderError {
     )
 }
 
+/// The longest `Location` header that is read.
+const MAX_LOCATION: usize = 2048;
+
+/// One GET that is **not** followed: the address a redirect points to. A status other than a
+/// redirect is an error (`NotFound` for a plain 200, because that is not what a repository
+/// with a release does).
+async fn locate(url: &str, timeout: Duration) -> Result<String, ProviderError> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("oh-my-shell/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ProviderError::new(ErrorKind::Internal, "the HTTP client did not start"))?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, ACCEPT_ANY)
+        .send()
+        .await
+        .map_err(|error| crate::genai_provider::map_reqwest_public(&error))?;
+    let status = response.status();
+    if !status.is_redirection() {
+        if status.is_success() {
+            return Err(ProviderError::new(
+                ErrorKind::NotFound,
+                "the address does not redirect",
+            ));
+        }
+        return Err(ProviderError::from_status(
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+        ));
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= MAX_LOCATION)
+        .ok_or_else(|| ProviderError::new(ErrorKind::BadResponse, "the redirect has no address"))?;
+    // A relative address is resolved against the one that was asked.
+    let target = response
+        .url()
+        .join(location)
+        .map_err(|_| ProviderError::new(ErrorKind::BadResponse, "the redirect address is bad"))?;
+    Ok(target.to_string())
+}
+
+/// Where `url` redirects to, asked on the shared runtime (Ctrl+C aware). The redirect is not
+/// followed.
+///
+/// # Errors
+///
+/// [`ProviderError`] for a network failure, an answer that is not a redirect, or a Ctrl+C.
+pub fn location(
+    url: &str,
+    timeout: Duration,
+    interrupted: &dyn Fn() -> bool,
+) -> Result<String, ProviderError> {
+    block_on(locate(url, timeout), interrupted)?
+}
+
+/// As [`location`], on a runtime made for this call and dropped at its end (the background
+/// check).
+///
+/// # Errors
+///
+/// As [`location`], without the Ctrl+C.
+pub fn location_detached(url: &str, timeout: Duration) -> Result<String, ProviderError> {
+    prepare_tls();
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| ProviderError::new(ErrorKind::Internal, format!("no runtime: {error}")))?;
+    let result = runtime.block_on(locate(url, timeout));
+    drop(runtime);
+    result
+}
+
 /// Downloads `url` on the shared runtime. Returns early with [`ErrorKind::Cancelled`] when
 /// `interrupted` says so (it is looked at every 50 ms).
 ///
@@ -256,14 +329,12 @@ mod tests {
     #[test]
     fn unset_means_github() {
         let origin = release_origin(None).unwrap();
-        assert_eq!(origin.api, "https://api.github.com");
         assert_eq!(origin.web, "https://github.com");
     }
 
     #[test]
-    fn a_loopback_server_replaces_both_addresses() {
+    fn a_loopback_server_replaces_github() {
         let origin = release_origin(Some("http://127.0.0.1:8123/")).unwrap();
-        assert_eq!(origin.api, "http://127.0.0.1:8123");
         assert_eq!(origin.web, "http://127.0.0.1:8123");
     }
 
@@ -284,31 +355,86 @@ mod tests {
     }
 
     #[test]
-    fn the_tag_is_read_from_the_release_json() {
-        let body = br#"{"id":1,"tag_name":"v0.2.0","name":"x","assets":[]}"#;
-        assert_eq!(tag_name(body).as_deref(), Some("v0.2.0"));
+    fn the_tag_is_read_from_the_redirect_address() {
         assert_eq!(
-            tag_name(br#"{"tag_name":"v1.0.0-rc.1"}"#).as_deref(),
+            tag_from_location("https://github.com/imshaid/oh-my-shell/releases/tag/v0.2.0")
+                .as_deref(),
+            Some("v0.2.0")
+        );
+        assert_eq!(
+            tag_from_location("/imshaid/oh-my-shell/releases/tag/v1.0.0-rc.1").as_deref(),
             Some("v1.0.0-rc.1")
+        );
+        // A query or a fragment is not part of the tag.
+        assert_eq!(
+            tag_from_location("https://github.com/o/r/releases/tag/v1.2.3?x=1#y").as_deref(),
+            Some("v1.2.3")
         );
     }
 
     #[test]
-    fn a_tag_that_could_change_an_address_is_not_used() {
-        for body in [
-            &br#"{"tag_name":"../../x"}"#[..],
-            br#"{"tag_name":"v1/2"}"#,
-            br#"{"tag_name":"v1 2"}"#,
-            br#"{"tag_name":"v1?x=1"}"#,
-            br#"{"tag_name":""}"#,
-            br#"{"tag_name":5}"#,
-            br#"{"name":"x"}"#,
-            br#"[]"#,
-            b"not json",
-            b"",
+    fn an_address_that_is_not_a_tag_or_could_change_a_path_is_not_used() {
+        for location in [
+            "https://github.com/imshaid/oh-my-shell/releases",
+            "https://github.com/imshaid/oh-my-shell/releases/tag/",
+            "https://github.com/o/r/releases/tag/../../x",
+            "https://github.com/o/r/releases/tag/v1/2",
+            "https://github.com/o/r/releases/tag/v1%202",
+            "https://github.com/o/r/releases/tag/v 1",
+            "https://github.com/o/r/releases/latest",
+            "",
         ] {
-            assert_eq!(tag_name(body), None, "{}", String::from_utf8_lossy(body));
+            assert_eq!(tag_from_location(location), None, "{location}");
         }
+        let long = format!("https://github.com/o/r/releases/tag/v{}", "1".repeat(80));
+        assert_eq!(tag_from_location(&long), None);
+    }
+
+    fn redirect(location: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn a_redirect_is_reported_and_not_followed() {
+        // One connection only: following the redirect would need a second one.
+        let (url, server) = serve(redirect("http://127.0.0.1:1/releases/tag/v7.7.7"), 1);
+        let target = location(&url, FIVE, &|| false).unwrap();
+        assert_eq!(target, "http://127.0.0.1:1/releases/tag/v7.7.7");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_relative_redirect_is_resolved_against_the_asked_address() {
+        let (url, server) = serve(redirect("/o/r/releases/tag/v3.0.0"), 1);
+        let origin = url.trim_end_matches("/x").to_owned();
+        let target = location_detached(&url, FIVE).unwrap();
+        assert_eq!(target, format!("{origin}/o/r/releases/tag/v3.0.0"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn an_answer_that_is_not_a_redirect_is_an_error() {
+        let (url, server) = serve(ok("hello"), 1);
+        let error = location(&url, FIVE, &|| false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotFound);
+        server.join().unwrap();
+        let (url, server) = serve(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            1,
+        );
+        let error = location(&url, FIVE, &|| false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotFound);
+        server.join().unwrap();
+        let (url, server) = serve(
+            b"HTTP/1.1 302 Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            1,
+        );
+        let error = location(&url, FIVE, &|| false).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::BadResponse);
+        server.join().unwrap();
     }
 
     #[test]

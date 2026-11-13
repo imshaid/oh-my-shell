@@ -48,9 +48,44 @@ TEXT
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# The tag name in the JSON that GitHub gives for `releases/latest`.
-tag_from_json() {
-    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+# The tag in the address that GitHub redirects `releases/latest` to:
+# ".../releases/tag/v0.1.1" gives "v0.1.1". Nothing is printed for anything else (no release
+# yet redirects to ".../releases"), or for a tag that is not a short plain word.
+tag_from_location() {
+    loc_text=$(printf '%s' "$1" | tr -d '\r\n')
+    case "$loc_text" in
+        */releases/tag/*) loc_tag=${loc_text##*/releases/tag/} ;;
+        *) return 0 ;;
+    esac
+    case "$loc_tag" in
+        '' | *[!A-Za-z0-9._+-]*) return 0 ;;
+    esac
+    [ "${#loc_tag}" -le 64 ] || return 0
+    printf '%s\n' "$loc_tag"
+}
+
+# The web address releases come from: GitHub, or (for tests) a server on this computer named
+# by OMSH_RELEASE_SERVER, the same hook `omsh update` has. Nothing else replaces GitHub.
+release_web() {
+    web_port=0
+    web_value=${OMSH_RELEASE_SERVER:-}
+    if [ -z "$web_value" ]; then
+        printf '%s\n' "https://github.com"
+        return 0
+    fi
+    web_value=${web_value%/}
+    case "$web_value" in http://* | https://*) ;; *) return 1 ;; esac
+    web_rest=${web_value#*://}
+    # Only an address and a port: no path, no user name, nothing after the port.
+    case "$web_rest" in */* | *@* | *\?* | *\#* | *\\* | *[!A-Za-z0-9.:\[\]]*) return 1 ;; esac
+    case "$web_rest" in
+        127.0.0.1 | localhost | \[::1\]) ;;
+        127.0.0.1:* | localhost:*) web_port=${web_rest#*:} ;;
+        \[::1\]:*) web_port=${web_rest#*\]:} ;;
+        *) return 1 ;;
+    esac
+    case "${web_port-0}" in '' | *[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$web_value"
 }
 
 # "x86_64-unknown-linux-gnu" or "aarch64-unknown-linux-gnu"; empty when there is no release.
@@ -64,25 +99,51 @@ target_for() {
 
 # Succeeds when "glibc 2.39" (the output of getconf) is new enough.
 glibc_ok() {
-    version=$(printf '%s' "$1" | sed -n 's/^glibc[[:space:]]\{1,\}\([0-9]\{1,\}\)\.\([0-9]\{1,\}\).*/\1 \2/p')
-    [ -n "$version" ] || return 1
-    major=${version% *}
-    minor=${version#* }
-    [ "$major" -gt "$MIN_GLIBC_MAJOR" ] && return 0
-    [ "$major" -eq "$MIN_GLIBC_MAJOR" ] && [ "$minor" -ge "$MIN_GLIBC_MINOR" ]
+    # Own variable names (glibc_*): POSIX sh has no `local`, and main() keeps `version`.
+    glibc_numbers=$(printf '%s' "$1" | sed -n 's/^glibc[[:space:]]\{1,\}\([0-9]\{1,\}\)\.\([0-9]\{1,\}\).*/\1 \2/p')
+    [ -n "$glibc_numbers" ] || return 1
+    glibc_major=${glibc_numbers% *}
+    glibc_minor=${glibc_numbers#* }
+    [ "$glibc_major" -gt "$MIN_GLIBC_MAJOR" ] && return 0
+    [ "$glibc_major" -eq "$MIN_GLIBC_MAJOR" ] && [ "$glibc_minor" -ge "$MIN_GLIBC_MINOR" ]
 }
 
-fetch() { # fetch URL FILE
+# Refuses an address that is not https (plain http only for a server on this computer).
+check_address() {
     case "$1" in
         https://* | http://127.0.0.1[:/]* | http://localhost[:/]* | http://\[::1\][:/]*) ;;
         *) die "refusing to download from $1 (https only)" ;;
     esac
+}
+
+fetch() { # fetch URL FILE
+    check_address "$1"
     if have curl; then
-        proto='=https'
-        case "$1" in http://*) proto='=http' ;; esac
-        curl --proto "$proto" --tlsv1.2 -fsSL -o "$2" "$1" || die "download failed: $1"
+        fetch_proto='=https'
+        case "$1" in http://*) fetch_proto='=http' ;; esac
+        curl --proto "$fetch_proto" --tlsv1.2 -fsSL -o "$2" "$1" || die "download failed: $1"
     elif have wget; then
         wget -q -O "$2" "$1" || die "download failed: $1"
+    else
+        die "needs curl or wget"
+    fi
+}
+
+# Where URL ($1) redirects to, without following it. Prints nothing when it does not redirect.
+# This is how the latest release is found: github.com/<repo>/releases/latest answers with a
+# redirect to .../releases/tag/<tag>. The GitHub API is not used: it allows an address only 60
+# requests an hour.
+redirect_of() { # redirect_of URL
+    check_address "$1"
+    if have curl; then
+        fetch_proto='=https'
+        case "$1" in http://*) fetch_proto='=http' ;; esac
+        curl --proto "$fetch_proto" --tlsv1.2 -fsS -o /dev/null -w '%{redirect_url}' "$1" \
+            || die "cannot reach $1"
+    elif have wget; then
+        # wget stops at the redirect (exit status 8) and, with -S, prints the headers.
+        wget_headers=$(wget --max-redirect=0 -S -O /dev/null "$1" 2>&1 || true)
+        printf '%s\n' "$wget_headers" | sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*//p' | head -n 1
     else
         die "needs curl or wget"
     fi
@@ -156,16 +217,17 @@ main() {
         cp "$sums" "$work/sha256.sum"
         # The name in the sums file is the release name, whatever the local file is called.
     else
+        web=$(release_web) || die "OMSH_RELEASE_SERVER is set, but it is not a server on this computer (localhost, 127.0.0.1 or ::1); GitHub is not replaced"
         if [ -z "$base_url" ]; then
             if [ -z "$version" ]; then
                 say "Looking for the latest release..."
-                fetch "https://api.github.com/repos/$REPO/releases/latest" "$work/latest.json"
-                tag=$(tag_from_json <"$work/latest.json")
+                location=$(redirect_of "$web/$REPO/releases/latest")
+                tag=$(tag_from_location "$location")
                 [ -n "$tag" ] || die "cannot read the latest release (is there one yet?)"
             else
                 tag="v$version"
             fi
-            base_url="https://github.com/$REPO/releases/download/$tag"
+            base_url="$web/$REPO/releases/download/$tag"
         fi
         say "Downloading $name from $base_url"
         fetch "$base_url/$name" "$work/$name"

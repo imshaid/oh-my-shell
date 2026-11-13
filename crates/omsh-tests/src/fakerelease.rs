@@ -1,7 +1,8 @@
 //! A fake release server on this machine, for the tests of `omsh update` and the daily check
 //! (S29b). It serves what GitHub serves for a repository:
 //!
-//! - `GET /repos/imshaid/oh-my-shell/releases/latest` as JSON with a `tag_name`;
+//! - `GET /imshaid/oh-my-shell/releases/latest` as a `302` to `.../releases/tag/<tag>`, as
+//!   github.com does (the address in `Location` is absolute and names this server);
 //! - `GET /imshaid/oh-my-shell/releases/download/<tag>/<file>` for the archive of this CPU
 //!   and `sha256.sum`.
 //!
@@ -33,10 +34,13 @@ pub enum Spoil {
 }
 
 type Routes = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+/// Paths that answer with a redirect, and where to.
+type Redirects = Arc<Mutex<HashMap<String, String>>>;
 
 pub struct FakeRelease {
     addr: SocketAddr,
     routes: Routes,
+    redirects: Redirects,
     seen: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -69,15 +73,21 @@ impl FakeRelease {
             .local_addr()
             .unwrap_or_else(|error| fail("the port's address", &error));
         let routes: Routes = Arc::default();
+        let redirects: Redirects = Arc::default();
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
-            let (routes, seen, stop) = (Arc::clone(&routes), Arc::clone(&seen), Arc::clone(&stop));
+            let (routes, redirects, seen, stop) = (
+                Arc::clone(&routes),
+                Arc::clone(&redirects),
+                Arc::clone(&seen),
+                Arc::clone(&stop),
+            );
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let _ = answer(stream, &routes, &seen);
+                            let _ = answer(stream, &routes, &redirects, &seen);
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                             thread::sleep(std::time::Duration::from_millis(5));
@@ -90,6 +100,7 @@ impl FakeRelease {
         Self {
             addr,
             routes,
+            redirects,
             seen,
             stop,
             thread: Some(thread),
@@ -143,12 +154,30 @@ impl FakeRelease {
         };
         let base = format!("/{REPO}/releases/download/{tag}");
         let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
-        routes.insert(
-            format!("/repos/{REPO}/releases/latest"),
-            format!(r#"{{"tag_name":"{tag}","name":"{tag}"}}"#).into_bytes(),
-        );
+        // github.com: `releases/latest` redirects to the page of the newest release.
+        let tag_page = format!("/{REPO}/releases/tag/{tag}");
+        self.redirects
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                format!("/{REPO}/releases/latest"),
+                format!("http://{}{tag_page}", self.addr),
+            );
+        routes.insert(tag_page, b"<title>release</title>".to_vec());
         routes.insert(format!("{base}/{name}"), bytes);
         routes.insert(format!("{base}/sha256.sum"), line.into_bytes());
+    }
+
+    /// A repository with no release yet: `releases/latest` redirects to `.../releases`, as
+    /// github.com does.
+    pub fn publish_nothing(&self) {
+        self.redirects
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                format!("/{REPO}/releases/latest"),
+                format!("http://{}/{REPO}/releases", self.addr),
+            );
     }
 
     /// Every request so far, as `GET /path`.
@@ -191,6 +220,7 @@ fn sha256(path: &Path) -> String {
 fn answer(
     mut stream: TcpStream,
     routes: &Routes,
+    redirects: &Redirects,
     seen: &Arc<Mutex<Vec<String>>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
@@ -213,6 +243,18 @@ fn answer(
     seen.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push(format!("{method} {path}"));
+    let target = redirects
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(path)
+        .cloned();
+    if let (Some(target), "GET") = (target, method) {
+        write!(
+            stream,
+            "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )?;
+        return stream.flush();
+    }
     let body = routes
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

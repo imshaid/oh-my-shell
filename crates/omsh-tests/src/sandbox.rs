@@ -317,6 +317,34 @@ impl<'a> Sandbox<'a> {
         Ok(command)
     }
 
+    /// `sh <script>` (the release installer) as a plain process in the sandbox's environment
+    /// only: its `HOME` and folders, a short `PATH`, no terminal. The installer puts the
+    /// program in `HOME/.local/bin`, which is inside the sandbox.
+    ///
+    /// # Panics
+    ///
+    /// When the folders are not safe.
+    #[must_use]
+    pub fn installer(&self, script: &Path) -> std::process::Command {
+        use std::process::{Command, Stdio};
+        assert_isolated(&self.folders(), &self.protected);
+        let mut command = Command::new("sh");
+        command
+            .arg(script)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LANG", "C")
+            .env("HOME", &self.home)
+            .current_dir(&self.home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (name, path) in self.folders() {
+            command.env(name, path);
+        }
+        command
+    }
+
     /// A launch of the installed copy as `omsh` (a link next to it), as the installer makes it.
     ///
     /// # Errors

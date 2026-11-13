@@ -128,9 +128,44 @@ check "glibc 3.0 is enough" glibc_probe "glibc 3.0"
 check "glibc 2.9 is too old (numbers, not text)" sh -c "! OMSH_INSTALL_SOURCED=1 sh -c \". '$installer'; glibc_ok 'glibc 2.9'\""
 check "an empty answer is not enough" sh -c "! OMSH_INSTALL_SOURCED=1 sh -c \". '$installer'; glibc_ok ''\""
 
-# --- the tag in GitHub's JSON ----------------------------------------------------------------------
-tag=$(OMSH_INSTALL_SOURCED=1 sh -c ". '$installer'; printf '%s' '{\"url\":\"x\",\"tag_name\": \"v1.2.3\",\"name\":\"y\"}' | tag_from_json")
-check "the tag is read from the JSON" test "$tag" = v1.2.3
+# --- the tag in the address `releases/latest` redirects to ----------------------------------------
+tag_probe() { OMSH_INSTALL_SOURCED=1 sh -c ". '$installer'; tag_from_location \"\$1\"" _ "$1"; }
+check "the tag is read from the redirect address" test "$(tag_probe 'https://github.com/imshaid/oh-my-shell/releases/tag/v1.2.3')" = v1.2.3
+check "a pre-release tag is read" test "$(tag_probe 'https://github.com/o/r/releases/tag/v1.0.0-rc.1')" = v1.0.0-rc.1
+check "a line ending (CR LF) is not part of the tag" test "$(tag_probe "$(printf 'https://github.com/o/r/releases/tag/v1.2.3\r\n')")" = v1.2.3
+check "no release yet (redirect to /releases) gives no tag" test -z "$(tag_probe 'https://github.com/o/r/releases')"
+check "a tag that could change the address gives no tag" test -z "$(tag_probe 'https://github.com/o/r/releases/tag/../../x')$(tag_probe 'https://github.com/o/r/releases/tag/v1/2')$(tag_probe 'https://github.com/o/r/releases/tag/v1%202')"
+# The helpers must not change the variables main() keeps (v0.1.0 shipped with glibc_ok
+# overwriting `version`, which made the download address "v2 36").
+cat > "$t/probe-version.sh" <<'PROBE'
+. "$1"
+version=0.1.1
+glibc_ok 'glibc 2.39'
+test "$version" = 0.1.1
+PROBE
+OMSH_INSTALL_SOURCED=1 check "glibc_ok leaves version alone" sh "$t/probe-version.sh" "$installer"
+cat > "$t/probe-vars.sh" <<'PROBE'
+. "$1"
+names="version bin_dir system add_shells archive sums base_url libc target name work tag web location"
+for n in $names; do eval "$n=keep"; done
+glibc_ok 'glibc 2.39'
+glibc_ok 'glibc 2.9' || true
+tag_from_location 'https://github.com/o/r/releases/tag/v1.2.3' >/dev/null
+OMSH_RELEASE_SERVER=http://127.0.0.1:1 release_web >/dev/null
+target_for x86_64 >/dev/null
+for n in $names; do
+    eval "value=\$$n"
+    [ "$value" = keep ] || { echo "$n was changed to $value"; exit 1; }
+done
+PROBE
+OMSH_INSTALL_SOURCED=1 check "no helper changes a variable that main() keeps" sh "$t/probe-vars.sh" "$installer"
+release_web_probe() { OMSH_RELEASE_SERVER=$1 OMSH_INSTALL_SOURCED=1 sh -c ". '$installer'; release_web"; }
+check "no hook: GitHub" test "$(OMSH_INSTALL_SOURCED=1 sh -c ". '$installer'; release_web")" = https://github.com
+check "the hook accepts 127.0.0.1 with a port" test "$(release_web_probe http://127.0.0.1:8123/)" = http://127.0.0.1:8123
+check "the hook accepts localhost and [::1]" sh -c "OMSH_RELEASE_SERVER=http://localhost:9 OMSH_INSTALL_SOURCED=1 sh -c \". '$installer'; release_web\" >/dev/null && OMSH_RELEASE_SERVER='http://[::1]:9' OMSH_INSTALL_SOURCED=1 sh -c \". '$installer'; release_web\" >/dev/null"
+for bad_hook in http://example.com https://github.com.evil.example http://127.0.0.2 http://localhost.evil.example http://127.0.0.1@evil.example http://127.0.0.1:80@evil.example http://127.0.0.1:80/x ftp://127.0.0.1 localhost; do
+    check "the hook refuses $bad_hook" sh -c "! OMSH_RELEASE_SERVER='$bad_hook' OMSH_INSTALL_SOURCED=1 sh -c \". '$installer'; release_web\" >/dev/null 2>&1"
+done
 
 # --- the download path, against a local server -----------------------------------------------------
 if command -v python3 >/dev/null 2>&1; then
