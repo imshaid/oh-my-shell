@@ -5,7 +5,9 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::io::capture::Captured;
 use crate::shell::{LineResult, Outcome, Shell};
@@ -24,6 +26,51 @@ case "$*" in *fail) exit 3;; esac
 exit 0
 "#;
 
+/// How long `wait_until_runnable` keeps trying: 200 tries, 10 ms apart.
+const BUSY_TRIES: u32 = 200;
+const BUSY_PAUSE: Duration = Duration::from_millis(10);
+
+/// Waits until `file` can be executed, by running it once (it must be one of the fakes: it logs
+/// to `/dev/null` and exits 0).
+///
+/// `exec` fails with "text file busy" (`ETXTBSY`) while any process holds the file open for
+/// writing. The tests run on many threads; a `fork` on another thread that happens between our
+/// `fs::write` opening the file and closing it copies the open handle into the child, which
+/// keeps it until its own `exec`. So a fake that was written a moment ago can be busy for a few
+/// milliseconds, and the wrapper's probe of it ("does it take `--color=auto`?") then fails
+/// and the wrapper quietly adds no flag. A holder always lets go: once one run succeeds nobody
+/// has the file open for writing any more, and nobody will (nothing writes the fakes again).
+/// The same retry as `Delivery::run` makes for `notify-send`.
+fn wait_until_runnable(file: &Path) {
+    let mut tries = 0;
+    loop {
+        let started = Command::new(file)
+            .arg("ready")
+            .env("OMSH_LOG", "/dev/null")
+            .env("OMSH_ACCEPT", "yes")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        match started {
+            Ok(status) => {
+                assert!(status.success(), "{} failed: {status}", file.display());
+                return;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < BUSY_TRIES =>
+            {
+                tries += 1;
+                std::thread::sleep(BUSY_PAUSE);
+            }
+            Err(error) => panic!(
+                "{} cannot be run after {tries} retries: {error}",
+                file.display()
+            ),
+        }
+    }
+}
+
 /// A directory of fake programs, removed at the end of the test.
 struct Fakes {
     dir: PathBuf,
@@ -39,6 +86,7 @@ impl Fakes {
             let file = dir.join(name);
             fs::write(&file, FAKE).unwrap();
             fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            wait_until_runnable(&file);
         }
         Self { dir }
     }
@@ -112,6 +160,40 @@ fn run(sh: &mut Shell, src: &str) -> Done {
         err: captured.stderr(),
         status,
     }
+}
+
+/// What to print when the wrapper did not add the flag although the fake accepts it: the wrapper
+/// hides its probe's output, so ask the same question again, in the shell and directly, and
+/// show the fake's call log (a probe that never started leaves no line in it).
+fn probe_report(fakes: &Fakes, sh: &mut Shell, done: &Done) -> String {
+    let again = run(
+        sh,
+        "command ls --color=auto -d / >/dev/null; echo probe-status=$?",
+    );
+    let direct = Command::new(fakes.path().join("ls"))
+        .args(["--color=auto", "-d", "/"])
+        .env("OMSH_LOG", "/dev/null")
+        .env("OMSH_ACCEPT", "yes")
+        .output();
+    let direct = match direct {
+        Ok(out) => format!(
+            "status {:?}, stderr {:?}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(error) => format!("could not start: {error} ({:?})", error.kind()),
+    };
+    format!(
+        "stderr of the line: {:?} (status {})\n\
+         calls the fake logged: {:?}\n\
+         the probe asked again in the shell: {:?}, stderr {:?}\n\
+         the fake run directly: {direct}",
+        done.err,
+        done.status,
+        fakes.calls(),
+        again.out,
+        again.err,
+    )
 }
 
 #[test]
@@ -240,7 +322,11 @@ fn the_probe_is_not_traced_and_leaves_the_status_alone() {
     let fakes = Fakes::new();
     let mut sh = fakes.shell(true);
     let done = run(&mut sh, "set -x; (exit 7); ls a");
-    assert!(done.err.contains("+ ls --color=auto a"), "{}", done.err);
+    assert!(
+        done.err.contains("+ ls --color=auto a"),
+        "{}",
+        probe_report(&fakes, &mut sh, &done)
+    );
     assert!(!done.err.contains("command"), "{}", done.err);
     assert!(
         !done.err.contains("-q x") && !done.err.contains("-d /"),
@@ -329,4 +415,35 @@ fn the_wrappers_exist_only_after_they_are_defined() {
     let mut names = fakes.shell(true).function_names();
     names.sort();
     assert_eq!(names, ["diff", "egrep", "fgrep", "grep", "ls"]);
+}
+
+/// The wait for a fake that is "text file busy": a handle open for writing makes `exec` fail
+/// until it is dropped, and the wait must go on trying until then. Without the retry the first
+/// busy answer would end the test run (the mutant "no retry" fails this test).
+#[test]
+fn a_fake_that_is_busy_for_a_while_is_waited_for() {
+    let dir = std::env::temp_dir().join(format!("omsh-busy-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("ls");
+    fs::write(&file, FAKE).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Proof that the file really is busy while the handle is open.
+    let holder = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    let busy = Command::new(&file).output().unwrap_err();
+    assert_eq!(busy.kind(), std::io::ErrorKind::ExecutableFileBusy);
+
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        drop(holder);
+    });
+    let started = Instant::now();
+    wait_until_runnable(&file);
+    assert!(
+        started.elapsed() >= Duration::from_millis(100),
+        "it returned while the file was still busy: {:?}",
+        started.elapsed()
+    );
+    release.join().unwrap();
+    let _ = fs::remove_dir_all(&dir);
 }
