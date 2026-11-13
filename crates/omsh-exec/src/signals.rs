@@ -90,13 +90,7 @@ pub(crate) fn inherited_ignored() -> u64 {
 /// Programs get the default behavior back before they run (see `spawn`).
 pub fn enter_interactive() {
     SURVIVES_INTERRUPTS.store(true, Ordering::SeqCst);
-    let catch = SigAction::new(
-        SigHandler::Handler(on_interrupt),
-        SaFlags::SA_RESTART,
-        SigSet::empty(),
-    );
-    // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
-    let _ = unsafe { sigaction(Signal::SIGINT, &catch) };
+    catch_interrupt();
     // A hangup ends the shell (and its jobs), unless it was told to ignore it (`nohup`).
     if inherited_ignored() & (1_u64 << libc::SIGHUP) == 0 {
         let hangup = SigAction::new(
@@ -119,6 +113,19 @@ pub fn enter_interactive() {
         // moment. The call only changes what the kernel does with the signal.
         let _ = unsafe { sigaction(signal, &ignore) };
     }
+}
+
+/// Catches `SIGINT` (Ctrl+C): the handler only sets the flag that [`interrupted`] reads. A
+/// one-shot command such as `omsh ai setup` calls this alone, so that a question with the echo
+/// turned off can put the terminal back before the program ends; it changes no other signal.
+pub fn catch_interrupt() {
+    let catch = SigAction::new(
+        SigHandler::Handler(on_interrupt),
+        SaFlags::SA_RESTART,
+        SigSet::empty(),
+    );
+    // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+    let _ = unsafe { sigaction(Signal::SIGINT, &catch) };
 }
 
 /// Records that a program died of Ctrl+C. With job control the shell is not in the

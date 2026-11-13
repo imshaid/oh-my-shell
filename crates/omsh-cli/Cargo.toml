@@ -1,6 +1,6 @@
 [package]
 name = "omsh-cli"
-description = "The oh-my-shell binary: argument parsing, mode selection and wiring."
+description = "An interactive Linux shell with an optional AI layer (the oh-my-shell binary)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -34,3 +34,29 @@ omsh-ui.workspace = true
 
 [lints]
 workspace = true
+
+# The .deb package (S29a), built by `cargo deb --no-build` in the release workflow. Paths of
+# assets are relative to this crate, except `target/release/`, which cargo-deb maps to the
+# real build directory. `THIRD-PARTY-LICENSES.html` is made by `cargo about` just before.
+[package.metadata.deb]
+name = "oh-my-shell"
+maintainer = "Oh My Shell developers <noreply@github.com>"
+copyright = "2026, Oh My Shell developers"
+license-file = ["../../LICENSE", "0"]
+section = "shells"
+priority = "optional"
+extended-description = """\
+An interactive Linux shell that behaves like a familiar POSIX shell, helps like fish while \
+you type, keeps a searchable history, checks dangerous commands before they run, and can \
+optionally hand a task to an AI. Nothing the AI suggests runs without a preview and your \
+confirmation."""
+# $auto adds the libc version the binary was linked against. ca-certificates: HTTPS to an AI
+# provider trusts the system certificate store only.
+depends = "$auto, ca-certificates"
+recommends = "git, libnotify-bin"
+assets = [
+    ["target/release/oh-my-shell", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/oh-my-shell/README.md", "644"],
+    ["../../THIRD-PARTY-LICENSES.html", "usr/share/doc/oh-my-shell/THIRD-PARTY-LICENSES.html", "644"],
+]
+maintainer-scripts = "../../packaging/deb/"

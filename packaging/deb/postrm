@@ -1,0 +1,19 @@
+#!/bin/sh
+# Takes the shell out of /etc/shells and removes the `omsh` link when the package goes.
+# (The users' config, history and trash are in their home directories and are not touched.)
+set -e
+
+SHELL_PATH=/usr/bin/oh-my-shell
+
+case "$1" in
+remove|purge)
+    if command -v remove-shell >/dev/null 2>&1; then
+        remove-shell "$SHELL_PATH"
+    fi
+    if [ "$(readlink /usr/bin/omsh 2>/dev/null)" = oh-my-shell ]; then
+        rm -f /usr/bin/omsh
+    fi
+    ;;
+esac
+
+exit 0

@@ -29,3 +29,7 @@ secrets/
 .idea/
 *.swp
 .DS_Store
+
+# --- Release build output (S29a) ---
+/THIRD-PARTY-LICENSES.html
+/dist/

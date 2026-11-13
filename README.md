@@ -5,8 +5,42 @@ like fish while you type, keeps a searchable history, and can optionally hand a 
 Nothing the AI suggests runs without a preview and your confirmation, and dangerous commands
 are checked locally first.
 
-**Status: pre-1.0, no installer yet.** Build it from source (below). Try it with
-`cargo run -p omsh-cli`; do not set it as your login shell yet.
+**Status: pre-1.0.** The release pipeline exists (below), but no release has been published yet:
+until one is, build from source. Do not set it as your login shell yet.
+
+## Install
+
+Linux, x86_64 or aarch64, with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+).
+
+**Install script.** Puts `oh-my-shell` and the short name `omsh` in `~/.local/bin`. It checks the
+download against the release's `sha256.sum`, runs the new binary once, and changes nothing else:
+no `chsh`, no edits to your shell's startup files, and `/etc/shells` only with `--add-to-shells`.
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://github.com/imshaid/oh-my-shell/releases/latest/download/install.sh | sh
+```
+
+Options (`sh -s -- --help` lists them): `--version X.Y.Z`, `--system` (`/usr/local/bin`),
+`--bin-dir DIR`, `--add-to-shells`.
+
+**Debian / Ubuntu package.** Download `oh-my-shell_<version>-1_amd64.deb` (or `_arm64.deb`) from the
+[releases page](https://github.com/imshaid/oh-my-shell/releases) and run
+`sudo apt install ./oh-my-shell_*.deb`. It installs `/usr/bin/oh-my-shell` and `/usr/bin/omsh`,
+lists the shell in `/etc/shells`, and depends on `ca-certificates` (HTTPS to an AI provider).
+
+**From source.** Needs a recent stable Rust toolchain:
+
+```sh
+cargo install --locked --git https://github.com/imshaid/oh-my-shell omsh-cli
+```
+
+(The program is called `oh-my-shell`; the package is `omsh-cli`. It is not on crates.io.)
+
+**Using it.** Start with the command of your terminal's profile (GNOME Terminal, Kitty, VS Code
+and others can run any program), or just type `oh-my-shell`. Use it for a while before you run
+`chsh`; the installer never does. `omsh` is a short name for the same program: alone it starts
+the shell, and `omsh ai setup`, `omsh ai status` and `omsh tour` work from any other shell too.
 
 ## What it does
 

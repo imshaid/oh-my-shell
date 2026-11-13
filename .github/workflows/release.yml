@@ -1,0 +1,167 @@
+name: Release
+
+# Builds the release files (S29a, blueprint §18). On every push this is a dry run: both targets
+# are built, checked, packaged and smoke-tested, and nothing is uploaded. On a tag `vX.Y.Z` the
+# files are also attached to a draft GitHub release, which `publish` makes public only after it
+# has downloaded every file again and checked it against the checksum made at build time.
+#
+# Own workflow, not cargo-dist (Decision Log, 2026-11-13). The only third-party action is the
+# pinned actions/checkout; everything else is the runner's own tools (`gh`, `rustup`, `apt`).
+#
+# glibc, built on Ubuntu 22.04 (glibc 2.35), so the files run on Ubuntu 22.04+, Debian 12+ and
+# Fedora 36+. scripts/check-binary.sh fails the build if the binary needs anything newer.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same pin as ci.yml. Bump both on purpose.
+  RUSTUP_TOOLCHAIN: "1.99.1"
+  CARGO_DEB_VERSION: "3.8.0"
+  CARGO_ABOUT_VERSION: "0.9.3"
+
+jobs:
+  prepare:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The tag must match the version in Cargo.toml
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match version ${version} in Cargo.toml" >&2
+            exit 1
+          fi
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "${GITHUB_REF_NAME}" in *-*) flags="--prerelease" ;; esac
+          # shellcheck disable=SC2086
+          gh release create "${GITHUB_REF_NAME}" --draft --verify-tag $flags \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Release ${GITHUB_REF_NAME}. Install: see the README, or run install.sh from the assets."
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: prepare
+    # `prepare` is skipped on a branch push; the build still runs then (dry run).
+    if: ${{ !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            about_arch: x86_64
+            # From the .sha256 file of the cargo-about 0.9.3 release asset.
+            about_sha256: "3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4"
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            about_arch: aarch64
+            about_sha256: "eb4d9ff6ebd2518152a8308729431a04b3836e71d2bd5ead7aea69f91a71162e"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: |
+          if ! command -v rustup >/dev/null; then
+            arch=$(uname -m)
+            curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/rustup-init" \
+              "https://static.rust-lang.org/rustup/dist/${arch}-unknown-linux-gnu/rustup-init"
+            chmod +x "$RUNNER_TEMP/rustup-init"
+            "$RUNNER_TEMP/rustup-init" -y --profile minimal --default-toolchain none --no-modify-path
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Build the release binary
+        run: cargo build --release --locked -p omsh-cli
+      - name: Check the binary (glibc 2.35, only the libraries every system has)
+        run: scripts/check-binary.sh target/release/oh-my-shell 2.35
+      - name: Make the third-party license list
+        env:
+          ASSET: cargo-about-${{ env.CARGO_ABOUT_VERSION }}-${{ matrix.about_arch }}-unknown-linux-musl
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$ASSET.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/$ASSET.tar.gz"
+          echo "${{ matrix.about_sha256 }}  $RUNNER_TEMP/$ASSET.tar.gz" | sha256sum --check -
+          mkdir "$RUNNER_TEMP/cargo-about"
+          tar -xzf "$RUNNER_TEMP/$ASSET.tar.gz" -C "$RUNNER_TEMP/cargo-about" --strip-components=1
+          "$RUNNER_TEMP/cargo-about/cargo-about" generate --locked -c about.toml \
+            --manifest-path crates/omsh-cli/Cargo.toml about.hbs -o THIRD-PARTY-LICENSES.html
+          test -s THIRD-PARTY-LICENSES.html
+          grep -c 'class="license"' THIRD-PARTY-LICENSES.html
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --version "$CARGO_DEB_VERSION" --locked
+      - name: Make the archive and the .deb
+        run: |
+          scripts/package-tarball.sh "${{ matrix.target }}" target/release/oh-my-shell dist
+          # The binary is built and stripped already (the release profile); cargo-deb packs it as it is.
+          cargo deb --no-build --no-strip -p omsh-cli --output dist/
+          cd dist
+          for deb in *.deb; do sha256sum "$deb" > "$deb.sha256"; done
+          ls -l
+      - name: Test the install script on this build
+        run: scripts/test-install.sh target/release/oh-my-shell
+      - name: Test the .deb (install, run, remove)
+        run: scripts/test-deb.sh dist/*.deb
+      - name: Attach the files to the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.deb dist/*.sha256
+
+  publish:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download every file again and check it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dl
+          gh release download "${GITHUB_REF_NAME}" --dir dl
+          cd dl
+          # Exactly the files we expect: two archives, two packages, and a checksum for each.
+          for want in oh-my-shell-x86_64-unknown-linux-gnu.tar.gz oh-my-shell-aarch64-unknown-linux-gnu.tar.gz; do
+            test -f "$want" && test -f "$want.sha256"
+          done
+          test "$(ls -1 ./*.deb | wc -l)" -eq 2
+          for sum in *.sha256; do sha256sum --check "$sum"; done
+          cat ./*.sha256 | sort -k2 > sha256.sum
+          cat sha256.sum
+      - name: Add sha256.sum and install.sh, remove the single checksum files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp scripts/install.sh dl/install.sh
+          gh release upload "${GITHUB_REF_NAME}" dl/sha256.sum dl/install.sh --clobber
+          for sum in dl/*.sha256; do
+            gh release delete-asset "${GITHUB_REF_NAME}" "$(basename "$sum")" --yes
+          done
+      - name: Make the release public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false

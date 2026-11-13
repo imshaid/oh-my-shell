@@ -862,7 +862,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
 /// Gives the shell its `omsh` builtin (`omsh ai setup` and friends, S20). This only stores the
 /// settings: the keyring, the TLS setup and the runtime are created when a person types an
 /// `omsh ai` command, never here.
-fn install_omsh(
+pub(crate) fn install_omsh(
     shell: &mut Shell,
     config: &Config,
     paths: &Paths,

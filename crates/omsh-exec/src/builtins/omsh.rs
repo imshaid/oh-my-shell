@@ -139,6 +139,18 @@ pub(super) fn omsh(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     Ok(ExitStatus(status))
 }
 
+impl Shell {
+    /// Runs `omsh` with these words, as the builtin does, without a command line to parse. For
+    /// the `omsh` program (S29a), which runs one command and ends. Ctrl+C gives 130.
+    pub fn run_omsh(&mut self, args: &[Vec<u8>], io: &Io) -> ExitStatus {
+        match omsh(self, args, io) {
+            Ok(status) => status,
+            Err(Unwind::Interrupted) => ExitStatus(130),
+            Err(_) => ExitStatus(1),
+        }
+    }
+}
+
 /// A [`Terminal`] over `io`, for code outside the `omsh` command that needs to ask a question.
 pub(crate) fn terminal_handle<'a>(shell: &'a Shell, io: &'a Io) -> impl Terminal + 'a {
     Handle { shell, io }

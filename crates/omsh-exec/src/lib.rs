@@ -49,7 +49,8 @@ pub use omsh_syntax::{Span, SyntaxDiagnostic, Trigger, trigger};
 pub use path::{DEFAULT_PATH, Lookup, PathCache, find_program};
 pub use shell::{LineResult, Outcome, Prepared, Shell};
 pub use signals::{
-    clear_interrupt, enter_interactive, hung_up, interrupted, note_inherited_signals,
+    catch_interrupt, clear_interrupt, enter_interactive, hung_up, interrupted,
+    note_inherited_signals,
 };
 pub use spawn::{ChildGroup, ExecRequest, SpawnFailure, start, wait};
 pub use status::{ExitStatus, Termination};

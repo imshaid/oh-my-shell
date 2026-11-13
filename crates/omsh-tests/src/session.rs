@@ -145,8 +145,14 @@ impl Launch {
     /// login shell. The program's argument zero is what the caller passed to `execvp`, so this
     /// makes a symbolic link with that name in `dir`, puts `dir` first in `PATH` and runs the
     /// link. `dir` must exist and stay until the session ends.
-    pub fn as_login(mut self, dir: &Path) -> io::Result<Self> {
-        let name = "-oh-my-shell";
+    pub fn as_login(self, dir: &Path) -> io::Result<Self> {
+        self.named(dir, "-oh-my-shell")
+    }
+
+    /// Starts the program under another name (S29a: `omsh`), the same way as
+    /// [`as_login`](Self::as_login): a symbolic link called `name` in `dir`, which must exist
+    /// and stay until the session ends.
+    pub fn named(mut self, dir: &Path, name: &str) -> io::Result<Self> {
         let link = dir.join(name);
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(std::fs::canonicalize(&self.bin)?, &link)?;
@@ -157,7 +163,7 @@ impl Launch {
             .map_or("/usr/bin:/bin", |(_, v)| v.as_str())
             .to_owned();
         self = self.env("PATH", &format!("{}:{path}", dir.display()));
-        self.bin = name.to_owned();
+        name.clone_into(&mut self.bin);
         Ok(self)
     }
 

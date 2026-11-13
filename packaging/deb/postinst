@@ -1,0 +1,23 @@
+#!/bin/sh
+# Registers the shell in /etc/shells and makes the short name `omsh` (blueprint D1, §18).
+# It never runs chsh and never changes anyone's login shell.
+set -e
+
+SHELL_PATH=/usr/bin/oh-my-shell
+
+case "$1" in
+configure)
+    if command -v add-shell >/dev/null 2>&1; then
+        add-shell "$SHELL_PATH"
+    fi
+    # `omsh` is a symbolic link to the shell, as the installer script makes it. A file of the
+    # same name that is not our link belongs to someone else and is left alone.
+    if [ ! -e /usr/bin/omsh ] && [ ! -L /usr/bin/omsh ]; then
+        ln -s oh-my-shell /usr/bin/omsh
+    elif [ "$(readlink /usr/bin/omsh 2>/dev/null)" != oh-my-shell ]; then
+        echo "oh-my-shell: /usr/bin/omsh exists and is not ours; not replaced" >&2
+    fi
+    ;;
+esac
+
+exit 0
