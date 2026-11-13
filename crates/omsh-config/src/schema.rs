@@ -156,7 +156,6 @@ pub struct Ai {
     pub model: Option<String>,
     /// Address of an OpenAI-compatible server (or a non-default Ollama).
     pub base_url: Option<String>,
-    pub language: AiLanguage,
     pub context: AiContext,
 }
 
@@ -167,7 +166,6 @@ impl Default for Ai {
             provider: None,
             model: None,
             base_url: None,
-            language: AiLanguage::Auto,
             context: AiContext::default(),
         }
     }
@@ -229,14 +227,6 @@ impl Provider {
     pub const fn takes_a_key(self) -> bool {
         !matches!(self, Self::Ollama)
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AiLanguage {
-    /// Answer in the language of the request.
-    Auto,
-    English,
-    Bangla,
 }
 
 /// `[ai.context]`: what may be sent with a request (§13.5). Each item can be turned off.
@@ -361,9 +351,7 @@ pub const SECTIONS: &[(&str, &[&str])] = &[
     ),
     (
         "ai",
-        &[
-            "enabled", "provider", "model", "base_url", "language", "context",
-        ],
+        &["enabled", "provider", "model", "base_url", "context"],
     ),
     ("ai.context", &["os", "cwd", "git", "recent_commands"]),
     ("notify", &["enabled", "min_seconds", "ignore"]),

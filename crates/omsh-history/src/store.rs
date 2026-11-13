@@ -26,7 +26,7 @@ use std::fs::{DirBuilder, Permissions};
 use std::hash::{BuildHasher, RandomState};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -81,10 +81,22 @@ pub const HINT_WINDOW: i64 = 20_000;
 /// The page cache of each connection, in KiB. SQLite's own default is 2,048 KiB per connection,
 /// and with a 100,000-row history two full caches were about 4 MB of the shell's idle memory
 /// (S28b). The pages are in the operating system's file cache anyway, so a smaller cache costs a
-/// little copying, not disk reads. The writer touches few pages at a time; the reader scans for
-/// `history search` and the explorer, so it gets more (the benchmark `query` shows the cost).
+/// little copying, not disk reads. The writer touches few pages at a time. The reader scans for
+/// `history search`, but a scan reads each page once, so a bigger cache does not make it
+/// faster: the benchmark `query` gives the same times at 256, 512 and 1,024 KiB (S28c), and
+/// the idle memory grows by about 0.3 MB and 0.8 MB with the last two. The one query that did
+/// slow down is the explorer's list; see [`EXPLORER_CACHE_KIB`].
 const WRITER_CACHE_KIB: i64 = 256;
 const READER_CACHE_KIB: i64 = 256;
+
+/// The cache the reader has while it lists the explorer's distinct commands. SQLite keeps the
+/// rows a `GROUP BY` sorts in memory only up to the size of the page cache, and past it writes
+/// them to a temporary file and merges them again. Measured on 100,000 rows (benchmark `query`,
+/// S28c): with 256, 512 or 1,024 KiB the list took 6.3 ms, with 2,048 KiB 5.1 ms, as before the
+/// caches were made small; on a CI runner the temporary file cost more (9.3 ms against 4.6 ms).
+/// So the reader gets this much while it makes that list and goes back to
+/// [`READER_CACHE_KIB`] after (the memory is the explorer's, and it is only held for a few ms).
+const EXPLORER_CACHE_KIB: i64 = 2_048;
 
 /// How many visited folders `j` remembers. The least recently visited are removed when a shell
 /// starts.
@@ -315,6 +327,10 @@ struct Shared {
     reader: Mutex<Option<Connection>>,
     /// Why history is not kept in the file, until someone takes it to show it.
     problem: Mutex<Option<String>>,
+    /// True from the start of a file store until its writer has finished opening the file (or
+    /// has given up and fallen back to memory). Never true for a store in memory. See
+    /// [`Store::reader_open`].
+    opening: AtomicBool,
 }
 
 struct Inner {
@@ -393,6 +409,7 @@ impl Store {
         let shared = Arc::new(Shared {
             reader: Mutex::new(None),
             problem: Mutex::new(None),
+            opening: AtomicBool::new(path.is_some()),
         });
         let (sender, receiver) = mpsc::channel();
         let session = new_session();
@@ -409,6 +426,7 @@ impl Store {
         if let Err(error) = spawned {
             // Without the thread nothing is stored and every query is empty.
             *lock(&shared.problem) = Some(format!("cannot start the history writer: {error}"));
+            shared.opening.store(false, Ordering::Release);
         }
         Self {
             inner: Arc::new(Inner {
@@ -470,6 +488,16 @@ impl Store {
             reply,
         });
         answer.recv_timeout(DELETE_PATIENCE).ok()
+    }
+
+    /// False only while the writer of a file store has not yet finished opening the file: until
+    /// then the store cannot be read, but it will be able to in a moment. True at once for a
+    /// store in memory, and after the writer is done opening, however that went (the file, the
+    /// fall back to memory, or a database it refused). A reader that gets `NotReady` while this
+    /// is false should wait; after it is true, `NotReady` is final.
+    #[must_use]
+    pub fn reader_open(&self) -> bool {
+        !self.inner.shared.opening.load(Ordering::Acquire)
     }
 
     /// Waits until everything queued so far is written, but no longer than `limit`. True if it
@@ -692,7 +720,7 @@ impl Store {
             })?;
             rows.collect()
         };
-        read().map_err(|_| NotReady)
+        with_cache(connection, EXPLORER_CACHE_KIB, read).map_err(|_| NotReady)
     }
 
     /// The entries that fit `query`. Empty if the database cannot be read right now: history
@@ -871,6 +899,7 @@ struct Writer {
 impl Writer {
     fn run(mut self, path: Option<&Path>, size: u32, receiver: &Receiver<Message>) {
         self.open(path, size);
+        self.shared.opening.store(false, Ordering::Release);
         // Ends when every `Store` is gone.
         while let Ok(first) = receiver.recv() {
             let mut batch = vec![first];
@@ -1177,6 +1206,20 @@ fn open_file(path: &Path, size: u32) -> Result<(Connection, Connection), Failure
 /// `cache_size` means KiB; a positive one means pages.
 fn set_cache(connection: &Connection, kib: i64) -> rusqlite::Result<()> {
     connection.pragma_update(None, "cache_size", -kib)
+}
+
+/// Runs `work` with the page cache of `connection` raised to `kib` KiB, and puts back the size
+/// it had. The connection must not be used by anyone else meanwhile (the callers hold its lock).
+fn with_cache<T>(connection: &Connection, kib: i64, work: impl FnOnce() -> T) -> T {
+    let before = connection
+        .query_row("PRAGMA cache_size", [], |row| row.get::<_, i64>(0))
+        .ok();
+    let raised = before.is_some() && set_cache(connection, kib).is_ok();
+    let out = work();
+    if let (true, Some(before)) = (raised, before) {
+        let _ = connection.pragma_update(None, "cache_size", before);
+    }
+    out
 }
 
 fn open_memory() -> Result<Connection, String> {

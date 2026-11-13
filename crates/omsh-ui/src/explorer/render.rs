@@ -202,7 +202,7 @@ fn row_line(
     let mut spans = vec![
         Span::styled(mark, styles.accent),
         Span::styled(sign, styles.danger),
-        Span::styled(age, styles.dim),
+        Span::styled(age, styles.secondary(selected)),
     ];
     spans.extend(spans_with_matches(&item.command, places, room, styles));
     Line::from(spans)
@@ -379,6 +379,22 @@ mod tests {
         assert_eq!(o.symbol(), "o");
         assert_ne!(o.fg, context.styles.accent.fg.unwrap());
         assert!(o.modifier.contains(Modifier::REVERSED));
+    }
+
+    /// Dim text on the chosen row (reverse video) is hard to read, so the chosen row has none.
+    #[test]
+    fn the_chosen_row_has_no_dim_text_and_the_others_keep_it() {
+        for color in [true, false] {
+            let mut model = sample();
+            let terminal = screen(&mut model, &context(color, true), 80, 24);
+            let buffer = terminal.backend().buffer();
+            assert!(buffer[(12, 19)].modifier.contains(Modifier::REVERSED));
+            assert!(
+                (0..80).all(|x| !buffer[(x, 19)].modifier.contains(Modifier::DIM)),
+                "the chosen row has dim cells (color {color})"
+            );
+            assert!(buffer[(5, 18)].modifier.contains(Modifier::DIM));
+        }
     }
 
     #[test]

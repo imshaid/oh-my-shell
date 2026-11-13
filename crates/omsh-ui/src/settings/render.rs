@@ -183,7 +183,7 @@ fn setting_line(
     let value_style = if row.setting.editable {
         styles.plain
     } else {
-        styles.dim
+        styles.secondary(selected)
     };
 
     let mut spans = vec![Span::styled(mark, styles.accent)];
@@ -192,7 +192,10 @@ fn setting_line(
     let shown = Span::raw(value.clone()).width();
     spans.push(Span::styled(value, value_style));
     spans.push(Span::raw(" ".repeat(value_room.saturating_sub(shown) + 1)));
-    spans.push(Span::styled(format!("{source:<7}"), styles.dim));
+    spans.push(Span::styled(
+        format!("{source:<7}"),
+        styles.secondary(selected),
+    ));
     if !sign.is_empty() {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(sign, styles.warning));
@@ -266,7 +269,7 @@ mod tests {
         let terminal = screen(&mut model, &styles(true, true), 80, 14);
         let rows = rows(&terminal);
         assert!(rows[0].starts_with("Settings"));
-        assert!(rows[0].ends_with("1 of 29"), "{:?}", rows[0]);
+        assert!(rows[0].ends_with("1 of 28"), "{:?}", rows[0]);
         // Marker, name in 32 columns, value in 24, then where it comes from.
         assert_eq!(
             rows[1],
@@ -293,7 +296,7 @@ mod tests {
         let mut model = model("");
         let terminal = screen(&mut model, &styles(true, true), 80, 14);
         let rows = rows(&terminal);
-        assert!(rows[0].ends_with("29 of 29"), "{:?}", rows[0]);
+        assert!(rows[0].ends_with("28 of 28"), "{:?}", rows[0]);
         let keys: Vec<&str> = rows[1..10]
             .iter()
             .map(|row| row[2..].split_whitespace().next().unwrap())
@@ -348,18 +351,21 @@ mod tests {
     #[test]
     fn a_setting_the_view_does_not_change_is_dim_and_says_where_to_change_it() {
         let mut model = model("");
-        model.paste("safety.confirm");
+        model.paste("blast_radius");
         let terminal = screen(&mut model, &styles(true, true), 80, 14);
         let rows = rows(&terminal);
-        assert!(rows[1].contains("dangerous"));
+        assert!(rows[1].contains("blast_radius"), "{:?}", rows[1]);
         assert!(
             rows[10].ends_with("Edit config.toml to change it."),
             "{:?}",
             rows[10]
         );
         let buffer = terminal.backend().buffer();
-        // The value (after the 2 + 32 columns of marker and name) is dim; an editable one is not.
-        assert!(buffer[(34, 1)].modifier.contains(Modifier::DIM));
+        // The value (after the 2 + 32 columns of marker and name) is dim on a row that is not
+        // chosen (the chosen row is in reverse video and has no dim text, see below).
+        assert!(rows[2].contains("blast_radius"), "{:?}", rows[2]);
+        assert!(buffer[(34, 2)].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(34, 1)].modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -447,6 +453,27 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert!(buffer[(0, 1)].modifier.contains(Modifier::REVERSED));
         assert_eq!(buffer[(0, 1)].fg, ratatui::style::Color::Reset);
+    }
+
+    /// Dim text on the chosen row (reverse video) is hard to read, so the chosen row has none,
+    /// also the source column and the value of a setting that cannot be changed here.
+    #[test]
+    fn the_chosen_row_has_no_dim_text_and_the_others_keep_it() {
+        for color in [true, false] {
+            let mut model = model("");
+            let terminal = screen(&mut model, &styles(color, true), 80, 14);
+            let buffer = terminal.backend().buffer();
+            assert!(buffer[(0, 1)].modifier.contains(Modifier::REVERSED));
+            assert!(
+                (0..80).all(|x| !buffer[(x, 1)].modifier.contains(Modifier::DIM)),
+                "the chosen row has dim cells (color {color})"
+            );
+            // Another row has its source column in dim.
+            assert!(
+                (0..80).any(|x| buffer[(x, 2)].modifier.contains(Modifier::DIM)),
+                "no dim cell on an unchosen row"
+            );
+        }
     }
 
     #[test]

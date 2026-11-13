@@ -346,7 +346,7 @@ fn plan_of(steps: &[(&str, &str)]) -> String {
         })
         .collect();
     format!(
-        r#"{{"summary":"Do the things","steps":[{}],"language":"en"}}"#,
+        r#"{{"summary":"Do the things","steps":[{}]}}"#,
         steps.join(",")
     )
 }

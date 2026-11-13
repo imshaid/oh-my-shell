@@ -192,7 +192,7 @@ fn a_request_shows_a_socket_and_leaves_none_behind() {
 #[test]
 fn a_plan_panel_holds_no_socket_while_it_waits() {
     pty_test(BIN, |ctx| {
-        let answer = r#"{"summary":"Do the thing","steps":[{"title":"Say","command":"echo hi","explanation":"x","risk":"low","needs_root":false}],"language":"en"}"#;
+        let answer = r#"{"summary":"Do the thing","steps":[{"title":"Say","command":"echo hi","explanation":"x","risk":"low","needs_root":false}]}"#;
         // Keep-alive on: the server leaves connections open, as the real providers do.
         let server = Server::start_answering(Duration::ZERO, true, &[answer])?;
         write_config(

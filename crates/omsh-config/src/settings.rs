@@ -9,7 +9,7 @@
 use toml_edit::{DocumentMut, Item};
 
 use crate::edit::Change;
-use crate::schema::{AiLanguage, Config, ConfirmLevel, EditMode, Icons, Motion};
+use crate::schema::{Config, ConfirmLevel, EditMode, Icons, Motion};
 
 /// What a key holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,12 +173,6 @@ pub const SETTINGS: &[Setting] = &[
         Kind::Text,
         false,
         "Address of a local or compatible server.",
-    ),
-    setting(
-        "ai.language",
-        Kind::Text,
-        false,
-        "Language of answers: auto, en or bn.",
     ),
     setting(
         "ai.context.os",
@@ -376,12 +370,6 @@ pub fn display(config: &Config, key: &str) -> String {
             "(set)"
         } else {
             "(not set)"
-        }
-        .to_owned(),
-        "ai.language" => match config.ai.language {
-            AiLanguage::Auto => "auto",
-            AiLanguage::English => "en",
-            AiLanguage::Bangla => "bn",
         }
         .to_owned(),
         "ai.context.os" => config.ai.context.os.to_string(),

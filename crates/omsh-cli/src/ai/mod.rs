@@ -171,7 +171,6 @@ impl AiSession {
         Ok(plan::PlanSetup {
             connect: Box::new(move || make(&own, key.as_ref())),
             settings,
-            language: inner.ai.language,
             context: inner.ai.context.clone(),
         })
     }

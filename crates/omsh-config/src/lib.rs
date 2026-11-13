@@ -25,6 +25,6 @@ pub use load::{Loaded, Parsed, Problem, Severity, check_url, load, parse};
 pub use paths::Paths;
 pub use read::read_text_file;
 pub use schema::{
-    Ai, AiContext, AiLanguage, Channel, Config, ConfirmLevel, EditMode, Editor, History, Icons,
-    Motion, NOTIFY_IGNORE, Notify, PROMPT_SEGMENTS, Prompt, Provider, SECTIONS, Safety, Ui, Update,
+    Ai, AiContext, Channel, Config, ConfirmLevel, EditMode, Editor, History, Icons, Motion,
+    NOTIFY_IGNORE, Notify, PROMPT_SEGMENTS, Prompt, Provider, SECTIONS, Safety, Ui, Update,
 };

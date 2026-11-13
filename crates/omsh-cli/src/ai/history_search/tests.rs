@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::TimeZone;
 use omsh_ai::fake::FakeProvider;
 use omsh_ai::{ErrorKind, Provider, ProviderError, Settings};
-use omsh_config::{AiLanguage, Provider as Kind};
+use omsh_config::Provider as Kind;
 use omsh_exec::{ReadError, Terminal};
 use omsh_history::{Filter, Store};
 use omsh_ui::Paint;
@@ -118,7 +118,6 @@ fn setup_with(fake: &Arc<FakeProvider>, connects: &Arc<AtomicU32>) -> PlanSetup 
             model: "test-model".to_owned(),
             base_url: None,
         },
-        language: AiLanguage::Auto,
         context: omsh_config::AiContext::default(),
     }
 }

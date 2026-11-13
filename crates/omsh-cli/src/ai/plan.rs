@@ -33,7 +33,7 @@ use omsh_ai::{
     collect_text_counting, follow_up_hides_secret, hides_secret, plan_request, retry_request,
     runtime,
 };
-use omsh_config::{AiContext, AiLanguage, ConfirmLevel};
+use omsh_config::{AiContext, ConfirmLevel};
 use omsh_editor::Head;
 use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, TRASH, Terminal};
 use omsh_safety::blast::Radius;
@@ -95,7 +95,6 @@ pub type Connect = Box<dyn FnMut() -> Result<Box<dyn Provider>, ProviderError>>;
 pub struct PlanSetup {
     pub connect: Connect,
     pub settings: Settings,
-    pub language: AiLanguage,
     pub context: AiContext,
 }
 
@@ -205,8 +204,6 @@ struct Reviewed {
     model: ModelRisk,
     /// The command as the plan (or the person, after an edit) has it.
     command: String,
-    /// The same after aliases are replaced: what would run.
-    text: String,
     analysis: Analysis,
     /// What the findings of the analysis would touch: one entry per finding, counted when the
     /// plan is shown. Empty until then.
@@ -244,15 +241,13 @@ impl Reviewed {
 }
 
 /// Prepares and analyzes `command` on a copy of the shell, so that nothing about the real one
-/// (its status, its source text) changes. `start` is where the command starts: for a step of a
+/// (its status, its source text) changes. Aliases are not applied: a plan step runs as the model
+/// wrote it (`ls -S` is not `eza -S`), and the analysis and the panel see that same text. `start` is where the command starts: for a step of a
 /// plan, where the step before it ended. `Err` is a short reason why it cannot run here.
-fn review(shell: &Shell, command: &str, start: &StartDir) -> Result<(String, Analysis), String> {
+fn review(shell: &Shell, command: &str, start: &StartDir) -> Result<Analysis, String> {
     let mut scratch = shell.clone();
-    match scratch.prepare(command, true) {
-        Ok(prepared) => {
-            let analysis = confirm::review_at(&scratch, &prepared, start);
-            Ok((prepared.text().to_owned(), analysis))
-        }
+    match scratch.prepare_unaliased(command, true) {
+        Ok(prepared) => Ok(confirm::review_at(&scratch, &prepared, start)),
         Err(result) => Err(message_of(&result)),
     }
 }
@@ -283,7 +278,7 @@ fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
     let mut out: Vec<Reviewed> = Vec::new();
     for (index, step) in plan.steps.iter().enumerate() {
         let start = start_of(&out, index);
-        let (text, analysis) = review(shell, &step.command, &start).map_err(|why| {
+        let analysis = review(shell, &step.command, &start).map_err(|why| {
             PlanError::new(format!(
                 "the command of step {} cannot be used here ({why}); use only the supported \
                  POSIX sh syntax",
@@ -296,7 +291,6 @@ fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
             needs_root: step.needs_root,
             model: step.risk,
             command: step.command.clone(),
-            text,
             analysis,
             radii: Vec::new(),
             edited: false,
@@ -551,9 +545,6 @@ fn panel_text(
             )
         ));
         block(&mut out, "     $ ", "       ", &step.command);
-        if step.text.trim_end() != step.command.trim_end() {
-            block(&mut out, "     runs as: ", "       ", &step.text);
-        }
         if step.edited {
             out.push_str("     (your edit; the model's explanation was for its own command)\n");
         } else if !step.explanation.trim().is_empty() {
@@ -806,7 +797,6 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     let PlanSetup {
         mut connect,
         settings,
-        language,
         context: allowed,
     } = setup;
     let kind = settings.kind;
@@ -827,7 +817,6 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     let plan_asked = PlanRequest {
         request,
         context: &context,
-        language,
     };
     if hides_secret(&plan_asked) {
         say(
@@ -1097,10 +1086,9 @@ fn edit_step(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], index: usize) {
     }
     let start = start_of(steps, index);
     match review(env.shell, new, &start) {
-        Ok((text, analysis)) => {
+        Ok(analysis) => {
             let step = &mut steps[index];
             step.command = new.to_owned();
-            step.text = text;
             step.analysis = analysis;
             step.edited = true;
             count_step(step, env.confirm, env.blast);
@@ -1119,8 +1107,7 @@ fn rechain(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], from: usize) {
     for index in from..steps.len() {
         let start = start_of(steps, index);
         let command = steps[index].command.clone();
-        if let Ok((text, analysis)) = review(env.shell, &command, &start) {
-            steps[index].text = text;
+        if let Ok(analysis) = review(env.shell, &command, &start) {
             steps[index].analysis = analysis;
         }
         count_step(&mut steps[index], env.confirm, env.blast);
@@ -1145,7 +1132,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
         block(&mut head, "  $ ", "    ", &step.command);
         say(env, &head);
 
-        let prepared = match env.shell.prepare(&step.command, true) {
+        let prepared = match env.shell.prepare_unaliased(&step.command, true) {
             Ok(prepared) => prepared,
             Err(result) => {
                 let why = message_of(&result);

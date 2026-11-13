@@ -20,8 +20,8 @@ use toml::de::{DeTable, DeValue};
 use crate::first_run;
 use crate::paths::Paths;
 use crate::schema::{
-    Ai, AiLanguage, Channel, Config, ConfirmLevel, EditMode, Icons, Motion, Notify,
-    PROMPT_SEGMENTS, Provider, SECTIONS, Ui,
+    Ai, Channel, Config, ConfirmLevel, EditMode, Icons, Motion, Notify, PROMPT_SEGMENTS, Provider,
+    SECTIONS, Ui,
 };
 
 /// A file larger than this is not a configuration file.
@@ -742,14 +742,6 @@ fn read_ai(r: &mut Reader<'_>, table: &DeTable<'_>, ai: &mut Ai) {
             // The text is not repeated: it may hold a password.
             Err(why) => r.error(&span, format!("ai.base_url {why}; using the default")),
         }
-    }
-    let languages = [
-        ("auto", AiLanguage::Auto),
-        ("en", AiLanguage::English),
-        ("bn", AiLanguage::Bangla),
-    ];
-    if let Some(language) = r.choice(table, "ai", "language", &languages) {
-        ai.language = language;
     }
     if let Some(context) = r.section(table, "ai", "context") {
         r.unknown(context, "ai.context");

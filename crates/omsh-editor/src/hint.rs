@@ -35,7 +35,8 @@
 //! key bindings already do that.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
 use omsh_history::{NotReady, Ranking, Store, now_ms};
@@ -105,6 +106,9 @@ pub(crate) struct HintState {
     /// The commands in order of rank, once the helper thread has made them for this prompt. A
     /// ranking is only made after the writer caught up, so its answers may be remembered.
     ranking: Option<Arc<Ranking>>,
+    /// Where [`start_ranking`] sends the work for the one helper thread, once it is started. The
+    /// thread ends when this is dropped with the state.
+    worker: Option<Sender<Job>>,
     /// True once the writer has been seen to catch up at this prompt. Until then no answer is
     /// remembered.
     settled: bool,
@@ -218,32 +222,77 @@ impl ShellHinter {
     }
 }
 
-/// Starts the helper thread that makes the ranking for the prompt that has just been reset.
-/// Nothing happens if the hinter is off (no source) or the thread cannot be made: the questions
-/// are then asked one by one.
+/// One prompt's work for the helper thread: whose ranking to make (`generation` is the prompt)
+/// and for which folder.
+struct Job {
+    cwd: String,
+    generation: u64,
+}
+
+/// Has the ranking made for the prompt that has just been reset. Nothing happens if the hinter
+/// is off (no source) or the helper thread cannot be made: the questions are then asked one by
+/// one.
+///
+/// **One thread for the life of the editor**, not one for each prompt. A thread that is new at
+/// each prompt gets a memory area (a malloc arena) of its own from the allocator, and whether
+/// the next prompt's thread reuses the area of the one before or opens another depends on
+/// whether that one has ended yet: the shell's idle memory moved by about 1 MB from run to run
+/// (S28b). One thread always uses the same area.
 pub(crate) fn start_ranking(state: &Arc<Mutex<HintState>>) {
-    let (source, cwd, generation) = {
-        let locked = state.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(source) = locked.source.clone() else {
+    let mut locked = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(source) = locked.source.clone() else {
+        return;
+    };
+    let job = Job {
+        cwd: locked.cwd.clone(),
+        generation: locked.generation,
+    };
+    // The thread is there: give it the work. A send fails only if the thread is gone (it
+    // panicked); then a new one is started below.
+    let job = match &locked.worker {
+        Some(worker) => match worker.send(job) {
+            Ok(()) => return,
+            Err(refused) => refused.0,
+        },
+        None => job,
+    };
+    let (sender, jobs) = mpsc::channel();
+    let weak = Arc::downgrade(state);
+    let spawned = std::thread::Builder::new()
+        .name("hint-ranking".into())
+        .spawn(move || rank_for_prompts(&source, &weak, &jobs));
+    if spawned.is_ok() && sender.send(job).is_ok() {
+        locked.worker = Some(sender);
+    }
+}
+
+/// The helper thread: makes the ranking of each prompt it is told about, and hands it to the
+/// state if that prompt is still the current one. Ends when the state is gone.
+fn rank_for_prompts(
+    source: &Arc<dyn HintSource>,
+    state: &Weak<Mutex<HintState>>,
+    jobs: &Receiver<Job>,
+) {
+    while let Ok(mut job) = jobs.recv() {
+        // Prompts that came while the last ranking was being made are over; only the newest
+        // one needs a list.
+        while let Ok(newer) = jobs.try_recv() {
+            job = newer;
+        }
+        let Some(ranking) = source.ranking(&job.cwd) else {
+            continue;
+        };
+        let Some(state) = state.upgrade() else {
             return;
         };
-        (source, locked.cwd.clone(), locked.generation)
-    };
-    let state = Arc::clone(state);
-    let _ = std::thread::Builder::new()
-        .name("hint-ranking".into())
-        .spawn(move || {
-            let Some(ranking) = source.ranking(&cwd) else {
-                return;
-            };
-            let mut locked = state.lock().unwrap_or_else(PoisonError::into_inner);
-            // The prompt may be over: its answers belong to it alone.
-            if locked.generation == generation {
-                locked.ranking = Some(Arc::new(ranking));
-                // The writer had caught up when the list was made.
-                locked.settled = true;
-            }
-        });
+        let mut locked = state.lock().unwrap_or_else(PoisonError::into_inner);
+        // The prompt may be over: its answers belong to it alone.
+        if locked.generation == job.generation {
+            locked.ranking = Some(Arc::new(ranking));
+            // The writer had caught up when the list was made.
+            locked.settled = true;
+        }
+    }
 }
 
 /// Starts a new prompt for a [`ShellHinter::standalone`] (the benchmark's worst case).
@@ -653,6 +702,10 @@ mod ranking_tests {
         asked: Arc<AtomicUsize>,
         ranking: Option<Ranking>,
         gate: Gate,
+        /// The thread of each call of `ranking`, in order, noted when the call starts.
+        threads: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+        /// Held by the source only: its count tells when the source has been dropped.
+        alive: Arc<()>,
     }
 
     impl HintSource for Listed {
@@ -670,6 +723,11 @@ mod ranking_tests {
         }
 
         fn ranking(&self, _cwd: &str) -> Option<Ranking> {
+            let _ = &self.alive;
+            self.threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
             let (open, bell) = &*self.gate;
             let mut open = open.lock().unwrap();
             while !*open {
@@ -684,16 +742,22 @@ mod ranking_tests {
         state: Arc<Mutex<HintState>>,
         asked: Arc<AtomicUsize>,
         gate: Gate,
+        threads: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+        alive: Arc<()>,
     }
 
     fn rig(ranking: Option<Ranking>) -> Rig {
         let asked = Arc::new(AtomicUsize::new(0));
         let gate: Gate = Arc::new((Mutex::new(false), Condvar::new()));
         let state = Arc::new(Mutex::new(HintState::default()));
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let alive = Arc::new(());
         let source = Listed {
             asked: Arc::clone(&asked),
             ranking,
             gate: Arc::clone(&gate),
+            threads: Arc::clone(&threads),
+            alive: Arc::clone(&alive),
         };
         let hinter = ShellHinter::new(Box::new(source), Arc::clone(&state), Style::new());
         Rig {
@@ -701,6 +765,8 @@ mod ranking_tests {
             state,
             asked,
             gate,
+            threads,
+            alive,
         }
     }
 
@@ -802,5 +868,98 @@ mod ranking_tests {
         // It holds none for "g" and was cut, so it cannot say "nothing": the source is asked.
         assert_eq!(rig.hint("g"), "it status");
         assert_eq!(rig.asked.load(Ordering::Relaxed), 1);
+    }
+
+    impl Rig {
+        fn calls(&self) -> usize {
+            self.threads.lock().unwrap().len()
+        }
+
+        fn wait_until(&self, what: &str, done: impl Fn(&Rig) -> bool) {
+            let end = Instant::now() + Duration::from_secs(5);
+            while !done(self) {
+                assert!(Instant::now() < end, "{what}");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+
+    /// The point of the change: a thread that is new at each prompt gets an allocator area of its
+    /// own, and the shell's idle memory moved by about 1 MB with it (S28b).
+    #[test]
+    fn one_thread_makes_the_list_of_every_prompt() {
+        let rig = rig(list(&["git status"], true));
+        rig.open_gate();
+        for prompt in 1..=4 {
+            rig.new_prompt();
+            rig.wait_for_list();
+            assert_eq!(rig.calls(), prompt, "one call for each prompt");
+        }
+        let threads = rig.threads.lock().unwrap().clone();
+        assert!(
+            threads.iter().all(|id| *id == threads[0]),
+            "the lists were made by {} different threads",
+            threads
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        );
+        assert_ne!(threads[0], std::thread::current().id());
+    }
+
+    #[test]
+    fn prompts_that_came_while_a_list_was_being_made_are_skipped_but_the_newest_is_made() {
+        let rig = rig(list(&["git status"], true));
+        rig.new_prompt(); // prompt 1: the thread takes it and waits at the gate
+        rig.wait_until("the thread never took the first prompt", |r| r.calls() == 1);
+        rig.new_prompt(); // prompts 2 and 3 wait in the queue
+        rig.new_prompt();
+        rig.open_gate();
+        rig.wait_for_list();
+        // The list is the one of the newest prompt; the middle one was never made.
+        assert_eq!(rig.calls(), 2);
+        assert_eq!(rig.hint_state_generation(), 3);
+        let mut rig = rig;
+        assert_eq!(rig.hint("g"), "it status");
+        assert_eq!(rig.asked.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_thread_ends_when_the_editor_is_gone() {
+        let Rig {
+            hinter,
+            state,
+            gate,
+            alive,
+            ..
+        } = rig(list(&["git status"], true));
+        {
+            let (open, bell) = &*gate;
+            *open.lock().unwrap() = true;
+            bell.notify_all();
+        }
+        state.lock().unwrap().reset("/".to_owned());
+        start_ranking(&state);
+        let end = Instant::now() + Duration::from_secs(5);
+        while state.lock().unwrap().ranking.is_none() {
+            assert!(Instant::now() < end, "the list never came");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(Arc::strong_count(&alive) > 1, "the source is in use");
+        // The thread holds the source and the state only weakly: dropping the editor's side
+        // lets it go, and with it the source.
+        drop(hinter);
+        drop(state);
+        let end = Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&alive) > 1 {
+            assert!(Instant::now() < end, "the thread was still running");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    impl Rig {
+        fn hint_state_generation(&self) -> u64 {
+            self.state.lock().unwrap().generation
+        }
     }
 }

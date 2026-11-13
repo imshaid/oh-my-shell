@@ -275,7 +275,7 @@ fn plan(steps: &[(&str, &str, &str)]) -> String {
         })
         .collect();
     format!(
-        r#"{{"summary":"Do the thing","steps":[{}],"language":"en"}}"#,
+        r#"{{"summary":"Do the thing","steps":[{}]}}"#,
         steps.join(",")
     )
 }

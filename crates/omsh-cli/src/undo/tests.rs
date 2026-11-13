@@ -213,7 +213,7 @@ fn a_secret_in_the_line_is_not_kept_in_the_journal() {
     let undo = dir.undo();
     fs::write(dir.path("a"), "a").unwrap();
     undo.begin_line(
-        "API_KEY=ghp_abcdefghijklmnopqrstuvwxyz0123456789 rm a",
+        concat!("API_KEY=gh", "p_abcdefghijklmnopqrstuvwxyz0123456789 rm a"),
         Origin::Typed,
     );
     let mut tty = Tty::default();

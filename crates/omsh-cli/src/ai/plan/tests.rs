@@ -122,7 +122,7 @@ fn json(steps: &[(&str, &str, &str)]) -> String {
         })
         .collect();
     format!(
-        r#"{{"summary":"Do the thing","steps":[{}],"language":"en"}}"#,
+        r#"{{"summary":"Do the thing","steps":[{}]}}"#,
         steps.join(",")
     )
 }
@@ -212,7 +212,6 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             model: "test-model".to_owned(),
             base_url: None,
         },
-        language: AiLanguage::Auto,
         context: setup.context.unwrap_or_default(),
     };
     let result = run(
@@ -402,7 +401,6 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         needs_root: false,
         model: ModelRisk::Low,
         command: "shred /nonexistent-omsh-plan-test".to_owned(),
-        text: String::new(),
         analysis: Analysis::default(),
         radii: Vec::new(),
         edited: false,
@@ -529,7 +527,7 @@ fn exit_in_a_step_ends_the_shell_with_its_status() {
 }
 
 #[test]
-fn aliases_apply_and_the_panel_says_what_will_run() {
+fn a_step_runs_as_the_model_wrote_it_and_aliases_do_not_change_it() {
     let dir = Dir::new();
     let command = format!("hi > {}", dir.file("out"));
     let answer = json(&[("Greet", &command, "low")]);
@@ -538,12 +536,35 @@ fn aliases_apply_and_the_panel_says_what_will_run() {
         "x",
         Setup {
             keys: vec![enter()],
-            aliases: vec!["alias hi='echo aliased'"],
+            // `hi` is also a function, which does apply; the alias of the same name does not.
+            aliases: vec!["hi() { echo from-function; }", "alias hi='echo aliased'"],
             ..Setup::default()
         },
     );
-    assert!(ran.err.contains("runs as: echo aliased > "), "{}", ran.err);
-    assert_eq!(fs::read_to_string(dir.file("out")).unwrap(), "aliased\n");
+    assert!(!ran.err.contains("runs as:"), "{}", ran.err);
+    assert_eq!(
+        fs::read_to_string(dir.file("out")).unwrap(),
+        "from-function\n"
+    );
+}
+
+#[test]
+fn an_alias_is_not_applied_to_a_step_that_names_a_real_program() {
+    let dir = Dir::new();
+    // `echo` is aliased to something that would change the output; the step must get the real one.
+    let command = format!("echo plain > {}", dir.file("out"));
+    let answer = json(&[("Say", &command, "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            aliases: vec!["alias echo='echo aliased'"],
+            ..Setup::default()
+        },
+    );
+    assert!(!ran.err.contains("runs as:"), "{}", ran.err);
+    assert_eq!(fs::read_to_string(dir.file("out")).unwrap(), "plain\n");
 }
 
 #[test]
@@ -1570,7 +1591,6 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         needs_root: false,
         model: ModelRisk::Low,
         command: format!("rm -rf {}", dir.file("a")),
-        text: String::new(),
         analysis: Analysis::default(),
         radii: Vec::new(),
         edited: false,

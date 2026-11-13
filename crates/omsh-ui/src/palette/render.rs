@@ -139,7 +139,7 @@ fn entry_line(
 
     let mut spans = vec![
         Span::styled(mark, styles.accent),
-        Span::styled(tag, styles.dim),
+        Span::styled(tag, styles.secondary(selected)),
     ];
     spans.extend(name_spans);
     let mut used = name_width;
@@ -148,7 +148,7 @@ fn entry_line(
         let detail = fit_text(&entry.detail, detail_room, styles);
         used += 2 + Span::raw(detail.clone()).width();
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(detail, styles.dim));
+        spans.push(Span::styled(detail, styles.secondary(selected)));
     }
     if key_width > 0 {
         let pad = room.saturating_sub(used) + 2;
@@ -304,6 +304,22 @@ mod tests {
         assert_eq!(buffer[(0, 1)].fg, ratatui::style::Color::Reset);
         // The tag of an unchosen row is dim.
         assert!(buffer[(2, 3)].modifier.contains(Modifier::DIM));
+    }
+
+    /// Dim text on the chosen row (reverse video) is hard to read, so the chosen row has none.
+    #[test]
+    fn the_chosen_row_has_no_dim_text_and_the_others_keep_it() {
+        for color in [true, false] {
+            let mut model = sample();
+            let terminal = screen(&mut model, &styles(color, true), 80, 12);
+            let buffer = terminal.backend().buffer();
+            assert!(buffer[(0, 1)].modifier.contains(Modifier::REVERSED));
+            assert!(
+                (0..80).all(|x| !buffer[(x, 1)].modifier.contains(Modifier::DIM)),
+                "the chosen row has dim cells (color {color})"
+            );
+            assert!(buffer[(2, 3)].modifier.contains(Modifier::DIM));
+        }
     }
 
     #[test]

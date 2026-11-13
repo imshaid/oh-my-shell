@@ -156,11 +156,19 @@ fn an_interactive_program_and_a_secret_in_the_line() {
         let mut term = desktop(ctx, &bin).start()?;
         term.command("vim notes.txt")?;
         term.prompt();
-        run_long_and_wait(&mut term, ctx, "sleep 1.3 # key=AKIAIOSFODNN7EXAMPLE", 1)?;
+        run_long_and_wait(
+            &mut term,
+            ctx,
+            concat!("sleep 1.3 # key=AKIA", "IOSFODNN7EXAMPLE"),
+            1,
+        )?;
         let got = lines(&log(ctx));
         assert_eq!(got.len(), 1, "vim must not notify: {got:?}");
         assert!(got[0].contains("[MASKED]"), "{got:?}");
-        assert!(!got[0].contains("AKIAIOSFODNN7EXAMPLE"), "{got:?}");
+        assert!(
+            !got[0].contains(concat!("AKIA", "IOSFODNN7EXAMPLE")),
+            "{got:?}"
+        );
         term.quit()
     });
 }

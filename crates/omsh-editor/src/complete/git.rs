@@ -154,6 +154,7 @@ pub(crate) const SUBCOMMANDS: &[&str] = &[
     "blame",
     "branch",
     "checkout",
+    "cherry",
     "cherry-pick",
     "clean",
     "clone",
@@ -219,7 +220,9 @@ pub(crate) fn place(before: &[String]) -> Place {
     match subcommand {
         "push" | "pull" | "fetch" if positional == 0 => Place::Remote,
         "push" | "pull" | "fetch" | "checkout" | "switch" | "branch" | "merge" | "rebase"
-        | "cherry-pick" | "diff" | "log" | "show" | "reset" | "revert" | "tag" => Place::Ref,
+        | "cherry" | "cherry-pick" | "diff" | "log" | "show" | "reset" | "revert" | "tag" => {
+            Place::Ref
+        }
         _ => Place::Other,
     }
 }
@@ -348,12 +351,21 @@ mod tests {
     }
 
     #[test]
+    fn cherry_is_offered_as_a_subcommand_and_the_list_stays_sorted() {
+        assert!(SUBCOMMANDS.contains(&"cherry"));
+        let mut sorted = SUBCOMMANDS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, SUBCOMMANDS);
+    }
+
+    #[test]
     fn the_place_of_the_cursor_in_a_git_command() {
         let p = |list: &[&str]| place(&words(list));
         assert_eq!(p(&[]), Place::Subcommand);
         assert_eq!(p(&["-C", "dir"]), Place::Subcommand);
         assert_eq!(p(&["--no-pager"]), Place::Subcommand);
         assert_eq!(p(&["checkout"]), Place::Ref);
+        assert_eq!(p(&["cherry"]), Place::Ref);
         assert_eq!(p(&["-C", "dir", "checkout"]), Place::Ref);
         assert_eq!(p(&["-c", "a.b=c", "switch", "-c"]), Place::Ref);
         assert_eq!(p(&["push"]), Place::Remote);

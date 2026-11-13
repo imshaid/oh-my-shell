@@ -336,7 +336,7 @@ fn ctrl_c_while_waiting_for_the_answer_cancels_and_the_prompt_comes_back() {
 #[test]
 fn a_failed_plan_step_offers_the_explanation() {
     pty_test(BIN, |ctx| {
-        let plan = r#"{"summary":"Fail","steps":[{"title":"Fail","command":"sh -c 'exit 5'","explanation":"x","risk":"low","needs_root":false}],"language":"en"}"#;
+        let plan = r#"{"summary":"Fail","steps":[{"title":"Fail","command":"sh -c 'exit 5'","explanation":"x","risk":"low","needs_root":false}]}"#;
         let server = Server::start_answering(Duration::ZERO, false, &[plan, "It exited with 5."])?;
         configure(ctx, &server, "")?;
         let mut term = launch(ctx).start()?;

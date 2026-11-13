@@ -691,6 +691,44 @@ fn readers_wait_for_a_database_that_is_still_opening() {
     release.join().unwrap();
 }
 
+/// `reader_open` is what lets a reader know that "not ready" is only for a moment (the writer is
+/// still opening the file) and not for good.
+#[test]
+fn a_store_in_memory_is_open_for_reading_from_the_start() {
+    // No `settle` first: the answer must not depend on the writer thread having run.
+    assert!(Store::in_memory().reader_open());
+}
+
+#[test]
+fn a_file_store_is_not_open_for_reading_until_its_writer_has_opened_the_file() {
+    let scratch = Scratch::new();
+    {
+        let store = Store::open(&scratch.db(), 100);
+        assert!(store.close(PATIENT));
+    }
+    let holder = Connection::open(scratch.db()).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let store = Store::open(&scratch.db(), 100);
+    // The writer is stuck on the lock: not open, and still not a moment later.
+    assert!(!store.reader_open());
+    thread::sleep(Duration::from_millis(150));
+    assert!(!store.reader_open(), "the lock is still held");
+    holder.execute_batch("COMMIT").unwrap();
+    assert!(store.settle(PATIENT), "the open finished");
+    assert!(store.reader_open());
+}
+
+#[test]
+fn a_file_store_that_fell_back_to_memory_counts_as_open() {
+    let scratch = Scratch::new();
+    let dir = scratch.0.join("data");
+    std::fs::create_dir_all(dir.join("history.db")).unwrap();
+    // A directory where the file should be: the writer gives up and keeps history in memory.
+    let store = Store::open(&dir.join("history.db"), 100);
+    assert!(store.settle(PATIENT));
+    assert!(store.reader_open(), "a reader must not wait for ever");
+}
+
 #[test]
 fn closing_writes_what_is_queued_and_leaves_one_file() {
     let scratch = Scratch::new();
@@ -1567,6 +1605,38 @@ fn the_page_cache_of_both_connections_is_limited() {
         // Negative: KiB (positive would be pages).
         assert_eq!(size, -kib, "the {name}");
     }
+}
+
+fn cache_of(connection: &Connection) -> i64 {
+    connection
+        .query_row("PRAGMA cache_size", [], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_raised_cache_is_put_back_after_the_work() {
+    let scratch = Scratch::new();
+    let (_writer, reader) = open_file(&scratch.db(), 1000).unwrap_or_else(|_| panic!("opens"));
+    assert_eq!(cache_of(&reader), -READER_CACHE_KIB);
+    let inside = with_cache(&reader, 3_000, || cache_of(&reader));
+    assert_eq!(inside, -3_000, "raised while the work runs");
+    assert_eq!(cache_of(&reader), -READER_CACHE_KIB, "and put back");
+}
+
+/// The explorer's list is made with a bigger cache (a `GROUP BY` sorter that fits in it is not
+/// written to a temporary file), and the reader is small again when the list is made.
+#[test]
+fn the_explorers_list_does_not_leave_the_reader_with_a_big_cache() {
+    let scratch = Scratch::new();
+    let store = Store::open(&scratch.db(), 1000);
+    record(&store, "ls", "/", 0);
+    record(&store, "make", "/", 2);
+    assert!(store.settle(PATIENT));
+    let rows = store.distinct_recent(100).expect("ready");
+    assert_eq!(rows.len(), 2);
+    let guard = lock(&store.inner.shared.reader);
+    let reader = guard.as_ref().expect("a reader");
+    assert_eq!(cache_of(reader), -READER_CACHE_KIB);
 }
 
 #[test]

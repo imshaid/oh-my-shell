@@ -198,7 +198,6 @@ pub fn command(setup: PlanSetup, text: &str, mut env: ExplainEnv<'_>) -> LineRes
     let PlanSetup {
         mut connect,
         settings,
-        language,
         context,
     } = setup;
     let ctx = PlanContext::build(gather(env.shell, &context, env.recent), &context);
@@ -224,7 +223,7 @@ pub fn command(setup: PlanSetup, text: &str, mut env: ExplainEnv<'_>) -> LineRes
             "oh-my-shell: a secret in the text or the context was hidden before sending\n",
         );
     }
-    let request = explain_command(text, &ctx, language);
+    let request = explain_command(text, &ctx);
     let status = ask(&mut connect, &settings, &request, &mut env, "??");
     finish(env.shell, status)
 }
@@ -294,7 +293,6 @@ pub fn last(
     let PlanSetup {
         mut connect,
         settings,
-        language,
         context,
     } = setup;
     let ctx = PlanContext::build(gather(env.shell, &context, env.recent), &context);
@@ -312,7 +310,7 @@ pub fn last(
             one_line(&command)
         ),
     );
-    let request = explain_failure(&command, status, &ctx, language);
+    let request = explain_failure(&command, status, &ctx);
     let code = ask(&mut connect, &settings, &request, &mut env, "??");
     done(&mut env, code)
 }
@@ -415,7 +413,6 @@ pub fn pipe(
     let PlanSetup {
         mut connect,
         settings,
-        language,
         context,
     } = setup;
 
@@ -500,7 +497,6 @@ pub fn pipe(
             output: &output,
         },
         &ctx,
-        language,
     );
     let code = ask(&mut connect, &settings, &request, &mut env, "?");
     // The status of the line is the command's own unless the question could not be answered.

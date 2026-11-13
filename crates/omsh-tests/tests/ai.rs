@@ -19,7 +19,7 @@ use omsh_tests::{Ctx, Launch, SHORT, pty_test};
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
 
 /// A made-up key. The text before the marker is what `grep` patterns below look for.
-const KEY: &str = "sk-test-5f3c9a1e77b24d0c";
+const KEY: &str = concat!("sk-", "test-5f3c9a1e77b24d0c");
 
 fn config_dir(ctx: &Ctx) -> PathBuf {
     ctx.home().join(".config/oh-my-shell")

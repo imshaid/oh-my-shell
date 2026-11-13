@@ -55,9 +55,7 @@ pub use history_search::{
 pub use keys::{
     CredentialsFile, KeyError, KeyStore, Keys, SecretService, Stored, parse_credentials,
 };
-pub use plan::{
-    Lang, MAX_COMMAND_CHARS, MAX_STEPS, ModelRisk, Plan, PlanError, Step, placeholder_in,
-};
+pub use plan::{MAX_COMMAND_CHARS, MAX_STEPS, ModelRisk, Plan, PlanError, Step, placeholder_in};
 pub use prompt::{PLAN_MAX_TOKENS, PlanRequest, hides_secret, plan_request, retry_request};
 pub use provider::{
     ChatEvent, ChatRequest, EventStream, Message, Provider, Role, Usage, collect_text,

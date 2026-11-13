@@ -240,7 +240,56 @@ pub fn set_setting(path: &Path, key: &str, change: &Change) -> Result<(), EditEr
             table.remove(name);
         }
     }
-    write(&target, &document.to_string(), mode)
+    // A table that lost its last key would stay as a bare `[header]`; take the header out too.
+    let tidy = if matches!(change, Change::Remove) {
+        without_empty_header(&document, &parts)
+    } else {
+        None
+    };
+    write(&target, &tidy.unwrap_or_else(|| document.to_string()), mode)
+}
+
+/// A line that cannot be in a TOML file (a NUL byte), used to find one header in the output.
+const HEADER_MARK: &str = "\u{0}omsh-header\n";
+
+/// The text of `document` without the header of the table `parts` name, if that table is now
+/// empty and the header is only a header: written with `[name]` and nothing after it on its line.
+/// The comments and blank lines that stood in front of the header stay, except the blank lines
+/// directly in front of it (they separated it from the text above, and nothing is left to
+/// separate). `None` when the table is not empty, has a comment after its header, is written
+/// with dotted keys, or is not found: the caller then writes the document as it is.
+///
+/// A table's prefix holds *everything* between the previous item and its header, comments of
+/// the user included (in the first-run file, the whole commented template), so the table is not
+/// simply removed: that would remove them too.
+fn without_empty_header(document: &DocumentMut, parts: &[&str]) -> Option<String> {
+    let mut copy = document.clone();
+    let (last, parents) = parts.split_last()?;
+    let mut table: &mut dyn TableLike = copy.as_table_mut();
+    for part in parents {
+        table = table.get_mut(part)?.as_table_like_mut()?;
+    }
+    let Item::Table(header) = table.get_mut(last)? else {
+        return None;
+    };
+    if !header.is_empty() || header.is_dotted() {
+        return None;
+    }
+    let prefix = header.decor().prefix()?.as_str()?.to_owned();
+    let suffix = header.decor().suffix()?.as_str()?.to_owned();
+    if !suffix.trim().is_empty() {
+        return None;
+    }
+    let kept = match prefix.trim_end().is_empty() {
+        true => String::new(),
+        false => format!("{}\n", prefix.trim_end()),
+    };
+    header
+        .decor_mut()
+        .set_prefix(format!("{kept}{HEADER_MARK}"));
+    let text = copy.to_string();
+    let line = format!("{HEADER_MARK}[{}]{suffix}\n", parts.join("."));
+    text.contains(&line).then(|| text.replacen(&line, "", 1))
 }
 
 /// The table `parts` name below `table`, or `None` if one of them is not in the file.
@@ -430,14 +479,14 @@ mod tests {
     fn existing_keys_are_replaced_and_their_comments_stay() {
         let dir = Scratch::new();
         let path = dir.file(
-            "[ai]\n# which one\nprovider = \"ollama\" # local\nmodel = \"old\"\nlanguage = \"bn\"\n",
+            "[ai]\n# which one\nprovider = \"ollama\" # local\nmodel = \"old\"\nnote = \"kept\"\n",
         );
         set_ai(&path, &choice(Provider::OpenAi, "gpt-x", None)).unwrap();
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.contains("# which one\n"), "{after}");
         assert!(after.contains("provider = \"openai\" # local\n"), "{after}");
         assert!(after.contains("model = \"gpt-x\"\n"), "{after}");
-        assert!(after.contains("language = \"bn\"\n"), "{after}");
+        assert!(after.contains("note = \"kept\"\n"), "{after}");
     }
 
     #[test]
@@ -681,6 +730,64 @@ mod tests {
         set_setting(&path, "ui.motion", &Change::Remove).unwrap();
         set_setting(&path, "editor.mode", &Change::Remove).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn removing_the_last_key_of_a_table_takes_its_header_and_the_blank_line_before_it() {
+        let dir = Scratch::new();
+        let path = dir.file("[editor]\nhints = true\n\n[ui]\nmotion = \"off\"\n");
+        set_setting(&path, "ui.motion", &Change::Remove).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[editor]\nhints = true\n"
+        );
+        // In the middle of the file, one blank line is left between its neighbours.
+        let path =
+            dir.file("[editor]\nhints = true\n\n[ui]\nmotion = \"off\"\n\n[history]\nsize = 5\n");
+        set_setting(&path, "ui.motion", &Change::Remove).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[editor]\nhints = true\n\n[history]\nsize = 5\n"
+        );
+        assert_eq!(setting_of(&path).history.size, 5);
+    }
+
+    #[test]
+    fn a_setting_changed_and_returned_to_default_leaves_the_first_run_file_as_it_was() {
+        let dir = Scratch::new();
+        let path = dir.0.join("config.toml");
+        set_setting(&path, "ui.motion", &Change::Text("off".into())).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("[ui]\nmotion"));
+        set_setting(&path, "ui.motion", &Change::Remove).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), TEMPLATE);
+    }
+
+    #[test]
+    fn a_nested_table_that_becomes_empty_loses_its_header_too() {
+        let dir = Scratch::new();
+        let path = dir.file("[ai.context]\ngit = false\n");
+        set_setting(&path, "ai.context.git", &Change::Remove).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn a_table_with_the_users_comment_on_its_header_line_stays() {
+        let dir = Scratch::new();
+        let path = dir.file("[ui] # mine\nmotion = \"off\"\n");
+        set_setting(&path, "ui.motion", &Change::Remove).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[ui] # mine\n");
+    }
+
+    #[test]
+    fn comments_in_front_of_a_removed_header_are_kept() {
+        let dir = Scratch::new();
+        let path =
+            dir.file("[editor]\nhints = true\n\n# about the look\n\n[ui]\nmotion = \"off\"\n");
+        set_setting(&path, "ui.motion", &Change::Remove).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[editor]\nhints = true\n\n# about the look\n"
+        );
     }
 
     #[test]

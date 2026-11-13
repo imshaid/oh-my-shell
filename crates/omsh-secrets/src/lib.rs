@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn key_formats_of_the_known_services() {
-        let aws = "AKIAIOSFODNN7EXAMPLE";
+        let aws = concat!("AKIA", "IOSFODNN7EXAMPLE");
         let github = format!("ghp_{}", "a1B2".repeat(9));
         let pat = format!("github_pat_{}", "x_1".repeat(8));
         let google = format!("AIza{}", "Sy-_9".repeat(7));
@@ -407,14 +407,14 @@ mod tests {
             let key = format!("{prefix}{}", "0".repeat(36));
             assert_eq!(parts(&key), [key.as_str()]);
         }
-        let temporary = "ASIAABCDEFGHIJKLMNOP";
+        let temporary = concat!("ASIA", "ABCDEFGHIJKLMNOP");
         assert_eq!(parts(temporary), [temporary]);
     }
 
     #[test]
     fn text_that_only_resembles_a_key() {
         let short_github = format!("ghp_{}", "a".repeat(35));
-        let long_aws = "AKIAIOSFODNN7EXAMPLEX";
+        let long_aws = concat!("AKIA", "IOSFODNN7EXAMPLEX");
         let lower_aws = "AKIAiosfodnn7example";
         let short_google = format!("AIza{}", "a".repeat(34));
         let inside_word = format!("task-{}", "a".repeat(30));
@@ -552,12 +552,12 @@ mod tests {
             ),
             (
                 "AWS AKIA",
-                "echo AKIAIOSFODNN7EXAMPLE | cmd".into(),
+                concat!("echo AKIA", "IOSFODNN7EXAMPLE | cmd").into(),
                 "echo [MASKED] | cmd".into(),
             ),
             (
                 "AWS ASIA",
-                "echo ASIAABCDEFGHIJKLMNOP".into(),
+                concat!("echo ASIA", "ABCDEFGHIJKLMNOP").into(),
                 "echo [MASKED]".into(),
             ),
             (

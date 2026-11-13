@@ -19,7 +19,7 @@ fn system_of(r: &ChatRequest) -> &str {
 
 #[test]
 fn an_explanation_asks_for_prose_and_carries_the_text() {
-    let r = explain_command("tar -xzf a.tgz", &PlanContext::default(), AiLanguage::Auto);
+    let r = explain_command("tar -xzf a.tgz", &PlanContext::default());
     assert!(!r.json);
     assert_eq!(r.max_tokens, EXPLAIN_MAX_TOKENS);
     assert_eq!(r.messages.len(), 1);
@@ -35,11 +35,11 @@ fn an_explanation_asks_for_prose_and_carries_the_text() {
 fn every_text_is_masked_by_this_module() {
     let key = ghp();
     let cmd = format!("curl -H 'Authorization: Bearer {key}' https://x");
-    let r = explain_command(&cmd, &PlanContext::default(), AiLanguage::Auto);
+    let r = explain_command(&cmd, &PlanContext::default());
     assert!(!r.messages[0].text.contains(&key));
     assert!(r.messages[0].text.contains("[MASKED]"));
 
-    let r = explain_failure(&cmd, 22, &PlanContext::default(), AiLanguage::Auto);
+    let r = explain_failure(&cmd, 22, &PlanContext::default());
     assert!(!r.messages[0].text.contains(&key));
 
     let output = plain("fine\n");
@@ -51,7 +51,6 @@ fn every_text_is_masked_by_this_module() {
             output: &output,
         },
         &PlanContext::default(),
-        AiLanguage::Auto,
     );
     assert!(!r.messages[0].text.contains(&key));
     assert!(!system_of(&r).contains(&key));
@@ -59,11 +58,7 @@ fn every_text_is_masked_by_this_module() {
 
 #[test]
 fn control_characters_in_a_command_do_not_reach_the_model() {
-    let r = explain_command(
-        "echo \x1b[31mhi\x07",
-        &PlanContext::default(),
-        AiLanguage::Auto,
-    );
+    let r = explain_command("echo \x1b[31mhi\x07", &PlanContext::default());
     assert!(
         !r.messages[0]
             .text
@@ -74,7 +69,7 @@ fn control_characters_in_a_command_do_not_reach_the_model() {
 
 #[test]
 fn a_failure_request_says_the_error_text_was_not_seen() {
-    let r = explain_failure("make", 2, &PlanContext::default(), AiLanguage::Auto);
+    let r = explain_failure("make", 2, &PlanContext::default());
     assert!(system_of(&r).contains("NOT captured"));
     assert!(r.messages[0].text.ends_with("Exit status: 2"));
 }
@@ -105,24 +100,18 @@ fn the_context_and_the_language_are_in_the_prompt() {
         recent: Vec::new(),
     };
     let ctx = PlanContext::build(gathered, &AiContext::default());
-    let auto = explain_command("ls", &ctx, AiLanguage::Auto);
-    assert!(system_of(&auto).contains("- OS: Ubuntu 26.04\n"));
-    assert!(system_of(&auto).contains("language of the user's text"));
-    let bn = explain_command("ls", &ctx, AiLanguage::Bangla);
-    assert!(system_of(&bn).contains("Answer in Bangla"));
-    let en = explain_command("ls", &ctx, AiLanguage::English);
-    assert!(system_of(&en).contains("Answer in English"));
-    let none = explain_command("ls", &PlanContext::default(), AiLanguage::Auto);
+    let with = explain_command("ls", &ctx);
+    assert!(system_of(&with).contains("- OS: Ubuntu 26.04\n"));
+    // Answers are in English, and no other language is offered.
+    assert!(system_of(&with).contains("Answer in English"));
+    assert!(!system_of(&with).contains("Bangla"));
+    let none = explain_command("ls", &PlanContext::default());
     assert!(!system_of(&none).contains("OS:"));
 }
 
 #[test]
 fn a_huge_command_is_cut() {
-    let r = explain_command(
-        &"x".repeat(TEXT_CHARS * 2),
-        &PlanContext::default(),
-        AiLanguage::Auto,
-    );
+    let r = explain_command(&"x".repeat(TEXT_CHARS * 2), &PlanContext::default());
     assert!(r.messages[0].text.chars().count() < TEXT_CHARS + 40);
 }
 
@@ -137,7 +126,6 @@ fn ask_with(output: &Output, question: &str) -> ChatRequest {
             output,
         },
         &PlanContext::default(),
-        AiLanguage::Auto,
     )
 }
 

@@ -140,6 +140,7 @@ fn whole_word(bytes: &[u8], end: usize, _len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LineResult;
     use crate::vars::Variables;
 
     fn expand(aliases: &[(&str, &str)], src: &str) -> String {
@@ -226,6 +227,25 @@ mod tests {
     #[test]
     fn an_alias_can_hold_more_than_a_word() {
         assert_eq!(expand(&[("both", "a; b")], "both && c"), "a; b && c");
+    }
+
+    #[test]
+    fn prepare_unaliased_keeps_the_text_that_prepare_would_replace() {
+        let mut shell = Shell::with_variables(Variables::default());
+        shell.aliases.insert("ll".to_owned(), "ls -l".to_owned());
+        let replaced = shell.prepare("ll /x", true).unwrap();
+        assert_eq!(replaced.text(), "ls -l /x");
+        let kept = shell.prepare_unaliased("ll /x", true).unwrap();
+        assert_eq!(kept.text(), "ll /x");
+        // An unfinished command is still reported as such, and a bad one still rejected.
+        assert!(matches!(
+            *shell.prepare_unaliased("echo 'x", false).unwrap_err(),
+            LineResult::Incomplete
+        ));
+        assert!(matches!(
+            *shell.prepare_unaliased("echo )", true).unwrap_err(),
+            LineResult::Rejected(_)
+        ));
     }
 
     #[test]

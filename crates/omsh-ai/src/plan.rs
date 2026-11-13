@@ -39,15 +39,6 @@ impl ModelRisk {
     }
 }
 
-/// The language the model wrote the plan in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Lang {
-    #[default]
-    En,
-    Bn,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Step {
     pub title: String,
@@ -63,8 +54,6 @@ pub struct Step {
 pub struct Plan {
     pub summary: String,
     pub steps: Vec<Step>,
-    #[serde(default)]
-    pub language: Lang,
 }
 
 /// Why an answer is not a usable plan. The text is short and has no model output in it beyond
@@ -283,7 +272,7 @@ mod tests {
     use super::*;
 
     fn plan_json(steps: &str) -> String {
-        format!(r#"{{"summary":"Do it","steps":[{steps}],"language":"en"}}"#)
+        format!(r#"{{"summary":"Do it","steps":[{steps}]}}"#)
     }
 
     fn step(command: &str) -> String {
@@ -301,7 +290,6 @@ mod tests {
         assert_eq!(plan.steps[0].command, "ls -la");
         assert_eq!(plan.steps[0].risk, ModelRisk::Low);
         assert!(!plan.steps[0].needs_root);
-        assert_eq!(plan.language, Lang::En);
     }
 
     #[test]
@@ -317,14 +305,21 @@ mod tests {
     }
 
     #[test]
-    fn missing_optional_fields_take_defaults_and_bangla_is_known() {
-        let answer = r#"{"summary":"s","steps":[{"title":"t","command":"ls","risk":"high"}],"language":"bn"}"#;
+    fn missing_optional_fields_take_defaults() {
+        let answer = r#"{"summary":"s","steps":[{"title":"t","command":"ls","risk":"high"}]}"#;
         let plan = Plan::parse(answer).unwrap();
-        assert_eq!(plan.language, Lang::Bn);
         assert_eq!(plan.steps[0].explanation, "");
         assert!(!plan.steps[0].needs_root);
-        let no_language = r#"{"summary":"s","steps":[{"title":"t","command":"ls","risk":"low"}]}"#;
-        assert_eq!(Plan::parse(no_language).unwrap().language, Lang::En);
+    }
+
+    /// The format no longer has a `language` field; a model that still sends one (from an older
+    /// prompt, or out of habit) is not refused.
+    #[test]
+    fn a_language_field_from_the_model_is_ignored() {
+        let answer = r#"{"summary":"s","steps":[{"title":"t","command":"ls","risk":"low"}],"language":"bn"}"#;
+        let plan = Plan::parse(answer).unwrap();
+        assert_eq!(plan.summary, "s");
+        assert_eq!(plan.steps.len(), 1);
     }
 
     #[test]
@@ -338,10 +333,6 @@ mod tests {
             (plan_json(&nine), "9 steps"),
             (
                 r#"{"summary":"s","steps":[{"title":"t","command":"ls","risk":"extreme"}]}"#.into(),
-                "schema",
-            ),
-            (
-                r#"{"summary":"s","steps":[{"title":"t","command":"ls","risk":"low"}],"language":"fr"}"#.into(),
                 "schema",
             ),
             (

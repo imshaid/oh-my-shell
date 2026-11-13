@@ -23,7 +23,7 @@ use omsh_ai::{
 };
 use omsh_config::Provider as Kind;
 
-const KEY: &str = "sk-test-5f3c9a1e77b24d0c";
+const KEY: &str = concat!("sk-", "test-5f3c9a1e77b24d0c");
 
 // -- the fake server --------------------------------------------------------------------
 

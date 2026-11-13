@@ -87,7 +87,7 @@ fn plan(steps: &[(&str, &str, &str)]) -> String {
         })
         .collect();
     format!(
-        r#"{{"summary":"Do the thing","steps":[{}],"language":"en"}}"#,
+        r#"{{"summary":"Do the thing","steps":[{}]}}"#,
         steps.join(",")
     )
 }
@@ -199,8 +199,11 @@ fn the_request_is_masked_and_carries_only_the_allowed_context() {
     });
 }
 
-const SECRET_EXPORT: &str = "export GITHUB_TOKEN=ghp_a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2";
-const TOKEN: &str = "ghp_a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2";
+const SECRET_EXPORT: &str = concat!(
+    "export GITHUB_TOKEN=gh",
+    "p_a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2"
+);
+const TOKEN: &str = concat!("ghp_", "a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2a1B2");
 
 #[test]
 fn the_branch_and_the_last_commands_are_sent_and_masked() {

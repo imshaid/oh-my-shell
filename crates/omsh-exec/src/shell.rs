@@ -474,7 +474,28 @@ impl Shell {
     /// The [`LineResult`] that `run_source` would have given (boxed, it is large): `Incomplete`
     /// when more input is needed, `Rejected` when the line is wrong.
     pub fn prepare(&mut self, src: &str, at_end: bool) -> Result<Prepared, Box<LineResult>> {
-        let src = &*self.expand_aliases(src).into_owned();
+        let src = self.expand_aliases(src).into_owned();
+        self.prepare_text(&src, at_end)
+    }
+
+    /// [`prepare`](Self::prepare) without the alias step: the text is parsed as it is, so what
+    /// runs is what was written. For commands that did not come from the person at the prompt
+    /// (an AI plan step): an alias such as `ls=eza` changes what a flag means (`ls -S`), and the
+    /// model wrote the command for the real program. Functions still apply, as they do for any
+    /// command.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`prepare`](Self::prepare).
+    pub fn prepare_unaliased(
+        &mut self,
+        src: &str,
+        at_end: bool,
+    ) -> Result<Prepared, Box<LineResult>> {
+        self.prepare_text(src, at_end)
+    }
+
+    fn prepare_text(&mut self, src: &str, at_end: bool) -> Result<Prepared, Box<LineResult>> {
         self.source = Some(Arc::from(src));
         match parse(src) {
             Ok(list) => Ok(Prepared {

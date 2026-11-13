@@ -1,64 +1,85 @@
 # Oh My Shell
 
-An interactive Linux shell, written in Rust. The goal is a shell that behaves like a
-familiar POSIX shell, helps like fish, and can optionally hand a task to an AI, always
-showing what will happen before anything runs.
+An interactive Linux shell, written in Rust. It behaves like a familiar POSIX shell, helps
+like fish while you type, keeps a searchable history, and can optionally hand a task to an AI.
+Nothing the AI suggests runs without a preview and your confirmation, and dangerous commands
+are checked locally first.
 
-**Status: early development.** The `oh-my-shell` binary reads commands from standard input
-and runs it: pipelines, redirections (including here-documents), `;` `&&` `||` `!`, `( )` and
-`{ }`, `if`, `while`, `until`, `for`, `case` and functions. Words get the usual POSIX
-expansions: `~`, `$var` and `${var:-x}`, `$(...)`, `$((1+2))`, field splitting and globbing.
-The first builtins are there (`cd`, `pwd`, `export`, `unset`, `set --`, `shift`, `echo`,
-`eval`, `.`, `exit`, `return`, `break`, `continue`). In a terminal, each command runs in its own
-process group, so Ctrl+C stops the command and not the shell. A command that ends with `&` runs
-in the background, and `jobs`, `wait` and `kill %1` work with it. Ctrl+Z stops the foreground
-job and keeps it in the job table; `fg` and `bg` continue it, `disown` forgets it, and `exit` warns
-once about stopped jobs.
-How it is started decides what runs: `oh-my-shell -c 'cmd'`, `oh-my-shell script.sh` and input
-from a pipe are handed to `/bin/sh` at once (so `ssh host cmd` and `scp` work with it as a
-login shell), and only a terminal (or `-i`) gets the shell's own interpreter. `-l`, or a name that
-starts with `-`, makes a login shell that imports the environment from `/etc/profile` and
-`~/.profile` through `/bin/sh -l`. `--no-ai` is accepted and does nothing yet.
-The interactive shell reads `~/.config/oh-my-shell/config.toml` (created, with every setting listed
-and commented out, the first time it starts) and then runs `~/.config/oh-my-shell/init.omsh`, a file of
-commands in the shell's own language for aliases, exports and functions. The `XDG_*` variables are
-respected. A mistake in `config.toml` never stops the shell: it is shown with its line and column, and
-the setting keeps its default. `--no-config` skips both files and writes nothing; it is the way back in
-when `init.omsh` is broken (an `exit` in it ends the shell).
-On a terminal that takes escape codes, lines are typed in a line editor: arrow keys, Home/End,
-Ctrl+A/E/K/W/U, Ctrl+R for history search, up and down to recall earlier commands of the session
-(a line that starts with a space is not remembered), and `editor.mode = "vi"` in `config.toml` for
-vi keys. Enter waits for an unfinished command (an open quote, `if` without `fi`, a trailing `\`,
-a here-document) and the next line becomes part of it. The prompt has two lines, like fish: a header with the directory (bold) and the git branch and virtual
-environment (dim), a failed status and a command that took over two seconds at the right edge (dim), and below it
-the symbol where you type. The text you type is colored as you type it, like fish: a command that does not exist is
-red, an existing file or directory is underlined, quoted text is yellow, options and arguments are cyan, `|`, `&&`,
-`||` and redirections are cyan, `;` and `&` are green, and a comment is dim red. A command that exists keeps the
-terminal's own color. Only the 16 ANSI color names are used (never hex or 256 colors, never bold), so the colors
-follow whatever theme your terminal has. The prompt's symbol also turns ANSI red after a command that failed.
-`NO_COLOR` removes every color and keeps the attributes (bold, dim, underline).
-In the interactive shell `ls`, `grep`, `egrep`, `fgrep` and `diff` are small built-in functions that add
-`--color=auto` when the program accepts it (asked once per program, by running it), so output to a terminal is
-colored and a pipe is not. `NO_COLOR` (set to anything non-empty) turns it off at every call. The shell never sets
-`LS_COLORS`, `GREP_COLOR` or `GREP_COLORS`. To change them, put an alias (`alias grep='grep --color=never'`) or a
-function of the same name in `init.omsh`, or remove one with `unset -f ls`. `command ls` skips the wrapper. They
-exist in the interactive shell only (also with `--no-config`); `-c`, scripts and pipes go to `/bin/sh`.
-`[prompt]` in `config.toml` picks the pieces. With `TERM=dumb`, an empty `TERM`, or inside
-Emacs the shell reads plain lines instead. History is not saved between sessions yet.
-Do not set it as your login shell yet.
+**Status: pre-1.0, no installer yet.** Build it from source (below). Try it with
+`cargo run -p omsh-cli`; do not set it as your login shell yet.
+
+## What it does
+
+**The shell.** Pipelines, redirections (here-documents included), `;` `&&` `||` `!`, `( )`,
+`{ }`, `if`, `while`, `until`, `for`, `case`, functions, aliases, the usual expansions
+(`~`, `$var`, `${var:-x}`, `$(...)`, `$((1+2))`, field splitting, globbing), job control
+(`&`, `jobs`, `fg`, `bg`, `wait`, `kill %1`, Ctrl+Z) and the common builtins. It is a
+POSIX-compatible subset, checked against `dash` and `bash`; syntax it does not support is
+reported with a clear message. Run as `oh-my-shell -c 'cmd'`, with a script, or with input from
+a pipe, it hands the work to `/bin/sh`, so `ssh host cmd` and `scp` work. Only a terminal (or
+`-i`) gets the interactive interpreter.
+
+**While you type.**
+- Syntax colors like fish (a command that does not exist is red, quotes are yellow, existing
+  files are underlined). Only the 16 ANSI colors are used, so your terminal theme decides how
+  they look. `NO_COLOR` is respected.
+- Gray hints from your history, ranked by the current folder first (Right or End accepts).
+- Tab completion for commands, paths, variables, git branches and options.
+- Abbreviations, bracketed paste, emacs or vi keys (`editor.mode = "vi"`).
+- A two-line prompt with the folder, git branch (read in the background, never slowing the
+  prompt), virtual environment, status and duration.
+
+**History.** Kept in a local SQLite file, with the folder, status and duration of every command.
+Secrets (keys, tokens, passwords in commands) are never stored. `history` lists and searches it,
+`j words` jumps to a folder you have used, and `Ctrl+R` opens a full-screen explorer.
+
+**Full-screen views.** `Ctrl+R` history explorer, `Ctrl+P` command palette (actions, aliases,
+functions, builtins), and a settings view that changes switches in `config.toml`.
+
+**Safety.** Every typed line is analyzed before it runs. A dangerous one (`rm -rf` on a big
+tree, for example) shows what it would touch and asks first. `rm` can
+move files to a trash instead of deleting them, and `undo` brings them back.
+
+**AI, optional and off until you set it up** (`omsh ai setup`; Ollama, Anthropic, OpenAI,
+Gemini, or any OpenAI-compatible server):
+- `? list the biggest files here` asks for a plan, shows each step with its risk, and runs it
+  only after you confirm. Steps run exactly as written: your aliases are not applied.
+- `?? tar -xzf a.tgz` explains a command without running it; `Alt+?` explains why the last
+  command failed; `cmd | ? question` asks about its output; `? history ...` searches the history
+  in plain words.
+- No network code runs on the normal command path. `--no-ai` switches the AI off for a session.
+  Keys are kept in the system keyring, or a private file, and are never sent to an address that
+  is not `https://` or this computer. Secrets are masked before anything is sent. Answers and
+  plans are in English.
+
+**Also.** Desktop notifications for long commands (`notify-send`), a first-run welcome and
+`omsh tour`, and themes (`~/.config/oh-my-shell/themes/<name>.toml`).
+
+## Configuration
+
+On the first start the shell writes `~/.config/oh-my-shell/config.toml` with every setting
+listed and commented out, and then runs `~/.config/oh-my-shell/init.omsh` (aliases, exports and
+functions, in the shell's own language). The `XDG_*` variables are respected. A mistake in the
+config never stops the shell: it is shown with its line and column and the setting keeps its
+default. `--no-config` skips both files and writes nothing; use it when `init.omsh` is broken.
 
 ## Build and run
 
 You need Linux and a recent stable Rust toolchain ([rustup](https://rustup.rs)).
 
 ```sh
-cargo build
-cargo run -p omsh-cli -- --version
+cargo build --release
+target/release/oh-my-shell --version
+cargo run -p omsh-cli          # the interactive shell
 ```
+
+The desktop notification needs `notify-send`; hints and the prompt's git segment need `git` in
+`PATH`. Neither is required.
 
 ## Check your changes
 
-CI runs these checks on every push:
+CI runs these checks on every push, plus a performance gate (start-up time, idle memory,
+keystroke latency), `cargo deny`, and the test suite again with the network switched off:
 
 ```sh
 cargo fmt --all --check

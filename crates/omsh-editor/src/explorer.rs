@@ -10,6 +10,10 @@ use omsh_ui::explorer::Item;
 /// just ran is in it. The same short wait the hinter makes for its first question.
 const SETTLE: Duration = Duration::from_millis(50);
 
+/// How long to go on waiting when the history file is still being opened: the same patience as
+/// the `history` builtin and the editor's searches have for the writer.
+const OPEN_PATIENCE: Duration = omsh_history::SETTLE;
+
 /// What the view is opened with.
 pub(crate) struct Listing {
     pub items: Vec<Item>,
@@ -21,7 +25,13 @@ pub(crate) struct Listing {
 /// The newest [`EXPLORER_WINDOW`] runs of every shell, one item for each distinct command, the
 /// newest first.
 pub(crate) fn listing(store: &Store) -> Listing {
-    let _ = store.settle(SETTLE);
+    if !store.settle(SETTLE) && !store.reader_open() {
+        // `Ctrl+R` in the first moments of a shell: the writer thread has not yet opened the
+        // file, so nothing can be read. Wait for it, as the `history` builtin does, instead of
+        // saying that the history cannot be read. A database that is open but slow, or a store
+        // in memory, never gets here.
+        let _ = store.settle(OPEN_PATIENCE);
+    }
     from_rows(store.distinct_recent(EXPLORER_WINDOW))
 }
 
@@ -79,6 +89,20 @@ mod tests {
         assert_eq!(listing.items[0].cwd, "/b");
         assert_eq!(listing.items[0].runs, 2);
         assert!(listing.items[1].failed());
+    }
+
+    #[test]
+    fn a_store_in_memory_never_waits_for_a_file() {
+        let store = Store::in_memory();
+        assert!(store.reader_open());
+        let started = std::time::Instant::now();
+        let listing = listing(&store);
+        assert!(!listing.unavailable);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the listing waited {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

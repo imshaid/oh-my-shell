@@ -75,7 +75,6 @@ enabled = false
 provider = "openai-compatible"
 model = "m"
 base_url = "https://example.com:8080/v1"
-language = "bn"
 [ai.context]
 os = false
 cwd = false
@@ -116,7 +115,6 @@ channel = "stable"
         c.ai.base_url.as_deref(),
         Some("https://example.com:8080/v1")
     );
-    assert_eq!(c.ai.language, AiLanguage::Bangla);
     assert!(!c.ai.context.os && !c.ai.context.cwd && !c.ai.context.git);
     assert!(!c.ai.context.recent_commands);
     assert!(c.update.check);
@@ -284,6 +282,20 @@ fn an_api_key_gets_a_message_that_says_where_keys_go() {
     // Not every name that contains "key" is a secret.
     let parsed = parse("[ai]\nkeyboard = 1\n");
     assert!(messages(&parsed)[0].contains("unknown setting ai.keyboard"));
+}
+
+/// `[ai] language` was removed (answers are in English). A file that still has it starts as
+/// usual, with the one line the loader gives for any unknown setting.
+#[test]
+fn the_removed_language_setting_is_an_unknown_setting() {
+    for value in ["bn", "auto", "en"] {
+        let parsed = parse(&format!("[ai]\nlanguage = \"{value}\"\n"));
+        assert_eq!(
+            messages(&parsed),
+            ["2:1: warning: unknown setting ai.language; ignored"]
+        );
+        assert_eq!(parsed.config.ai, Ai::default());
+    }
 }
 
 #[test]

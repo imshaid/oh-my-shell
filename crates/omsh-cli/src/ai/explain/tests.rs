@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use omsh_ai::fake::FakeProvider;
 use omsh_ai::{ErrorKind, LEFT_OUT, ProviderError};
-use omsh_config::{AiLanguage, Provider as Kind};
+use omsh_config::Provider as Kind;
 use omsh_exec::ReadError;
 use omsh_history::Filter;
 use omsh_ui::Paint;
@@ -192,7 +192,6 @@ fn go(fake: FakeProvider, flow: Flow<'_>, setup: Setup) -> Ran {
                 model: "test-model".to_owned(),
                 base_url: None,
             },
-            language: AiLanguage::Auto,
             context: omsh_config::AiContext::default(),
         }
     };

@@ -754,8 +754,19 @@ fn the_first_argument_of_push_and_pull_is_a_remote() {
 fn the_git_command_itself_is_completed() {
     let s = repo();
     let mut c = in_repo(&s);
-    assert_eq!(values(&mut c, "git ch"), ["checkout", "cherry-pick"]);
-    assert_eq!(values(&mut c, "git -C . che"), ["checkout", "cherry-pick"]);
+    assert_eq!(
+        values(&mut c, "git ch"),
+        ["checkout", "cherry", "cherry-pick"]
+    );
+    assert_eq!(
+        values(&mut c, "git -C . che"),
+        ["checkout", "cherry", "cherry-pick"]
+    );
+    // `cherry` itself takes refs (upstream and head), like `cherry-pick`.
+    assert_eq!(
+        values(&mut c, "git cherry mai"),
+        values(&mut c, "git cherry-pick mai")
+    );
     assert!(values(&mut c, "git zzz").is_empty());
     let all = values(&mut c, "git ");
     assert!(all.contains(&"status".to_owned()) && all.contains(&"commit".to_owned()));

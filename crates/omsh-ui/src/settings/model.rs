@@ -333,6 +333,35 @@ pub(crate) mod tests {
         assert_eq!(model.pending(), 0);
     }
 
+    /// Settings apply at the next start, and the view reads the file each time it opens. So a
+    /// shell that opens the view after another shell changed a setting shows it as waiting for
+    /// the next start (S28c: a second running shell is not told while its view is closed, and
+    /// a view that is already open does not follow the file either).
+    #[test]
+    fn a_view_opened_later_shows_a_change_that_another_shell_wrote() {
+        let (mut first, text, _) = model_with("");
+        select(&mut first, "editor.hints");
+        first.handle_key(key(KeyCode::Enter));
+        assert!(text.lock().unwrap().contains("hints = false"));
+        assert_eq!(first.pending(), 1);
+
+        // Another shell (the same running configuration, the same file) opens its view.
+        let second_store = Memory {
+            text: Arc::clone(&text),
+            fail: Arc::new(Mutex::new(None)),
+        };
+        let second = Model::new(Config::default(), Some(Box::new(second_store)));
+        assert_eq!(
+            second.pending(),
+            1,
+            "the file is read again at each opening"
+        );
+
+        // A view that is already open keeps the rows it was made with.
+        *text.lock().unwrap() = String::new();
+        assert_eq!(first.pending(), 1);
+    }
+
     #[test]
     fn typing_finds_a_setting_by_its_name() {
         let (mut model, _, _) = model_with("");

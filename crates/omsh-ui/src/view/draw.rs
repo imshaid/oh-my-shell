@@ -43,6 +43,14 @@ impl Styles {
         }
     }
 
+    /// The style for secondary text (a tag, a detail, an age, a source) on a row. Dim, except on
+    /// the chosen row: that row is drawn in reverse video, and dim text on it is hard to read, so
+    /// there it has the weight of the rest of the row.
+    #[must_use]
+    pub fn secondary(&self, chosen: bool) -> Style {
+        if chosen { self.plain } else { self.dim }
+    }
+
     /// `unicode` with a terminal that takes it, `ascii` otherwise.
     #[must_use]
     pub fn glyph(&self, unicode: &'static str, ascii: &'static str) -> &'static str {

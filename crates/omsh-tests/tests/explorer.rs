@@ -145,6 +145,42 @@ fn a_chosen_command_goes_into_the_line_and_runs_only_after_enter() {
     });
 }
 
+/// `Ctrl+R` in the first moments of a shell, while the history writer has not finished opening
+/// the file (S28c). The view used to wait 50 ms and then say "The history cannot be read right
+/// now."; it now waits for the writer, as the `history` builtin does. To make the state certain,
+/// another connection holds the database locked, so the writer is stuck in its first step when
+/// `Ctrl+R` is pressed; the lock is let go 400 ms later.
+#[test]
+fn ctrl_r_waits_for_a_history_file_that_is_still_opening() {
+    pty_test(BIN, |ctx| {
+        seed(ctx, &[row("echo listed-here", "/x", 0)])?;
+        let blocker = rusqlite::Connection::open(ctx.history_file()).expect("open the history");
+        blocker
+            .execute_batch("BEGIN EXCLUSIVE")
+            .expect("take the lock");
+        let mut term = ctx.start()?;
+        // The shell is up and its writer is stuck. Let go only after the key has been sent.
+        let started = std::time::Instant::now();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            blocker.execute_batch("COMMIT").expect("let go");
+        });
+        press_ctrl_r(&mut term)?;
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "the view opened after {:?}: the writer was not held back, so this test shows nothing",
+            started.elapsed()
+        );
+        release.join().expect("the lock holder ended");
+        term.write_bytes(b"listed")?;
+        term.write_bytes(b"\r")?;
+        left_view(&mut term);
+        term.expect_plain("echo listed-here", SHORT);
+        term.cancel_line()?;
+        term.quit()
+    });
+}
+
 /// In vi mode `Ctrl+R` opens the view in insert mode and in normal mode.
 #[test]
 fn ctrl_r_works_in_both_vi_modes() {
