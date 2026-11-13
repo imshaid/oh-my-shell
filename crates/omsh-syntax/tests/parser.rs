@@ -2044,8 +2044,11 @@ fn awkward_input_stays_fast() {
         let _ = parse_tolerant(src);
         let elapsed = started.elapsed();
         let head: String = src.chars().take(12).collect();
+        // Only a guard against a quadratic blow-up (that would take minutes). A shared CI runner
+        // was seen to be 2.9 times slower than a desktop (5.1 s against 1.8 s for one case in a
+        // debug build), so the limit is far above the normal time.
         assert!(
-            elapsed < Duration::from_secs(5),
+            elapsed < Duration::from_secs(15),
             "{head:?} took {elapsed:?}"
         );
     }
