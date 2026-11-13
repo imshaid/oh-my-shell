@@ -32,6 +32,6 @@ if [ -n "$highest" ]; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-    echo "check-binary.sh: ok (libraries: $(echo $needed | tr ' ' ','); highest glibc symbol: ${highest:-none}, limit $max)"
+    echo "check-binary.sh: ok (libraries: $(echo "$needed" | paste -sd, -); highest glibc symbol: ${highest:-none}, limit $max)"
 fi
 exit "$fail"

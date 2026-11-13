@@ -32,7 +32,12 @@ ok() { checks=$((checks + 1)); printf 'ok   %s\n' "$1"; }
 bad() { checks=$((checks + 1)); failures=$((failures + 1)); printf 'FAIL %s\n' "$1"; }
 check() { # check "label" command...
     label=$1; shift
-    if "$@" >/dev/null 2>&1; then ok "$label"; else bad "$label"; fi
+    if out=$("$@" 2>&1); then
+        ok "$label"
+    else
+        bad "$label"
+        [ -z "$out" ] || printf '%s\n' "$out" | sed 's/^/     | /'
+    fi
 }
 refuses() { # refuses "label" "text the message must contain" command...
     label=$1; text=$2; shift 2

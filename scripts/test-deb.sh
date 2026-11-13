@@ -3,7 +3,10 @@
 # apt (Debian, Ubuntu). It changes the machine: run it in CI or in a container.
 #   scripts/test-deb.sh path/to/oh-my-shell_X.Y.Z-1_amd64.deb
 set -eu
-[ $# -eq 1 ] && [ -f "$1" ] || { echo "usage: $0 FILE.deb" >&2; exit 2; }
+if [ $# -ne 1 ] || [ ! -f "$1" ]; then
+    echo "usage: $0 FILE.deb" >&2
+    exit 2
+fi
 deb=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 sudo=""
 [ "$(id -u)" -eq 0 ] || sudo=sudo

@@ -182,7 +182,9 @@ main() {
 
     tar -xzf "$work/$name" -C "$work" || die "cannot unpack $name"
     new="$work/oh-my-shell-$target/oh-my-shell"
-    [ -f "$new" ] && [ ! -L "$new" ] || die "the archive does not hold oh-my-shell-$target/oh-my-shell"
+    if [ ! -f "$new" ] || [ -L "$new" ]; then
+        die "the archive does not hold oh-my-shell-$target/oh-my-shell"
+    fi
     chmod 755 "$new"
     shown=$("$new" --version 2>&1) || die "the new binary does not run on this system: $shown"
     case "$shown" in
