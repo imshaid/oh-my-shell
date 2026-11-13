@@ -28,6 +28,16 @@ fn have_strace() -> bool {
 
 /// The shell under `strace`, writing to `trace`. `extra` are arguments of the shell.
 fn traced(ctx: &Ctx, trace: &Path, extra: &[&str]) -> io::Result<Session> {
+    traced_with_env(ctx, trace, extra, &[])
+}
+
+/// [`traced`] with more environment variables for the shell.
+fn traced_with_env(
+    ctx: &Ctx,
+    trace: &Path,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> io::Result<Session> {
     let mut launch = Launch::new("strace")
         .home(ctx.home())
         .env(
@@ -49,6 +59,9 @@ fn traced(ctx: &Ctx, trace: &Path, extra: &[&str]) -> io::Result<Session> {
     }
     for arg in extra {
         launch = launch.arg(arg);
+    }
+    for (name, value) in env {
+        launch = launch.env(name, value);
     }
     launch.start()
 }
@@ -192,6 +205,83 @@ fn a_session_with_no_ai_creates_no_network_socket_either() {
         term.quit()?;
         let text = fs::read_to_string(&trace)?;
         assert_eq!(violations(&text), Vec::<String>::new(), "{text}");
+        Ok(())
+    });
+}
+
+/// S29b: with `[update] check = true` a shell asks the network at most once a day. With a stamp
+/// from a moment ago it asks nothing, so it creates no socket, and a session of ordinary work
+/// stays clean. (With no stamp it does ask; that is the one network use outside `omsh ai`.)
+#[test]
+fn a_session_with_the_update_check_on_and_a_fresh_stamp_creates_no_network_socket() {
+    if !have_strace() {
+        skip(
+            "a_session_with_the_update_check_on_and_a_fresh_stamp_creates_no_network_socket",
+            "strace is not installed",
+        );
+        return;
+    }
+    pty_test(BIN, |ctx| {
+        let config = ctx.home().join(".config/oh-my-shell");
+        fs::create_dir_all(&config)?;
+        fs::write(config.join("config.toml"), "[update]\ncheck = true\n")?;
+        let state = ctx.home().join(".local/state/oh-my-shell");
+        fs::create_dir_all(&state)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        fs::write(
+            state.join("update-check"),
+            format!("checked={now}\nlatest=\n"),
+        )?;
+        let trace = ctx.home().join("trace.txt");
+        let mut term = traced(ctx, &trace, &[])?;
+        session_of_ordinary_work(&mut term, ctx)?;
+        // Longer than the check's start delay (2 s), so a lookup that wrongly started would show.
+        term.pump(Duration::from_millis(3000));
+        term.quit()?;
+        let text = fs::read_to_string(&trace)?;
+        assert_eq!(violations(&text), Vec::<String>::new(), "{text}");
+        Ok(())
+    });
+}
+
+/// The positive control for the test above: with the check on and no stamp the shell does open a
+/// socket (to a port on this machine where nothing listens), and the trace shows it. So the test
+/// above would catch a check that started when it should not.
+#[test]
+fn a_due_update_check_is_seen_by_the_trace() {
+    if !have_strace() {
+        skip(
+            "a_due_update_check_is_seen_by_the_trace",
+            "strace is not installed",
+        );
+        return;
+    }
+    pty_test(BIN, |ctx| {
+        let config = ctx.home().join(".config/oh-my-shell");
+        fs::create_dir_all(&config)?;
+        fs::write(config.join("config.toml"), "[update]\ncheck = true\n")?;
+        // A port nobody listens on: the connection is refused, which is all the trace needs.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            listener.local_addr()?.port()
+        };
+        let origin = format!("http://127.0.0.1:{port}");
+        let trace = ctx.home().join("trace.txt");
+        let mut term = traced_with_env(
+            ctx,
+            &trace,
+            &[],
+            &[("OMSH_RELEASE_SERVER", origin.as_str())],
+        )?;
+        term.pump(Duration::from_millis(3500));
+        term.quit()?;
+        let text = fs::read_to_string(&trace)?;
+        assert!(
+            text.contains("socket(AF_INET"),
+            "the check should have opened a socket:\n{text}"
+        );
         Ok(())
     });
 }

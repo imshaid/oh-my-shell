@@ -33,6 +33,7 @@ mod retry;
 mod retry_after;
 mod secret;
 
+pub mod download;
 pub mod fake;
 pub mod runtime;
 
@@ -40,7 +41,7 @@ pub use context::{Gathered, GitState, PlanContext, RECENT_COMMANDS, RecentComman
 pub use conversation::{
     Conversation, MAX_FOLLOW_UP_CHARS, SOFT_TURN_LIMIT, follow_up_hides_secret,
 };
-pub use destination::{key_may_go_to, server_of};
+pub use destination::{key_may_go_to, server_of, this_machine_origin};
 pub use error::{ErrorKind, ProviderError};
 pub use explain::{
     EXPLAIN_MAX_TOKENS, LEFT_OUT, OUTPUT_HEAD_CHARS, OUTPUT_TAIL_CHARS, Output, OutputAsk,

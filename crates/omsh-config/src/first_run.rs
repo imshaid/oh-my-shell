@@ -23,9 +23,6 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # Commands to run at startup (aliases, exports, functions) go in "init.omsh", next to this
 # file. It is written in the shell's own language and is not created for you. Start the
 # shell with --no-config to skip both files.
-#
-# Some settings are checked now, but the part of the shell that uses them comes in a later
-# version. They are marked "not used yet".
 
 #[ui]
 # Name of a theme: "nord" (built in), or themes/<name>.toml next to this file. A theme file
@@ -125,8 +122,8 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #ignore = ["vi", "vim", "nvim", "nano", "emacs", "micro", "hx", "less", "more", "most", "man", "info", "ssh", "mosh", "top", "htop", "btop", "tmux", "screen", "watch", "sh", "bash", "zsh", "fish", "oh-my-shell"]
 
 #[update]
-# Look for a new release when the shell starts. Off, because it needs the network.
-# (not used yet)
+# Look for a new release, at most once a day, in the background a moment after the prompt, and
+# say so in one line if there is one. Off, because it needs the network. `omsh update` installs it.
 #check = false
 #channel = "stable"
 "##;

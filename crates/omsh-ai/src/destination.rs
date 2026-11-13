@@ -31,6 +31,31 @@ pub fn key_may_go_to(url: &str) -> bool {
     secure || is_this_machine(&host)
 }
 
+/// The origin (`scheme://host[:port]`, no path, lower case) of a server on this very machine, if
+/// `url` is one: `http` or `https`, with the host exactly `localhost`, `127.0.0.1` or `::1`, no
+/// user name and nothing after the host and port but an optional `/`. `None` for everything
+/// else, also for `127.0.0.2`, `localhost.evil.example` and `http://localhost@evil.example/`.
+///
+/// Used for the test hook of `omsh update`: a server given that way can never be a remote one.
+#[must_use]
+pub fn this_machine_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = if let Some(rest) = strip_prefix_ignoring_case(url, "https://") {
+        ("https", rest)
+    } else {
+        ("http", strip_prefix_ignoring_case(url, "http://")?)
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, after) = rest.split_at(end);
+    if !(after.is_empty() || after == "/") {
+        return None;
+    }
+    if authority.contains('@') || authority.contains('\\') {
+        return None;
+    }
+    let host = host_of(authority)?;
+    is_this_machine(&host).then(|| format!("{scheme}://{}", authority.to_ascii_lowercase()))
+}
+
 /// The part of `url` that names the server (`host` or `host:port`), for a message. Anything
 /// before an `@` (a user name, a password) is left out, and so is the path.
 #[must_use]
@@ -87,6 +112,38 @@ fn strip_prefix_ignoring_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_this_machine_is_an_origin_for_the_test_hook() {
+        for (url, origin) in [
+            ("http://localhost:8080", "http://localhost:8080"),
+            ("http://127.0.0.1:9/", "http://127.0.0.1:9"),
+            ("https://LOCALHOST", "https://localhost"),
+            ("http://[::1]:80", "http://[::1]:80"),
+        ] {
+            assert_eq!(this_machine_origin(url).as_deref(), Some(origin), "{url}");
+        }
+        for url in [
+            "",
+            "localhost:8080",
+            "ftp://localhost",
+            "http://example.com",
+            "https://github.com",
+            "http://127.0.0.2",
+            "http://127.1",
+            "http://localhost.evil.example",
+            "http://localhost@evil.example/",
+            "http://evil.example@localhost/",
+            "http://localhost:80/path",
+            "http://localhost?x=1",
+            "http://localhost\\@evil.example",
+            "http://[::1]x",
+            "http://localhost:",
+            "http://0.0.0.0:8080",
+        ] {
+            assert_eq!(this_machine_origin(url), None, "{url}");
+        }
+    }
 
     #[test]
     fn https_is_always_fine() {

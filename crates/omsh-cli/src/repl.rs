@@ -36,6 +36,7 @@ use crate::notify::{self, Notifier};
 use crate::radius::BlastLimits;
 use crate::report::{self, Style};
 use crate::undo::{self, Undo};
+use crate::update::UpdateEnv;
 
 const PROMPT: &str = "$ ";
 const CONTINUATION_PROMPT: &str = "> ";
@@ -148,6 +149,7 @@ fn run_on(
         ai,
         undo,
         config_file,
+        update,
     } = match start_up(&mut shell, &mut files, options) {
         Ok(started) => started,
         // `exit` in the startup file.
@@ -183,6 +185,12 @@ fn run_on(
     // The desktop notification after a long command. Its "could not be shown" message goes to
     // the editor's toast, or waits for the next prompt of the plain reader.
     let notifier = interactive.then(|| Notifier::new(editor.as_ref().map(Editor::toast)));
+    // The daily check for a new release (S29b): off unless `[update] check = true`, at most one
+    // lookup a day, on a helper thread a moment after the prompt. Its news is a toast.
+    let release_check = update
+        .as_ref()
+        .filter(|_| interactive && config.update.check)
+        .and_then(|env| crate::update::daily::start(env, editor.as_ref().map(Editor::toast)));
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     // How long the last command took, for the prompt.
@@ -208,6 +216,9 @@ fn run_on(
                     say(&format!("oh-my-shell: {problem}"));
                 }
                 if let Some(message) = notifier.as_ref().and_then(Notifier::take_message) {
+                    say(&format!("oh-my-shell: {message}"));
+                }
+                if let Some(message) = release_check.as_ref().and_then(|c| c.take_message()) {
                     say(&format!("oh-my-shell: {message}"));
                 }
             }
@@ -751,6 +762,8 @@ struct Started {
     undo: Option<Arc<Undo>>,
     /// `config.toml`, for the settings view (S27b). None under `--no-config`.
     config_file: Option<PathBuf>,
+    /// Where the daily check for a new release looks and writes (S29b). None when not interactive.
+    update: Option<UpdateEnv>,
 }
 
 /// How many lines of problems with `config.toml` are shown before "... and N more".
@@ -775,6 +788,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             ai: None,
             undo: None,
             config_file: None,
+            update: None,
         });
     }
     // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
@@ -788,7 +802,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
     });
     if options.no_config {
         let config = Config::default();
-        let ai = install_omsh(shell, &config, &paths, options);
+        let ai = install_omsh(shell, &config, &paths, options, false);
         let history = History {
             store: Store::in_memory(),
             filter: Filter::new(&config.history.ignore),
@@ -800,6 +814,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             ai: Some(ai),
             undo: None,
             config_file: None,
+            update: Some(crate::omsh::update_env(shell, &paths, true)),
         });
     }
     let loaded = omsh_config::load(&paths);
@@ -828,7 +843,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
     for line in themed.report(MAX_CONFIG_LINES) {
         say(&format!("oh-my-shell: {line}"));
     }
-    let ai = install_omsh(shell, &config, &paths, options);
+    let ai = install_omsh(shell, &config, &paths, options, false);
     // After `init.omsh`: what the startup file runs is not typed by anyone and is not
     // history. The file is opened by the store's own thread, so the prompt does not wait.
     let store = match paths.data_dir() {
@@ -856,6 +871,7 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
         ai: Some(ai),
         undo,
         config_file: paths.config_file(),
+        update: Some(crate::omsh::update_env(shell, &paths, false)),
     })
 }
 
@@ -867,10 +883,14 @@ pub(crate) fn install_omsh(
     config: &Config,
     paths: &Paths,
     options: Options,
+    as_tool: bool,
 ) -> Arc<ai::AiSession> {
     let env = ai::Environment::system(paths, options.no_config);
     let session = Arc::new(ai::AiSession::new(config, options.no_ai, env));
-    shell.set_omsh(Arc::clone(&session) as Arc<dyn OmshCommand>);
+    let update = crate::omsh::update_env(shell, paths, options.no_config);
+    let uninstall = crate::omsh::uninstall_env(&update, config, paths, as_tool);
+    let tools = crate::omsh::Tools::new(Arc::clone(&session), update, uninstall);
+    shell.set_omsh(Arc::new(tools) as Arc<dyn OmshCommand>);
     session
 }
 

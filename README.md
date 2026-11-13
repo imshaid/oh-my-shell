@@ -42,6 +42,24 @@ and others can run any program), or just type `oh-my-shell`. Use it for a while 
 `chsh`; the installer never does. `omsh` is a short name for the same program: alone it starts
 the shell, and `omsh ai setup`, `omsh ai status` and `omsh tour` work from any other shell too.
 
+**Updating.** `omsh update` looks up the latest GitHub release, downloads the archive for your CPU,
+checks it against the release's `sha256.sum`, runs the new program once with `--version`, and only
+then renames it over the old one (a shell that is already running keeps the old file until you
+restart it). `omsh update --check` only says whether a newer release exists. It refuses to touch a
+copy that a package manager (`.deb`, under `/usr`) or `cargo` installed, and says how to update
+that one instead. If you want a one-line hint when a release comes out, set `check = true` under
+`[update]` in `config.toml`: the shell then asks, at most once a day and a moment after the
+prompt, what the latest release is (nothing is downloaded or installed), and shows a short notice.
+It is off by default, because it needs the network.
+
+**Uninstalling.** Run `omsh uninstall` from another shell (it is refused inside Oh My Shell, which
+has its history open). It asks, one question at a time, whether to remove the program, your
+settings, your history, the trash with its undo journal, and the stored AI keys; nothing is removed
+until every question is answered, and Esc or Ctrl+C stops with nothing removed. It refuses while
+Oh My Shell is your login shell (change it with `chsh` first). It never edits `/etc/shells`; it
+tells you what to remove there. A `.deb` is removed with `sudo apt remove oh-my-shell` and a
+`cargo` install with `cargo uninstall omsh-cli`.
+
 ## What it does
 
 **The shell.** Pipelines, redirections (here-documents included), `;` `&&` `||` `!`, `( )`,

@@ -1843,6 +1843,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
+ "flate2",
  "miette",
  "nix",
  "omsh-ai",
@@ -1854,6 +1855,7 @@ dependencies = [
  "omsh-secrets",
  "omsh-syntax",
  "omsh-ui",
+ "ring",
 ]
 
 [[package]]

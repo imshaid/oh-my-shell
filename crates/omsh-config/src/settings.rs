@@ -220,7 +220,7 @@ pub const SETTINGS: &[Setting] = &[
         "update.check",
         Kind::Bool,
         false,
-        "Look for a new release at start (not built yet).",
+        "Look for a new release once a day, in the background.",
     ),
     setting(
         "update.channel",

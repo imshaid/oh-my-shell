@@ -20,9 +20,8 @@ use omsh_exec::{Io, Shell, catch_interrupt, note_inherited_signals};
 
 use crate::repl::{Options, install_omsh};
 
-/// The first words that make `omsh` a tool and not a shell. `update` and `uninstall` join them
-/// in S29b.
-const TOOLS: &[&str] = &["ai", "tour", "help"];
+/// The first words that make `omsh` a tool and not a shell.
+const TOOLS: &[&str] = &["ai", "tour", "help", "update", "uninstall"];
 
 /// What `omsh` was asked to run.
 #[derive(Debug, PartialEq, Eq)]
@@ -67,7 +66,7 @@ pub fn run(request: Request) -> ExitCode {
         no_ai: request.no_ai,
         no_config: request.no_config,
     };
-    let _session = install_omsh(&mut shell, &config, &paths, options);
+    let _session = install_omsh(&mut shell, &config, &paths, options, true);
     let words: Vec<Vec<u8>> = request
         .words
         .into_iter()

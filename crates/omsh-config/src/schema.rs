@@ -306,8 +306,8 @@ impl Default for Notify {
 /// `[update]`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Update {
-    /// Look for a new release at startup. Off by default: a check is network traffic, and
-    /// the normal path makes none (Gate C). S29 decides how it works.
+    /// Look for a new release, at most once a day, on a helper thread after the prompt (S29b).
+    /// Off by default: a check is network traffic, and the normal path makes none (Gate C).
     pub check: bool,
     pub channel: Channel,
 }

@@ -333,6 +333,11 @@ fn map_web(error: &genai::webc::Error) -> ProviderError {
     }
 }
 
+/// [`map_reqwest`] for the download code of this crate.
+pub(crate) fn map_reqwest_public(error: &reqwest::Error) -> ProviderError {
+    map_reqwest(error)
+}
+
 fn map_reqwest(error: &reqwest::Error) -> ProviderError {
     if let Some(status) = error.status() {
         return ProviderError::from_status(

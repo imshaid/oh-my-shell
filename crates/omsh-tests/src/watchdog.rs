@@ -42,6 +42,16 @@ impl Ctx {
             .home(&self.home)
     }
 
+    /// Like [`launch`](Self::launch), for another program than the one under test (a copy of it
+    /// that a test installed, S29b). The watchdog cleans up after it in the same way. The
+    /// environment starts as for any launch; [`crate::sandbox::Sandbox`] is the way to set the
+    /// folders of such a program.
+    pub fn launch_program(&self, program: &Path) -> Launch {
+        Launch::new(&program.to_string_lossy())
+            .registered(Arc::clone(&self.sessions))
+            .home(&self.home)
+    }
+
     /// The home directory of this test: empty at the start, removed at the end. Put
     /// `.config/oh-my-shell/config.toml` or `init.omsh` here before starting the shell.
     pub fn home(&self) -> &Path {

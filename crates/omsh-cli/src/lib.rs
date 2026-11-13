@@ -31,6 +31,7 @@ mod confirm;
 mod handoff;
 mod history;
 mod notify;
+mod omsh;
 mod probe;
 mod radius;
 mod repl;
@@ -38,6 +39,8 @@ mod report;
 mod tool;
 mod tour;
 mod undo;
+mod uninstall;
+mod update;
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};

@@ -92,6 +92,11 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 # the store they want, not the `keyring` crate.
 keyring-core = "1.0"
 zbus-secret-service-keyring-store = { version = "1.0", features = ["crypto-rust"] }
+# `omsh update` (S29b), in `omsh-cli` only. Both were in the tree already (reqwest, rustls), so they
+# add no package. flate2 unpacks the release's `.tar.gz` (pure Rust `miniz_oxide`, MIT or Apache-2.0);
+# ring makes the SHA-256 that is compared with `sha256.sum` (ISC-style license, already allowed).
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+ring = { version = "0.17", default-features = false }
 # Wipes a key from memory when it is dropped.
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
 # The plan the model sends back (S21, §13.4) is JSON. Both crates were in the tree already
