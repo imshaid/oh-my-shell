@@ -141,6 +141,16 @@ named in the file.
   `/etc/shells`, and was removed cleanly.
 - The aarch64 files were built and smoke-tested (install script, `.deb` install, run and removal) on GitHub's native
   `ubuntu-22.04-arm` runner in the release workflow; they were never run on aarch64 hardware of our own.
+- Version 1.0.0 was tagged on commit 8323395. The release workflow run for the tag (43940168443) was green in all four jobs
+  (draft release, both builds, publish). The release holds six files: `install.sh`, the two `.tar.gz` archives (x86_64 and
+  aarch64), the two `.deb` packages (amd64 and arm64) and `sha256.sum`. `sha256.sum` lists the two archives and the two `.deb`
+  files; `install.sh` is by design not listed in it. After the release was public, `sha256sum -c sha256.sum` on the downloaded
+  files printed OK for all four, and `releases/latest` redirected to `v1.0.0`.
+- The real update test: in a fresh `debian:12` container (x86_64, host network) 0.1.1 was installed with its own `install.sh`,
+  `omsh update` then downloaded 1.0.0 from GitHub (`Checksum ok`, `Updated Oh My Shell 0.1.1 -> 1.0.0`), `oh-my-shell --version`
+  printed `1.0.0`, and `omsh update --check` said that 1.0.0 is the newest release. This test ran on x86_64 only. The aarch64
+  build ran only on GitHub's `ubuntu-22.04-arm` runner and was never run on our own aarch64 hardware; the update path on aarch64
+  was not tested at all.
 
 ## 5. Limitations
 
@@ -150,7 +160,7 @@ there is no proxy support; a cold disk cache and large work trees were not measu
 
 ## 6. Future work
 
-- Test `omsh update` for real, from an installed 0.1.1 to 1.0.0 through GitHub, once 1.0.0 is published.
+- Test `omsh update` on aarch64 (the x86_64 update from 0.1.1 to 1.0.0 was tested, see section 4.4).
 - The success criteria for being useful in practice are not yet met: use as a daily shell for a month, use by a group of other
   people for a week, and reports or contributions from people the author does not know.
 - Safety rules for more commands (`rsync --delete`, `truncate`, `tee`), trash coverage for `find -delete` and wrapped `rm`.
@@ -164,7 +174,7 @@ POSIX. The only measured comparison in this project is the one in section 4.3 an
 
 ## 8. Timeline
 
-Dates are those of the commits in the repository (73 commits on `main` at 1df718f, before the version bump, 2026-11-04 to 2026-11-16).
+Dates are those of the commits in the repository (74 commits on `main` at the tagged commit 8323395, 2026-11-04 to 2026-11-17).
 
 | Date | What was added |
 |---|---|
@@ -176,3 +186,4 @@ Dates are those of the commits in the repository (73 commits on `main` at 1df718
 | 2026-11-12 | Completion, git prompt, performance gate, robustness fixes, themes and motion, history explorer, command palette and settings view |
 | 2026-11-13 | Notifications and tour, idle-memory work, polish, release pipeline, `omsh update` and `omsh uninstall`, version 0.1.0 and 0.1.1 |
 | 2026-11-16 | Documentation accuracy fixes |
+| 2026-11-17 | Version 1.0.0 tagged and released; `omsh update` tested from 0.1.1 to 1.0.0 |

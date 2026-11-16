@@ -277,6 +277,7 @@ Start-up numbers are for a warm file system cache.
 | History lookups on 100,000 rows, worst p99 | 8.74 ms | 20 ms |
 
 Other sizes: the release binary was 13,324,912 bytes in a local release build of the last measured source before the 0.1.1
-fix (fat LTO, one code-generation unit, stripped); the v0.1.1 archives are 6.4 MB (x86_64) and 6.0 MB (aarch64).
+fix (fat LTO, one code-generation unit, stripped); the v0.1.1 archives are 6.4 MB (x86_64) and 6.0 MB (aarch64); the v1.0.0 archives are 6,357,232 bytes (x86_64) and
+5,983,796 bytes (aarch64).
 
 Not measured: a cold disk cache, the cost of `git status` in a very large work tree, and anything on aarch64 hardware.
