@@ -252,27 +252,29 @@ trusted because it comes from GitHub over https.
 The end-to-end tests that touch real files (`omsh update`, `omsh uninstall`) run only through a sandbox that refuses any
 home or `XDG_*` folder that is the real home or inside it.
 
-At the last full local run before the documentation segments (version 0.1.1) `cargo test --workspace --locked` gave 2460 passed,
-0 failed, 1 ignored; CI run 43387684502 (below) was green in all six jobs.
+CI run 43894149788 on `main` (commit 1df718f, the commit before the version bump to 1.0.0) was green in all six jobs, so every
+test passed there. A local `cargo test --workspace --locked` on the same source ran 2469 tests (2444 passed, 1 ignored); the 25 that
+failed all compare with `/bin/sh`, which on that machine is bash, not dash (CI has dash).
 
 ## Measured numbers
 
-From the "Performance gate" job of CI run 43387684502 on `main` (commit 7d4f80e, version 0.1.1, an `ubuntu-24.04` runner).
+From the "Performance gate" job of CI run 43894149788 on `main` (commit 1df718f, the commit before the version bump to 1.0.0, an
+`ubuntu-24.04` runner).
 Start-up numbers are for a warm file system cache.
 
 | What | Measured | Budget |
 |---|---|---|
-| `oh-my-shell --version` (median) | 0.87 ms | 10 ms |
-| `oh-my-shell -c true` minus `/bin/sh -c true` | 0.81 ms | 5 ms |
-| Start to first prompt, no repository | 1.95 ms | 30 ms |
-| Start to first prompt, repository, real `git` | 4.32 ms | 30 ms |
-| Start to first prompt, repository, `git` that never answers | 22.41 ms | 30 ms |
-| Idle memory (RSS) at the prompt | 9.84 MB | 15 MB |
-| Idle memory with a 100,000-row history | 11.21 MB | 15 MB |
-| Idle memory, 100,000 rows, newest 20,000 all different | 11.86 MB | 15 MB |
-| Keystroke to end of redraw, worst p99 (100- and 499-character lines) | 0.21 ms | 5 ms |
-| First Tab (completion menu), worst p99, 20,000 programs on `PATH` | 11.5 ms | 50 ms |
-| History lookups on 100,000 rows, worst p99 | 13.6 ms | 20 ms |
+| `oh-my-shell --version` (median) | 0.62 ms | 10 ms |
+| `oh-my-shell -c true` minus `/bin/sh -c true` | 0.55 ms | 5 ms |
+| Start to first prompt, no repository | 1.63 ms | 30 ms |
+| Start to first prompt, repository, real `git` | 2.57 ms | 30 ms |
+| Start to first prompt, repository, `git` that never answers | 21.72 ms | 30 ms |
+| Idle memory (RSS) at the prompt | 9.91 MB | 15 MB |
+| Idle memory with a 100,000-row history | 11.10 MB | 15 MB |
+| Idle memory, 100,000 rows, newest 20,000 all different | 11.95 MB | 15 MB |
+| Keystroke to end of redraw, worst p99 (100- and 499-character lines) | 0.44 ms | 5 ms |
+| First Tab (completion menu), worst p99, 20,000 programs on `PATH` | 8.1 ms | 50 ms |
+| History lookups on 100,000 rows, worst p99 | 8.74 ms | 20 ms |
 
 Other sizes: the release binary was 13,324,912 bytes in a local release build of the last measured source before the 0.1.1
 fix (fat LTO, one code-generation unit, stripped); the v0.1.1 archives are 6.4 MB (x86_64) and 6.0 MB (aarch64).

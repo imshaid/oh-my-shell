@@ -100,27 +100,28 @@ Each row was read from the code: the system call or mechanism, then the file whe
 
 ### 4.1 Tests
 
-`cargo test --workspace --locked` at version 0.1.1 (before the documentation segments): **2460 passed, 0 failed, 1 ignored**
-(local run). CI for the same commit (7d4f80e) ran six jobs, all green: format, Clippy, tests, tests with the network off, the performance
-gate and `cargo deny` (run 43387684502 on `main`). The test kinds are listed in [design.md](design.md#testing).
+CI for commit 1df718f (the commit before the version bump to 1.0.0) ran six jobs, all green: format, Clippy, tests, tests with the
+network off, the performance gate and `cargo deny` (run 43894149788 on `main`). A local `cargo test --workspace --locked` on the same
+source ran 2469 tests (2444 passed, 1 ignored); the 25 that failed all compare with `/bin/sh`, which on that machine is bash, not
+dash (CI has dash). The test kinds are listed in [design.md](design.md#testing).
 
 ### 4.2 Performance against the budgets
 
-From the "Performance gate" job of that run (an `ubuntu-24.04` runner, warm file-system cache):
+From the "Performance gate" job of that run (commit 1df718f, before the version bump; an `ubuntu-24.04` runner, warm file-system cache):
 
 | Measure | Result | Budget |
 |---|---|---|
-| `--version` | 0.87 ms | 10 ms |
-| `-c true` overhead over `/bin/sh -c true` | 0.81 ms | 5 ms |
-| Start to first prompt (no repository / real `git` / `git` that never answers) | 1.95 / 4.32 / 22.41 ms | 30 ms |
-| Idle memory at the prompt | 9.84 MB | 15 MB |
-| Idle memory with a 100,000-row history | 11.21 MB | 15 MB |
-| Keystroke to end of redraw, worst p99 | 0.21 ms | 5 ms |
-| Completion menu, worst p99 over 20,000 programs | 11.5 ms | 50 ms |
-| History lookups over 100,000 rows, worst p99 | 13.6 ms | 20 ms |
+| `--version` | 0.62 ms | 10 ms |
+| `-c true` overhead over `/bin/sh -c true` | 0.55 ms | 5 ms |
+| Start to first prompt (no repository / real `git` / `git` that never answers) | 1.63 / 2.57 / 21.72 ms | 30 ms |
+| Idle memory at the prompt | 9.91 MB | 15 MB |
+| Idle memory with a 100,000-row history | 11.10 MB | 15 MB |
+| Keystroke to end of redraw, worst p99 | 0.44 ms | 5 ms |
+| Completion menu, worst p99 over 20,000 programs | 8.1 ms | 50 ms |
+| History lookups over 100,000 rows, worst p99 | 8.74 ms | 20 ms |
 
-The same job also measures `/bin/sh -c true` at 0.52 ms median on that runner, so `-c true` is about 2.5 times slower than
-`sh` in absolute terms (1.34 ms against 0.52 ms) while staying inside the budget.
+The same job also measures `/bin/sh -c true` at 0.39 ms median on that runner, so `-c true` is about 2.4 times slower than
+`sh` in absolute terms (0.94 ms against 0.39 ms) while staying inside the budget.
 
 ### 4.3 Compatibility with `/bin/sh`
 
@@ -149,7 +150,7 @@ there is no proxy support; a cold disk cache and large work trees were not measu
 
 ## 6. Future work
 
-- Tag 1.0.0 and test `omsh update` for real, from an installed 0.1.1 to 1.0.0 through GitHub.
+- Test `omsh update` for real, from an installed 0.1.1 to 1.0.0 through GitHub, once 1.0.0 is published.
 - The success criteria for being useful in practice are not yet met: use as a daily shell for a month, use by a group of other
   people for a week, and reports or contributions from people the author does not know.
 - Safety rules for more commands (`rsync --delete`, `truncate`, `tee`), trash coverage for `find -delete` and wrapped `rm`.
@@ -163,7 +164,7 @@ POSIX. The only measured comparison in this project is the one in section 4.3 an
 
 ## 8. Timeline
 
-Dates are those of the commits in the repository (72 commits before the documentation-accuracy change, 2026-11-04 to 2026-11-13).
+Dates are those of the commits in the repository (73 commits on `main` at 1df718f, before the version bump, 2026-11-04 to 2026-11-16).
 
 | Date | What was added |
 |---|---|
@@ -174,3 +175,4 @@ Dates are those of the commits in the repository (72 commits before the document
 | 2026-11-11 | Safety analyzer, AI plans, context and masking, blast radius, trash and undo, conversation, explain features, history search, hints, abbreviations, `j` |
 | 2026-11-12 | Completion, git prompt, performance gate, robustness fixes, themes and motion, history explorer, command palette and settings view |
 | 2026-11-13 | Notifications and tour, idle-memory work, polish, release pipeline, `omsh update` and `omsh uninstall`, version 0.1.0 and 0.1.1 |
+| 2026-11-16 | Documentation accuracy fixes |

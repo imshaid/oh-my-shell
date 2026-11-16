@@ -5,7 +5,7 @@ helps while you type, remembers your commands, checks dangerous commands before 
 optionally ask an AI for help. This guide explains how to install it and use it. The
 [command reference](commands.md) lists every builtin, option, key and setting.
 
-**Status:** version 0.1.1. A 1.0 release has not been tagged yet.
+**Status:** version 1.0.0.
 
 Contents: [Install](#install) · [First start](#first-start) · [How the shell is started](#how-the-shell-is-started) ·
 [The language](#the-language) · [Job control](#job-control) · [Typing](#typing-editor-prompt-and-views) ·
