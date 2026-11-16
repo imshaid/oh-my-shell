@@ -26,7 +26,7 @@ Goals the project set itself (they are the headings of [user-guide.md](user-guid
 3. **Check before harm:** analyze each typed line offline, show what a dangerous command would touch, offer a trash and an
    undo.
 4. **Optional, explicit AI:** off until set up, never on the normal command path, every suggested command shown and
-   confirmed, secrets masked.
+   confirmed, text that matches the known secret patterns masked.
 5. **Fast and small:** budgets for start-up, memory and keystroke latency, checked in CI (section 6).
 
 Non-goals: full bash compatibility; being a terminal emulator; Windows or macOS.
@@ -48,7 +48,7 @@ Non-goals: full bash compatibility; being a terminal emulator; Windows or macOS.
 
 ## 3. Implementation summary
 
-Eleven crates, about 107,000 lines of Rust (`git ls-files '*.rs' | xargs cat | wc -l`); see the table in
+Eleven crates, about 107,600 lines of Rust (`git ls-files '*.rs' | xargs cat | wc -l`); see the table in
 [design.md](design.md#shape-of-the-program). Main components: a lexer and parser with spans; an executor that forks, execs and
 manages process groups; a line editor built on reedline; a SQLite history; a rule-based safety analyzer with blast radius,
 trash and undo; an AI layer with several providers; full-screen views; and a release pipeline with its own installer and
@@ -61,25 +61,26 @@ Each row was read from the code: the system call or mechanism, then the file whe
 | Shell feature | Operating-system concept | Source |
 |---|---|---|
 | Running an external program | `fork` then `execve` in the child; everything the child needs is prepared before the fork, because only the forking thread exists in the child | [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
-| Telling "not found" (127) and "not executable" (126) apart from success | A pipe closed on `exec` (`O_CLOEXEC`): end-of-file means `execve` worked, an error number means it failed | [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
+| Telling "not found" (127) and "not executable" (126) apart from success | A pipe closed on `exec` (`O_CLOEXEC`): an error number written to it means `execve` failed; end-of-file normally means it worked (it also arrives if the child dies before `execve`, and a short or failed read gives no number) | [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
 | Finding a program | Searching `PATH` directories, with a cache keyed by the `PATH` value; `hash -r` clears it | [path.rs](../crates/omsh-exec/src/path.rs) |
 | `a \| b \| c` | `pipe2`: one pipe between neighbours; each stage is a thread that forks only when it reaches a program | [exec/pipeline.rs](../crates/omsh-exec/src/exec/pipeline.rs), [jobs.rs](../crates/omsh-exec/src/jobs.rs) |
 | `$(...)` | A pipe for standard output, read by a second thread so a large output cannot block | [expand/mod.rs](../crates/omsh-exec/src/expand/mod.rs) |
 | `2>&1`, `3>file`, `<` | A table of open files per command; the child applies it with `dup2` before `execve` | [io.rs](../crates/omsh-exec/src/io.rs), [redirect.rs](../crates/omsh-exec/src/redirect.rs), [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
 | Here-documents `<<EOF` | An anonymous memory file (`memfd_create`), so there is no pipe size limit and no helper process | [redirect.rs](../crates/omsh-exec/src/redirect.rs) |
-| `set -C` (noclobber) and `>\|` | Opening with `O_CREAT \| O_EXCL`, which fails if the file exists | [redirect.rs](../crates/omsh-exec/src/redirect.rs) |
+| `set -C` (noclobber) | With `set -C`, `>` (and `&>`) makes the file with `O_CREAT \| O_EXCL`. If the name exists and is a regular file the redirection fails (`cannot overwrite existing file`, status 2); if it exists and is not a regular file, such as `/dev/null`, it is opened as usual, as POSIX says (checked by hand). `>\|` opens the ordinary way, which is how it overrides the option | [redirect.rs](../crates/omsh-exec/src/redirect.rs) |
 | `umask` | The process file-mode mask: set with `umask(2)`, read back from `/proc/self/status` | [builtins/umask.rs](../crates/omsh-exec/src/builtins/umask.rs) |
 | Variables and `export` | A private table; the environment (`envp`) is built for each `exec` | [vars.rs](../crates/omsh-exec/src/vars.rs) |
-| `exec cmd` | Replacing the process image with `execve`, without a fork | [builtins/exec.rs](../crates/omsh-exec/src/builtins/exec.rs), [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
+| `exec cmd` | Replacing the process image with `execve`, without a fork, when it is typed at the top level; inside a subshell or a pipeline stage (a thread) the program runs as a child and that copy of the shell ends with its status | [builtins/exec.rs](../crates/omsh-exec/src/builtins/exec.rs), [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
 | Ctrl+C stops the job, not the shell | Process groups: `setpgid` in both parent and child; the terminal sends the signal to the foreground group | [spawn.rs](../crates/omsh-exec/src/spawn.rs), [jobs.rs](../crates/omsh-exec/src/jobs.rs) |
 | Giving the terminal to a job | `tcsetpgrp`; the shell ignores `SIGTTOU` first, or it would stop itself | [terminal.rs](../crates/omsh-exec/src/terminal.rs), [signals.rs](../crates/omsh-exec/src/signals.rs) |
-| Ctrl+Z, `fg`, `bg` | `waitpid` with `WUNTRACED` to see a stop, `SIGCONT` through `killpg` to continue | [spawn.rs](../crates/omsh-exec/src/spawn.rs), [exec/stopped.rs](../crates/omsh-exec/src/exec/stopped.rs), [jobs.rs](../crates/omsh-exec/src/jobs.rs) |
+| Ctrl+Z, `fg`, `bg` | A stop is seen with `waitid` and `WSTOPPED` (for the group leader, which is every single-program job) or `waitpid` with `WUNTRACED` (for the other members of a pipeline); `SIGCONT` goes through `killpg` to continue | [spawn.rs](../crates/omsh-exec/src/spawn.rs), [exec/stopped.rs](../crates/omsh-exec/src/exec/stopped.rs), [jobs.rs](../crates/omsh-exec/src/jobs.rs) |
 | Keeping the process group alive for late stages | A zombie leader held with `waitid` and `WNOWAIT`; its process id is not reused while the group exists | [spawn.rs](../crates/omsh-exec/src/spawn.rs), [jobs.rs](../crates/omsh-exec/src/jobs.rs) |
-| `kill`, `trap`, hang-up, Ctrl+C handling | `sigaction`: handlers that only set a flag, ignored signals, defaults restored for a child | [signals.rs](../crates/omsh-exec/src/signals.rs), [traps.rs](../crates/omsh-exec/src/traps.rs), [builtins/trap.rs](../crates/omsh-exec/src/builtins/trap.rs) |
-| A program started with a signal ignored keeps ignoring it | Ignored dispositions are inherited across `execve`; the shell reads what it inherited with `sigaction` before changing anything | [signals.rs](../crates/omsh-exec/src/signals.rs), [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
-| A crashed program does not leave the terminal broken | `termios` saved and restored (`tcgetattr`, `tcsetattr`), and a panic hook | [terminal.rs](../crates/omsh-exec/src/terminal.rs) |
+| Hang-up, Ctrl+C and `trap` handling | `sigaction`: handlers that only set a flag, ignored signals, defaults restored for a child | [signals.rs](../crates/omsh-exec/src/signals.rs), [traps.rs](../crates/omsh-exec/src/traps.rs), [builtins/trap.rs](../crates/omsh-exec/src/builtins/trap.rs) |
+| The `kill` builtin and signalling a job | `kill` for a process, `killpg` for a job's group | [builtins/jobs.rs](../crates/omsh-exec/src/builtins/jobs.rs), [jobs.rs](../crates/omsh-exec/src/jobs.rs) |
+| A program started with a signal ignored keeps ignoring it | Ignored dispositions are inherited across `execve`; the shell reads what it inherited with `sigaction` before changing anything. `SIGPIPE` is the exception: a child gets it back at its default | [signals.rs](../crates/omsh-exec/src/signals.rs), [spawn.rs](../crates/omsh-exec/src/spawn.rs) |
+| A crashed program does not leave the terminal broken | `termios` saved before a job; put back after a job that was stopped or killed by a signal (`tcgetattr`, `tcsetattr`); after a job that ends normally the modes it left are kept; and a panic hook | [terminal.rs](../crates/omsh-exec/src/terminal.rs) |
 | Full-screen views | Raw mode and the alternate screen, with a panic hook that restores both | [screen.rs](../crates/omsh-ui/src/screen.rs) |
-| Hidden input for an API key and single-key questions | `termios` with `ICANON` and `ECHO` turned off, put back afterwards | [builtins/omsh.rs](../crates/omsh-exec/src/builtins/omsh.rs) |
+| Hidden input for an API key and single-key questions | `termios`: single-key questions turn `ICANON` and `ECHO` off, the hidden key prompt turns `ECHO` off only; put back afterwards | [builtins/omsh.rs](../crates/omsh-exec/src/builtins/omsh.rs) |
 | Login shell environment | A child `sh -l -c 'env -0 >&3'` with a pipe on descriptor 3 | [login.rs](../crates/omsh-exec/src/login.rs) |
 | `-c`, scripts and piped input | `execv` of `/bin/sh`: the same process continues as `sh` | [handoff.rs](../crates/omsh-cli/src/handoff.rs) |
 | `*.txt` | Reading directories (`read_dir`) and matching names | [expand/pathname.rs](../crates/omsh-exec/src/expand/pathname.rs) |
@@ -90,7 +91,7 @@ Each row was read from the code: the system call or mechanism, then the file whe
 | `omsh update` | Write a temporary file next to the program, `fsync`, run it, `rename` over the old one (atomic), `fsync` the folder | [update/mod.rs](../crates/omsh-cli/src/update/mod.rs) |
 | Editing `config.toml` from the settings view | Temporary file and `rename`; the mode is kept | [edit.rs](../crates/omsh-config/src/edit.rs) |
 | First-run config without a race | Write a temporary file, then `link`, which fails if the name is taken | [first_run.rs](../crates/omsh-config/src/first_run.rs) |
-| `omsh uninstall` refuses for a login shell | The account database entry of the effective user (`getpwuid` through `nix`) | [omsh.rs](../crates/omsh-cli/src/omsh.rs) |
+| `omsh uninstall` refuses for a login shell | The account database entry of the effective user (`getpwuid` through `nix`); if the lookup fails the check does not refuse | [omsh.rs](../crates/omsh-cli/src/omsh.rs) |
 | AI requests only on demand | A `current_thread` async runtime built on the first request, driven from the calling thread | [runtime.rs](../crates/omsh-ai/src/runtime.rs) |
 | "No network on the normal path" is tested | Running the shell under `strace -f` and listing every `socket` and `connect` | [offline.rs](../crates/omsh-tests/tests/offline.rs) |
 | Testing a terminal program | A pseudo-terminal pair (`openpty`) with the shell on the slave side | [session.rs](../crates/omsh-tests/src/session.rs) |
@@ -99,8 +100,8 @@ Each row was read from the code: the system call or mechanism, then the file whe
 
 ### 4.1 Tests
 
-`cargo test --workspace --locked` at version 0.1.1 (before this documentation was added): **2460 passed, 0 failed, 1 ignored**
-(local run). CI for the same commit ran six jobs, all green: format, Clippy, tests, tests with the network off, the performance
+`cargo test --workspace --locked` at version 0.1.1 (before the documentation segments): **2460 passed, 0 failed, 1 ignored**
+(local run). CI for the same commit (7d4f80e) ran six jobs, all green: format, Clippy, tests, tests with the network off, the performance
 gate and `cargo deny` (run 43387684502 on `main`). The test kinds are listed in [design.md](design.md#testing).
 
 ### 4.2 Performance against the budgets
@@ -137,13 +138,14 @@ named in the file.
   (x86_64, host network); each then ran `--version`, `omsh --version`, `omsh ai status` and `omsh update --check`. On Alpine
   the installer refused with a clear message (glibc is required). The `.deb` was installed in Debian 12, listed the shell in
   `/etc/shells`, and was removed cleanly.
-- Not tested on hardware: the aarch64 files (checked by checksum and by build tests only).
+- The aarch64 files were built and smoke-tested (install script, `.deb` install, run and removal) on GitHub's native
+  `ubuntu-22.04-arm` runner in the release workflow; they were never run on aarch64 hardware of our own.
 
 ## 5. Limitations
 
 See [the user guide](user-guide.md#known-limitations). The main ones: keys that arrive in one read together with Ctrl+C are
 dropped; the analyzer is a list of rules and does not know every dangerous command; masking does not know every kind of secret;
-there is no proxy support; a cold disk cache and large work trees were not measured; aarch64 was not run on hardware.
+there is no proxy support; a cold disk cache and large work trees were not measured; aarch64 was smoke-tested on a CI runner only, not run on our own hardware.
 
 ## 6. Future work
 
@@ -151,7 +153,7 @@ there is no proxy support; a cold disk cache and large work trees were not measu
 - The success criteria for being useful in practice are not yet met: use as a daily shell for a month, use by a group of other
   people for a week, and reports or contributions from people the author does not know.
 - Safety rules for more commands (`rsync --delete`, `truncate`, `tee`), trash coverage for `find -delete` and wrapped `rm`.
-- Run the release files on aarch64 hardware; measure a cold disk cache.
+- Run the release files on aarch64 hardware of our own; measure a cold disk cache.
 
 ## 7. Related work
 
@@ -161,7 +163,7 @@ POSIX. The only measured comparison in this project is the one in section 4.3 an
 
 ## 8. Timeline
 
-Dates are those of the commits in the repository (71 commits, 2026-11-04 to 2026-11-13).
+Dates are those of the commits in the repository (72 commits before the documentation-accuracy change, 2026-11-04 to 2026-11-13).
 
 | Date | What was added |
 |---|---|

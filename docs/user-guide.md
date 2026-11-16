@@ -19,15 +19,16 @@ later. Alpine (musl) is not supported by the release files; build from source th
 
 Three ways, all from <https://github.com/imshaid/oh-my-shell>:
 
-**The install script** puts `oh-my-shell` and the short name `omsh` in `~/.local/bin`:
+**The install script** puts `oh-my-shell` in `~/.local/bin`, and the short name `omsh` beside it when that name is free:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/imshaid/oh-my-shell/releases/latest/download/install.sh | sh
 ```
 
-It changes nothing else: it never runs `chsh`, never edits your shell's startup files, and touches
-`/etc/shells` only with `--add-to-shells`. Options: `--version X.Y.Z`, `--system`, `--bin-dir DIR`,
+It makes the short name `omsh` only when that name is free (another file called `omsh` is left alone, with a
+warning). It never runs `chsh`, never edits your shell's startup files, and touches `/etc/shells` only with
+`--add-to-shells`. Options: `--version X.Y.Z`, `--system`, `--bin-dir DIR`,
 `--add-to-shells` ([list](commands.md#installsh-options)). If `~/.local/bin` is not in your `PATH`, it says so.
 
 **A `.deb` package** (Debian, Ubuntu): download `oh-my-shell_<version>-1_amd64.deb` (or `_arm64.deb`) from the
@@ -64,7 +65,8 @@ by `/bin/sh` (see below).
 
 ## First start
 
-The first start writes `~/.config/oh-my-shell/config.toml` (with every setting commented out at its default)
+The first start writes `~/.config/oh-my-shell/config.toml` (every setting is a commented line: where a default exists it shows the default, and for the unset ones, such as the
+motion, provider, model and server address, it shows an example, not a default)
 and shows three lines once: where the settings are, the keys `Ctrl+R` and `Ctrl+P`, and `omsh tour`. `omsh tour`
 is a one-minute walk through the features. Your own startup commands (aliases, exports, functions) go in
 `~/.config/oh-my-shell/init.omsh`, written in the shell's own language; the file is not created for you.
@@ -76,7 +78,7 @@ Files (the `XDG_*` variables are respected):
 | `~/.config/oh-my-shell/config.toml` | Settings. |
 | `~/.config/oh-my-shell/init.omsh` | Your startup commands. |
 | `~/.config/oh-my-shell/themes/<name>.toml` | Your themes. |
-| `~/.config/oh-my-shell/credentials` | AI keys, only when there is no system keyring (mode 0600). |
+| `~/.config/oh-my-shell/credentials` | AI keys, when there is no system keyring or storing in it failed (mode 0600). |
 | `~/.local/share/oh-my-shell/history.db` | The history (SQLite). |
 | `~/.local/share/oh-my-shell/trash/` and `undo.db` | Trashed files and the undo journal. |
 | `~/.local/state/oh-my-shell/` | Small state, such as the time of the last update check. |
@@ -92,10 +94,11 @@ Files (the `XDG_*` variables are respected):
 | `-l` or a name starting with `-` | Login shell: the environment that `/etc/profile` and `~/.profile` build (by running `/bin/sh -l`) is imported before the first prompt. |
 | `-i` | Forces the interactive shell. |
 | `--no-ai` | The AI layer is off for the session. |
-| `--no-config` | No `config.toml`, no `init.omsh`, nothing written. The way back in when a startup file is broken. |
+| `--no-config` | No `config.toml`, no `init.omsh`, and nothing saved by itself (no config, history or check-stamp file). It does not stop commands you give on purpose (`omsh update`, `omsh uninstall`). The way back in when a startup file is broken. |
 
 So the builtins that need the interactive shell (`history`, `j`, `undo`, `omsh`) do not exist in `-c` and
-scripts, and scripts written for bash keep running in `/bin/sh` as they always did.
+scripts. `oh-my-shell script.sh` always hands the file to `/bin/sh`, whatever its first line says, so a script that
+needs bash must be run as `bash script.sh`.
 
 ## The language
 
@@ -133,7 +136,8 @@ Run such a script with `bash script.sh`. The [builtins](commands.md#builtins) ar
 
 ## Job control
 
-Each command runs in its own process group, so Ctrl+C stops the command and not the shell. A line that ends
+Each job runs in its own process group (the programs of a pipeline share one; builtins run inside the shell; with `set +m`
+no new groups are made), so Ctrl+C stops the job and not the shell. A line that ends
 with `&` runs in the background. `jobs` lists jobs, `fg %1` brings one back, `bg %1` lets a stopped one go on in
 the background, `wait` waits, `kill %1` signals, `disown %1` forgets one. Ctrl+Z stops the foreground job and
 keeps it. Leaving the shell with stopped jobs gives a warning first. Finished background jobs are reported
@@ -168,9 +172,11 @@ prompt), a virtual environment, the status of the last command and its duration 
   runs and says so.
 - `Ctrl+P`: the command palette: actions (settings, history explorer, explain the last failure, undo, jobs, AI
   status, AI setup, edit `config.toml`), aliases, abbreviations, functions and builtins with a one-line help.
-  Picking puts text in the line; it never runs it.
+  Picking an alias, abbreviation, function or builtin puts its name in the line; picking an action opens the history
+  explorer or the settings, or explains the last failure. Nothing is run by picking.
 - Settings (from the palette): every key with its value, where it comes from, and a mark when the value
-  changes at the next start. Switches and fixed choices can be changed there and are written to `config.toml`.
+  changes at the next start. Switches and fixed choices can be changed there and are written to `config.toml` (`update.check` and
+  `safety.confirm` are shown, with instructions to edit the file, but not changed there).
 
 **Notifications.** A command that ran 10 seconds or more ends with a desktop notification through
 `notify-send` (package `libnotify-bin`), unless it was ended with Ctrl+C or stopped, was a `?` request, or is in
@@ -197,7 +203,7 @@ running at the same time share it safely. `history` lists and searches it; `j wo
 
 ## Safety
 
-Every line you type is analyzed offline (no network, a fraction of a millisecond) after aliases are replaced and
+Every line you type is analyzed offline (no network) after aliases are replaced and
 before anything runs. Levels: **safe** runs; **caution** shows a one-line note and runs; **dangerous** shows
 a panel and asks; **critical** asks you to type `yes` or the target. `[safety] confirm` sets the lowest level
 that asks (default `dangerous`); critical always asks. The rules cover `rm` of big or important paths,
@@ -236,10 +242,11 @@ name that only exists at run time. `rm $flags /` (flags in a variable) counts as
 ## AI help
 
 **The AI layer is off until you set it up** (`omsh ai setup`). The shell is fully usable without it, and
-`--no-ai` or `ai.enabled = false` turns it off for good.
+`--no-ai` turns it off for that run only (it writes no setting); `ai.enabled = false` in `config.toml` is the lasting switch.
 
 **There is no network access on the normal command path.** Typing, running commands, completion, the safety analysis,
-history, the prompt and `-c` open no network socket. A test runs the shell under `strace` and the whole test suite
+history, the prompt and `-c` make no connection of their own and create no network socket (the one caveat: `~user` expansion uses the
+system account lookup, which on a network-account setup, LDAP or sssd, may reach the network). A test runs the shell under `strace` and the whole test suite
 with the network switched off to check this. The network is used only when you ask: an AI request (`?`, `??`,
 `| ?`, `Alt+?`), `omsh ai setup` and `omsh ai test`, `omsh update`, and the daily update check, which is off by
 default. The AI code starts on the first AI request, not before.
@@ -247,7 +254,8 @@ default. The AI code starts on the first AI request, not before.
 **Setup.** `omsh ai setup` asks for a provider (Ollama, Anthropic, OpenAI, Gemini, or any OpenAI-compatible
 server), a model and a key, checks them with one small request, and writes `provider`, `model` and `base_url` to
 `config.toml`. Keys are never written to `config.toml`, to the history or to logs: they go in the system keyring,
-or in a file only you can read when there is no keyring. A key is sent only to `https://` addresses and to this
+or in a file only you can read, which is used when there is no keyring or storing in it fails (a key is read from the file if
+the keyring does not have it or cannot be read). A key is sent only to `https://` addresses and to this
 computer. `omsh ai status` shows what is set (never the key); `omsh ai forget` removes the key.
 
 **Asking.**
@@ -260,21 +268,23 @@ computer. `omsh ai status` shows what is set (never the key); `omsh ai forget` r
 | `ls -l \| ? which is the biggest` | Runs `ls -l`, sends its (truncated, masked) output with the question. |
 | `? history what did I run with docker last week` | Searches your history in plain words; the answer comes from the local database. |
 
-**The plan panel** keys: Enter runs, `e` edits a command, `c` chats ("make it recursive"), `v` shows exactly
-what was sent, Esc cancels. **Every AI command needs your confirmation, whatever its risk.** It goes through the
-same parser, safety analyzer and executor as typed commands, and the analyzer's level wins over the model's. A
-failed step stops the plan. Steps run exactly as written: your aliases are not applied. AI deletes go to the
-trash and into the undo journal.
+**The plan panel** keys: Enter runs, `e` edits a command, `c` chats ("make it recursive"), `v` shows the last request as it was sent (control characters removed; earlier plans and refused retries show only as character counts), Esc cancels. **Every plan needs your confirmation, whatever its risk.** One confirmation covers the plan you see; its steps then run one
+after the other, and a step is asked about again only if the safety analysis, run again just before it, rates it higher. Each
+command goes through the same parser, safety analyzer and executor as typed commands. For a step you did not edit, the
+higher of the analyzer's level and the model's applies; for a step you edited, the analyzer's alone. A failed step stops the
+plan. Steps run exactly as written: your aliases are not applied. A deletion that the shell can recognize (a plain `rm`)
+goes to the trash and into the undo journal when the journal is available; a wrapped `rm`, `find -delete` and the like are
+not followed, and the panel says which steps are permanent.
 
 **What is sent.** The system name, the shell name, the working folder, whether it is a git repository and the
 branch, and the last 3 commands with their exit status (never their output), each switchable in
 `[ai.context]`. File contents are never sent unless you pipe them with `| ?`. Secrets are replaced by `[MASKED]`
 first. For `| ?`, the system prompt tells the model to ignore any instruction found in the piped output.
-Answers and plans are in English.
+The prompt asks for English answers and plans; this is not checked.
 
 ## Configuration
 
-`config.toml` is TOML; every [setting](commands.md#settings-configtoml) is listed in it, commented out, with its default.
+`config.toml` is TOML; every [setting](commands.md#settings-configtoml) is listed in it as a commented line (the default, or an example for an unset setting).
 A mistake never stops the shell: it is reported as `omsh: ...` with its line and column, the setting keeps its
 default, and the rest of the file applies. Changes apply at the next start. The settings view (`Ctrl+P`, then
 "Settings") changes the switches for you.
@@ -291,20 +301,25 @@ export EDITOR=nano
 **Update.** `omsh update` looks up the latest GitHub release, downloads the archive for your CPU, checks it against
 `sha256.sum` (see [what that protects](#what-the-checksum-protects-and-what-it-does-not)), runs the new program once
 with `--version`, and only then renames it over the old one. A shell already running keeps the old file until you
-restart it. `omsh update --check` only says whether a newer release exists. It refuses a copy installed by a
-package manager (under `/usr`) or by `cargo` and says how to update that one: `sudo apt install ./new.deb`
-or the `cargo install` command again. It never installs an older version. For a notice when a release comes out, set
-`check = true` under `[update]`: the shell then asks GitHub for the latest version at most once a day, a moment after
+restart it. `omsh update --check` installs nothing; it says whether a newer release exists (and, like the daily check, records the time
+in the stamp file unless `--no-config` is given). It refuses a copy installed by a
+package manager (under `/usr`, but not `/usr/local`) or by `cargo` (found by the program's path) and says how to update that one: `sudo apt install ./new.deb`
+or the `cargo install` command again. It installs only a newer release than the one you run; two updates running at the same moment are not guarded against
+each other. For a notice when a release comes out, set
+`check = true` under `[update]`: the shell then asks GitHub for the latest version about once a day (if the stamp file cannot be written it can repeat at each start), a moment after
 the prompt, and shows one line (nothing is downloaded). It is off by default because it needs the network.
 
 **Uninstall.** Run `omsh uninstall` from another shell (it is refused inside Oh My Shell, which has its history
 open). It asks one question at a time: the program, your settings, your history, the trash with its undo journal, the
 stored AI keys. Nothing is removed until every question is answered, and Esc or Ctrl+C stops with nothing removed.
-It refuses while Oh My Shell is your login shell (change that with `chsh` first). It never edits `/etc/shells`; it
+It refuses while Oh My Shell is your login shell (change that with `chsh` first); if the account database cannot be read,
+that check cannot refuse. See the [limitations](#known-limitations) for folders that are links or overlap. It never edits `/etc/shells`; it
 tells you what to remove there. A `.deb` is removed with `sudo apt remove oh-my-shell`, a cargo install with
 `cargo uninstall omsh-cli`.
 
 ## Known limitations
+
+Only the `trap` case in the last entry was run by hand; every other item here was read in the source and was not run.
 
 - Keys that arrive in the same read as Ctrl+C or Ctrl+D are dropped (a script on a pty, `tmux send-keys` with
   several keys, a paste that is not bracketed). Typing by hand is not affected. The second of two lines that
@@ -316,10 +331,24 @@ tells you what to remove there. A `.deb` is removed with `sudo apt remove oh-my-
 - HTTPS trusts the system certificate store; without `ca-certificates` the message is "TLS certificate or
   handshake was not accepted".
 - `undo` with no number takes the newest action of any shell, not only this one.
-- The trash copy across file systems keeps content, mode, times and (as root) owner, but not hard links,
-  extended attributes or ACLs.
-- The release files were run on x86_64 hardware; the aarch64 files were checked by checksum and by build tests
-  only.
+- The trash copy across file systems keeps content, mode and the modification time of files (for folders it tries), and
+  the owner when it can (as root); it does not keep access times, the times of symbolic links, hard links, extended
+  attributes or ACLs.
+- The release files were run on x86_64 hardware here. The aarch64 files were built and smoke-tested (install script, `.deb`
+  install, run and removal) on GitHub's native aarch64 runner, and never run on aarch64 hardware of our own.
+- `omsh uninstall` follows a symbolic link at the config folder (for example a dotfiles repository) and empties what it
+  points to; and if the data or state folder is the same as, or inside, the config folder, removing the program can also
+  remove data you said no to. Check `omsh uninstall`'s questions against your folder layout first.
+- The check of `--base-url` and `OMSH_RELEASE_SERVER` in `install.sh` looks at the start of the text: an address with a user
+  name, such as `http://127.0.0.1:80@host`, passes it. These switches are for tests; do not use addresses you do not trust.
+- `install.sh` names its temporary file after the process id, so on a machine with other users a planted link in a shared
+  `--bin-dir` could be followed. The default folder is your own.
+- `~/.cargo` or `CARGO_HOME` reached through a symbolic link is not recognized as a cargo install, so `omsh update` may replace
+  that copy.
+- Found while reviewing the process code, not fixed (the `trap` case was reproduced by hand; the others were read in the code and not run): in an interactive shell a background builtin such as `read &` is not cut off from the terminal and can take the keys you type; `trap '' SIGNAL` set in a
+  subshell is not passed on to the programs it starts; a hang-up that arrives while a foreground program runs is acted on
+  only after that program ends; and if the thread that waits for a stopped program cannot be created, a zombie process can
+  remain.
 - `history.size` is applied when a shell starts.
 - The shell runs on Linux only.
 
@@ -337,8 +366,8 @@ cursor-position question within half a second; the shell then says so once.
 **"The history cannot be read right now."** The history file is still opening, a moment after the start; try again.
 It waits for the file, so this should be rare.
 
-**`history`, `j`, `undo` or `omsh` say "not available in this shell".** You are in `-c`, a script or piped input; those
-run in `/bin/sh`. They exist in the interactive shell.
+**`history`, `j`, `undo` or `omsh` are "not found" or "not available".** You are in `-c`, a script or piped input; those run
+in `/bin/sh`, which has no such commands and prints its own message. They exist in the interactive shell.
 
 **The AI says "AI is not set up".** Run `omsh ai setup`. For a local model, install Ollama and choose it there.
 

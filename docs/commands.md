@@ -1,7 +1,8 @@
 # Command reference
 
-Every builtin, every `omsh` command, every option, every key and every setting of Oh My Shell,
-each with a one-line description, how to use it and one example. For the story around them, read
+Every builtin, every `omsh` command, every key and every setting of Oh My Shell, with the options
+of each that matter in daily use, a one-line description, how to use it and one example. Rarely used
+corners are not all listed; the tests check that every name is here, not that every option is. For the story around them, read
 the [user guide](user-guide.md).
 
 The tests check this page: each builtin, each `omsh` command and each `config.toml` key must appear
@@ -35,13 +36,14 @@ Usage: `test EXPRESSION` or `[ EXPRESSION ]`
 Example: `[ -d /tmp ] && echo yes`
 
 ### `alias`
-Define an alias, or list them. An alias replaces the first word of a typed line.
+Define an alias, or list them.
+An alias is replaced at every command position (after `|`, `;`, `&&` and so on), not only the first word of the line.
 Usage: `alias [NAME=TEXT...]`
 Example: `alias ll='ls -l'`
 
 ### `bg`
-Continue a stopped job in the background.
-Usage: `bg [%JOB]`
+Continue stopped jobs in the background. Several jobs may be named.
+Usage: `bg [%JOB...]`
 Example: press Ctrl+Z in `sleep 100`, then `bg %1`.
 
 ### `break`
@@ -65,13 +67,15 @@ Usage: `continue [N]`
 Example: `for i in 1 2 3; do [ $i = 2 ] && continue; echo $i; done` prints `1` and `3`.
 
 ### `disown`
-Forget a job: the shell no longer waits for it or reports it.
-Usage: `disown [%JOB]`
+Forget jobs: the shell no longer waits for them or reports them. `-a` takes all jobs, `-r` only running ones,
+`-h` keeps the job but stops the hang-up signal from reaching it.
+Usage: `disown [-a | -r] [-h] [%JOB...]`
 Example: `sleep 100 & disown %1` (in a shell with no other job; `jobs` shows the numbers).
 
 ### `echo`
-Print the arguments. `-n` leaves out the final newline; `-e` reads backslash escapes.
-Usage: `echo [-n] [-e] [ARGUMENT...]`
+Print the arguments. `-n` leaves out the final newline; `-e` reads backslash escapes; `-E` turns them off again.
+Letters can be combined (`-ne`).
+Usage: `echo [-neE] [ARGUMENT...]`
 Example: `echo -e 'a\tb'`
 
 ### `eval`
@@ -80,7 +84,9 @@ Usage: `eval [ARGUMENT...]`
 Example: `eval "echo $HOME"`
 
 ### `exec`
-Replace the shell by a program (no new process). With no program, it applies the redirections to the shell.
+Replace the shell by a program. At the top level no new process is made; inside a subshell or a pipeline stage
+the program runs as a child and that copy of the shell ends with its status. With no program, it applies the
+redirections to the shell.
 Usage: `exec [PROGRAM [ARGUMENT...]]`
 Example: `exec sleep 1`
 
@@ -90,8 +96,8 @@ Usage: `exit [N]`
 Example: `exit 0`
 
 ### `export`
-Put variables in the environment of the programs the shell starts.
-Usage: `export NAME[=VALUE]...`
+Put variables in the environment of the programs the shell starts. With no operand, or with `-p`, it lists them.
+Usage: `export [-p] [NAME[=VALUE]...]`
 Example: `export EDITOR=nano`
 
 ### `false`
@@ -111,7 +117,7 @@ Example: `hash -r`
 
 ### `history`
 List, search or delete the stored commands (interactive shell only).
-Usage: `history [--here] [--failed] [--since AGE] [-n COUNT | --all] [search TEXT...]` and `history delete ID...`
+Usage: `history [--here] [--failed] [--since AGE | --since=AGE] [-n COUNT | -nCOUNT | --all] [search TEXT...]`, `history delete ID...` and `history -h` (or `--help`)
 Example: `history --failed --since 2d` (AGE is a number and `s`, `m`, `h`, `d` or `w`).
 
 ### `j`
@@ -120,8 +126,9 @@ Usage: `j WORD...` or `j -` (the previous folder)
 Example: `j proj src`
 
 ### `jobs`
-List background and stopped jobs. `-l` adds process ids; `-p` prints only the process group leaders.
-Usage: `jobs [-l | -p]`
+List background and stopped jobs. `-l` adds process ids; `-p` prints only the process group leaders; `-r` lists
+only running jobs and `-s` only stopped ones. Job operands (`%1`) pick jobs.
+Usage: `jobs [-lprs] [%JOB...]`
 Example: `sleep 100 & jobs`
 
 ### `kill`
@@ -145,13 +152,14 @@ Usage: `pwd [-L | -P]`
 Example: `pwd`
 
 ### `read`
-Read a line from standard input into variables. `-r` keeps backslashes; `-p` shows a prompt.
-Usage: `read [-r] [-p PROMPT] NAME...`
+Read a line from standard input into variables. `-r` keeps backslashes; `-p` shows a prompt. With no name the
+line goes to `REPLY`.
+Usage: `read [-r] [-p PROMPT] [NAME...]`
 Example: `echo 'a b' | { read x y; echo $y; }` prints `b`.
 
 ### `readonly`
-Make variables read-only.
-Usage: `readonly NAME[=VALUE]...`
+Make variables read-only. With no operand, or with `-p`, it lists them.
+Usage: `readonly [-p] [NAME[=VALUE]...]`
 Example: `readonly LIMIT=10`
 
 ### `return`
@@ -162,8 +170,9 @@ Example: `f() { return 3; }; f; echo $?` prints `3`.
 ### `set`
 Set shell options and the positional arguments. Options: `-e` (stop on error), `-u` (unset is an error),
 `-x` (trace), `-f` (no globbing), `-C` (no `>` over a file), `-m` (job control), and `-o name` for
-`errexit`, `nounset`, `xtrace`, `noglob`, `noclobber`, `monitor`, `pipefail`. `set -o` lists them.
-Usage: `set [-eufxCm] [-o NAME] [--] [ARGUMENT...]`
+`errexit`, `nounset`, `xtrace`, `noglob`, `noclobber`, `monitor`, `pipefail`. `set -o` lists them, `set +o` prints commands
+that set them back, and a `+` letter (`set +e`) turns an option off. `set` with no argument lists the variables.
+Usage: `set [-+eufxCm] [-+o NAME] [--] [ARGUMENT...]`
 Example: `set -- a b c; echo $2` prints `b`.
 
 ### `shift`
@@ -172,8 +181,10 @@ Usage: `shift [N]`
 Example: `set -- a b c; shift; echo $1` prints `b`.
 
 ### `trap`
-Run a command when a signal arrives or when the shell exits.
-Usage: `trap [ACTION] SIGNAL...`
+Run a command when a signal arrives or when the shell exits. Only `EXIT`, `HUP`, `INT`, `QUIT`, `USR1`, `USR2`,
+`ALRM` and `TERM` can be trapped (`CHLD` and others are refused). With no argument it lists the traps; `-` as the
+action puts the default back and an empty action ignores the signal.
+Usage: `trap [-p] [ACTION SIGNAL...]`
 Example: `trap 'echo bye' EXIT`
 
 ### `true`
@@ -203,12 +214,13 @@ Usage: `undo [--list | NUMBER]`
 Example: `undo --list`
 
 ### `unset`
-Remove variables or functions.
-Usage: `unset NAME...`
+Remove variables (the default, or with `-v`) or functions (`-f`).
+Usage: `unset [-f | -v] NAME...`
 Example: `unset EDITOR`
 
 ### `wait`
-Wait for background jobs to end; the status is that of the job waited for.
+Wait for background jobs to end. With no operand it waits for all of them and the status is 0; with operands the
+status is that of the last one named.
 Usage: `wait [%JOB | PID]...`
 Example: `sleep 1 & wait`
 
@@ -251,15 +263,18 @@ Example: `omsh ai forget`
 
 ### `omsh update`
 Download the latest release, check it against `sha256.sum`, try the new program, and rename it over the
-old one. `--check` only says whether a newer release exists. It refuses a copy installed by a package
-manager or by `cargo`.
+old one. `--check` does not install anything; it says whether a newer release exists, and (like the daily check) it
+records the time in the check stamp unless `--no-config` is given. It refuses a copy under `/usr` (a package
+manager; `/usr/local` is allowed) or in the `cargo` bin folder, as found from the program's path (a symbolic link at
+the front of that path can fool the test).
 Usage: `omsh update [--check]`
 Example: `omsh update --check`
 
 ### `omsh uninstall`
 Remove the program, and, if you say yes to each question, your settings, history, trash, and stored
 AI keys. Nothing is removed until every question is answered. Refused inside the shell and while Oh My
-Shell is your login shell.
+Shell is your login shell (if the account database cannot be read, that check cannot refuse). See the
+[limitations](user-guide.md#known-limitations) for folders that are links or overlap.
 Usage: `omsh uninstall` (from another shell)
 Example: `omsh uninstall`
 
@@ -274,7 +289,7 @@ Example: `omsh uninstall`
 | `-l`, `--login` | Acts as a login shell: imports the environment that `/bin/sh -l` builds from `/etc/profile` and `~/.profile`. A program name that starts with `-` does the same. | `oh-my-shell -l` |
 | `-i` | Forces the interactive shell. | `oh-my-shell -i` |
 | `--no-ai` | Turns the AI layer off for this session, whatever `ai.enabled` says. | `oh-my-shell --no-ai` |
-| `--no-config` | Reads neither `config.toml` nor `init.omsh`, and writes nothing (no history file either). The way back in when a startup file is broken. | `oh-my-shell --no-config` |
+| `--no-config` | Reads neither `config.toml` nor `init.omsh`, and no longer saves anything by itself (no config, history or check-stamp file). It does not stop commands you give on purpose: `omsh --no-config update` still replaces the program and `--no-config uninstall` still removes after you agree. The way back in when a startup file is broken. | `oh-my-shell --no-config` |
 | `-V`, `--version` | Prints the version and exits. | `oh-my-shell --version` |
 | `-h`, `--help` | Prints the help. | `oh-my-shell --help` |
 
@@ -283,11 +298,11 @@ Example: `omsh uninstall`
 | Option | What it does | Example |
 |---|---|---|
 | `--version X.Y.Z` | Installs that release instead of the latest. | `sh -s -- --version 0.1.1` |
-| `--system` | Installs to `/usr/local/bin` (uses `sudo` when not root). | `sh -s -- --system` |
+| `--system` | Installs to `/usr/local/bin` (uses `sudo` only if that folder is not writable for you). | `sh -s -- --system` |
 | `--bin-dir DIR` | Installs to `DIR`. | `sh -s -- --bin-dir ~/bin` |
 | `--add-to-shells` | Adds the shell to `/etc/shells` (uses `sudo` when not root). | `sh -s -- --add-to-shells` |
 | `--archive FILE --sums FILE` | Uses local files and downloads nothing (for tests). | |
-| `--base-url URL` | The folder that holds the release files (https, or http on this computer; for tests). | |
+| `--base-url URL` | The folder that holds the release files (for tests). The address must start with `https://` or with `http://` followed by `127.0.0.1`, `localhost` or `[::1]`; this is a check of the beginning of the text, so an address with a user name (`http://127.0.0.1:80@host`) is not refused. | |
 | `-h`, `--help` | Prints the options. | `sh -s -- --help` |
 
 The examples are for `curl ... install.sh | sh -s -- OPTION`; see the
@@ -304,8 +319,8 @@ The editor is [reedline](https://crates.io/crates/reedline); the usual emacs key
 | Key | What it does |
 |---|---|
 | Enter | Runs the line, or waits for more when the command is unfinished (an open quote, `if` without `fi`). |
-| Tab | Opens the completion menu; Tab again moves to the next choice. |
-| Shift+Tab | Moves to the previous choice. |
+| Tab | Opens the completion menu; Tab again moves to the next choice (emacs and vi insert mode, not vi normal mode). |
+| Shift+Tab | Moves to the previous choice (same modes). |
 | Right, End | Takes the whole gray hint. |
 | Alt+F | Takes one word of the hint. |
 | Up, Down | Walk through the history. |
@@ -337,7 +352,7 @@ A line that starts with `?` is an AI request ([user guide](user-guide.md#ai-help
 | Key | What it does |
 |---|---|
 | (typing) | Filters actions, aliases, abbreviations, functions and builtins. |
-| Enter, Tab | Picks the entry: text goes into the line (never runs), or the action starts. |
+| Enter, Tab | Picks the entry. Aliases, abbreviations, functions and builtins put text in the line (never run it); an action opens history, opens settings, or explains the last failure. |
 | Up, Ctrl+P, Ctrl+K / Down, Ctrl+N, Ctrl+J | Move the choice. |
 | PageUp, PageDown, Home, End | Move by a page, or to the first or last row. |
 | Esc, Ctrl+C, Ctrl+G | Closes it. |
@@ -346,7 +361,7 @@ A line that starts with `?` is an AI request ([user guide](user-guide.md#ai-help
 
 | Key | What it does |
 |---|---|
-| Enter, Tab | Changes the chosen switch or choice to its next value and writes it to `config.toml`. |
+| Enter, Tab | Changes the chosen switch or choice to its next value and writes it to `config.toml`. `update.check` and `safety.confirm` are shown but not changed here; selecting them shows how to edit the file. |
 | Shift+Tab | Changes it to the previous value. |
 | Up, Down, Ctrl+P, Ctrl+N, Ctrl+K, Ctrl+J, PageUp, PageDown, Home, End | Move the choice. |
 | Esc, Ctrl+C, Ctrl+G | Closes it. |
@@ -359,13 +374,14 @@ A change applies at the next start of the shell.
 |---|---|
 | Safety question for a dangerous line | Type `y` or `yes` and Enter to run it; `t` (or `trash`) runs it with `rm` moving files to the trash, where that is possible; anything else, Enter alone, Ctrl+C and Ctrl+D cancel. |
 | Safety question for a critical line | Type `yes` or the target's name; anything else cancels. There is no trash choice. |
-| AI plan panel | Enter runs; `e` edits the command; `c` chats (asks for a change); `v` shows exactly what was sent; Esc cancels. |
+| AI plan panel | Enter runs; `e` edits the command; `c` chats (asks for a change); `v` shows the last request as it was sent (control characters removed; earlier plans and refused retries appear only as character counts); Esc cancels. |
 | `omsh tour` | Enter, `n` or Space next; `b` back; `q` or Esc leaves. |
 
 ## Settings (`config.toml`)
 
 The first start writes `~/.config/oh-my-shell/config.toml` with every setting listed and commented
-out at its default. A mistake in a value is reported with its line and column and the default is used.
+out. A setting that has a default shows it; one that is unset (`ui.motion`, `ai.provider`, `ai.model`,
+`ai.base_url`) shows an example value, which is not the default. A mistake in a value is reported with its line and column and the default is used.
 The keys, with the default in brackets:
 
 ### `[ui]`
@@ -418,5 +434,5 @@ The keys, with the default in brackets:
 
 ### `[update]`
 
-- `update.check` (`false`): ask GitHub for the latest release at most once a day, after the prompt. Example: `check = true`.
+- `update.check` (`false`): ask GitHub for the latest release about once a day, after the prompt (the time is kept in a stamp file; if that file cannot be written the check can repeat at every start). Example: `check = true`.
 - `update.channel` (`"stable"`): only `"stable"` is accepted; it is read and not used. Example: `channel = "stable"`.

@@ -22,7 +22,7 @@ mkdir -p /tmp/omsh-try && HOME=/tmp/omsh-try XDG_CONFIG_HOME=/tmp/omsh-try/c XDG
   XDG_STATE_HOME=/tmp/omsh-try/s XDG_CACHE_HOME=/tmp/omsh-try/k cargo run -p omsh-cli
 ```
 
-`--no-config` reads and writes no config or history file at all.
+`--no-config` reads no config or `init.omsh` and saves no config, history or check-stamp file by itself.
 
 ## The checks
 
@@ -61,7 +61,7 @@ Notes on the tests:
 - **A new dependency needs a reason**: check that it is maintained, that its license passes `cargo deny`, and say in the pull
   request what it is for and what it costs in binary size. Check the current version on crates.io.
 - **No network on the normal command path.** Network code lives in `omsh-ai` and runs only after an explicit AI command,
-  `omsh update`, or the optional update check. A test fails on any socket created in a normal session.
+  `omsh update`, or the optional update check. A test fails on any network socket created in a normal session (anything but a local Unix socket) and on any connection to the D-Bus.
 - **Never print numbers or progress that were not measured.**
 - **Each crate has a short module comment** that says what it is for; keep it true.
 - **Respect the crate boundaries** (the arrows are in `Cargo.toml` and in [docs/design.md](docs/design.md#shape-of-the-program)):
@@ -79,10 +79,10 @@ Notes on the tests:
   and run `cargo test -p omsh-tests`; it must still pass. Do not commit the sleep.
 - **At the editor, after Ctrl+C use `Session::cancel_line()`**, never `key(3)` followed by a search for `$ `. Between two lines
   use `command`/`sync`; two `line` calls in a row are type-ahead, and the editor may drop the second.
-- **Tests of `omsh update` and `omsh uninstall` run only through `omsh_tests::sandbox::Sandbox`.** It points `HOME` and every
+- **End-to-end tests of `omsh update` and `omsh uninstall` run only through `omsh_tests::sandbox::Sandbox`** (unit tests of those commands use their own temporary-folder helpers). It points `HOME` and every
   `XDG_*` folder and `CARGO_HOME` inside a temporary home and refuses to start if any of them is the real home or inside it.
   The program that runs is a hard link to a copy of the test binary, never the file in `target/`.
-- Every test has a time limit; no test may be able to hang. AI tests use the fake provider and the fake HTTP server on the
+- The pseudo-terminal tests wait with deadlines and a watchdog, so none can hang; keep every new wait bounded. AI tests use the fake provider and the fake HTTP server on the
   loopback; none needs a real model.
 - When you change the commands, builtins or settings, update [docs/commands.md](docs/commands.md): tests fail if a builtin, an
   `omsh` command or a `config.toml` key is missing there, or if a relative link in the Markdown files points nowhere.

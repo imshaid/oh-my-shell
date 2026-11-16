@@ -9,7 +9,8 @@ before you make it your login shell; the installers never run `chsh`.
 
 - **AI is off until you set it up** (`omsh ai setup`). The shell is fully usable without it, and `--no-ai` switches it off.
 - **No network access on the normal command path.** Typing, running commands, completion, history and the safety check
-  open no network socket (a test checks it). The network is used only when you ask: an AI request, `omsh update`, and an
+  make no connection of their own (a test checks that no network socket is created). One caveat: `~user` expansion asks the
+  system's account lookup, and on a machine set up with a network account service (LDAP, sssd) that lookup may use the network. The network is used only when you ask: an AI request, `omsh update`, and an
   optional daily update check that is off by default.
 - **No telemetry** of any kind.
 
@@ -22,8 +23,9 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/imshaid/oh-my-shell/releases/latest/download/install.sh | sh
 ```
 
-This puts `oh-my-shell` and the short name `omsh` in `~/.local/bin`. It changes nothing else: no `chsh`, no edits to your
-shell's startup files, and `/etc/shells` only with `--add-to-shells`.
+This puts `oh-my-shell` in `~/.local/bin`, and the short name `omsh` next to it if that name is free (a different file
+already called `omsh` is left alone, with a warning). It does not run `chsh`, does not edit your shell's startup files, and
+touches `/etc/shells` only with `--add-to-shells`.
 
 **A `.deb`** for Debian and Ubuntu is on the [releases page](https://github.com/imshaid/oh-my-shell/releases):
 `sudo apt install ./oh-my-shell_<version>-1_amd64.deb` (or `_arm64.deb`).
@@ -52,18 +54,20 @@ More in the [user guide](docs/user-guide.md#install): the options, updating with
   `-c`, scripts and piped input go to `/bin/sh`, so `ssh host cmd` and `scp` keep working.
 - **While you type.** Syntax colors, gray hints from your history, Tab completion, abbreviations, emacs or vi keys, a prompt with
   the git branch, `Ctrl+R` history explorer, `Ctrl+P` command palette, a settings view, `j` to jump to a folder you used.
-- **History.** A local SQLite file with folder, status and duration. Secrets are never stored.
+- **History.** A local SQLite file with folder, status and duration. A line that matches one of the known secret patterns is not
+stored; a secret in a shape the patterns do not know can be (`history delete ID` removes it).
 - **Safety.** Every typed line is analyzed first. A dangerous one shows what it would touch and asks; `rm` can move files to a
   trash, and `undo` brings them back.
-- **AI (optional).** `? request` plans commands and asks before each runs; `?? command` explains one; `Alt+?` explains the last
+- **AI (optional).** `? request` plans commands and shows the whole plan for one confirmation (it asks again only if a step turns out riskier
+when it is about to run); `?? command` explains one; `Alt+?` explains the last
   failure; `cmd | ? question` asks about output; `? history ...` searches your history in plain words. Providers: Ollama,
-  Anthropic, OpenAI, Gemini, any OpenAI-compatible server. Secrets are masked before anything is sent, and keys are kept in
+  Anthropic, OpenAI, Gemini, any OpenAI-compatible server. Text that matches the known secret patterns is masked before anything is sent, and keys are kept in
   the system keyring or a file only you can read.
 
 ## Documentation
 
 - [User guide](docs/user-guide.md): install, use, safety, AI, configuration, troubleshooting.
-- [Command reference](docs/commands.md): every builtin, `omsh` command, option, key and setting.
+- [Command reference](docs/commands.md): every builtin, `omsh` command, key and setting, with the main options.
 - [Design](docs/design.md): how it is built, with the measured numbers.
 - [Report material](docs/report.md): notes for a written report.
 - [Contributing](CONTRIBUTING.md): build, checks and rules.
