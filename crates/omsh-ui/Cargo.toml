@@ -11,6 +11,12 @@ omsh-config.workspace = true
 toml.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
+unicode-width.workspace = true
+# The terminal query of `sync`: poll and read with a time limit, as `omsh-editor` does.
+nix.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
 
 [[bench]]
 name = "explorer"

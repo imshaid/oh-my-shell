@@ -1939,9 +1939,12 @@ name = "omsh-ui"
 version = "1.0.0"
 dependencies = [
  "crossterm",
+ "insta",
+ "nix",
  "omsh-config",
  "ratatui",
  "toml",
+ "unicode-width 0.2.3",
 ]
 
 [[package]]

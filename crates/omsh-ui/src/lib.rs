@@ -4,14 +4,27 @@
 //! - [`theme_file`]: `themes/<name>.toml`, which overrides any of them.
 //! - [`look`]: which of color, Unicode and motion the terminal gets (the degrade rules).
 //! - [`paint`]: wraps text in the theme's colors, and the glyphs panels use.
-//! - [`motion`]: the activity spinner and its redraw rule.
+//! - [`motion`]: the activity spinner and its redraw rule, easing and the frame clock.
+//!
+//! The foundation of the UI upgrade (`docs/UI_UPGRADE.md`, phase 1). Nothing outside this crate
+//! calls it yet:
+//!
+//! - [`caps`]: what the terminal allows, decided by one pure function.
+//! - [`text`]: styled lines, widths, and the one writer of escape sequences.
+//! - [`boxes`]: rounded boxes, full or open on the right.
+//! - [`widgets`]: buttons, a filterable list and the numbered fallback.
+//! - [`inline`]: drawing a menu below the prompt and erasing it again.
+//! - [`sync`]: does the terminal understand synchronized output (DEC mode 2026).
 //!
 //! - [`explorer`], [`fuzzy`], [`screen`], [`style`]: the full-screen history explorer (S27a): its
 //!   state, the small fuzzy matcher, the alternate screen with its panic restore, and the mapping
 //!   from theme to ratatui styles.
 
+pub mod boxes;
+pub mod caps;
 pub mod explorer;
 pub mod fuzzy;
+pub mod inline;
 pub mod look;
 pub mod motion;
 pub mod paint;
@@ -19,14 +32,19 @@ pub mod palette;
 pub mod screen;
 pub mod settings;
 pub mod style;
+pub mod sync;
+pub mod text;
 pub mod theme;
 pub mod theme_file;
 pub mod view;
+pub mod widgets;
 
+pub use caps::{Caps, CapsFacts, Out};
 pub use fuzzy::{Haystack, Query};
 pub use look::{Facts, Look};
 pub use motion::{Spinner, redraw_interval};
 pub use paint::{Glyphs, Paint};
 pub use screen::install_panic_restore;
+pub use text::{Line, Span, Style, Tone};
 pub use theme::{AnsiColor, Role, RoleStyle, Theme, Token};
 pub use theme_file::{LoadedTheme, load_theme, parse_theme};

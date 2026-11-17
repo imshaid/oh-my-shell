@@ -1,0 +1,9 @@
+---
+source: crates/omsh-ui/tests/panels.rs
+expression: "written(&lines, &caps)"
+---
+⟨35⟩+-⟨0⟩ Set up AI ⟨35⟩------------------------------------------+⟨0⟩
+⟨35⟩|⟨0⟩ Pick a provider. Your key stays on this machine.     ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ ⟨32⟩safe⟨0⟩  nothing is sent yet                            ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ ⟨33⟩caution⟨0⟩  a paid provider                             ⟨35⟩|⟨0⟩
+⟨35⟩+-⟨0⟩ ⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose, ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨35⟩---------------------------+⟨0⟩

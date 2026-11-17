@@ -213,6 +213,9 @@ impl Role {
 pub enum Token {
     /// Brand, the bar of neutral panels, key hints.
     Accent,
+    /// The keys a person can press (`Enter`, `t`, `←→`) in the new menus and panels (U1). Cyan
+    /// in `nord`. A theme file written before it existed has no `key`, and gets cyan.
+    Key,
     /// Paths and the working directory.
     Path,
     /// Anything that has to do with the AI.
@@ -231,8 +234,9 @@ pub enum Token {
 
 impl Token {
     /// Every token.
-    pub const ALL: [Token; 8] = [
+    pub const ALL: [Token; 9] = [
         Token::Accent,
+        Token::Key,
         Token::Path,
         Token::Ai,
         Token::Success,
@@ -247,6 +251,7 @@ impl Token {
     pub fn name(self) -> &'static str {
         match self {
             Token::Accent => "accent",
+            Token::Key => "key",
             Token::Path => "path",
             Token::Ai => "ai",
             Token::Success => "success",
@@ -363,6 +368,7 @@ impl Default for Theme {
             tokens: [RoleStyle::PLAIN; Token::ALL.len()],
         };
         theme.set_token(Token::Accent, RoleStyle::color(AnsiColor::Blue));
+        theme.set_token(Token::Key, RoleStyle::color(AnsiColor::Cyan));
         theme.set_token(Token::Path, RoleStyle::color(AnsiColor::Cyan));
         theme.set_token(Token::Ai, RoleStyle::color(AnsiColor::Magenta));
         theme.set_token(Token::Success, RoleStyle::color(AnsiColor::Green));
@@ -586,6 +592,7 @@ mod tests {
         let theme = Theme::default();
         let color = |token| theme.token(token).color;
         assert_eq!(color(Token::Accent), Some(AnsiColor::Blue));
+        assert_eq!(color(Token::Key), Some(AnsiColor::Cyan));
         assert_eq!(color(Token::Path), Some(AnsiColor::Cyan));
         assert_eq!(color(Token::Ai), Some(AnsiColor::Magenta));
         assert_eq!(color(Token::Success), Some(AnsiColor::Green));

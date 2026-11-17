@@ -248,3 +248,64 @@ fn a_long_report_is_cut_with_a_count() {
     assert_eq!(lines.len(), 3);
     assert!(lines[2].ends_with("... and 3 more problems"), "{lines:?}");
 }
+
+// The `key` token came after the first theme files were written (U1). A file that does not know
+// it must load as before, with no problem reported, and the keys must be cyan.
+
+/// A theme file as written before `key` existed: the eight old tokens, all set.
+const OLD_THEME_FILE: &str = "[tokens]\n\
+    accent = \"green\"\npath = \"green\"\nai = \"green\"\nsuccess = \"green\"\n\
+    warning = \"green\"\ndanger = \"green\"\nmuted = \"green\"\ndim = \"green\"\n";
+
+#[test]
+fn a_theme_file_without_the_key_token_falls_back_to_cyan() {
+    let (theme, problems) = parse_theme(OLD_THEME_FILE);
+    assert!(problems.is_empty(), "{problems:?}");
+    let key = theme.token(Token::Key);
+    assert_eq!(key.color, Some(AnsiColor::Cyan));
+    assert_eq!(key, nord().token(Token::Key));
+    // The tokens the file does name are still the file's.
+    assert_eq!(theme.token(Token::Accent).color, Some(AnsiColor::Green));
+}
+
+#[test]
+fn a_theme_file_with_only_roles_or_nothing_falls_back_to_cyan_too() {
+    for text in ["", "[roles]\nquote = \"green\"\n", "[tokens]\n"] {
+        let (theme, problems) = parse_theme(text);
+        assert!(problems.is_empty(), "{text:?}: {problems:?}");
+        assert_eq!(
+            theme.token(Token::Key).color,
+            Some(AnsiColor::Cyan),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_theme_file_on_disk_without_the_key_token_falls_back_to_cyan() {
+    let (dir, paths) = scratch("old-file");
+    fs::write(dir.join("oh-my-shell/themes/old.toml"), OLD_THEME_FILE).unwrap();
+    let loaded = load_theme("old", &paths);
+    assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+    assert_eq!(loaded.theme.token(Token::Key).color, Some(AnsiColor::Cyan));
+    assert_eq!(
+        loaded.theme.token(Token::Danger).color,
+        Some(AnsiColor::Green)
+    );
+}
+
+#[test]
+fn the_key_token_can_be_set_and_a_bad_value_keeps_cyan() {
+    let (theme, problems) = parse_theme("[tokens]\nkey = \"green\"\n");
+    assert!(problems.is_empty());
+    assert_eq!(theme.token(Token::Key).color, Some(AnsiColor::Green));
+
+    let (theme, problems) = parse_theme("[tokens]\nkey = \"default\"\n");
+    assert!(problems.is_empty());
+    assert_eq!(theme.token(Token::Key).color, None);
+
+    let (theme, problems) = parse_theme("[tokens]\nkey = \"#00ffff\"\n");
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(at(&problems[0]), (2, 7));
+    assert_eq!(theme.token(Token::Key).color, Some(AnsiColor::Cyan));
+}

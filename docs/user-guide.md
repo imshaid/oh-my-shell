@@ -187,7 +187,7 @@ and the shell says so once. `[notify]` changes or switches it off. The notificat
 (secrets masked).
 
 **Themes.** `ui.theme` names a built-in theme (`nord`) or `themes/<name>.toml`. A theme file lists only the
-colors you change: eight tokens (`accent`, `path`, `ai`, `success`, `warning`, `danger`, `muted`, `dim`) and the
+colors you change: nine tokens (`accent`, `key`, `path`, `ai`, `success`, `warning`, `danger`, `muted`, `dim`) and the
 command-line roles (`command`, `error`, `quote`, ...), each one of the 16 ANSI color names.
 
 ## History and privacy

@@ -1,0 +1,25 @@
+---
+source: crates/omsh-ui/tests/panels.rs
+expression: "format!(\"top:\\n{top}\\n\\nafter two Down:\\n{scrolled}\\n\\nfilter zz:\\n{none}\\n\\nin 20 columns:\\n{narrow}\")"
+---
+top:
+⟨2;90⟩filter _⟨0⟩
+⟨36⟩> ⟨0⟩⟨7⟩build/output.o  /home/user/work/build/output.o  0 m...⟨0⟩
+  notes final.txt  ⟨2;90⟩/home/user/work/notes final.txt  1...⟨0⟩
+⟨2;90⟩v 1 more⟨0⟩
+
+after two Down:
+⟨2;90⟩filter _⟨0⟩
+⟨2;90⟩^ 1 more⟨0⟩
+  notes final.txt  ⟨2;90⟩/home/user/work/notes final.txt  1...⟨0⟩
+⟨36⟩> ⟨0⟩⟨7⟩report-2026.pdf  /home/user/work/report-2026.pdf  2...⟨0⟩
+
+filter zz:
+⟨2;90⟩filter ⟨0⟩zz⟨2;90⟩_⟨0⟩
+⟨2;90⟩no match⟨0⟩
+
+in 20 columns:
+⟨2;90⟩filter _⟨0⟩
+⟨2;90⟩^ 1 more⟨0⟩
+  notes final.txt...
+⟨36⟩> ⟨0⟩⟨7⟩report-2026.pdf...⟨0⟩

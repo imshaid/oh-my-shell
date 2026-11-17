@@ -66,6 +66,11 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 # `Style` and does not re-export it. reedline depends on it already (0.50.3, MIT, nushell), so
 # it adds no crate to the tree.
 nu-ansi-term = { version = "0.50", default-features = false }
+# Display width of text, for the inline panels and menus of the UI upgrade (U1), in `omsh-ui` only.
+# A line that is wider than the terminal wraps and breaks the cursor arithmetic of an inline redraw,
+# so rows that hold user text (file names, commands, also in Bangla) are measured and cut. ratatui
+# depends on it already (0.2.3, MIT or Apache-2.0, unicode-rs), so it adds no crate to the tree.
+unicode-width = "0.2"
 # Line editor (S13a). Default features are off: `sqlite`, `system_clipboard` and
 # `external_printer` are not used (history is our own store in S13b; job notices are printed
 # before the prompt, not above the line being typed).

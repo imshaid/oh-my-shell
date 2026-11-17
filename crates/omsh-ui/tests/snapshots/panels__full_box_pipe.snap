@@ -1,0 +1,9 @@
+---
+source: crates/omsh-ui/tests/panels.rs
+expression: "written(&lines, &caps)"
+---
++- Set up AI ------------------------------------------+
+| Pick a provider. Your key stays on this machine.     |
+| safe  nothing is sent yet                            |
+| caution  a paid provider                             |
++- Enter choose, Esc cancel ---------------------------+
