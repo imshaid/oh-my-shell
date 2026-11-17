@@ -436,6 +436,10 @@ fn a_prompt_reads_the_git_segment_when_it_is_drawn() {
         failure: None,
         left: vec![Segment::Git],
         right: vec![],
+        style: omsh_config::UiStyle::Plain,
+        caps: omsh_ui::caps::Caps::plain(),
+        theme: omsh_ui::Theme::default(),
+        ai: true,
     };
     let state = PromptState {
         cwd: repo,
@@ -444,6 +448,7 @@ fn a_prompt_reads_the_git_segment_when_it_is_drawn() {
         conda_env: None,
         last_status: 0,
         last_duration: None,
+        separate: false,
         root: false,
         git_env: Vec::new(),
     };

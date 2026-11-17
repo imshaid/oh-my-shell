@@ -3,16 +3,27 @@
 //! `[prompt] right` (a failed status, a long duration, the time) at the right edge. The second
 //! line is the symbol, and the line being typed follows it.
 //!
-//! No color is forced. The directory is bold and the other segments are dim, in whatever colors
-//! the terminal uses; the symbol is plain. The one color is ANSI red (color 1, which the user's
-//! terminal theme defines) on the symbol after a command that failed. `NO_COLOR` turns that
-//! red off and keeps bold and dim, which are not colors.
+//! Two layouts (`ui.style`). **Plain** forces no color: the directory is bold and the other
+//! segments are dim, in whatever colors the terminal uses; the symbol is plain; the one color is
+//! ANSI red on the symbol after a command that failed. **Spaced** (the default) draws the
+//! pieces from the theme's semantic tones: the directory blue, the branch and the time dim, and
+//! the status and the duration merged into one chip (`✓ 4 ms` green, `✘ 127` red) at the right;
+//! while the line being typed is a request to the AI, the tag `ask AI` (magenta) comes before
+//! it. The rule between commands is not part of the prompt: the editor prints it once, above.
+//! `NO_COLOR` turns every color off and keeps bold and dim, which are not colors.
 
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use omsh_config::UiStyle;
+use omsh_ui::caps::Caps;
+use omsh_ui::shell_look;
+use omsh_ui::text::{Line, Tone, render_line};
+use omsh_ui::theme::Theme;
 use reedline::{
     Color, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, PromptViMode,
 };
@@ -36,6 +47,14 @@ pub struct Look {
     pub left: Vec<Segment>,
     /// Segments right of the line, in order (`[prompt] right`).
     pub right: Vec<Segment>,
+    /// The layout of the prompt (`ui.style`).
+    pub style: UiStyle,
+    /// What the terminal takes, for the spaced layout's pieces.
+    pub caps: Caps,
+    /// The theme the spaced layout takes its tones from.
+    pub theme: Theme,
+    /// The AI can be asked (it is not switched off): only then the `ask AI` tag shows.
+    pub ai: bool,
 }
 
 /// What the prompt needs to know about the shell right now. The shell fills it in before each
@@ -53,6 +72,9 @@ pub struct PromptState {
     pub last_status: u8,
     /// How long the last command took, if there was one.
     pub last_duration: Option<Duration>,
+    /// A command ran since the last prompt was drawn: the spaced layout prints a rule above
+    /// this one. False for the first prompt, and after Ctrl+C.
+    pub separate: bool,
     /// The shell runs as root: the indicator is `#`.
     pub root: bool,
     /// The shell's values of the variables that `git` is given (see
@@ -81,6 +103,29 @@ pub struct ShellPrompt {
     unicode: bool,
     indicator: String,
     vi_normal_indicator: String,
+    /// The spaced layout draws the git segment from a tone at each paint, so it keeps what it
+    /// needs. `None` for the plain layout.
+    tones: Option<Tones>,
+    /// The `ask AI` tag, already written, and the flag the highlighter raises while the line
+    /// being typed is a request to the AI. Read at each paint.
+    ai_tag: Option<(String, Arc<AtomicBool>)>,
+}
+
+/// The theme and the terminal's abilities, to turn a tone into escape sequences.
+#[derive(Clone, Debug)]
+struct Tones {
+    theme: Theme,
+    caps: Caps,
+}
+
+impl Tones {
+    fn write(&self, tone: Tone, text: &str) -> String {
+        render_line(&Line::new().tone(tone, text), &self.theme, &self.caps)
+    }
+
+    fn line(&self, line: &Line) -> String {
+        render_line(line, &self.theme, &self.caps)
+    }
 }
 
 const RESET: &str = "\x1b[0m";
@@ -97,25 +142,63 @@ impl ShellPrompt {
     /// nothing until [`with_git`](Self::with_git) says where to read it from.
     #[must_use]
     pub fn new(look: &Look, state: &PromptState, now: impl Fn() -> String) -> Self {
-        let piece = |segment: Segment| -> Option<Piece> {
-            Some(Piece::Text(match segment {
-                Segment::Cwd => styled(
-                    BOLD,
-                    &segments::cwd(&state.cwd, state.home.as_deref(), look.unicode),
-                ),
-                Segment::Git => return Some(Piece::Git),
+        let tones = (look.style == UiStyle::Spaced).then(|| Tones {
+            theme: look.theme.clone(),
+            caps: look.caps,
+        });
+        // One segment as text; `None` when it has nothing to say.
+        let text_of = |segment: Segment| -> Option<String> {
+            let dim = |text: &str| match &tones {
+                Some(tones) => tones.write(Tone::Dim, text),
+                None => styled(DIM, text),
+            };
+            Some(match segment {
+                Segment::Cwd => {
+                    let shown = segments::cwd(&state.cwd, state.home.as_deref(), look.unicode);
+                    match &tones {
+                        Some(tones) => tones.write(Tone::Info, &shown),
+                        None => styled(BOLD, &shown),
+                    }
+                }
+                Segment::Git => return None,
                 Segment::Venv => {
                     let name =
                         segments::venv(state.virtual_env.as_deref(), state.conda_env.as_deref())?;
-                    styled(DIM, &format!("[{name}]"))
+                    dim(&format!("[{name}]"))
                 }
-                Segment::Status => styled(DIM, &segments::status(state.last_status, look.unicode)?),
-                Segment::Duration => styled(DIM, &segments::duration(state.last_duration?)?),
-                Segment::Time => styled(DIM, &now()),
-            }))
+                Segment::Status => dim(&segments::status(state.last_status, look.unicode)?),
+                Segment::Duration => dim(&segments::duration(state.last_duration?)?),
+                Segment::Time => dim(&now()),
+            })
         };
-        let left: Vec<Piece> = look.left.iter().filter_map(|s| piece(*s)).collect();
-        let right: Vec<Piece> = look.right.iter().filter_map(|s| piece(*s)).collect();
+        // A list of segments as pieces. In the spaced layout the status and the duration are one
+        // chip, put where the first of them stands.
+        let pieces = |list: &[Segment]| -> Vec<Piece> {
+            let mut out = Vec::new();
+            let mut chip_done = false;
+            for &segment in list {
+                if segment == Segment::Git {
+                    out.push(Piece::Git);
+                    continue;
+                }
+                let text = match &tones {
+                    Some(tones) if matches!(segment, Segment::Status | Segment::Duration) => {
+                        if std::mem::replace(&mut chip_done, true) {
+                            continue;
+                        }
+                        shell_look::chip(state.last_status, state.last_duration, look.unicode)
+                            .map(|chip| tones.line(&chip))
+                    }
+                    _ => text_of(segment),
+                };
+                if let Some(text) = text {
+                    out.push(Piece::Text(text));
+                }
+            }
+            out
+        };
+        let left = pieces(&look.left);
+        let right = pieces(&look.right);
 
         let glyph = if state.root {
             "#"
@@ -130,6 +213,10 @@ impl ShellPrompt {
             (Some(code), true) => styled(code, &text),
             _ => text,
         };
+        let ai_tag = tones
+            .as_ref()
+            .filter(|_| look.ai)
+            .map(|tones| tones.line(&shell_look::ai_tag()));
         Self {
             left,
             right,
@@ -138,7 +225,20 @@ impl ShellPrompt {
             unicode: look.unicode,
             indicator: symbol(format!("{glyph} ")),
             vi_normal_indicator: symbol(": ".to_owned()),
+            tones,
+            // The flag is attached by `with_ai_flag`; until then the tag never shows.
+            ai_tag: ai_tag.map(|text| (text, Arc::new(AtomicBool::new(false)))),
         }
+    }
+
+    /// Where the `ask AI` tag learns that the line being typed is a request: a flag the
+    /// highlighter sets at every key, before the prompt is drawn.
+    #[must_use]
+    pub fn with_ai_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        if let Some((_, own)) = &mut self.ai_tag {
+            *own = flag;
+        }
+        self
     }
 
     /// Where the git segment reads the branch and the marker from.
@@ -178,6 +278,8 @@ impl ShellPrompt {
             unicode: false,
             indicator,
             vi_normal_indicator,
+            tones: None,
+            ai_tag: None,
         }
     }
 
@@ -191,7 +293,11 @@ impl ShellPrompt {
     fn join(&self, pieces: &[Piece]) -> String {
         let git = || {
             let snapshot = self.git.as_ref()?.snapshot();
-            Some(styled(DIM, &snapshot.text()?))
+            let text = snapshot.text()?;
+            Some(match &self.tones {
+                Some(tones) => tones.write(Tone::Dim, &text),
+                None => styled(DIM, &text),
+            })
         };
         pieces
             .iter()
@@ -222,7 +328,18 @@ impl Prompt for ShellPrompt {
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        Cow::Owned(self.join(&self.right))
+        let right = self.join(&self.right);
+        // The tag comes first, so the status stays at the edge. Read at every paint.
+        match &self.ai_tag {
+            Some((tag, asked)) if asked.load(Ordering::Relaxed) => {
+                Cow::Owned(if right.is_empty() {
+                    tag.clone()
+                } else {
+                    format!("{tag} {right}")
+                })
+            }
+            _ => Cow::Owned(right),
+        }
     }
 
     fn render_prompt_indicator(&self, mode: PromptEditMode) -> Cow<'_, str> {
@@ -266,6 +383,8 @@ impl Prompt for ShellPrompt {
 mod tests {
     use super::*;
 
+    /// A look of the plain layout (the prompt of version 1.0), which most of these tests are
+    /// about.
     fn look(left: &[Segment], right: &[Segment]) -> Look {
         Look {
             unicode: true,
@@ -273,6 +392,32 @@ mod tests {
             failure: Some("31".to_owned()),
             left: left.to_vec(),
             right: right.to_vec(),
+            style: UiStyle::Plain,
+            caps: terminal(true, false),
+            theme: Theme::default(),
+            ai: true,
+        }
+    }
+
+    /// A terminal that takes escapes.
+    fn terminal(unicode: bool, no_color: bool) -> Caps {
+        Caps {
+            out_tty: true,
+            stderr_tty: true,
+            unicode,
+            color: !no_color,
+            no_color,
+            ..Caps::plain()
+        }
+    }
+
+    /// The spaced layout, in color.
+    fn spaced(left: &[Segment], right: &[Segment]) -> Look {
+        Look {
+            style: UiStyle::Spaced,
+            color: true,
+            caps: terminal(true, false),
+            ..look(left, right)
         }
     }
 
@@ -284,6 +429,7 @@ mod tests {
             conda_env: None,
             last_status: 0,
             last_duration: None,
+            separate: false,
             root: false,
             git_env: Vec::new(),
         }
@@ -688,5 +834,216 @@ mod tests {
             p.render_prompt_history_search_indicator(failing),
             "(failing search: zz) "
         );
+    }
+
+    // ----- the spaced layout -------------------------------------------------------------
+
+    fn ran(status: u8, took: Duration) -> PromptState {
+        PromptState {
+            last_status: status,
+            last_duration: Some(took),
+            separate: true,
+            ..state()
+        }
+    }
+
+    const DEFAULT_RIGHT: [Segment; 2] = [Segment::Status, Segment::Duration];
+
+    #[test]
+    fn spaced_draws_the_directory_in_blue_and_the_branch_dim() {
+        let p = build(&spaced(&[Segment::Cwd], &[]), &state());
+        // Tone `info` is blue (34); not bold.
+        assert_eq!(p.render_prompt_left(), "\x1b[34m~/code\x1b[0m\n");
+        let p = with_git_in(&spaced(&[Segment::Cwd, Segment::Git], &[]));
+        assert_eq!(
+            p.render_prompt_left(),
+            "\x1b[34m~/code\x1b[0m \x1b[2;90m(topic)\x1b[0m\n"
+        );
+    }
+
+    fn with_git_in(look: &Look) -> ShellPrompt {
+        build(look, &state()).with_git(Handle::fixed(Snapshot {
+            head: on("topic"),
+            dirt: Dirtiness::Clean,
+        }))
+    }
+
+    #[test]
+    fn a_success_is_a_green_chip_with_its_time_at_the_right() {
+        let p = build(
+            &spaced(&[Segment::Cwd], &DEFAULT_RIGHT),
+            &ran(0, Duration::from_millis(4)),
+        );
+        assert_eq!(p.render_prompt_right(), "\x1b[32m✓ 4 ms\x1b[0m");
+    }
+
+    #[test]
+    fn a_failure_is_a_red_chip_with_the_status() {
+        let p = build(
+            &spaced(&[Segment::Cwd], &DEFAULT_RIGHT),
+            &ran(127, Duration::from_millis(3)),
+        );
+        assert_eq!(p.render_prompt_right(), "\x1b[31m✘ 127\x1b[0m");
+    }
+
+    #[test]
+    fn status_and_duration_make_one_chip_not_two() {
+        let p = build(
+            &spaced(&[], &[Segment::Duration, Segment::Time, Segment::Status]),
+            &ran(2, Duration::from_secs(9)),
+        );
+        assert_eq!(
+            right(&p),
+            "✘ 2 · 9.0 s 12:34",
+            "one chip where the first stood, then the time"
+        );
+    }
+
+    #[test]
+    fn there_is_no_chip_before_a_command_has_run() {
+        let p = build(&spaced(&[Segment::Cwd], &DEFAULT_RIGHT), &state());
+        assert_eq!(p.render_prompt_right(), "");
+    }
+
+    #[test]
+    fn the_chip_is_only_where_the_configuration_puts_it() {
+        let p = build(
+            &spaced(&[Segment::Cwd], &[Segment::Time]),
+            &ran(1, Duration::from_millis(3)),
+        );
+        assert_eq!(right(&p), "12:34", "no status segment, no chip");
+    }
+
+    #[test]
+    fn the_ask_ai_tag_follows_the_flag_and_comes_first() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let p = build(
+            &spaced(&[Segment::Cwd], &DEFAULT_RIGHT),
+            &ran(0, Duration::from_millis(4)),
+        )
+        .with_ai_flag(Arc::clone(&flag));
+        assert_eq!(right(&p), "✓ 4 ms");
+        flag.store(true, Ordering::Relaxed);
+        assert_eq!(right(&p), "ask AI ✓ 4 ms");
+        assert!(
+            p.render_prompt_right().starts_with("\x1b[35mask AI\x1b[0m"),
+            "magenta"
+        );
+        flag.store(false, Ordering::Relaxed);
+        assert_eq!(right(&p), "✓ 4 ms", "and gone again");
+    }
+
+    #[test]
+    fn the_tag_stands_alone_when_there_is_no_chip() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let p = build(&spaced(&[Segment::Cwd], &DEFAULT_RIGHT), &state()).with_ai_flag(flag);
+        assert_eq!(right(&p), "ask AI");
+    }
+
+    #[test]
+    fn the_tag_is_not_offered_when_the_ai_is_switched_off() {
+        let mut l = spaced(&[Segment::Cwd], &DEFAULT_RIGHT);
+        l.ai = false;
+        let flag = Arc::new(AtomicBool::new(true));
+        let p = build(&l, &state()).with_ai_flag(flag);
+        assert_eq!(right(&p), "");
+    }
+
+    #[test]
+    fn the_plain_layout_never_shows_the_tag_or_a_success_chip() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let p = build(
+            &look(&[Segment::Cwd], &DEFAULT_RIGHT),
+            &ran(0, Duration::from_millis(4)),
+        )
+        .with_ai_flag(flag);
+        assert_eq!(right(&p), "");
+    }
+
+    #[test]
+    fn spaced_without_color_keeps_dim_and_drops_the_colors() {
+        let mut l = spaced(&[Segment::Cwd, Segment::Git], &DEFAULT_RIGHT);
+        l.color = false;
+        l.caps = terminal(true, true);
+        let p = build(&l, &ran(1, Duration::from_millis(3)))
+            .with_git(Handle::fixed(Snapshot {
+                head: on("topic"),
+                dirt: Dirtiness::Clean,
+            }))
+            .with_ai_flag(Arc::new(AtomicBool::new(true)));
+        let all = format!("{}{}", p.render_prompt_left(), p.render_prompt_right());
+        assert!(!has_color(&all), "{all:?}");
+        assert!(all.contains("\x1b[2m(topic)"), "dim stays: {all:?}");
+        assert!(
+            right(&p).starts_with("ask AI ✘ 1"),
+            "the words carry the meaning: {:?}",
+            right(&p)
+        );
+    }
+
+    #[test]
+    fn spaced_in_ascii_has_no_unicode_anywhere() {
+        let mut l = spaced(&[Segment::Cwd], &DEFAULT_RIGHT);
+        l.unicode = false;
+        l.caps = terminal(false, false);
+        let ok = build(&l, &ran(0, Duration::from_millis(4)));
+        assert_eq!(right(&ok), "ok 4 ms");
+        let failed = build(&l, &ran(3, Duration::from_millis(4)));
+        assert_eq!(right(&failed), "x 3");
+        assert!(failed.render_prompt_right().is_ascii());
+        assert!(failed.render_prompt_left().is_ascii());
+    }
+
+    #[test]
+    fn spaced_everything_is_from_the_16_color_palette() {
+        let mut l = spaced(
+            &[Segment::Cwd, Segment::Git, Segment::Venv],
+            &[Segment::Status, Segment::Time],
+        );
+        l.failure = Some("31".to_owned());
+        let mut s = ran(1, Duration::from_secs(5));
+        s.conda_env = Some("base".into());
+        let p = build(&l, &s)
+            .with_git(Handle::fixed(Snapshot {
+                head: on("main"),
+                dirt: Dirtiness::Dirty,
+            }))
+            .with_ai_flag(Arc::new(AtomicBool::new(true)));
+        let all = everything(&p);
+        // Every parameter of every sequence is reset, dim, or a color 30 to 37 or 90 to 97.
+        let mut rest = all.as_str();
+        while let Some(at) = rest.find("\x1b[") {
+            rest = &rest[at + 2..];
+            let end = rest.find('m').unwrap();
+            for code in rest[..end].split(';') {
+                let n: u16 = code.parse().unwrap();
+                assert!(
+                    matches!(n, 0 | 2 | 4 | 7 | 30..=37 | 90..=97),
+                    "{n} in {all:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_bangla_directory_stays_whole_beside_the_chip() {
+        let mut s = ran(1, Duration::from_millis(40));
+        s.cwd = PathBuf::from("/home/me/প্রকল্প");
+        let p = build(&spaced(&[Segment::Cwd], &DEFAULT_RIGHT), &s);
+        assert_eq!(left(&p), "~/প্রকল্প\n");
+        assert_eq!(right(&p), "✘ 1");
+    }
+
+    #[test]
+    fn the_transient_prompt_of_the_spaced_layout_is_still_only_the_symbol() {
+        let p = build(
+            &spaced(&[Segment::Cwd], &DEFAULT_RIGHT),
+            &ran(0, Duration::from_millis(4)),
+        )
+        .with_ai_flag(Arc::new(AtomicBool::new(true)))
+        .transient();
+        assert_eq!(p.render_prompt_left(), "");
+        assert_eq!(p.render_prompt_right(), "");
+        assert_eq!(indicator(&p), "❯ ");
     }
 }

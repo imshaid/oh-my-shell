@@ -20,8 +20,8 @@ use toml::de::{DeTable, DeValue};
 use crate::first_run;
 use crate::paths::Paths;
 use crate::schema::{
-    Ai, Channel, Config, ConfirmLevel, EditMode, Icons, Motion, Notify, PROMPT_SEGMENTS, Provider,
-    SECTIONS, Ui,
+    Ai, Channel, Config, ConfirmLevel, EditMode, Greeting, Icons, Motion, Notify, PROMPT_SEGMENTS,
+    Provider, SECTIONS, Ui, UiStyle,
 };
 
 /// A file larger than this is not a configuration file.
@@ -581,6 +581,8 @@ fn read_ui(r: &mut Reader<'_>, table: &DeTable<'_>, ui: &mut Ui) {
         ("full", Motion::Full),
         ("reduced", Motion::Reduced),
         ("off", Motion::Off),
+        // The UI spec names the full setting "on"; it is the same thing.
+        ("on", Motion::Full),
     ];
     if let Some(motion) = r.choice(table, "ui", "motion", &motion) {
         ui.motion = Some(motion);
@@ -592,6 +594,18 @@ fn read_ui(r: &mut Reader<'_>, table: &DeTable<'_>, ui: &mut Ui) {
     ];
     if let Some(icons) = r.choice(table, "ui", "icons", &icons) {
         ui.icons = icons;
+    }
+    let styles = [("plain", UiStyle::Plain), ("spaced", UiStyle::Spaced)];
+    if let Some(style) = r.choice(table, "ui", "style", &styles) {
+        ui.style = style;
+    }
+    let greetings = [
+        ("auto", Greeting::Auto),
+        ("always", Greeting::Always),
+        ("never", Greeting::Never),
+    ];
+    if let Some(greeting) = r.choice(table, "ui", "greeting", &greetings) {
+        ui.greeting = greeting;
     }
 }
 

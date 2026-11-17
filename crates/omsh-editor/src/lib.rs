@@ -30,7 +30,7 @@ mod toast;
 mod validator;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -38,8 +38,11 @@ use std::thread;
 use std::time::Duration;
 
 use nu_ansi_term::Style;
-use omsh_config::{Config, EditMode as ConfigMode};
+use omsh_config::{Config, EditMode as ConfigMode, UiStyle};
 use omsh_history::{Filter, Store};
+use omsh_ui::caps::Caps;
+use omsh_ui::shell_look::{self, marks};
+use omsh_ui::text::render_line;
 use omsh_ui::{Role, Theme, Token};
 use reedline::{
     ColumnarMenu, EditCommand, Emacs, KeyCode, KeyModifiers, Keybindings, MenuBuilder, Reedline,
@@ -124,6 +127,10 @@ pub struct Editor {
     /// The theme and the look of the history explorer.
     theme: Theme,
     ui_look: omsh_ui::Look,
+    /// Raised by the highlighter while the line is a request to the AI; read by the prompt.
+    ai_line: Arc<AtomicBool>,
+    /// Write the OSC 133 mark that says where each prompt starts.
+    marks: bool,
     /// The folder of the last prompt, for the explorer's "this folder" scope.
     cwd: String,
     /// What this shell runs with, for the settings view and the abbreviations in the palette.
@@ -155,13 +162,28 @@ impl Editor {
         hang_up: impl Fn() -> bool + Send + 'static,
         terminal_gone: impl Fn() -> bool + Send + 'static,
     ) -> Self {
+        // What the spaced prompt may write, until the shell says more (`with_shell_look`): a
+        // terminal that takes escapes, with the colors and symbols the caller allows.
+        let caps = Caps {
+            out_tty: true,
+            stderr_tty: true,
+            unicode,
+            color,
+            no_color: !color,
+            ..Caps::plain()
+        };
         let look = Look {
             unicode,
             color,
             failure: theme.token(Token::Danger).sgr_parameters(),
             left: names(&config.prompt.left),
             right: names(&config.prompt.right),
+            style: config.ui.style,
+            caps,
+            theme: theme.clone(),
+            ai: config.ai.enabled,
         };
+        let ai_line = Arc::new(AtomicBool::new(false));
 
         let theme = if color {
             theme.clone()
@@ -193,10 +215,10 @@ impl Editor {
         // started, not what another open shell runs meanwhile.
         let session = history.session_id();
         let mut engine = Reedline::create()
-            .with_highlighter(Box::new(highlight::ShellHighlighter::new(
-                theme.clone(),
-                Arc::clone(&context),
-            )))
+            .with_highlighter(Box::new(
+                highlight::ShellHighlighter::new(theme.clone(), Arc::clone(&context))
+                    .with_ai_flag(Arc::clone(&ai_line)),
+            ))
             .with_visual_selection_style(highlight::to_style(theme.get(Role::Selection)))
             .with_validator(Box::new(validator::ShellValidator))
             .with_break_signal(flag)
@@ -291,6 +313,8 @@ impl Editor {
                 unicode,
                 motion: omsh_config::Motion::Off,
             },
+            ai_line,
+            marks: false,
             cwd: String::new(),
             running: config.clone(),
             config_file: None,
@@ -303,6 +327,16 @@ impl Editor {
     #[must_use]
     pub fn toast(&self) -> ToastHandle {
         self.toast.clone()
+    }
+
+    /// What the shell found out about the terminal (`caps`), whether the AI can be asked (the
+    /// `ask AI` tag only shows then) and whether to write the OSC 133 mark before each prompt.
+    #[must_use]
+    pub fn with_shell_look(mut self, caps: Caps, ai: bool, marks: bool) -> Self {
+        self.look.caps = caps;
+        self.look.ai = ai;
+        self.marks = marks;
+        self
     }
 
     /// Tells the editor where `config.toml` is (the settings view writes there; `None` when
@@ -342,8 +376,9 @@ impl Editor {
             .unwrap_or_else(PoisonError::into_inner)
             .reset(state.cwd.to_string_lossy().into_owned());
         hint::start_ranking(&self.hints);
-        let mut prompt =
-            ShellPrompt::new(&self.look, state, segments::now).with_toast(self.toast.clone());
+        let mut prompt = ShellPrompt::new(&self.look, state, segments::now)
+            .with_toast(self.toast.clone())
+            .with_ai_flag(Arc::clone(&self.ai_line));
         if let Some(watch) = &self.git {
             // Started now, read at every paint; the wait is short and bounded, so that a slow
             // `git` never delays the prompt.
@@ -351,7 +386,36 @@ impl Editor {
             watch.wait(&handle, git_status::FIRST_PAINT_WAIT);
             prompt = prompt.with_git(handle);
         }
+        self.write_before_prompt(state.separate);
         self.read_with(prompt)
+    }
+
+    /// What goes to the terminal just before the prompt is drawn: in the spaced layout, after a
+    /// command, a blank line and a thin rule; and the OSC 133 mark. Both are written here and
+    /// not inside the prompt, so that a repaint of the prompt never repeats them and the line
+    /// editor never counts them as part of the prompt's width.
+    fn write_before_prompt(&self, separate: bool) {
+        let mut out = String::new();
+        if separate && self.look.style == UiStyle::Spaced {
+            let window = crossterm::terminal::size().ok().map(|(columns, _)| columns);
+            let width = shell_look::rule_width(&self.look.caps, window);
+            out.push('\n');
+            out.push_str(&render_line(
+                &shell_look::rule(width, self.look.unicode),
+                &self.look.theme,
+                &self.look.caps,
+            ));
+            out.push('\n');
+        }
+        if self.marks {
+            out.push_str(marks::PROMPT_START);
+        }
+        if !out.is_empty() {
+            let mut stderr = io::stderr().lock();
+            // A terminal that cannot be written to is found out by the editor itself.
+            let _ = stderr.write_all(out.as_bytes());
+            let _ = stderr.flush();
+        }
     }
 
     /// Waits for the rest of a command that the shell found unfinished after the editor let it
@@ -684,6 +748,7 @@ fn neutral_state() -> PromptState {
         conda_env: None,
         last_status: 0,
         last_duration: None,
+        separate: false,
         root: nix::unistd::geteuid().is_root(),
         git_env: Vec::new(),
     }

@@ -28,6 +28,7 @@
 
 mod ai;
 mod confirm;
+mod greeting;
 mod handoff;
 mod history;
 mod notify;

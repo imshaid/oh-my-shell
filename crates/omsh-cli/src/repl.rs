@@ -11,11 +11,11 @@ use std::fs::File;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use omsh_config::{Config, Paths};
+use omsh_config::{Config, Paths, UiStyle};
 use omsh_editor::{
     CommandLookup, Editor, Facts, PromptState, Read as Typed, Recall, fish_completion_directories,
     passed_variables, suggest_command, working_directory,
@@ -27,10 +27,14 @@ use omsh_exec::{
     terminal_gone, trigger, wait_for_input,
 };
 use omsh_history::{Filter, Store};
+use omsh_ui::caps::{Caps, Out};
+use omsh_ui::shell_look::{AiHint, marks};
+use omsh_ui::text::render_line;
 use omsh_ui::{Look, Paint, Theme};
 
 use crate::ai;
 use crate::confirm;
+use crate::greeting;
 use crate::history::History;
 use crate::notify::{self, Notifier};
 use crate::radius::BlastLimits;
@@ -150,6 +154,8 @@ fn run_on(
         undo,
         config_file,
         update,
+        state_dir,
+        welcome,
     } = match start_up(&mut shell, &mut files, options) {
         Ok(started) => started,
         // `exit` in the startup file.
@@ -171,6 +177,16 @@ fn run_on(
     );
     let style = Style::from_look(look);
     let paint = Paint::new(&theme, look);
+    // What the terminal takes, for the look of the prompt (the rule, the chip, the hint bar) and
+    // for the OSC 133 marks. Read once, after the configuration.
+    let caps = Caps::detect(Out::Stderr, config.ui.icons, config.ui.motion);
+    let marks_wanted = interactive
+        && marks::wanted(
+            &caps,
+            shell
+                .var("TERM")
+                .and_then(|term| std::str::from_utf8(term).ok()),
+        );
     let mut editor = history.and_then(|history| {
         make_editor(
             &shell,
@@ -179,9 +195,28 @@ fn run_on(
             style,
             interactive && terminals,
             history,
-            config_file,
+            EditorSetup {
+                caps,
+                no_ai: options.no_ai,
+                marks: marks_wanted,
+                config_file,
+            },
         )
     });
+    // The hint bar: one dim line above the first prompt, only where there is a line editor to
+    // take the keys it names.
+    if editor.is_some()
+        && caps.stderr_tty
+        && let Some(bar) = greeting::take(
+            &config,
+            options.no_ai,
+            state_dir.as_deref(),
+            welcome,
+            caps.unicode,
+        )
+    {
+        say(&render_line(&bar, &theme, &caps));
+    }
     // The desktop notification after a long command. Its "could not be shown" message goes to
     // the editor's toast, or waits for the next prompt of the plain reader.
     let notifier = interactive.then(|| Notifier::new(editor.as_ref().map(Editor::toast)));
@@ -195,6 +230,8 @@ fn run_on(
     let mut pending = String::new();
     // How long the last command took, for the prompt.
     let mut took: Option<Duration> = None;
+    // A command ran since the last prompt was drawn: the next prompt starts with a rule.
+    let mut ran_since_prompt = false;
     // The last commands typed here, for the AI context (S22). Lines the history ignores are
     // left out of it too.
     let mut recent = ai::recent::Recent::new(
@@ -223,8 +260,11 @@ fn run_on(
                 }
             }
         }
+        // Taken here: a prompt that is drawn is the one that gets the rule, and the one after a
+        // Ctrl+C (which ran nothing) does not.
+        let separate = pending.is_empty() && std::mem::take(&mut ran_since_prompt);
         let next = match editor.as_mut() {
-            Some(editor) => read_edited(editor, &shell, &pending, took),
+            Some(editor) => read_edited(editor, &shell, &pending, took, separate),
             None => read_plain(&mut input, interactive, pending.is_empty()),
         };
         let at_end = match next {
@@ -285,6 +325,13 @@ fn run_on(
         });
         let started = Instant::now();
         let folder = history.map(|_| directory(&shell));
+        // The marks of OSC 133 tell a terminal where a command's output starts and ends (kitty
+        // jumps between prompts and opens the last output with them). Only while the line
+        // editor draws the prompts (it writes the start mark).
+        let marks_on = marks_wanted && editor.is_some();
+        if marks_on {
+            write_mark(marks::OUTPUT_START);
+        }
         // A typed line is looked at by the safety analyzer first (S16). Other input (`-c`
         // scripts, a pipe) is run as written: the person is not there to answer.
         let result = if interactive {
@@ -317,6 +364,13 @@ fn run_on(
         } else {
             shell.run_source(&pending, at_end, &mut files)
         };
+        if marks_on && !matches!(result, LineResult::Incomplete) {
+            let status = match &result {
+                LineResult::Ran(Outcome::Exit(status)) => status.0,
+                _ => shell.last_status().0,
+            };
+            write_mark(&marks::command_end(status));
+        }
         if let Some((history, token)) = noted {
             match &result {
                 // Nothing ran: the rest of the command is still to come.
@@ -352,10 +406,17 @@ fn run_on(
         match result {
             LineResult::Incomplete => {}
             LineResult::Ran(Outcome::Continue(_)) => {
-                took = Some(started.elapsed());
-                if let (Some(notifier), Some(took)) = (&notifier, took) {
-                    notify_if_due(notifier, &shell, &pending, took, &config, look.unicode);
+                let blank = pending.trim().is_empty();
+                // A blank line ran nothing: the spaced prompt keeps showing how the last real
+                // command ended, instead of a time that is not a command's. (The plain prompt
+                // is as it was in 1.0.)
+                if !(blank && config.ui.style == UiStyle::Spaced) {
+                    took = Some(started.elapsed());
+                    if let (Some(notifier), Some(took)) = (&notifier, took) {
+                        notify_if_due(notifier, &shell, &pending, took, &config, look.unicode);
+                    }
                 }
+                ran_since_prompt |= !blank;
                 pending.clear();
             }
             LineResult::Ran(Outcome::Exit(status)) => {
@@ -365,6 +426,7 @@ fn run_on(
                 report::show(&report, style);
                 pending.clear();
                 took = Some(started.elapsed());
+                ran_since_prompt = true;
             }
         }
         if at_end {
@@ -562,6 +624,18 @@ pub(crate) fn directory(shell: &Shell) -> String {
 /// satellite link is not mistaken for a silent terminal.
 const CURSOR_ANSWER_LIMIT: Duration = Duration::from_millis(500);
 
+/// What the editor is given besides the configuration: what the terminal takes (for the look of
+/// the prompt), whether the AI is off for the session, whether to write the OSC 133 marks, and
+/// where `config.toml` is (for the settings view).
+struct EditorSetup {
+    caps: Caps,
+    /// `--no-ai`.
+    no_ai: bool,
+    /// Write the OSC 133 marks.
+    marks: bool,
+    config_file: Option<PathBuf>,
+}
+
 fn make_editor(
     shell: &Shell,
     config: &Config,
@@ -569,7 +643,7 @@ fn make_editor(
     style: Style,
     terminals: bool,
     history: &History,
-    config_file: Option<PathBuf>,
+    setup: EditorSetup,
 ) -> Option<Editor> {
     if !should_edit(terminals, shell.var("TERM"), shell.var("INSIDE_EMACS")) {
         return None;
@@ -602,7 +676,13 @@ fn make_editor(
             hung_up,
             || terminal_gone(io::stdin()),
         )
-        .with_palette(config_file, builtin_summary),
+        .with_palette(setup.config_file, builtin_summary)
+        // The tag `ask AI` is offered only while the AI can be asked.
+        .with_shell_look(
+            setup.caps,
+            greeting::ai_hint(config, setup.no_ai) != AiHint::Off,
+            setup.marks,
+        ),
     )
 }
 
@@ -678,7 +758,7 @@ fn completion_facts(shell: &Shell) -> Facts {
 
 /// Everything the prompt shows, taken from the shell's own variables (not the process
 /// environment, which a `cd` or `export` does not change).
-fn prompt_state(shell: &Shell, took: Option<Duration>) -> PromptState {
+fn prompt_state(shell: &Shell, took: Option<Duration>, separate: bool) -> PromptState {
     let path = |name: &str| {
         shell
             .var(name)
@@ -695,6 +775,7 @@ fn prompt_state(shell: &Shell, took: Option<Duration>) -> PromptState {
             .map(str::to_owned),
         last_status: shell.last_status().0,
         last_duration: took,
+        separate,
         root: is_root(),
         // What `git` is given, taken from the shell's variables like everything else here.
         git_env: passed_variables()
@@ -707,10 +788,16 @@ fn prompt_state(shell: &Shell, took: Option<Duration>) -> PromptState {
     }
 }
 
-fn read_edited(editor: &mut Editor, shell: &Shell, pending: &str, took: Option<Duration>) -> Next {
+fn read_edited(
+    editor: &mut Editor,
+    shell: &Shell,
+    pending: &str,
+    took: Option<Duration>,
+    separate: bool,
+) -> Next {
     let typed = if pending.is_empty() {
         editor.read(
-            &prompt_state(shell, took),
+            &prompt_state(shell, took, separate),
             Box::new(ShellCommands::of(shell)),
             completion_facts(shell),
         )
@@ -764,6 +851,11 @@ struct Started {
     config_file: Option<PathBuf>,
     /// Where the daily check for a new release looks and writes (S29b). None when not interactive.
     update: Option<UpdateEnv>,
+    /// The state folder, where the hint bar keeps its count. None under `--no-config` and when
+    /// not interactive.
+    state_dir: Option<PathBuf>,
+    /// This start printed the first-run welcome.
+    welcome: bool,
 }
 
 /// How many lines of problems with `config.toml` are shown before "... and N more".
@@ -789,6 +881,8 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             undo: None,
             config_file: None,
             update: None,
+            state_dir: None,
+            welcome: false,
         });
     }
     // Built in, reads no file: it also runs under `--no-config`. Before `init.omsh`, so
@@ -815,6 +909,8 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
             undo: None,
             config_file: None,
             update: Some(crate::omsh::update_env(shell, &paths, true)),
+            state_dir: None,
+            welcome: false,
         });
     }
     let loaded = omsh_config::load(&paths);
@@ -823,7 +919,8 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
     }
     // Only the start that wrote the first-run file, and only for a person at a terminal: the
     // three-line welcome (§15.5). A pipe or a script gets the file and no words.
-    if loaded.created && io::stderr().is_terminal() {
+    let welcome = loaded.created && io::stderr().is_terminal();
+    if welcome {
         let home = shell
             .var("HOME")
             .map(|home| PathBuf::from(OsString::from_vec(home.to_vec())));
@@ -872,6 +969,8 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
         undo,
         config_file: paths.config_file(),
         update: Some(crate::omsh::update_env(shell, &paths, false)),
+        state_dir: paths.state_dir().map(Path::to_path_buf),
+        welcome,
     })
 }
 
@@ -953,6 +1052,13 @@ fn prompt(text: &str) {
 /// Writes one line to stderr. A failed write is ignored: there is nowhere left to say so.
 fn say(text: &str) {
     let _ = writeln!(io::stderr(), "{text}");
+}
+
+/// Writes an OSC 133 mark to the terminal, at once.
+fn write_mark(mark: &str) {
+    let mut stderr = io::stderr().lock();
+    let _ = stderr.write_all(mark.as_bytes());
+    let _ = stderr.flush();
 }
 
 #[cfg(test)]

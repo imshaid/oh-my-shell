@@ -387,8 +387,10 @@ The keys, with the default in brackets:
 ### `[ui]`
 
 - `ui.theme` (`"nord"`): the theme, `"nord"` or the name of `themes/<name>.toml`. Example: `theme = "nord"`.
-- `ui.motion` (unset): `"full"`, `"reduced"` or `"off"`; unset means reduced over ssh and full otherwise. Example: `motion = "off"`.
+- `ui.motion` (unset): `"full"` (or `"on"`, the same thing), `"reduced"` or `"off"`; unset means reduced over ssh and full otherwise. Example: `motion = "off"`.
 - `ui.icons` (`"auto"`): `"unicode"`, `"ascii"` or `"auto"`. Example: `icons = "ascii"`.
+- `ui.style` (`"spaced"`): `"spaced"` or `"plain"`. Spaced prints a blank line and a thin rule before the prompt of every command after the first, and shows how the last command ended at the right of the header (`✓ 4 ms` or `✘ 127`). Plain is the two-line prompt of version 1.0. Example: `style = "plain"`.
+- `ui.greeting` (`"auto"`): `"auto"`, `"always"` or `"never"`. The one-line reminder of keys under the first prompt of a session: `auto` shows it for the first five sessions after the welcome, `always` at every start, `never` not at all. Example: `greeting = "never"`.
 
 ### `[editor]`
 

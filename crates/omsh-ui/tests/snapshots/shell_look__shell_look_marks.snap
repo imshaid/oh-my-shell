@@ -1,0 +1,5 @@
+---
+source: crates/omsh-ui/tests/shell_look.rs
+expression: "all.replace('\\x1b', \"⟨ESC⟩\")"
+---
+⟨ESC⟩]133;A⟨ESC⟩\|⟨ESC⟩]133;C⟨ESC⟩\|⟨ESC⟩]133;D;3⟨ESC⟩\

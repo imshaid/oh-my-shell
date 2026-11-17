@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use super::*;
 
@@ -113,6 +113,7 @@ fn codes(style: Style) -> Vec<u8> {
 const RED: u8 = 31;
 const GREEN: u8 = 32;
 const YELLOW: u8 = 33;
+const MAGENTA: u8 = 35;
 const CYAN: u8 = 36;
 const DIM: u8 = 2;
 const UNDERLINE: u8 = 4;
@@ -124,10 +125,10 @@ fn a_command_that_is_not_found_is_red() {
 }
 
 #[test]
-fn a_command_that_exists_has_no_color() {
+fn a_command_that_exists_is_green() {
     let s = setup();
-    assert_eq!(s.codes_of("ls", "ls"), Vec::<u8>::new());
-    assert_eq!(s.codes_of("echo hi", "echo"), Vec::<u8>::new());
+    assert_eq!(s.codes_of("ls", "ls"), vec![GREEN]);
+    assert_eq!(s.codes_of("echo hi", "echo"), vec![GREEN]);
 }
 
 #[test]
@@ -171,30 +172,28 @@ fn quotes_are_yellow_and_the_rest_of_the_word_is_not() {
     assert_eq!(
         pieces[2..],
         [
-            ("x".to_owned(), vec![CYAN]),
+            ("x".to_owned(), Vec::<u8>::new()),
             ("'y'".to_owned(), vec![YELLOW]),
-            ("z".to_owned(), vec![CYAN])
+            ("z".to_owned(), Vec::<u8>::new())
         ]
     );
 }
 
 #[test]
-fn separators_are_green_and_operators_cyan() {
+fn separators_and_operators_are_magenta() {
     let s = setup();
     let line = "ls ; ls & ls | cat && ls || ls";
-    assert_eq!(s.codes_of(line, ";"), vec![GREEN]);
-    assert_eq!(s.codes_of(line, "&"), vec![GREEN]);
-    assert_eq!(s.codes_of(line, "|"), vec![CYAN]);
-    assert_eq!(s.codes_of(line, "&&"), vec![CYAN]);
-    assert_eq!(s.codes_of(line, "||"), vec![CYAN]);
+    for text in [";", "&", "|", "&&", "||"] {
+        assert_eq!(s.codes_of(line, text), vec![MAGENTA], "{text}");
+    }
 }
 
 #[test]
-fn redirections_are_cyan() {
+fn redirections_are_magenta() {
     let s = setup();
     let line = "ls > out 2>&1 < in >> log";
     for text in [">", "2", ">&", "<", ">>"] {
-        assert_eq!(s.codes_of(line, text), vec![CYAN], "{text}");
+        assert_eq!(s.codes_of(line, text), vec![MAGENTA], "{text}");
     }
 }
 
@@ -209,7 +208,7 @@ fn variables_and_substitutions_are_expansions_and_commands_inside_are_checked() 
     let s = setup();
     assert_eq!(s.codes_of("echo $HOME", "$HOME"), vec![CYAN]);
     assert_eq!(s.codes_of("echo $(nosuch)", "nosuch"), vec![RED]);
-    assert_eq!(s.codes_of("echo $(ls)", "ls"), Vec::<u8>::new());
+    assert_eq!(s.codes_of("echo $(ls)", "ls"), vec![GREEN]);
 }
 
 #[test]
@@ -227,7 +226,7 @@ fn a_quoted_command_that_is_not_found_is_red_all_over() {
     assert_eq!(s.codes_of("\"nosuch\"", "\"nosuch\""), vec![RED]);
     // Quotes are taken away before the lookup.
     assert_eq!(s.codes_of("'ls'", "'ls'"), vec![YELLOW]);
-    assert_eq!(s.codes_of("l\\s", "l"), Vec::<u8>::new());
+    assert_eq!(s.codes_of("l\\s", "l"), vec![GREEN]);
 }
 
 #[test]
@@ -236,20 +235,17 @@ fn an_existing_file_is_underlined_and_keeps_its_color() {
     dir.file("a.txt");
     fs::create_dir(dir.0.join("sub dir")).unwrap();
     let s = Setup::new(Theme::default(), &dir.0, None);
-    assert_eq!(
-        s.codes_of("cat a.txt missing", "a.txt"),
-        vec![UNDERLINE, CYAN]
-    );
-    assert_eq!(s.codes_of("cat a.txt missing", "missing"), vec![CYAN]);
-    assert_eq!(s.codes_of("ls ./a.txt", "./a.txt"), vec![UNDERLINE, CYAN]);
+    assert_eq!(s.codes_of("cat a.txt missing", "a.txt"), vec![UNDERLINE]);
+    assert_eq!(s.codes_of("cat a.txt missing", "missing"), Vec::<u8>::new());
+    assert_eq!(s.codes_of("ls ./a.txt", "./a.txt"), vec![UNDERLINE]);
     // A directory counts, and so does a quoted name with a blank.
     assert_eq!(
         s.codes_of("ls 'sub dir'", "'sub dir'"),
         vec![UNDERLINE, YELLOW]
     );
-    assert_eq!(s.codes_of("ls sub\\ dir", "sub"), vec![UNDERLINE, CYAN]);
+    assert_eq!(s.codes_of("ls sub\\ dir", "sub"), vec![UNDERLINE]);
     // A redirection target is checked as well.
-    assert_eq!(s.codes_of("ls < a.txt", "a.txt"), vec![UNDERLINE, CYAN]);
+    assert_eq!(s.codes_of("ls < a.txt", "a.txt"), vec![UNDERLINE]);
 }
 
 #[test]
@@ -258,24 +254,21 @@ fn a_path_is_checked_from_the_prompts_directory_and_with_the_home_for_a_tilde() 
     dir.file("in-home");
     let elsewhere = TempDir::new();
     let s = Setup::new(Theme::default(), &elsewhere.0, Some(&dir.0));
-    assert_eq!(
-        s.codes_of("cat ~/in-home", "~/in-home"),
-        vec![UNDERLINE, CYAN]
-    );
-    assert_eq!(s.codes_of("cat ~/nope", "~/nope"), vec![CYAN]);
+    assert_eq!(s.codes_of("cat ~/in-home", "~/in-home"), vec![UNDERLINE]);
+    assert_eq!(s.codes_of("cat ~/nope", "~/nope"), Vec::<u8>::new());
     assert_eq!(
         s.codes_of("cat in-home", "in-home"),
-        vec![CYAN],
+        Vec::<u8>::new(),
         "not in the cwd"
     );
     let absolute = dir.0.join("in-home");
     let line = format!("cat {}", absolute.display());
     assert_eq!(
         s.codes_of(&line, absolute.to_str().unwrap()),
-        vec![UNDERLINE, CYAN]
+        vec![UNDERLINE]
     );
     // `~user` cannot be checked here.
-    assert_eq!(s.codes_of("cat ~root", "~root"), vec![CYAN]);
+    assert_eq!(s.codes_of("cat ~root", "~root"), Vec::<u8>::new());
 }
 
 #[test]
@@ -288,7 +281,7 @@ fn an_option_is_never_underlined_and_neither_is_a_word_with_an_expansion() {
     assert!(!s.codes_of("ls $PWD/x", "$PWD").contains(&UNDERLINE));
     assert_eq!(
         s.codes_of("ls x*", "x*"),
-        vec![CYAN],
+        Vec::<u8>::new(),
         "a pattern is not a name"
     );
 }
@@ -322,10 +315,10 @@ fn answers_are_remembered_until_the_next_prompt() {
     // A file made while the line is being typed is not seen until the next prompt ...
     s.pieces("cat late");
     dir.file("late");
-    assert_eq!(s.codes_of("cat late", "late"), vec![CYAN]);
+    assert_eq!(s.codes_of("cat late", "late"), Vec::<u8>::new());
     // ... and then it is, and the command questions are asked again.
     s.new_prompt(&dir.0, None);
-    assert_eq!(s.codes_of("cat late", "late"), vec![UNDERLINE, CYAN]);
+    assert_eq!(s.codes_of("cat late", "late"), vec![UNDERLINE]);
     let before = s.asked.load(Ordering::Relaxed);
     s.pieces("nosuch");
     assert_eq!(s.asked.load(Ordering::Relaxed), before + 1, "asked again");
@@ -533,7 +526,7 @@ fn a_pipe_into_the_ai_colors_the_command_and_leaves_the_question_plain() {
         line
     );
     assert_eq!(s.codes_of(line, "-l"), vec![CYAN]);
-    assert_eq!(s.codes_of(line, "|"), vec![CYAN]);
+    assert_eq!(s.codes_of(line, "|"), vec![MAGENTA]);
     // The question: no yellow quote, no red word.
     let (last, codes) = pieces.last().unwrap();
     assert!(last.contains("what's"), "{pieces:?}");
@@ -548,7 +541,7 @@ fn a_pipe_trigger_after_blanks_is_cut_at_the_right_place() {
     let line = "  ls | ? x";
     let joined: String = s.pieces(line).iter().map(|p| p.0.clone()).collect();
     assert_eq!(joined, line);
-    assert_eq!(s.codes_of(line, "|"), vec![CYAN]);
+    assert_eq!(s.codes_of(line, "|"), vec![MAGENTA]);
 }
 
 /// Whether the word that starts at `at` in `line` would be replaced by an abbreviation.
@@ -613,7 +606,94 @@ fn an_abbreviation_name_in_command_position_is_not_red() {
         .lock()
         .unwrap()
         .set_abbreviations(["gco".to_owned()].into_iter().collect());
-    assert_eq!(s.codes_of("gco", "gco"), Vec::<u8>::new());
+    assert_eq!(
+        s.codes_of("gco", "gco"),
+        vec![GREEN],
+        "it is a command once the space is typed"
+    );
     // Not a command anywhere else, but nothing is colored for an argument anyway.
     assert_eq!(s.codes_of("nosuch", "nosuch"), vec![RED]);
+}
+
+/// What follows `|`, `&&`, `||`, `;` and `&` is a command, so it is looked up like the first
+/// word: green when it exists, red when it does not (a typo after a pipe is shown at once).
+#[test]
+fn a_command_after_each_operator_is_looked_up_like_the_first_one() {
+    let s = setup();
+    for operator in ["|", "&&", "||", ";", "&"] {
+        let typo = format!("ls {operator} gerp x");
+        assert_eq!(
+            s.codes_of(&typo, "gerp"),
+            vec![RED],
+            "typo after {operator}"
+        );
+        let found = format!("ls {operator} cat x");
+        assert_eq!(
+            s.codes_of(&found, "cat"),
+            vec![GREEN],
+            "found after {operator}"
+        );
+    }
+    // And at the start of a group and after a newline.
+    assert_eq!(s.codes_of("( gerp x )", "gerp"), vec![RED]);
+    assert_eq!(s.codes_of("ls\ngerp x", "gerp"), vec![RED]);
+}
+
+#[test]
+fn a_word_that_cannot_be_checked_is_neither_green_nor_red() {
+    let s = setup();
+    // `ls$x` is only known when it runs: it is not called a command, or a missing one.
+    assert_eq!(s.codes_of("ls$x y", "ls"), Vec::<u8>::new());
+    assert_eq!(
+        s.codes_of("$(which ls) y", "which"),
+        vec![RED],
+        "inside, as before"
+    );
+}
+
+/// Bangla names (combining marks, conjuncts) are cut only at the borders of the lexer's words,
+/// so a piece is never split inside a letter and the pieces always add up to the line; the
+/// colors land on the right words.
+#[test]
+fn bangla_names_stay_whole_and_the_colors_land_on_the_right_words() {
+    let dir = TempDir::new();
+    dir.file("রিপোর্ট.txt");
+    let s = Setup::new(Theme::default(), &dir.0, None);
+    let line = "cat রিপোর্ট.txt ক্ষত্রিয় -l | grep 'প্রকল্প' > ছবি.png";
+    let pieces = s.pieces(line);
+    assert_eq!(
+        pieces.iter().map(|p| p.0.as_str()).collect::<String>(),
+        line,
+        "nothing dropped, nothing repeated"
+    );
+    assert_eq!(s.codes_of(line, "রিপোর্ট.txt"), vec![UNDERLINE]);
+    assert_eq!(
+        s.codes_of(line, "ক্ষত্রিয়"),
+        Vec::<u8>::new(),
+        "not a file here"
+    );
+    assert_eq!(s.codes_of(line, "-l"), vec![CYAN]);
+    assert_eq!(s.codes_of(line, "|"), vec![MAGENTA]);
+    assert_eq!(s.codes_of(line, "'প্রকল্প'"), vec![YELLOW]);
+    assert_eq!(s.codes_of(line, ">"), vec![MAGENTA]);
+    // A Bangla command that does not exist is red all over.
+    assert_eq!(s.codes_of("কমান্ড ক্ষত্রিয়", "কমান্ড"), vec![RED]);
+}
+
+#[test]
+fn the_ai_flag_follows_whether_the_line_is_a_request() {
+    let flag = Arc::new(AtomicBool::new(false));
+    let highlighter = ShellHighlighter::new(Theme::default(), Arc::new(Mutex::new(Context::new())))
+        .with_ai_flag(Arc::clone(&flag));
+    let raised = |line: &str| {
+        highlighter.highlight(line, 0);
+        flag.load(Ordering::Relaxed)
+    };
+    assert!(raised("? why"), "a plain request");
+    assert!(raised("?? what is this"), "an explanation");
+    assert!(raised("ls -l | ? biggest"), "a pipe into the AI");
+    assert!(!raised("ls -l"), "an ordinary line lowers it again");
+    assert!(raised("? again"));
+    assert!(!raised(""), "an empty line lowers it");
+    assert!(!raised("nosuch ? x"), "a `?` that is only a glob word");
 }

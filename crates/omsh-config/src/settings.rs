@@ -9,7 +9,7 @@
 use toml_edit::{DocumentMut, Item};
 
 use crate::edit::Change;
-use crate::schema::{Config, ConfirmLevel, EditMode, Icons, Motion};
+use crate::schema::{Config, ConfirmLevel, EditMode, Greeting, Icons, Motion, UiStyle};
 
 /// What a key holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +51,8 @@ impl Setting {
 
 const MOTION: &[&str] = &["automatic", "full", "reduced", "off"];
 const ICONS: &[&str] = &["auto", "unicode", "ascii"];
+const STYLE: &[&str] = &["spaced", "plain"];
+const GREETING: &[&str] = &["auto", "always", "never"];
 const MODE: &[&str] = &["emacs", "vi"];
 const CONFIRM: &[&str] = &["caution", "dangerous", "critical"];
 
@@ -87,6 +89,18 @@ pub const SETTINGS: &[Setting] = &[
         Kind::Choice(ICONS),
         true,
         "Unicode or ASCII symbols. Auto follows the locale.",
+    ),
+    setting(
+        "ui.style",
+        Kind::Choice(STYLE),
+        true,
+        "Spaced: a rule between commands and the last status at the right. Plain: two lines.",
+    ),
+    setting(
+        "ui.greeting",
+        Kind::Choice(GREETING),
+        true,
+        "The key reminder under the first prompt. Auto: the first five sessions.",
     ),
     setting(
         "editor.mode",
@@ -337,6 +351,17 @@ pub fn display(config: &Config, key: &str) -> String {
             Icons::Ascii => "ascii",
         }
         .to_owned(),
+        "ui.style" => match config.ui.style {
+            UiStyle::Spaced => "spaced",
+            UiStyle::Plain => "plain",
+        }
+        .to_owned(),
+        "ui.greeting" => match config.ui.greeting {
+            Greeting::Auto => "auto",
+            Greeting::Always => "always",
+            Greeting::Never => "never",
+        }
+        .to_owned(),
         "editor.mode" => match config.editor.mode {
             EditMode::Emacs => "emacs",
             EditMode::Vi => "vi",
@@ -431,8 +456,10 @@ mod tests {
                 "editor.mode",
                 "notify.enabled",
                 "prompt.transient",
+                "ui.greeting",
                 "ui.icons",
                 "ui.motion",
+                "ui.style",
             ]
         );
         // Only booleans and fixed choices.

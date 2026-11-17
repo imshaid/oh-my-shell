@@ -269,7 +269,7 @@ mod tests {
         let terminal = screen(&mut model, &styles(true, true), 80, 14);
         let rows = rows(&terminal);
         assert!(rows[0].starts_with("Settings"));
-        assert!(rows[0].ends_with("1 of 28"), "{:?}", rows[0]);
+        assert!(rows[0].ends_with("1 of 30"), "{:?}", rows[0]);
         // Marker, name in 32 columns, value in 24, then where it comes from.
         assert_eq!(
             rows[1],
@@ -296,7 +296,7 @@ mod tests {
         let mut model = model("");
         let terminal = screen(&mut model, &styles(true, true), 80, 14);
         let rows = rows(&terminal);
-        assert!(rows[0].ends_with("28 of 28"), "{:?}", rows[0]);
+        assert!(rows[0].ends_with("30 of 30"), "{:?}", rows[0]);
         let keys: Vec<&str> = rows[1..10]
             .iter()
             .map(|row| row[2..].split_whitespace().next().unwrap())
@@ -307,12 +307,12 @@ mod tests {
                 "ui.theme",
                 "ui.motion",
                 "ui.icons",
+                "ui.style",
+                "ui.greeting",
                 "editor.mode",
                 "editor.hints",
                 "editor.abbreviations",
-                "prompt.left",
-                "prompt.right",
-                "prompt.transient"
+                "prompt.left"
             ]
         );
     }

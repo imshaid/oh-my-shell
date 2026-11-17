@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/shell_look.rs
+expression: "written(&scene(&caps), &caps)"
+---
+⟨2⟩────────────────────────⟨0⟩
+✓ 4 ms
+✓ 3.2 s
+✘ 127
+✘ 2 · 3.2 s
+ask AI
+?⟨2⟩ ask AI · ⟨0⟩Ctrl+P⟨2⟩ palette · ⟨0⟩Ctrl+R⟨2⟩ history · ⟨0⟩omsh tour
+?⟨2⟩ ask AI · ⟨0⟩Ctrl+P⟨2⟩ palette · ⟨0⟩Ctrl+R⟨2⟩ history · ⟨0⟩omsh tour⟨2⟩ · ⟨0⟩omsh ai setup
+Ctrl+P⟨2⟩ palette · ⟨0⟩Ctrl+R⟨2⟩ history · ⟨0⟩omsh tour

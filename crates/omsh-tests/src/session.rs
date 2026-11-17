@@ -825,8 +825,9 @@ fn without_side_drawing(text: &str) -> String {
     out
 }
 
-/// The text without escape sequences (`ESC [ ... final`, and `ESC` plus one character), and for
-/// each byte of it the position of that byte in `text`.
+/// The text without escape sequences (`ESC [ ... final`, an OSC string `ESC ] ... BEL` or
+/// `ESC ] ... ESC \`, and `ESC` plus one character), and for each byte of it the position of that
+/// byte in `text`. An OSC string cut off at the end of `text` is dropped, as a cut-off `ESC [`.
 pub fn strip_escapes(text: &str) -> (String, Vec<usize>) {
     let mut plain = String::new();
     let mut origin = Vec::new();
@@ -842,6 +843,18 @@ pub fn strip_escapes(text: &str) -> (String, Vec<usize>) {
             // Parameters and intermediates, then one final byte in `@`..=`~`.
             for (_, c) in chars.by_ref() {
                 if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+        } else if chars.peek().is_some_and(|&(_, next)| next == ']') {
+            chars.next();
+            // The string ends at BEL or at the string terminator `ESC \`.
+            while let Some((_, c)) = chars.next() {
+                if c == '\u{7}' {
+                    break;
+                }
+                if c == '\x1b' {
+                    chars.next();
                     break;
                 }
             }

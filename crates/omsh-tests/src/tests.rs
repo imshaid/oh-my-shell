@@ -184,6 +184,23 @@ fn escape_sequences_are_stripped_and_positions_kept() {
     assert_eq!(strip_escapes("x\x1b").0, "x");
 }
 
+/// OSC strings (the OSC 133 prompt marks, a title) end at BEL or at `ESC \\`, and are not text.
+#[test]
+fn osc_strings_are_stripped_and_positions_kept() {
+    use crate::session::strip_escapes;
+    for end in ["\x07", "\x1b\\"] {
+        let text = format!("a\x1b]133;A{end}b\x1b]133;D;1{end}\x1b[31mc\x1b[0m$ ");
+        let (plain, origin) = strip_escapes(&text);
+        assert_eq!(plain, "abc$ ", "terminated by {end:?}");
+        for (i, &at) in origin.iter().enumerate() {
+            assert_eq!(text.as_bytes()[at], plain.as_bytes()[i]);
+        }
+    }
+    // A string cut off at the end of the output does not panic and shows nothing of itself.
+    assert_eq!(strip_escapes("x\x1b]133;").0, "x");
+    assert_eq!(strip_escapes("x\x1b]133;A\x1b").0, "x");
+}
+
 /// A program that prints `$ `, then for each line it reads waits 0.4 s, prints a result line and
 /// prints `$ ` again, as a shell does.
 const SLOW_PROMPTER: &str =

@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/shell_look.rs
+expression: "written(&scene(&caps), &caps)"
+---
+------------------------
+ok 4 ms
+ok 3.2 s
+x 127
+x 2 - 3.2 s
+ask AI
+? ask AI - Ctrl+P palette - Ctrl+R history - omsh tour
+? ask AI - Ctrl+P palette - Ctrl+R history - omsh tour - omsh ai setup
+Ctrl+P palette - Ctrl+R history - omsh tour

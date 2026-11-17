@@ -14,6 +14,8 @@
 //! - [`boxes`]: rounded boxes, full or open on the right.
 //! - [`widgets`]: buttons, a filterable list and the numbered fallback.
 //! - [`inline`]: drawing a menu below the prompt and erasing it again.
+//! - [`shell_look`]: the rule between commands, the status chip, the hint bar and the OSC 133 marks
+//!   (UI upgrade, phase 2).
 //! - [`sync`]: does the terminal understand synchronized output (DEC mode 2026).
 //!
 //! - [`explorer`], [`fuzzy`], [`screen`], [`style`]: the full-screen history explorer (S27a): its
@@ -31,6 +33,7 @@ pub mod paint;
 pub mod palette;
 pub mod screen;
 pub mod settings;
+pub mod shell_look;
 pub mod style;
 pub mod sync;
 pub mod text;

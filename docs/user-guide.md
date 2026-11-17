@@ -147,9 +147,12 @@ once, before the next prompt.
 
 ## Typing: editor, prompt and views
 
-**Colors.** A command that exists is plain, one that does not is red, quotes are yellow, options and arguments
-are cyan, an existing file is underlined. Only the 16 ANSI colors are used, so your terminal theme decides how
-they look. `NO_COLOR` is respected.
+**Colors.** While you type, a command that exists is green and one that does not is red (also after `|`, `&&`,
+`||`, `;` and `&`), options are cyan, quotes are yellow, an existing file is underlined, and what joins commands or
+redirects (`|`, `&&`, `||`, `;`, `&`, `>`) is magenta. Plain arguments keep your terminal's text color. A word
+that holds an expansion (`ls$x`) cannot be checked before it runs, so it is neither green nor red. Only the 16
+ANSI colors are used, so your terminal theme decides how they look. `NO_COLOR` is respected. Any of these can be
+changed in a theme file (see "Themes").
 
 **Hints.** Gray text after the cursor suggests the rest of a command from your history, with commands from the
 current folder first. Right or End takes all of it, Alt+F one word.
@@ -165,8 +168,27 @@ through the choices.
 command is unfinished (an open quote, `if` without `fi`).
 
 **The prompt** has the folder, the git branch with a dirty marker (read in the background, never slowing the
-prompt), a virtual environment, the status of the last command and its duration when long. `prompt.left`,
+prompt), a virtual environment, and, at the right, how the last command ended. `prompt.left`,
 `prompt.right` and `prompt.transient` change it. If a command is not found, a line suggests a similar name.
+
+**The look of the prompt** is `ui.style`. The default, `spaced`, prints a blank line and a thin dim rule above the
+prompt of every command after the first (not after Ctrl+C or an empty line), puts the folder in blue, and shows at
+the right of the header how the last command ended: `✓ 4 ms` in green, or `✘ 127` in red (with the time added
+when it took over two seconds). The time is the real time of that command; before the first command there is no
+chip. The `status` and `duration` segments of `prompt.right` are that chip. While the line you type is a request
+to the AI (`?`, `??`, `| ?`) the tag `ask AI` shows in magenta at the right; it is not shown when the AI is
+switched off. Without Unicode the marks are `ok` and `x`, and the rule is made of `-`. `ui.style = "plain"` gives
+the two-line prompt of version 1.0, with no rule and a status only after a failure.
+
+**The hint bar** is one dim line above the first prompt of a session that names the keys worth knowing:
+`? ask AI · Ctrl+P palette · Ctrl+R history · omsh tour` (and `omsh ai setup` while the AI is not set up). With
+`ui.greeting = "auto"` (the default) it is shown for the first five sessions after the welcome and then never;
+the count is a small file, `greeting`, in the state folder (`~/.local/state/oh-my-shell`). `always` shows it at
+every start and `never` not at all. It is not shown without the line editor or with `--no-config`.
+
+**Terminal marks.** On a terminal the shell also writes the OSC 133 marks (where each prompt starts, where a
+command's output starts and ends with its status) that kitty, WezTerm and iTerm2 use to jump between prompts and
+copy the last output. They are not written for `-c`, scripts, pipes, `TERM=dumb` or `TERM=linux`.
 
 **Views** take the whole screen and give it back:
 - `Ctrl+R`: the history explorer. One row for each distinct command, fuzzy filter, scope all / this folder /

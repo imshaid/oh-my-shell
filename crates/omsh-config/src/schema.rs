@@ -27,6 +27,10 @@ pub struct Ui {
     /// `None` means automatic: reduced over `ssh`, full otherwise (§15.2).
     pub motion: Option<Motion>,
     pub icons: Icons,
+    /// How the prompt is laid out (`ui.style`).
+    pub style: UiStyle,
+    /// When the one-line hint bar is shown at the start of a session (`ui.greeting`).
+    pub greeting: Greeting,
 }
 
 impl Default for Ui {
@@ -35,8 +39,28 @@ impl Default for Ui {
             theme: "nord".to_owned(),
             motion: None,
             icons: Icons::Auto,
+            style: UiStyle::Spaced,
+            greeting: Greeting::Auto,
         }
     }
+}
+
+/// `ui.style`: the layout of the prompt. (`blocks` of the UI spec is not built yet.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiStyle {
+    /// The prompt of version 1.0: a header line and the symbol line, nothing between commands.
+    Plain,
+    /// A blank line and a thin rule between commands, and the last status at the right.
+    Spaced,
+}
+
+/// `ui.greeting`: the hint bar at the top of a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Greeting {
+    /// The first five sessions after the welcome, then never.
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,7 +360,7 @@ pub const PROMPT_SEGMENTS: &[&str] = &["cwd", "git", "venv", "status", "duration
 /// The sections and their keys. The loader reports anything else as unknown, and a test checks
 /// that the first-run file mentions every key listed here.
 pub const SECTIONS: &[(&str, &[&str])] = &[
-    ("ui", &["theme", "motion", "icons"]),
+    ("ui", &["theme", "motion", "icons", "style", "greeting"]),
     ("editor", &["mode", "hints", "abbreviations"]),
     ("prompt", &["left", "right", "transient"]),
     ("history", &["size", "ignore"]),

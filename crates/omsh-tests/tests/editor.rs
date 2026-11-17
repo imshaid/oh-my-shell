@@ -410,6 +410,8 @@ fn vi_mode_comes_from_the_configuration() {
 #[test]
 fn the_right_prompt_shows_the_status_and_a_long_duration() {
     pty_test(BIN, |ctx| {
+        // The prompt of version 1.0. The spaced one is tested in `look.rs`.
+        write_config(ctx, "[ui]\nstyle = \"plain\"\n")?;
         let mut term = ctx.start()?;
         term.line("false")?;
         // ASCII icons (the C locale of the harness): `x 1`.
@@ -462,6 +464,9 @@ fn sets_a_color(shown: &str) -> bool {
 #[test]
 fn the_symbol_is_red_only_after_a_failure_and_nothing_else_is_colored() {
     pty_test(BIN, |ctx| {
+        // The prompt of version 1.0; the spaced style colors more on purpose (`look.rs`). No
+        // hint bar: it is colored, and this test is about the prompt.
+        write_config(ctx, "[ui]\nstyle = \"plain\"\ngreeting = \"never\"\n")?;
         let mut term = ctx.launch().env("NO_COLOR", "").start_raw()?;
         term.expect("$ ", SHORT);
         assert!(!sets_a_color(term.transcript()), "{:?}", term.transcript());
@@ -473,7 +478,12 @@ fn the_symbol_is_red_only_after_a_failure_and_nothing_else_is_colored() {
         term.expect("\x1b[31m$ \x1b[0m", SHORT);
         // The red is on the symbol alone: the dim status (`x 1`) next to it has none.
         term.expect("\x1b[2mx 1\x1b[0m", SHORT);
-        let shown = term.transcript().replace("\x1b[31m$ \x1b[0m", "");
+        // (The typed word `false` is green now, as every command that exists: that is the
+        // command line's color, not the prompt's.)
+        let shown = term
+            .transcript()
+            .replace("\x1b[31m$ \x1b[0m", "")
+            .replace("\x1b[32mfalse\x1b[0m", "");
         assert!(!sets_a_color(&shown), "{shown:?}");
         // A success takes the red away again.
         term.line("true")?;
@@ -486,7 +496,9 @@ fn the_symbol_is_red_only_after_a_failure_and_nothing_else_is_colored() {
 #[test]
 fn no_color_keeps_bold_and_dim() {
     pty_test(BIN, |ctx| {
-        // The harness sets NO_COLOR=1 by default.
+        // The prompt of version 1.0 (the spaced one is tested in `look.rs`). The harness sets
+        // NO_COLOR=1 by default.
+        write_config(ctx, "[ui]\nstyle = \"plain\"\n")?;
         let mut term = ctx.start()?;
         term.line("false")?;
         term.expect("\x1b[2mx 1\x1b[0m", SHORT);

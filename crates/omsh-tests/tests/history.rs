@@ -282,7 +282,10 @@ fn a_terminal_gets_the_newest_hundred_and_a_pipe_everything() {
         term.sync("listed")?;
         // The editor turns bracketed paste off (`ESC [ ? 2004 l`) just before a command's output
         // starts (S14b); that mark is not part of the listing.
-        let shown = term.transcript()[from..].replace("\x1b[?2004l", "");
+        // Without the bracketed-paste switch and the mark that says "the output starts here".
+        let shown = term.transcript()[from..]
+            .replace("\x1b[?2004l", "")
+            .replace("\x1b]133;C\x1b\\", "");
         // 100 entries: `history` itself, the `echo typed`, and `: w105` back to `: w8`.
         assert!(listed(&shown, 105) && listed(&shown, 8), "{shown}");
         assert!(!listed(&shown, 7) && !listed(&shown, 1), "{shown}");

@@ -53,6 +53,8 @@ fn every_setting_can_be_given() {
 theme = "my-theme_2"
 motion = "off"
 icons = "ascii"
+style = "plain"
+greeting = "never"
 [editor]
 mode = "vi"
 hints = false
@@ -94,6 +96,8 @@ channel = "stable"
     assert_eq!(c.ui.theme, "my-theme_2");
     assert_eq!(c.ui.motion, Some(Motion::Off));
     assert_eq!(c.ui.icons, Icons::Ascii);
+    assert_eq!(c.ui.style, UiStyle::Plain);
+    assert_eq!(c.ui.greeting, Greeting::Never);
     assert_eq!(c.editor.mode, EditMode::Vi);
     assert!(!c.editor.hints);
     assert_eq!(c.editor.abbreviations["gco"], "git checkout");
@@ -128,7 +132,9 @@ fn a_wrong_value_is_reported_where_it_is_and_the_default_stays() {
     assert_eq!(parsed.config.ui.icons, Icons::Ascii, "the good key applies");
     assert_eq!(
         messages(&parsed),
-        [r#"3:10: ui.motion must be "full", "reduced" or "off", not "fast"; using the default"#]
+        [
+            r#"3:10: ui.motion must be "full", "reduced", "off" or "on", not "fast"; using the default"#
+        ]
     );
 }
 
@@ -645,4 +651,33 @@ fn notifications_are_on_after_ten_seconds_and_skip_the_interactive_programs() {
     assert_eq!(parsed.config.notify.min_seconds, 5);
     assert_eq!(parsed.config.notify.ignore, Config::default().notify.ignore);
     assert_eq!(parsed.problems.len(), 1);
+}
+
+#[test]
+fn the_prompt_style_and_the_greeting_default_to_spaced_and_auto() {
+    let ui = parse("").config.ui;
+    assert_eq!(ui.style, UiStyle::Spaced);
+    assert_eq!(ui.greeting, Greeting::Auto);
+}
+
+#[test]
+fn blocks_is_not_a_style_yet_and_falls_back_to_the_default() {
+    let parsed = parse("[ui]\nstyle = \"blocks\"\ngreeting = \"sometimes\"\n");
+    assert_eq!(parsed.config.ui.style, UiStyle::Spaced);
+    assert_eq!(parsed.config.ui.greeting, Greeting::Auto);
+    assert_eq!(
+        messages(&parsed),
+        [
+            r#"2:9: ui.style must be "plain" or "spaced", not "blocks"; using the default"#,
+            r#"3:12: ui.greeting must be "auto", "always" or "never", not "sometimes"; using the default"#,
+        ]
+    );
+}
+
+/// The UI spec calls the full setting "on"; the loader takes it as the same thing.
+#[test]
+fn motion_on_is_the_same_as_full() {
+    let parsed = parse("[ui]\nmotion = \"on\"\n");
+    assert!(parsed.problems.is_empty(), "{:?}", messages(&parsed));
+    assert_eq!(parsed.config.ui.motion, Some(Motion::Full));
 }

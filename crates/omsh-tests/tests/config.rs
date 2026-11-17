@@ -42,7 +42,7 @@ fn a_broken_config_still_starts_with_the_defaults_and_a_clear_error() {
         let name = file.display();
         assert!(
             shown.contains(&format!(
-                "{name}:3:10: ui.motion must be \"full\", \"reduced\" or \"off\", not \"fast\""
+                "{name}:3:10: ui.motion must be \"full\", \"reduced\", \"off\" or \"on\", not \"fast\""
             )),
             "{shown}"
         );

@@ -17,6 +17,7 @@ const RED: &str = "\x1b[31m";
 const YELLOW: &str = "\x1b[33m";
 const GREEN: &str = "\x1b[32m";
 const CYAN: &str = "\x1b[36m";
+const MAGENTA: &str = "\x1b[35m";
 
 /// True if the output sets a foreground or background color (30-38, 40-48, 90-97, 100-107), as
 /// opposed to bold, dim, underline, reset or the terminal's default color (39, 49).
@@ -107,12 +108,31 @@ fn quotes_operators_and_separators_have_their_colors() {
         let drawn = type_and_see(
             &mut term,
             "echo 'a b' ; ls | cat && ls > out",
-            &format!("{CYAN}>"),
+            &format!("{MAGENTA}>"),
         )?;
         assert!(drawn.contains(&format!("{YELLOW}'a b'")), "{drawn:?}");
-        assert!(drawn.contains(&format!("{GREEN};")), "{drawn:?}");
-        assert!(drawn.contains(&format!("{CYAN}|")), "{drawn:?}");
-        assert!(drawn.contains(&format!("{CYAN}&&")), "{drawn:?}");
+        // What joins, ends or redirects commands is magenta.
+        for operator in [";", "|", "&&"] {
+            assert!(
+                drawn.contains(&format!("{MAGENTA}{operator}")),
+                "{operator}: {drawn:?}"
+            );
+        }
+        finish(&mut term)
+    });
+}
+
+/// A command that exists is green; a typo after `|` is red like a typo at the start.
+#[test]
+fn a_command_that_exists_is_green_and_a_typo_after_a_pipe_is_red() {
+    pty_test(BIN, |ctx| {
+        let mut term = colored(ctx, ctx.home())?;
+        let drawn = type_and_see(&mut term, "ls | gerp x", &format!("{RED}gerp"))?;
+        assert!(drawn.contains(&format!("{GREEN}ls")), "{drawn:?}");
+        assert!(drawn.contains(&format!("{MAGENTA}|")), "{drawn:?}");
+        clear(&mut term)?;
+        let drawn = type_and_see(&mut term, "ls | cat", &format!("{GREEN}cat"))?;
+        assert!(!drawn.contains(RED), "{drawn:?}");
         finish(&mut term)
     });
 }
@@ -131,21 +151,18 @@ fn a_comment_is_dim_red() {
 }
 
 #[test]
-fn an_existing_file_is_underlined_and_keeps_its_color() {
+fn an_existing_file_is_underlined_and_a_missing_one_is_not() {
     pty_test(BIN, |ctx| {
         fs::write(ctx.home().join("marker.txt"), "x")?;
         let mut term = colored(ctx, ctx.home())?;
         let drawn = type_and_see(&mut term, "cat marker.txt nope.txt", "nope.txt")?;
-        // Underlined and cyan, in either order of the two codes.
+        // Underlined, with no color: plain arguments keep the terminal's own text color.
+        assert!(drawn.contains("\x1b[4mmarker.txt"), "{drawn:?}");
         assert!(
-            drawn.contains("\x1b[4;36mmarker.txt") || drawn.contains("\x1b[36;4mmarker.txt"),
-            "{drawn:?}"
-        );
-        assert!(
-            !drawn.contains("\x1b[4;36mnope.txt") && !drawn.contains("\x1b[36;4mnope.txt"),
+            !drawn.contains("\x1b[4mnope.txt"),
             "a missing file was underlined: {drawn:?}"
         );
-        assert!(drawn.contains(&format!("{CYAN}nope.txt")), "{drawn:?}");
+        assert!(!drawn.contains(&format!("{CYAN}marker.txt")), "{drawn:?}");
         finish(&mut term)
     });
 }

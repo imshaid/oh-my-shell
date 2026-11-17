@@ -1,0 +1,6 @@
+---
+source: crates/omsh-ui/tests/shell_look.rs
+expression: "written(&[header, status], &caps)"
+---
+⟨34⟩~/প্রকল্প/ক্ষত্রিয়⟨0⟩⟨2;90⟩ (main)⟨0⟩
+⟨31⟩x 1⟨0⟩

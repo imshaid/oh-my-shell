@@ -43,13 +43,13 @@ fn default_means_the_terminals_own_color() {
 #[test]
 fn a_table_gives_the_whole_look() {
     let (theme, problems) =
-        parse_theme("[roles]\nquote = { color = \"magenta\", underline = true }\nparam = {}\n");
+        parse_theme("[roles]\nquote = { color = \"magenta\", underline = true }\ncommand = {}\n");
     assert!(problems.is_empty(), "{problems:?}");
     let quote = theme.get(Role::Quote);
     assert_eq!(quote.color, Some(AnsiColor::Magenta));
     assert!(quote.underline && !quote.dim && !quote.reverse);
     assert_eq!(
-        theme.get(Role::Param),
+        theme.get(Role::Command),
         RoleStyle::PLAIN,
         "an empty table is plain"
     );

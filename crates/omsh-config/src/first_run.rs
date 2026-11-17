@@ -33,12 +33,18 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #   quote = { color = "green", underline = true }
 # Colors are names, never hex values, so they follow your terminal's own colors.
 #theme = "nord"
-# "full", "reduced" or "off": how much of the waiting line moves. When unset: "reduced" over
+# "full" (or "on"), "reduced" or "off": how much of the waiting line moves. When unset: "reduced" over
 # ssh, "full" otherwise. Always off on a "dumb" terminal and in a locale that is not UTF-8.
 # motion = "full"
 # "unicode", "ascii" or "auto" (unicode when the locale is UTF-8). Used by error reports,
 # panels and the waiting line.
 #icons = "auto"
+# "spaced" puts a blank line and a thin rule between commands and shows how the last one
+# ended at the right; "plain" is the two-line prompt without them.
+#style = "spaced"
+# The one-line reminder of keys under the first prompt: "auto" shows it for the first five
+# sessions after the welcome, "always" every time, "never" not at all.
+#greeting = "auto"
 
 #[editor]
 # "emacs" or "vi".

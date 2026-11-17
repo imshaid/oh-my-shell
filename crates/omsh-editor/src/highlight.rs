@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use nu_ansi_term::{Color, Style};
@@ -132,11 +133,26 @@ impl Context {
 pub struct ShellHighlighter {
     theme: Theme,
     context: Arc<Mutex<Context>>,
+    /// Raised while the line being highlighted is a request to the AI (`?`, `??`, `| ?`), and
+    /// lowered otherwise. The prompt reads it to show the `ask AI` tag. Reedline highlights the
+    /// buffer before it draws the prompt in the same paint, so the tag follows the keys.
+    ai_line: Arc<AtomicBool>,
 }
 
 impl ShellHighlighter {
     pub(crate) fn new(theme: Theme, context: Arc<Mutex<Context>>) -> Self {
-        Self { theme, context }
+        Self {
+            theme,
+            context,
+            ai_line: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Where this highlighter says whether the line is a request to the AI.
+    #[must_use]
+    pub(crate) fn with_ai_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.ai_line = flag;
+        self
     }
 
     /// A highlighter that is not tied to an [`Editor`](crate::Editor): it has its own facts, for
@@ -254,7 +270,9 @@ impl Highlighter for ShellHighlighter {
         // `cmd | ? question`: the command is colored as usual, the `|` is an operator and the
         // question is plain text.
         let mut pipe_at = None;
-        match trigger(line) {
+        let asked = trigger(line);
+        self.ai_line.store(asked.is_some(), Ordering::Relaxed);
+        match asked {
             Some(Trigger::Pipe { at, .. }) => pipe_at = Some(at),
             Some(_) => return render(line, &[plain(0)]),
             None => {}
@@ -274,7 +292,10 @@ impl Highlighter for ShellHighlighter {
 
         {
             let mut context = self.context.lock().unwrap_or_else(PoisonError::into_inner);
-            for word in &lexed.words {
+            // The lexer lists a word when it closes, so a word nested inside another (`$(ls)`)
+            // comes before the one around it. The outer one goes first here, so that what it
+            // does to its own pieces never covers the look of the words inside it.
+            for word in lexed.words.iter().rev() {
                 self.look_at_word(&mut context, code, word, &mut pieces);
             }
         }
@@ -339,16 +360,23 @@ impl ShellHighlighter {
         let Some(text) = line.get(word.span.start..word.span.end) else {
             return;
         };
-        let Some(value) = literal_value(text) else {
-            // It holds an expansion; what it comes to is known only when it runs.
-            return;
-        };
-        let tilde = text.starts_with('~');
         // The pieces of this word. They are in order, so the first one is found by search.
         let first = pieces.partition_point(|piece| piece.end <= word.span.start);
         let inside = pieces[first..]
             .iter_mut()
             .take_while(|piece| piece.start < word.span.end);
+        let Some(value) = literal_value(text) else {
+            // It holds an expansion; what it comes to is known only when it runs. Such a name is
+            // not called a command (green) or a missing one (red): it stays plain.
+            if word.kind == HighlightKind::Command {
+                let plain = self.style(Role::Normal);
+                for piece in inside.filter(|piece| piece.kind == HighlightKind::Command) {
+                    piece.style = plain;
+                }
+            }
+            return;
+        };
+        let tilde = text.starts_with('~');
 
         match word.kind {
             HighlightKind::Command => {

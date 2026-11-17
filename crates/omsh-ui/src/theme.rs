@@ -381,8 +381,11 @@ impl Default for Theme {
                 ..RoleStyle::color(AnsiColor::BrightBlack)
             },
         );
+        // A command that exists is green and one that does not is red; plain arguments keep the
+        // terminal's own text color, so that options (cyan), paths (underlined) and quotes
+        // (yellow) are what stands out.
+        theme.set(Role::Command, RoleStyle::color(AnsiColor::Green));
         theme.set(Role::Error, RoleStyle::color(AnsiColor::Red));
-        theme.set(Role::Param, RoleStyle::color(AnsiColor::Cyan));
         theme.set(Role::Option, RoleStyle::color(AnsiColor::Cyan));
         theme.set(
             Role::ValidPath,
@@ -392,9 +395,10 @@ impl Default for Theme {
             },
         );
         theme.set(Role::Quote, RoleStyle::color(AnsiColor::Yellow));
-        theme.set(Role::Operator, RoleStyle::color(AnsiColor::Cyan));
-        theme.set(Role::Redirection, RoleStyle::color(AnsiColor::Cyan));
-        theme.set(Role::End, RoleStyle::color(AnsiColor::Green));
+        // What joins or ends commands (`|`, `&&`, `||`, `;`, `&`) and what redirects is magenta.
+        theme.set(Role::Operator, RoleStyle::color(AnsiColor::Magenta));
+        theme.set(Role::Redirection, RoleStyle::color(AnsiColor::Magenta));
+        theme.set(Role::End, RoleStyle::color(AnsiColor::Magenta));
         theme.set(
             Role::Comment,
             RoleStyle {
@@ -504,14 +508,18 @@ mod tests {
     fn the_default_roles_are_the_ones_the_owner_listed() {
         let theme = Theme::default();
         let color = |role| theme.get(role).color;
-        assert_eq!(color(Role::Command), None, "a found command has no color");
+        assert_eq!(color(Role::Command), Some(AnsiColor::Green));
         assert_eq!(color(Role::Error), Some(AnsiColor::Red));
-        assert_eq!(color(Role::Param), Some(AnsiColor::Cyan));
+        assert_eq!(
+            color(Role::Param),
+            None,
+            "plain arguments keep the terminal's color"
+        );
         assert_eq!(color(Role::Option), Some(AnsiColor::Cyan));
         assert_eq!(color(Role::Quote), Some(AnsiColor::Yellow));
-        assert_eq!(color(Role::Operator), Some(AnsiColor::Cyan));
-        assert_eq!(color(Role::Redirection), Some(AnsiColor::Cyan));
-        assert_eq!(color(Role::End), Some(AnsiColor::Green));
+        assert_eq!(color(Role::Operator), Some(AnsiColor::Magenta));
+        assert_eq!(color(Role::Redirection), Some(AnsiColor::Magenta));
+        assert_eq!(color(Role::End), Some(AnsiColor::Magenta));
         assert_eq!(color(Role::Comment), Some(AnsiColor::Red));
         assert_eq!(color(Role::Autosuggestion), Some(AnsiColor::BrightBlack));
         let path = theme.get(Role::ValidPath);
@@ -569,7 +577,7 @@ mod tests {
         let mut theme = Theme::default();
         theme.set(Role::Quote, RoleStyle::color(AnsiColor::Green));
         assert_eq!(theme.get(Role::Quote).color, Some(AnsiColor::Green));
-        assert_eq!(theme.get(Role::Param).color, Some(AnsiColor::Cyan));
+        assert_eq!(theme.get(Role::Command).color, Some(AnsiColor::Green));
     }
 
     #[test]
