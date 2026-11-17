@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/first_run_panels.rs
+expression: "written(&UseEza::new().render(&caps, WIDTH), &caps)"
+---
+╭─ Use eza for ls? ──────────────────────────────────────────────────────────╮
+│ Oh My Shell does not read the aliases of fish or bash, so `ls` runs the    │
+│ system ls. eza is on your PATH.                                            │
+│ Choosing it writes ui.ls = "eza" to config.toml, and `ls` runs eza from    │
+│ now on. To undo it: Ctrl+P, Settings, ui.ls, or `unalias ls` for one       │
+│ session.                                                                   │
+│                                                                            │
+│ [⟨4⟩U⟨0⟩se eza for ls]  ⟨7⟩ ⟨0⟩⟨4;7⟩N⟨0⟩⟨7⟩ot now ⟨0⟩                                                │
+╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩not now⟨0⟩ ─────────────────────────────────────╯

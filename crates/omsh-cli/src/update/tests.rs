@@ -558,6 +558,7 @@ fn the_stamp_round_trips_and_is_private() {
     let stamp = daily::Stamp {
         checked: 1_700_000_000,
         latest: Version::parse("1.2.3"),
+        noticed: Some(1_700_000_500),
     };
     daily::write(&state, &stamp).unwrap();
     assert_eq!(daily::read(&state), Some(stamp));
@@ -598,6 +599,7 @@ fn a_lookup_is_due_once_a_day() {
     let at = |checked| daily::Stamp {
         checked,
         latest: None,
+        noticed: None,
     };
     let now = 1_000_000;
     assert!(daily::is_due(None, now));
@@ -673,49 +675,67 @@ fn without_a_state_folder_or_with_a_refused_server_nothing_is_asked() {
 }
 
 #[test]
-fn the_toast_names_both_versions_and_the_command() {
-    let text = daily::message(
-        &Version::parse("0.2.0").unwrap(),
-        &Version::parse("0.1.0").unwrap(),
-    );
-    assert_eq!(
-        text,
-        "Oh My Shell 0.2.0 is out (you have 0.1.0): run omsh update"
-    );
-    assert!(text.chars().count() <= 100);
-}
-
-#[test]
-fn the_helper_thread_leaves_the_news_for_a_shell_without_a_toast() {
+fn the_helper_thread_leaves_the_news_in_the_stamp_and_a_second_start_asks_nothing() {
     let dir = Folder::new("dailythread");
     let env = env(&dir);
     let table = std::sync::Arc::new(table_with_latest("v9.9.9"));
-    let daily = daily::start_with(
+    assert!(daily::start_with(
         &env,
-        None,
         Duration::from_millis(1),
         table.clone() as std::sync::Arc<dyn Fetch>,
-    )
-    .expect("a check is due");
+    ));
+    let state = env.state_dir.clone().unwrap();
     let started = Instant::now();
-    let mut message = None;
+    let mut found = None;
     while started.elapsed() < Duration::from_secs(5) {
-        message = daily.take_message();
-        if message.is_some() {
+        found = daily::read(&state).and_then(|stamp| stamp.latest);
+        if found.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(message.unwrap_or_default().contains("9.9.9"));
-    assert_eq!(daily.take_message(), None, "said once");
+    assert_eq!(found, Version::parse("9.9.9"));
     // A second shell the same day does not even start a thread.
-    assert!(
-        daily::start_with(
-            &env,
-            None,
-            Duration::ZERO,
-            table as std::sync::Arc<dyn Fetch>
-        )
-        .is_none()
-    );
+    assert!(!daily::start_with(
+        &env,
+        Duration::ZERO,
+        table as std::sync::Arc<dyn Fetch>
+    ));
+}
+
+#[test]
+fn the_news_is_not_announced_again_for_the_release_already_announced() {
+    let dir = Folder::new("dailynoticed");
+    let env = env(&dir);
+    let state = env.state_dir.clone().unwrap();
+    let current = Version::current();
+    let table = table_with_latest("v9.9.9");
+    daily::check_once(&env, 1_000_000, &table, &current);
+    let mut stamp = daily::read(&state).unwrap();
+    stamp.noticed = Some(1_000_100);
+    daily::write(&state, &stamp).unwrap();
+    // A day later the same release is found again: it stays announced.
+    daily::check_once(&env, 1_000_000 + daily::DAY, &table, &current);
+    assert_eq!(daily::read(&state).unwrap().noticed, Some(1_000_100));
+    // A newer release is news again.
+    let newer = table_with_latest("v10.0.0");
+    daily::check_once(&env, 1_000_000 + 2 * daily::DAY, &newer, &current);
+    let stamp = daily::read(&state).unwrap();
+    assert_eq!(stamp.latest, Version::parse("10.0.0"));
+    assert_eq!(stamp.noticed, None);
+}
+
+#[test]
+fn the_three_ways_the_check_is_skipped() {
+    use daily::{Skip, skip_reason};
+    assert_eq!(skip_reason(None, false, true), None);
+    assert_eq!(skip_reason(Some(b""), false, true), None);
+    assert_eq!(skip_reason(Some(b"0"), false, true), None);
+    assert_eq!(skip_reason(Some(b"1"), false, true), Some(Skip::Variable));
+    assert_eq!(skip_reason(Some(b"yes"), false, true), Some(Skip::Variable));
+    assert_eq!(skip_reason(None, true, true), Some(Skip::Ci));
+    assert_eq!(skip_reason(None, false, false), Some(Skip::NotTerminal));
+    // The variable is the reason named first.
+    assert_eq!(skip_reason(Some(b"1"), true, false), Some(Skip::Variable));
+    assert!(Skip::Variable.words().contains("OMSH_NO_UPDATE_CHECK"));
 }

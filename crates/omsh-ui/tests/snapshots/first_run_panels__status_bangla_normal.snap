@@ -1,0 +1,14 @@
+---
+source: crates/omsh-ui/tests/first_run_panels.rs
+expression: "written(&render_status(&rows(path), &caps, WIDTH), &caps)"
+---
+⟨34⟩╭─⟨0⟩ Oh My Shell status ⟨34⟩────────────────────────────────────────────────────────⟨0⟩
+⟨34⟩│⟨0⟩ ⟨2;90⟩Version⟨0⟩       1.1.0
+⟨34⟩│⟨0⟩ ⟨2;90⟩Build⟨0⟩         ⟨33⟩2026-09-01, 77 days old (old: omsh update --check)⟨0⟩
+⟨34⟩│⟨0⟩ ⟨2;90⟩AI⟨0⟩            ⟨35⟩ready: gemini, gemini-2.5-flash⟨0⟩
+⟨34⟩│⟨0⟩ ⟨2;90⟩Update check⟨0⟩  ⟨32⟩on, once a day⟨0⟩
+⟨34⟩│⟨0⟩ ⟨2;90⟩Last look⟨0⟩     2026-11-16 12:00, newest is 1.1.0
+⟨34⟩│⟨0⟩ ⟨2;90⟩Motion⟨0⟩        full (automatic)
+⟨34⟩│⟨0⟩ ⟨2;90⟩Terminal⟨0⟩      xterm-256color, 80x24
+⟨34⟩│⟨0⟩ ⟨2;90⟩Config file⟨0⟩   ⟨36⟩~/কনফিগ/রিপোর্ট/config.toml⟨0⟩
+⟨34⟩╰─────────────────────────────────────────────────────────────────────────────⟨0⟩

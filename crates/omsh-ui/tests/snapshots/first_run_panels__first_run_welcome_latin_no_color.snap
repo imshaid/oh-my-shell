@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/first_run_panels.rs
+expression: "written(&panel.render(&caps, WIDTH), &caps)"
+---
+╭─ Welcome to Oh My Shell ───────────────────────────────────────────────────╮
+│ Ctrl+R searches history, Ctrl+P opens the palette, and `undo` restores     │
+│ deletions.                                                                 │
+│ Nothing is sent anywhere unless you set up AI or turn on the update check. │
+│ This is shown once.                                                        │
+│                                                                            │
+│ [⟨4⟩T⟨0⟩ake the tour]  [Set up ⟨4⟩A⟨0⟩I now]  ⟨7⟩ ⟨0⟩⟨4;7⟩S⟨0⟩⟨7⟩kip ⟨0⟩                                   │
+╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩skip⟨0⟩ ────────────────────────────────────────╯
+⟨2⟩Settings: ⟨0⟩~/.config/oh-my-shell/config.toml

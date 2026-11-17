@@ -323,6 +323,23 @@ impl Shell {
             .collect()
     }
 
+    /// Defines the alias `name` as `text`, as the `alias` builtin would. A name the builtin would
+    /// refuse is ignored. The shell itself uses this for `ui.ls = "eza"`; a person's `init.omsh`
+    /// runs after it and can replace or remove the alias.
+    pub fn define_alias(&mut self, name: &str, text: &str) {
+        if crate::alias::is_alias_name(name) {
+            self.aliases.insert(name.to_owned(), text.to_owned());
+        }
+    }
+
+    /// True when `name` would start a program found through this shell's `PATH` (nothing is
+    /// started and nothing is cached). Functions, aliases and builtins are not looked at.
+    #[must_use]
+    pub fn program_on_path(&self, name: &str) -> bool {
+        let path = self.vars.search_path(&[]);
+        crate::path::find_program(name.as_bytes(), &path, None)
+    }
+
     /// Sets `$0`: the name the shell was started under (`-oh-my-shell` for a login shell).
     pub fn set_name(&mut self, name: &[u8]) {
         self.name = name.to_vec();

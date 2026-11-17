@@ -3,7 +3,7 @@
 //! | Piece | What it does |
 //! |---|---|
 //! | [`run`] | `omsh update [--check]`: look up the latest release, download the archive for this CPU, check it against the release's `sha256.sum`, run the new program once, and rename it over the old one |
-//! | [`daily`] | `[update] check = true`: at most once a day, on a helper thread, ask only what the latest release is and show a toast |
+//! | [`daily`] | `[update] check = true`: at most once a day, on a helper thread, ask only what the latest release is and leave what it found for the next start, which says so in one line (`notice`) |
 //! | [`place`] | refuses to touch a program that a package manager, `cargo` or a build folder owns |
 //! | [`archive`] | unpacks one file from the `.tar.gz` and computes SHA-256 |
 //! | [`version`] | reads and orders version numbers |
@@ -15,6 +15,7 @@
 
 pub mod archive;
 pub mod daily;
+pub mod notice;
 pub mod place;
 pub mod version;
 
@@ -366,11 +367,18 @@ fn failed(terminal: &mut dyn Terminal, why: &str) -> u8 {
 /// is a convenience.
 fn note_checked(env: &UpdateEnv, newest: &Version) {
     if let Some(dir) = &env.state_dir {
+        // The same release that was already announced stays announced.
+        let before = daily::read(dir);
+        let noticed = before
+            .as_ref()
+            .filter(|stamp| stamp.latest.as_ref() == Some(newest))
+            .and_then(|stamp| stamp.noticed);
         let _ = daily::write(
             dir,
             &daily::Stamp {
                 checked: daily::now(),
                 latest: Some(newest.clone()),
+                noticed,
             },
         );
     }

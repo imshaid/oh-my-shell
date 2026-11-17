@@ -85,6 +85,18 @@ const WINDOW: Winsize = Winsize {
     ws_ypixel: 0,
 };
 
+/// Where `setsid` is, found with the `PATH` of the test process. Looked up here, not by the
+/// `Command`, because a test may give the shell a `PATH` of its own, and `Command` would then
+/// look for `setsid` in that.
+fn setsid_path() -> std::path::PathBuf {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|dir| dir.join("setsid"))
+        .find(|file| file.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from("setsid"))
+}
+
 impl Launch {
     pub fn new(bin: &str) -> Self {
         Self {
@@ -99,11 +111,21 @@ impl Launch {
                 // are off to keep the transcript readable; a test that wants them removes this.
                 ("TERM".into(), "xterm-256color".into()),
                 ("NO_COLOR".into(), "1".into()),
+                // The first start gets the three lines of text, not the panels: only the tests
+                // that are about the panels ask for them (`first_run_panels`).
+                ("OMSH_FIRST_RUN".into(), "plain".into()),
             ],
             cwd: None,
             registry: None,
             answer_cursor_queries: true,
         }
+    }
+
+    /// The first start shows its panels (welcome, "Stay up to date?", "Use eza for ls?") instead
+    /// of the three lines of text. The default environment asks for the text.
+    pub fn first_run_panels(mut self) -> Self {
+        self.env.retain(|(k, _)| k != "OMSH_FIRST_RUN");
+        self
     }
 
     /// Starts with `TERM=dumb`: the shell uses its plain line reader, with no escape codes.
@@ -188,7 +210,7 @@ impl Launch {
     }
 
     /// Sets (or replaces) an environment variable. The environment starts with only `PATH`,
-    /// `HOME`, `LANG`, `TERM` and `NO_COLOR`. The three `XDG_*_HOME` variables are not in it: unless a
+    /// `HOME`, `LANG`, `TERM`, `NO_COLOR` and `OMSH_FIRST_RUN`. The three `XDG_*_HOME` variables are not in it: unless a
     /// test sets them, they are made from `HOME` when the program starts, so the shell's
     /// files always land under the home the test chose.
     pub fn env(mut self, key: &str, value: &str) -> Self {
@@ -239,7 +261,7 @@ impl Launch {
         // Only our side is non-blocking (it is a separate open file from the slave).
         fcntl(&pty.master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).map_err(io::Error::from)?;
 
-        let mut command = Command::new("setsid");
+        let mut command = Command::new(setsid_path());
         command.arg("-c");
         if self.under_sh {
             // `$0` is the program, `$@` its arguments: nothing needs quoting.

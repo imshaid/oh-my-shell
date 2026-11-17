@@ -38,6 +38,19 @@ fn traced_with_env(
     extra: &[&str],
     env: &[(&str, &str)],
 ) -> io::Result<Session> {
+    traced_full(ctx, trace, extra, env, false, true)
+}
+
+/// The most general form: `panels` leaves the first-start panels on (the harness asks for the
+/// text welcome), and `wait_for_prompt` is false when the session starts with a question.
+fn traced_full(
+    ctx: &Ctx,
+    trace: &Path,
+    extra: &[&str],
+    env: &[(&str, &str)],
+    panels: bool,
+    wait_for_prompt: bool,
+) -> io::Result<Session> {
     let mut launch = Launch::new("strace")
         .home(ctx.home())
         .env(
@@ -63,7 +76,14 @@ fn traced_with_env(
     for (name, value) in env {
         launch = launch.env(name, value);
     }
-    launch.start()
+    if panels {
+        launch = launch.first_run_panels();
+    }
+    if wait_for_prompt {
+        launch.start()
+    } else {
+        launch.start_raw()
+    }
 }
 
 /// What the trace shows that a session without AI must not do. Empty when all is well.
@@ -123,6 +143,9 @@ fn session_of_ordinary_work(term: &mut Session, ctx: &Ctx) -> io::Result<()> {
         "? history yesterday",
         "? history",
         "omsh ai status",
+        // UI upgrade, phase 5: the status page asks nothing and sends nothing.
+        "omsh status",
+        "omsh status | cat",
         // S14b: the visited-directory memory and its jump.
         "cd /",
         "j repo",
@@ -319,6 +342,128 @@ fn the_trace_sees_a_connection_made_by_a_program_the_shell_started() {
             found.iter().any(|line| line.contains("AF_INET")),
             "the checker did not see the child's TCP socket:\n{text}"
         );
+        Ok(())
+    });
+}
+
+// -- UI upgrade, phase 5 ------------------------------------------------------------------------------
+
+/// A `[update] check = true` file, a due stamp (none) and a server address on this computer where
+/// nothing listens: a check that wrongly started would show as a TCP socket in the trace.
+fn due_check_config(ctx: &Ctx) -> io::Result<()> {
+    let config = ctx.home().join(".config/oh-my-shell");
+    fs::create_dir_all(&config)?;
+    fs::write(config.join("config.toml"), "[update]\ncheck = true\n")
+}
+
+fn closed_port_origin() -> io::Result<String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr()?.port()
+    ))
+}
+
+/// The first start with its panels (welcome, "Stay up to date?", and "Use eza for ls?" when `eza`
+/// is installed here) shows keys and writes a file; it makes no socket. Answered with Esc.
+#[test]
+fn a_first_start_with_its_panels_creates_no_network_socket() {
+    if !have_strace() {
+        skip(
+            "a_first_start_with_its_panels_creates_no_network_socket",
+            "strace is not installed",
+        );
+        return;
+    }
+    pty_test(BIN, |ctx| {
+        let trace = ctx.home().join("trace.txt");
+        let origin = closed_port_origin()?;
+        let mut term = traced_full(
+            ctx,
+            &trace,
+            &[],
+            &[("OMSH_RELEASE_SERVER", origin.as_str())],
+            true,
+            false,
+        )?;
+        term.expect_plain("Take the tour", SHORT);
+        term.press(b"\x1b")?;
+        term.expect_plain("Stay up to date?", SHORT);
+        term.press(b"\x1b")?;
+        // A machine with `eza` gets a third question.
+        if term.try_expect("Use eza for ls?", Duration::from_millis(1000)) {
+            term.press(b"\x1b")?;
+        }
+        term.prompt();
+        term.pump(Duration::from_millis(3000));
+        term.quit()?;
+        let text = fs::read_to_string(&trace)?;
+        assert_eq!(violations(&text), Vec::<String>::new(), "{text}");
+        Ok(())
+    });
+}
+
+/// `OMSH_NO_UPDATE_CHECK` and CI keep a check that is due and switched on from starting.
+#[test]
+fn the_opt_out_and_ci_keep_a_due_check_from_opening_a_socket() {
+    if !have_strace() {
+        skip(
+            "the_opt_out_and_ci_keep_a_due_check_from_opening_a_socket",
+            "strace is not installed",
+        );
+        return;
+    }
+    for (name, value) in [("OMSH_NO_UPDATE_CHECK", "1"), ("CI", "true")] {
+        pty_test(BIN, move |ctx| {
+            due_check_config(ctx)?;
+            let trace = ctx.home().join("trace.txt");
+            let origin = closed_port_origin()?;
+            let mut term = traced_with_env(
+                ctx,
+                &trace,
+                &[],
+                &[("OMSH_RELEASE_SERVER", origin.as_str()), (name, value)],
+            )?;
+            term.pump(Duration::from_millis(3500));
+            term.quit()?;
+            let text = fs::read_to_string(&trace)?;
+            assert_eq!(violations(&text), Vec::<String>::new(), "{name}: {text}");
+            Ok(())
+        });
+    }
+}
+
+/// The news line at the start of a session is read from the stamp: no socket.
+#[test]
+fn showing_the_news_of_a_release_creates_no_network_socket() {
+    if !have_strace() {
+        skip(
+            "showing_the_news_of_a_release_creates_no_network_socket",
+            "strace is not installed",
+        );
+        return;
+    }
+    pty_test(BIN, |ctx| {
+        due_check_config(ctx)?;
+        let state = ctx.home().join(".local/state/oh-my-shell");
+        fs::create_dir_all(&state)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        fs::write(
+            state.join("update-check"),
+            format!("checked={now}\nlatest=9.9.9\nnoticed=\n"),
+        )?;
+        let trace = ctx.home().join("trace.txt");
+        let mut term = traced(ctx, &trace, &[])?;
+        // The line is there already (so the path under test ran) ...
+        let (shown, _) = omsh_tests::session::strip_escapes(term.transcript());
+        assert!(shown.contains("omsh 9.9.9 available"), "{shown}");
+        term.pump(Duration::from_millis(3000));
+        term.quit()?;
+        // ... and the trace has no network socket.
+        let text = fs::read_to_string(&trace)?;
+        assert_eq!(violations(&text), Vec::<String>::new(), "{text}");
         Ok(())
     });
 }

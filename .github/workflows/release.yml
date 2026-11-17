@@ -91,7 +91,16 @@ jobs:
           fi
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
       - name: Build the release binary
-        run: cargo build --release --locked -p omsh-cli
+        # The time of the commit, in seconds since 1970, is built into the program: `omsh status`
+        # and the "this build is N days old" line (when the daily check is off) read it. The
+        # commit time and not the time of the build, so that the same source gives the same file.
+        run: |
+          OMSH_BUILD_EPOCH=$(git log -1 --format=%ct)
+          case "$OMSH_BUILD_EPOCH" in
+            '' | *[!0-9]*) echo "cannot read the commit time: $OMSH_BUILD_EPOCH" >&2; exit 1 ;;
+          esac
+          export OMSH_BUILD_EPOCH
+          cargo build --release --locked -p omsh-cli
       - name: Check the binary (glibc 2.35, only the libraries every system has)
         run: scripts/check-binary.sh target/release/oh-my-shell 2.35
       - name: Make the third-party license list

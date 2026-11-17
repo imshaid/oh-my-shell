@@ -275,8 +275,12 @@ fn wait_for_requests(server: &FakeRelease, n: usize) {
     }
 }
 
+/// The news the check finds is said at the **next** start, in the line where the hint bar goes,
+/// once in a day; the session that did the lookup says nothing.
+const NOTICE: &str = "omsh 9.9.9 available";
+
 #[test]
-fn the_daily_check_shows_a_toast_once_and_then_stays_quiet_for_a_day() {
+fn the_daily_check_leaves_the_news_for_the_next_start_and_says_it_once_a_day() {
     pty_test(BIN, |ctx| {
         let sandbox = Sandbox::new(ctx, BIN)?;
         turn_check_on(ctx)?;
@@ -287,9 +291,13 @@ fn the_daily_check_shows_a_toast_once_and_then_stays_quiet_for_a_day() {
                 .launch()
                 .env("OMSH_RELEASE_SERVER", &server.origin())
                 .start()?;
-            // A couple of seconds after the prompt.
-            shell.expect("is out (you have", SHORT);
-            shell.expect("run omsh update", SHORT);
+            // A couple of seconds after the prompt the lookup is made, and nothing is shown.
+            wait_for_requests(&server, 1);
+            assert!(
+                !shell.try_expect(NOTICE, Duration::from_millis(500)),
+                "{}",
+                shell.transcript()
+            );
             shell.quit()?;
         }
         assert_eq!(
@@ -299,19 +307,90 @@ fn the_daily_check_shows_a_toast_once_and_then_stays_quiet_for_a_day() {
         );
         let stamp = fs::read_to_string(state_dir(ctx).join("update-check"))?;
         assert!(stamp.contains("latest=9.9.9"), "{stamp}");
-        // A second shell the same day: no lookup and no toast.
+        // The next start the same day: the line, before the prompt, and no lookup.
         let mut again = sandbox
             .launch()
             .env("OMSH_RELEASE_SERVER", &server.origin())
             .start()?;
-        assert!(
-            !again.try_expect("is out (you have", Duration::from_millis(3500)),
-            "no second toast"
-        );
+        let (text, _) = omsh_tests::session::strip_escapes(again.transcript());
+        assert!(text.contains(NOTICE), "{text}");
+        assert!(text.contains("run: omsh update"), "{text}");
+        assert!(text.find(NOTICE) < text.find("$ "), "{text}");
         assert_eq!(server.requests().len(), 1, "{:?}", server.requests());
         again.quit()?;
+        // And the one after it, still the same day: said once.
+        let mut third = sandbox
+            .launch()
+            .env("OMSH_RELEASE_SERVER", &server.origin())
+            .start()?;
+        assert!(
+            !third.transcript().contains(NOTICE),
+            "{}",
+            third.transcript()
+        );
+        assert_eq!(server.requests().len(), 1, "{:?}", server.requests());
+        third.quit()?;
+        // A day and a bit later the stamp is old: the line comes again (the lookup does too).
+        let file = state_dir(ctx).join("update-check");
+        let text = fs::read_to_string(&file)?;
+        let old = text
+            .lines()
+            .map(|line| match line.split_once('=') {
+                Some(("checked", _)) => "checked=1".to_owned(),
+                Some(("noticed", _)) => "noticed=1".to_owned(),
+                _ => line.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&file, old + "\n")?;
+        let mut fourth = sandbox
+            .launch()
+            .env("OMSH_RELEASE_SERVER", &server.origin())
+            .start()?;
+        assert!(
+            fourth.transcript().contains(NOTICE),
+            "{}",
+            fourth.transcript()
+        );
+        fourth.quit()?;
         Ok(())
     });
+}
+
+/// The opt-outs: the variable, and CI. Each leaves the network and the line alone.
+#[test]
+fn the_variable_and_ci_turn_the_check_and_its_line_off() {
+    for (name, value) in [("OMSH_NO_UPDATE_CHECK", "1"), ("CI", "true")] {
+        pty_test(BIN, move |ctx| {
+            let sandbox = Sandbox::new(ctx, BIN)?;
+            turn_check_on(ctx)?;
+            let server = FakeRelease::start();
+            server.publish("v9.9.9", &program("9.9.9"), Spoil::None);
+            // A stamp that already holds news: it must not be shown either.
+            fs::create_dir_all(state_dir(ctx))?;
+            fs::write(
+                state_dir(ctx).join("update-check"),
+                "checked=1\nlatest=9.9.9\nnoticed=\n",
+            )?;
+            let mut shell = sandbox
+                .launch()
+                .env("OMSH_RELEASE_SERVER", &server.origin())
+                .env(name, value)
+                .start()?;
+            assert!(
+                !shell.try_expect(NOTICE, Duration::from_millis(3500)),
+                "{name}: {}",
+                shell.transcript()
+            );
+            assert!(
+                server.requests().is_empty(),
+                "{name}: {:?}",
+                server.requests()
+            );
+            shell.quit()?;
+            Ok(())
+        });
+    }
 }
 
 #[test]
@@ -325,7 +404,7 @@ fn the_check_is_off_by_default_and_asks_nothing() {
             .env("OMSH_RELEASE_SERVER", &server.origin())
             .start()?;
         assert!(
-            !shell.try_expect("is out (you have", Duration::from_millis(3500)),
+            !shell.try_expect(NOTICE, Duration::from_millis(3500)),
             "no toast"
         );
         assert!(server.requests().is_empty(), "{:?}", server.requests());
@@ -347,7 +426,7 @@ fn the_check_with_no_config_asks_nothing_and_writes_nothing() {
             .arg("--no-config")
             .env("OMSH_RELEASE_SERVER", &server.origin())
             .start()?;
-        assert!(!shell.try_expect("is out (you have", Duration::from_millis(3500)));
+        assert!(!shell.try_expect(NOTICE, Duration::from_millis(3500)));
         assert!(server.requests().is_empty());
         assert!(!state_dir(ctx).exists());
         shell.quit()?;
@@ -367,7 +446,7 @@ fn a_failed_check_is_silent_and_not_repeated_at_the_next_start() {
                 .env("OMSH_RELEASE_SERVER", &server.origin())
                 .start()?;
             wait_for_requests(&server, 1);
-            assert!(!shell.try_expect("is out (you have", Duration::from_millis(500)));
+            assert!(!shell.try_expect(NOTICE, Duration::from_millis(500)));
             shell.quit()?;
         }
         let stamp = fs::read_to_string(state_dir(ctx).join("update-check"))?;
@@ -376,7 +455,7 @@ fn a_failed_check_is_silent_and_not_repeated_at_the_next_start() {
             .launch()
             .env("OMSH_RELEASE_SERVER", &server.origin())
             .start()?;
-        assert!(!again.try_expect("is out (you have", Duration::from_millis(3000)));
+        assert!(!again.try_expect(NOTICE, Duration::from_millis(3000)));
         assert_eq!(server.requests().len(), 1, "{:?}", server.requests());
         again.quit()?;
         Ok(())

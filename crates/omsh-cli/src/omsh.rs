@@ -13,6 +13,7 @@ use omsh_config::{Config, Paths};
 use omsh_exec::{OmshCommand, Shell, Terminal};
 
 use crate::ai::AiSession;
+use crate::status::{self, StatusEnv};
 use crate::uninstall::{self, UninstallEnv};
 use crate::update::{self, Network, UpdateEnv, place};
 
@@ -21,15 +22,22 @@ pub struct Tools {
     ai: Arc<AiSession>,
     update: UpdateEnv,
     uninstall: UninstallEnv,
+    status: StatusEnv,
 }
 
 impl Tools {
     #[must_use]
-    pub fn new(ai: Arc<AiSession>, update: UpdateEnv, uninstall: UninstallEnv) -> Self {
+    pub fn new(
+        ai: Arc<AiSession>,
+        update: UpdateEnv,
+        uninstall: UninstallEnv,
+        status: StatusEnv,
+    ) -> Self {
         Self {
             ai,
             update,
             uninstall,
+            status,
         }
     }
 }
@@ -54,6 +62,11 @@ impl OmshCommand for Tools {
                     place::running_program(),
                     &Network,
                 )
+            }
+            Some(b"status") => {
+                let rest = rest();
+                let words: Vec<&str> = rest.iter().map(String::as_str).collect();
+                status::run(&words, terminal, &self.status)
             }
             Some(b"uninstall") => {
                 let rest = rest();

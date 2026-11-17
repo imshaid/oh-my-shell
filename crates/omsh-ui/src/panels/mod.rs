@@ -13,12 +13,14 @@ use crate::theme::Theme;
 pub mod choose;
 pub mod details;
 pub mod facts;
+pub mod first_run;
 pub mod info;
 pub mod menu;
 pub mod meter;
 pub mod plan;
 pub mod run_it;
 pub mod set_up;
+pub mod status;
 pub mod step;
 pub mod undo_picker;
 

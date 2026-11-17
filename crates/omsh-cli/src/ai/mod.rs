@@ -165,6 +165,7 @@ const OMSH_USAGE: &str = "\
 usage: omsh <command>
   ai       set up and check the AI layer (omsh ai for the list)
   tour     a one-minute walk through what the shell does
+  status   show the version, the build age, the AI, the update check and the terminal
   update   download and install the latest release (omsh update --check only looks)
   uninstall  remove the program, and your files if you say so (from another shell)
 ";

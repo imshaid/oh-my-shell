@@ -188,6 +188,7 @@ fn run_on(
                 .var("TERM")
                 .and_then(|term| std::str::from_utf8(term).ok()),
         );
+    let config_file_for_questions = config_file.clone();
     let mut editor = history.and_then(|history| {
         make_editor(
             &shell,
@@ -220,29 +221,82 @@ fn run_on(
     if let (Some(ai), Some(ui)) = (ai.as_deref(), &menu_ui) {
         ai.set_menu(ui.clone());
     }
-    // The hint bar: one dim line above the first prompt, only where there is a line editor to
-    // take the keys it names.
-    if editor.is_some()
-        && caps.stderr_tty
-        && let Some(bar) = greeting::take(
-            &config,
-            options.no_ai,
-            state_dir.as_deref(),
-            welcome,
-            caps.unicode,
-        )
-    {
-        say(&render_line(&bar, &theme, &caps));
+    // The first start: the welcome and the questions, or the three lines of text. The answer to
+    // "Stay up to date?" counts at once: the first check is one of the things that was asked for.
+    let mut check_daily_now = false;
+    if welcome {
+        let home = shell
+            .var("HOME")
+            .map(|home| PathBuf::from(OsString::from_vec(home.to_vec())));
+        let answers = crate::first_run::run(
+            crate::first_run::FirstRun {
+                shell: &mut shell,
+                files: &mut files,
+                ai: ai.as_deref(),
+                ui: menu_ui.as_ref(),
+                config: &config,
+                config_file: config_file_for_questions.as_deref(),
+                home: home.as_deref(),
+                no_ai: options.no_ai,
+            },
+            &say,
+        );
+        check_daily_now = answers.check_daily;
+    }
+    // The daily check is on when the file or the first-start answer says so, unless this start
+    // is one where it never runs: the variable `OMSH_NO_UPDATE_CHECK`, CI, or no terminal.
+    let update_skip = crate::update::daily::skip_reason(
+        shell.var(crate::update::daily::OPT_OUT),
+        caps.ci,
+        caps.stderr_tty,
+    );
+    let update_on =
+        interactive && (config.update.check || check_daily_now) && update_skip.is_none();
+    // One dim line above the first prompt, only where there is a line editor to take the keys it
+    // names: news about a release or the nudge about an old build (read from small files, no
+    // network) when there is one, else the hint bar. Never in the session that showed the welcome.
+    if editor.is_some() && caps.stderr_tty && !caps.ci {
+        let notice = if welcome {
+            None
+        } else {
+            state_dir.as_deref().and_then(|dir| {
+                crate::update::notice::take(&crate::update::notice::Inputs {
+                    state_dir: dir,
+                    now: crate::update::daily::now(),
+                    current: &crate::update::version::Version::current(),
+                    check_on: update_on,
+                    build_epoch: crate::update::notice::build_epoch(),
+                })
+            })
+        };
+        let line = match notice {
+            Some(crate::update::notice::Notice::Newer(newest)) => Some(
+                omsh_ui::shell_look::update_notice(&newest.to_string(), caps.unicode),
+            ),
+            Some(crate::update::notice::Notice::OldBuild { days }) => {
+                Some(omsh_ui::shell_look::old_build_notice(days, caps.unicode))
+            }
+            None => greeting::take(
+                &config,
+                options.no_ai,
+                state_dir.as_deref(),
+                welcome,
+                caps.unicode,
+            ),
+        };
+        if let Some(line) = line {
+            say(&render_line(&line, &theme, &caps));
+        }
     }
     // The desktop notification after a long command. Its "could not be shown" message goes to
     // the editor's toast, or waits for the next prompt of the plain reader.
     let notifier = interactive.then(|| Notifier::new(editor.as_ref().map(Editor::toast)));
     // The daily check for a new release (S29b): off unless `[update] check = true`, at most one
-    // lookup a day, on a helper thread a moment after the prompt. Its news is a toast.
-    let release_check = update
-        .as_ref()
-        .filter(|_| interactive && config.update.check)
-        .and_then(|env| crate::update::daily::start(env, editor.as_ref().map(Editor::toast)));
+    // lookup a day, on a helper thread a moment after the prompt. Its news is shown at the next
+    // start, not in this session.
+    if let Some(env) = update.as_ref().filter(|_| update_on) {
+        let _ = crate::update::daily::start(env);
+    }
     // The lines read so far for the command being typed: more than one when it is unfinished.
     let mut pending = String::new();
     // How long the last command took, for the prompt.
@@ -275,9 +329,6 @@ fn run_on(
                     say(&format!("oh-my-shell: {problem}"));
                 }
                 if let Some(message) = notifier.as_ref().and_then(Notifier::take_message) {
-                    say(&format!("oh-my-shell: {message}"));
-                }
-                if let Some(message) = release_check.as_ref().and_then(|c| c.take_message()) {
                     say(&format!("oh-my-shell: {message}"));
                 }
             }
@@ -971,15 +1022,13 @@ fn start_up(shell: &mut Shell, files: &mut Io, options: Options) -> Result<Start
         say(&format!("oh-my-shell: {line}"));
     }
     // Only the start that wrote the first-run file, and only for a person at a terminal: the
-    // three-line welcome (§15.5). A pipe or a script gets the file and no words.
+    // welcome and the first questions (`first_run::run`, once the terminal's look is known). A
+    // pipe or a script gets the file and no words.
     let welcome = loaded.created && io::stderr().is_terminal();
-    if welcome {
-        let home = shell
-            .var("HOME")
-            .map(|home| PathBuf::from(OsString::from_vec(home.to_vec())));
-        for line in crate::tour::welcome(paths.config_file().as_deref(), home.as_deref()) {
-            say(&line);
-        }
+    // `ui.ls = "eza"`: `ls` runs eza, if it is there. Before `init.omsh`, so that the file can
+    // replace or remove the alias.
+    if loaded.config.ui.ls == omsh_config::LsProgram::Eza {
+        crate::first_run::define_ls_alias(shell);
     }
     if let Some(init) = paths.init_file()
         && let Outcome::Exit(status) = shell.run_startup_file(&init, files)
@@ -1041,7 +1090,14 @@ pub(crate) fn install_omsh(
     let session = Arc::new(ai::AiSession::new(config, options.no_ai, env));
     let update = crate::omsh::update_env(shell, paths, options.no_config);
     let uninstall = crate::omsh::uninstall_env(&update, config, paths, as_tool);
-    let tools = crate::omsh::Tools::new(Arc::clone(&session), update, uninstall);
+    let status = crate::status::StatusEnv {
+        config: config.clone(),
+        paths: paths.clone(),
+        no_ai: options.no_ai,
+        no_config: options.no_config,
+        state_dir: update.state_dir.clone(),
+    };
+    let tools = crate::omsh::Tools::new(Arc::clone(&session), update, uninstall, status);
     shell.set_omsh(Arc::new(tools) as Arc<dyn OmshCommand>);
     session
 }

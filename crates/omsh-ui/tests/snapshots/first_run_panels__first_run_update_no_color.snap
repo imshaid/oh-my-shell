@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/first_run_panels.rs
+expression: "written(&StayUpdated::new().render(&caps, WIDTH), &caps)"
+---
+╭─ Stay up to date? ─────────────────────────────────────────────────────────╮
+│ Once a day, a moment after the prompt, Oh My Shell can ask GitHub which    │
+│ release is the newest. That is one request for a release name.             │
+│ Nothing is downloaded or installed, and you see one line when there is     │
+│ news. `omsh update` installs it, and checks the file first.                │
+│ You can change this later: Ctrl+P, Settings, update.check.                 │
+│                                                                            │
+│ [⟨4⟩Y⟨0⟩es, check daily]  ⟨7⟩ ⟨0⟩⟨4;7⟩N⟨0⟩⟨7⟩o, I'll run omsh update --check myself ⟨0⟩              │
+╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩no⟨0⟩ ──────────────────────────────────────────╯

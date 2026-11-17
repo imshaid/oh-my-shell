@@ -21,7 +21,7 @@ use omsh_exec::{Io, Shell, catch_interrupt, note_inherited_signals};
 use crate::repl::{Options, install_omsh};
 
 /// The first words that make `omsh` a tool and not a shell.
-const TOOLS: &[&str] = &["ai", "tour", "help", "update", "uninstall"];
+const TOOLS: &[&str] = &["ai", "tour", "help", "update", "uninstall", "status"];
 
 /// What `omsh` was asked to run.
 #[derive(Debug, PartialEq, Eq)]

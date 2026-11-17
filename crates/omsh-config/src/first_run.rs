@@ -45,6 +45,10 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # The one-line reminder of keys under the first prompt: "auto" shows it for the first five
 # sessions after the welcome, "always" every time, "never" not at all.
 #greeting = "auto"
+# What the word `ls` runs: "ls" or "eza". Oh My Shell does not read the aliases of fish or bash,
+# so if you use eza there, say so here. It applies only while `eza` is on your PATH; the first-run
+# question offers it when it is. Set it back to "ls" to undo.
+#ls = "ls"
 
 #[editor]
 # "emacs" or "vi".

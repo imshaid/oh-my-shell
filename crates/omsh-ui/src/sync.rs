@@ -215,6 +215,13 @@ pub fn query(limit: Duration) -> Probe {
 
 static ANSWER: OnceLock<bool> = OnceLock::new();
 
+/// What the terminal said, if it was asked already in this process; `None` before that. Never
+/// asks (`omsh status` uses it: reporting must not be a reason to talk to the terminal).
+#[must_use]
+pub fn known() -> Option<bool> {
+    ANSWER.get().copied()
+}
+
 /// Whether to wrap redraws in synchronized-output sequences. The terminal is asked once ([`LIMIT`]
 /// at most) and the answer is kept. A question that was not asked ([`Support::NotAsked`]) gives
 /// false and is not kept, so a later call may ask.

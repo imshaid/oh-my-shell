@@ -9,7 +9,7 @@
 use toml_edit::{DocumentMut, Item};
 
 use crate::edit::Change;
-use crate::schema::{Config, ConfirmLevel, EditMode, Greeting, Icons, Motion, UiStyle};
+use crate::schema::{Config, ConfirmLevel, EditMode, Greeting, Icons, LsProgram, Motion, UiStyle};
 
 /// What a key holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +53,7 @@ const MOTION: &[&str] = &["automatic", "full", "reduced", "off"];
 const ICONS: &[&str] = &["auto", "unicode", "ascii"];
 const STYLE: &[&str] = &["spaced", "plain"];
 const GREETING: &[&str] = &["auto", "always", "never"];
+const LS: &[&str] = &["ls", "eza"];
 const MODE: &[&str] = &["emacs", "vi"];
 const CONFIRM: &[&str] = &["caution", "dangerous", "critical"];
 
@@ -101,6 +102,12 @@ pub const SETTINGS: &[Setting] = &[
         Kind::Choice(GREETING),
         true,
         "The key reminder under the first prompt. Auto: the first five sessions.",
+    ),
+    setting(
+        "ui.ls",
+        Kind::Choice(LS),
+        true,
+        "What `ls` runs. Eza only when it is on PATH; set back to ls to undo.",
     ),
     setting(
         "editor.mode",
@@ -251,7 +258,7 @@ pub const SETTINGS: &[Setting] = &[
     setting(
         "update.check",
         Kind::Bool,
-        false,
+        true,
         "Look for a new release once a day, in the background.",
     ),
     setting(
@@ -380,6 +387,11 @@ pub fn display(config: &Config, key: &str) -> String {
             Greeting::Never => "never",
         }
         .to_owned(),
+        "ui.ls" => match config.ui.ls {
+            LsProgram::Ls => "ls",
+            LsProgram::Eza => "eza",
+        }
+        .to_owned(),
         "editor.mode" => match config.editor.mode {
             EditMode::Emacs => "emacs",
             EditMode::Vi => "vi",
@@ -482,8 +494,10 @@ mod tests {
                 "prompt.transient",
                 "ui.greeting",
                 "ui.icons",
+                "ui.ls",
                 "ui.motion",
                 "ui.style",
+                "update.check",
             ]
         );
         // Only booleans and fixed choices.

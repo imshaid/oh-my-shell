@@ -177,7 +177,7 @@ fn the_terminal_settings_come_back_after_a_killed_full_screen_program() {
         kill(sleep[0], Signal::SIGKILL)?;
         term.sync("restored")?;
 
-        let after = settings_while_a_command_runs(&mut term, 33)?;
+        let after = settings_while_a_command_runs(&mut term, 34)?;
         assert_eq!(after, before, "{}", term.transcript());
         term.quit()
     });

@@ -3,10 +3,12 @@
 //! Off by default: a check is network traffic, and the normal path makes none (Gate C). When it
 //! is on, the shell asks at most once in 24 hours, on a helper thread, a couple of seconds
 //! after the prompt is up, and only what the latest release is. If it is newer than this
-//! program the person gets a toast. Nothing is downloaded and nothing is installed.
+//! program, the next session says so in one line where the hint bar is (`notice.rs`). Nothing is
+//! downloaded and nothing is installed.
 //!
-//! A small stamp file in the state folder remembers when the last lookup was and what it found,
-//! so a second shell started the same day neither uses the network nor shows the toast again.
+//! A small stamp file in the state folder remembers when the last lookup was, what it found, and
+//! when the news was last shown, so a second shell started the same day neither uses the network
+//! nor shows the line again.
 //! The stamp is written *before* the lookup, so a server that never answers is asked once a day
 //! and not at every start.
 //!
@@ -16,11 +18,9 @@ use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use omsh_editor::ToastHandle;
 
 use super::version::Version;
 use super::{DetachedNetwork, Fetch, UpdateEnv, latest};
@@ -41,6 +41,8 @@ pub struct Stamp {
     pub checked: u64,
     /// The latest release it found, if it found one.
     pub latest: Option<Version>,
+    /// When the notice about `latest` was last shown, in seconds since 1970.
+    pub noticed: Option<u64>,
 }
 
 /// Seconds since 1970.
@@ -59,16 +61,19 @@ pub fn read(dir: &Path) -> Option<Stamp> {
     file.take(MAX_STAMP).read_to_string(&mut text).ok()?;
     let mut checked = None;
     let mut latest = None;
+    let mut noticed = None;
     for line in text.lines() {
         match line.split_once('=') {
             Some(("checked", value)) => checked = value.trim().parse().ok(),
             Some(("latest", value)) => latest = Version::parse(value),
+            Some(("noticed", value)) => noticed = value.trim().parse().ok(),
             _ => {}
         }
     }
     Some(Stamp {
         checked: checked?,
         latest,
+        noticed,
     })
 }
 
@@ -82,12 +87,13 @@ pub fn write(dir: &Path, stamp: &Stamp) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     let tmp = dir.join(format!("{FILE}.tmp-{}", std::process::id()));
     let text = format!(
-        "checked={}\nlatest={}\n",
+        "checked={}\nlatest={}\nnoticed={}\n",
         stamp.checked,
         stamp
             .latest
             .as_ref()
-            .map_or_else(String::new, ToString::to_string)
+            .map_or_else(String::new, ToString::to_string),
+        stamp.noticed.map_or_else(String::new, |at| at.to_string()),
     );
     let result = (|| {
         let mut file = OpenOptions::new()
@@ -131,12 +137,15 @@ pub fn check_once(
     if !is_due(before.as_ref(), now) {
         return None;
     }
+    let before_latest = before.as_ref().and_then(|stamp| stamp.latest.clone());
+    let noticed = before.as_ref().and_then(|stamp| stamp.noticed);
     // First, so that a lookup that fails or hangs is not tried again at every start.
     let _ = write(
         dir,
         &Stamp {
             checked: now,
-            latest: before.and_then(|stamp| stamp.latest),
+            latest: before_latest.clone(),
+            noticed,
         },
     );
     let (_tag, newest) = latest(origin, fetch, &|| false).ok()?;
@@ -145,74 +154,76 @@ pub fn check_once(
         &Stamp {
             checked: now,
             latest: Some(newest.clone()),
+            // The same release that was already announced is not announced again; a newer one is.
+            noticed: noticed.filter(|_| before_latest.as_ref() == Some(&newest)),
         },
     );
     (newest > *current).then_some(newest)
 }
 
-/// The words of the toast.
-#[must_use]
-pub fn message(newest: &Version, current: &Version) -> String {
-    format!("Oh My Shell {newest} is out (you have {current}): run omsh update")
+/// Why the daily check does not run although `[update] check` is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Skip {
+    /// `OMSH_NO_UPDATE_CHECK` is set to something other than empty or `0`.
+    Variable,
+    /// A continuous-integration run.
+    Ci,
+    /// Standard error is not a terminal: nobody would see the news.
+    NotTerminal,
 }
 
-/// The running daily check. Dropping it does nothing: the helper thread is not waited for and
-/// ends with the process.
-pub struct Daily {
-    /// The message for a shell with no toast, waiting for the next prompt.
-    stash: Arc<Mutex<Option<String>>>,
-}
-
-impl Daily {
-    /// The message waiting for a shell that has no toast, once.
+impl Skip {
+    /// The reason in words, for `omsh status`.
     #[must_use]
-    pub fn take_message(&self) -> Option<String> {
-        self.stash
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
+    pub fn words(self) -> &'static str {
+        match self {
+            Skip::Variable => "OMSH_NO_UPDATE_CHECK is set",
+            Skip::Ci => "this is a CI run",
+            Skip::NotTerminal => "standard error is not a terminal",
+        }
     }
 }
 
-/// Starts the check if it is due. `toast` is where the news is shown; without one it waits in
-/// [`Daily::take_message`]. Returns `None` (and starts nothing) when no lookup is due or
-/// nothing can be written.
+/// The name of the variable that turns the check (and its notice) off.
+pub const OPT_OUT: &str = "OMSH_NO_UPDATE_CHECK";
+
+/// Whether the check is skipped for this start, and why. `variable` is the value of
+/// [`OPT_OUT`].
 #[must_use]
-pub fn start(env: &UpdateEnv, toast: Option<ToastHandle>) -> Option<Daily> {
-    start_with(env, toast, START_DELAY, Arc::new(DetachedNetwork))
+pub fn skip_reason(variable: Option<&[u8]>, ci: bool, terminal: bool) -> Option<Skip> {
+    if variable.is_some_and(|value| !value.is_empty() && value != b"0") {
+        Some(Skip::Variable)
+    } else if ci {
+        Some(Skip::Ci)
+    } else if !terminal {
+        Some(Skip::NotTerminal)
+    } else {
+        None
+    }
+}
+
+/// Starts the check if it is due. Returns false (and starts nothing) when no lookup is due or
+/// nothing can be written. The news is not shown here: the next session reads it from the stamp.
+#[must_use]
+pub fn start(env: &UpdateEnv) -> bool {
+    start_with(env, START_DELAY, Arc::new(DetachedNetwork))
 }
 
 /// [`start`] with its delay and its network given, for the tests.
 #[must_use]
-pub fn start_with(
-    env: &UpdateEnv,
-    toast: Option<ToastHandle>,
-    delay: Duration,
-    fetch: Arc<dyn Fetch>,
-) -> Option<Daily> {
-    let dir = env.state_dir.as_deref()?;
-    env.origin.as_ref().ok()?;
-    if !is_due(read(dir).as_ref(), now()) {
-        return None;
+pub fn start_with(env: &UpdateEnv, delay: Duration, fetch: Arc<dyn Fetch>) -> bool {
+    let Some(dir) = env.state_dir.as_deref() else {
+        return false;
+    };
+    if env.origin.is_err() || !is_due(read(dir).as_ref(), now()) {
+        return false;
     }
-    let stash = Arc::new(Mutex::new(None));
     let env = env.clone();
-    let shared = Arc::clone(&stash);
-    let spawned = thread::Builder::new()
+    thread::Builder::new()
         .name("update-check".to_owned())
         .spawn(move || {
             thread::sleep(delay);
-            let current = Version::current();
-            let Some(newest) = check_once(&env, now(), fetch.as_ref(), &current) else {
-                return;
-            };
-            let text = message(&newest, &current);
-            match &toast {
-                Some(toast) => toast.post(&text),
-                None => {
-                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = Some(text);
-                }
-            }
-        });
-    spawned.ok().map(|_| Daily { stash })
+            let _ = check_once(&env, now(), fetch.as_ref(), &Version::current());
+        })
+        .is_ok()
 }

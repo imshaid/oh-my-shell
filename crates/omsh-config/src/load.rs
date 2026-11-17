@@ -20,8 +20,8 @@ use toml::de::{DeTable, DeValue};
 use crate::first_run;
 use crate::paths::Paths;
 use crate::schema::{
-    Ai, Channel, Config, ConfirmLevel, EditMode, Greeting, INLINE_FIELDS, Icons, Motion, Notify,
-    PROMPT_SEGMENTS, Provider, SECTIONS, Ui, UiStyle,
+    Ai, Channel, Config, ConfirmLevel, EditMode, Greeting, INLINE_FIELDS, Icons, LsProgram, Motion,
+    Notify, PROMPT_SEGMENTS, Provider, SECTIONS, Ui, UiStyle,
 };
 
 /// A file larger than this is not a configuration file.
@@ -606,6 +606,10 @@ fn read_ui(r: &mut Reader<'_>, table: &DeTable<'_>, ui: &mut Ui) {
     ];
     if let Some(greeting) = r.choice(table, "ui", "greeting", &greetings) {
         ui.greeting = greeting;
+    }
+    let programs = [("ls", LsProgram::Ls), ("eza", LsProgram::Eza)];
+    if let Some(program) = r.choice(table, "ui", "ls", &programs) {
+        ui.ls = program;
     }
 }
 

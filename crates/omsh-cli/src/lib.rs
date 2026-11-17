@@ -28,6 +28,7 @@
 
 mod ai;
 mod confirm;
+mod first_run;
 mod greeting;
 mod handoff;
 mod history;
@@ -37,6 +38,7 @@ mod probe;
 mod radius;
 mod repl;
 mod report;
+mod status;
 mod tool;
 mod tour;
 mod undo;

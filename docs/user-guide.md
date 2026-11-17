@@ -31,7 +31,17 @@ address, the second refuses TLS older than 1.2.
 It makes the short name `omsh` only when that name is free (another file called `omsh` is left alone, with a
 warning). It never runs `chsh`, never edits your shell's startup files, and touches `/etc/shells` only with
 `--add-to-shells`. Options: `--version X.Y.Z`, `--system`, `--bin-dir DIR`,
-`--add-to-shells` ([list](commands.md#installsh-options)). If `~/.local/bin` is not in your `PATH`, it says so.
+`--add-to-shells` ([list](commands.md#installsh-options)).
+
+**The `PATH` note.** If `~/.local/bin` is not in your `PATH`, the installer prints the line to add for your shell
+(`fish_add_path ~/.local/bin` for fish; an `export PATH=...` line and the name of the startup file for bash and zsh;
+the generic `export` line for any other shell). It only prints it: it never edits a startup file for you.
+
+**What the installer shows.** On a terminal it shows a header, a spinner for each step that settles into `✓`, a
+real download line (percent and speed, only when the server says how big the file is), and, at the end, the time
+the new program took for `--version`, measured by running it ten times. A pipe, a file or `TERM=dumb` gets one
+plain line for each step and no escape codes. `NO_COLOR` removes the colors, a locale that is not UTF-8 gives
+ASCII symbols, and `OMSH_MOTION=off` removes the spinner.
 
 **A `.deb` package** (Debian, Ubuntu): download `oh-my-shell_<version>-1_amd64.deb` (or `_arm64.deb`) from the
 [releases page](https://github.com/imshaid/oh-my-shell/releases) and run `sudo apt install ./oh-my-shell_*.deb`.
@@ -69,8 +79,23 @@ by `/bin/sh` (see below).
 
 The first start writes `~/.config/oh-my-shell/config.toml` (every setting is a commented line: where a default exists it shows the default, and for the unset ones, such as the
 motion, provider, model and server address, it shows an example, not a default)
-and shows three lines once: where the settings are, the keys `Ctrl+R` and `Ctrl+P`, and `omsh tour`. `omsh tour`
-is a one-minute walk through the features. Your own startup commands (aliases, exports, functions) go in
+and, once, asks up to three questions on a terminal. Each starts on the answer that changes nothing, and `Esc` is
+that answer:
+
+1. **Welcome:** take the tour, set up AI now (not offered with `--no-ai` or `ai.enabled = false`), or skip.
+2. **Stay up to date?** Yes means one request a day to GitHub for the name of the newest release (nothing is
+   downloaded or installed) and one line at the next start when there is news; it writes `update.check = true`.
+   The first button is "Yes", but the chosen one is **"No, I'll run omsh update --check myself"**, which writes
+   `update.check = false`.
+3. **Use eza for ls?** Asked only when `eza` is on your `PATH`. Oh My Shell does not read the aliases of fish or
+   bash, so `ls` runs the system `ls` unless you say otherwise. Yes writes `ui.ls = "eza"` and `ls` runs `eza` from
+   then on (at once in this session, and at every start, while `eza` is on `PATH`). **To undo it:** `Ctrl+P`,
+   Settings, `ui.ls` (Enter switches it back to `ls`), or `unalias ls` for the current session. Nothing is changed
+   unless you choose it.
+
+Without a terminal with keys (a pipe, `TERM=dumb`, CI) or with `OMSH_FIRST_RUN=plain`, nothing is asked and the
+three lines of text are shown instead: where the settings are, the keys `Ctrl+R` and `Ctrl+P`, and `omsh tour`.
+`omsh tour` is a one-minute walk through the features. Your own startup commands (aliases, exports, functions) go in
 `~/.config/oh-my-shell/init.omsh`, written in the shell's own language; the file is not created for you.
 
 Files (the `XDG_*` variables are respected):
@@ -373,8 +398,22 @@ in the stamp file unless `--no-config` is given). It refuses a copy installed by
 package manager (under `/usr`, but not `/usr/local`) or by `cargo` (found by the program's path) and says how to update that one: `sudo apt install ./new.deb`
 or the `cargo install` command again. It installs only a newer release than the one you run; two updates running at the same moment are not guarded against
 each other. For a notice when a release comes out, set
-`check = true` under `[update]`: the shell then asks GitHub for the latest version about once a day (if the stamp file cannot be written it can repeat at each start), a moment after
-the prompt, and shows one line (nothing is downloaded). It is off by default because it needs the network.
+`check = true` under `[update]` (the first-start question sets it too): the shell then asks GitHub for the latest
+version about once a day (if the stamp file cannot be written it can repeat at each start), a moment after the prompt,
+and keeps the answer in the stamp file. Nothing is downloaded. **The news is shown at the next start**, not in the
+session that asked: one dim line where the hint bar goes (`↑ omsh 1.1.0 available · run: omsh update`), at most once
+in 24 hours. It is off by default because it needs the network. The environment variable `OMSH_NO_UPDATE_CHECK`
+(anything but empty or `0`) turns the check and its line off, and the check never runs in CI or when standard error
+is not a terminal.
+
+**An old build, with the check off.** If a release build is more than 60 days old and the daily check is off, the
+first prompt of a session says once for that build, `this build is N days old · check for a new one: omsh update
+--check`. No network is used to show it. A build made without a release date (a `cargo install`, a development
+build) says nothing, because its age would be a guess.
+
+**`omsh status`** shows one page: the version, the build date and age, whether the AI is set up (from the settings
+alone), whether the daily check is on and what it last found, the motion mode and what decided it, and what the
+terminal can do. It asks nothing and sends nothing; on a pipe it prints `label: value` lines.
 
 **Uninstall.** Run `omsh uninstall` from another shell (it is refused inside Oh My Shell, which has its history
 open). It asks one question at a time: the program, your settings, your history, the trash with its undo journal, the

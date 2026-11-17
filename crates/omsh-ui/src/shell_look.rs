@@ -84,6 +84,33 @@ pub fn explain_hint() -> Line {
         .tone(Tone::Dim, " explain")
 }
 
+/// The line that takes the hint bar's place when the daily check found a newer release.
+/// `newest` is a version number (`1.1.0`): it is never user text.
+#[must_use]
+pub fn update_notice(newest: &str, unicode: bool) -> Line {
+    let arrow = if unicode { "↑" } else { "^" };
+    let separator = if unicode { " · " } else { " - " };
+    let dim = Style::of(Tone::Dim);
+    Line::new()
+        .then(&format!("{arrow} omsh {newest} available"), dim)
+        .then(separator, dim)
+        .then("run: ", dim)
+        .then("omsh update", Style::of(Tone::Key))
+}
+
+/// The line for a person who turned the daily check off, when this build is old: it says how
+/// old, and how to look, on their own say-so. No network is used to show it.
+#[must_use]
+pub fn old_build_notice(days: u64, unicode: bool) -> Line {
+    let separator = if unicode { " · " } else { " - " };
+    let dim = Style::of(Tone::Dim);
+    Line::new()
+        .then(&format!("this build is {days} days old"), dim)
+        .then(separator, dim)
+        .then("check for a new one: ", dim)
+        .then("omsh update --check", Style::of(Tone::Key))
+}
+
 /// What the hint bar may say about the AI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AiHint {

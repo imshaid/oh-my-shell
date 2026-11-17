@@ -26,6 +26,6 @@ pub use paths::Paths;
 pub use read::read_text_file;
 pub use schema::{
     Ai, AiContext, AiInline, Channel, Config, ConfirmLevel, EditMode, Editor, Greeting, History,
-    INLINE_FIELDS, Icons, Motion, NOTIFY_IGNORE, Notify, PROMPT_SEGMENTS, Prompt, Provider,
-    SECTIONS, Safety, Ui, UiStyle, Update,
+    INLINE_FIELDS, Icons, LsProgram, Motion, NOTIFY_IGNORE, Notify, PROMPT_SEGMENTS, Prompt,
+    Provider, SECTIONS, Safety, Ui, UiStyle, Update,
 };

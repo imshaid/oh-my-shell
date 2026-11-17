@@ -94,6 +94,11 @@ pub trait Terminal {
     }
     /// Whether Ctrl+C was pressed. Checked while waiting for the network.
     fn interrupted(&self) -> bool;
+    /// Whether standard output of this command is a terminal (not a pipe or a file): a page that
+    /// has a panel for a person and plain lines for a pipe asks this. False by default.
+    fn output_is_terminal(&self) -> bool {
+        false
+    }
     /// Whether a person is at a real terminal for this command: standard input **and** standard
     /// error are terminals, so that a panel can be drawn on one and keys read from the other. A
     /// scripted terminal, a pipe, `undo 2>file` and `< /dev/null` are all `false`, and the
@@ -245,6 +250,12 @@ impl Terminal for Handle<'_> {
 
     fn interrupted(&self) -> bool {
         self.shell.interrupted()
+    }
+
+    fn output_is_terminal(&self) -> bool {
+        self.io
+            .get(1)
+            .is_some_and(|slot| slot.as_fd().is_terminal())
     }
 
     fn menu_keys(&self) -> bool {

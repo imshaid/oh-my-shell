@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/first_run_panels.rs
+expression: "written(&panel.render(&caps, WIDTH), &caps)"
+---
+⟨34⟩╭─⟨0⟩ Stay up to date? ⟨34⟩─────────────────────────────────────────────────────────╮⟨0⟩
+⟨34⟩│⟨0⟩ Once a day, a moment after the prompt, Oh My Shell can ask GitHub which    ⟨34⟩│⟨0⟩
+⟨34⟩│⟨0⟩ release is the newest. That is one request for a release name.             ⟨34⟩│⟨0⟩
+⟨34⟩│⟨0⟩ Nothing is downloaded or installed, and you see one line when there is     ⟨34⟩│⟨0⟩
+⟨34⟩│⟨0⟩ news. `omsh update` installs it, and checks the file first.                ⟨34⟩│⟨0⟩
+⟨34⟩│⟨0⟩ You can change this later: Ctrl+P, Settings, update.check.                 ⟨34⟩│⟨0⟩
+⟨34⟩│⟨0⟩                                                                            ⟨34⟩│⟨0⟩
+⟨34⟩│⟨0⟩ ⟨7⟩ ⟨0⟩⟨4;7⟩Y⟨0⟩⟨7⟩es, check daily ⟨0⟩  [⟨4⟩N⟨0⟩o, I'll run omsh update --check myself]              ⟨34⟩│⟨0⟩
+⟨34⟩╰─⟨0⟩ ⟨36⟩←→⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩no⟨0⟩ ⟨34⟩──────────────────────────────────────────╯⟨0⟩

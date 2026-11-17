@@ -229,7 +229,7 @@ Example: `sleep 1 & wait`
 ## omsh commands
 
 `omsh` is also a program (the installer makes the link). `omsh` alone starts the shell; `omsh ai ...`,
-`omsh tour`, `omsh help`, `omsh update` and `omsh uninstall` run that command from any other shell.
+`omsh tour`, `omsh help`, `omsh status`, `omsh update` and `omsh uninstall` run that command from any other shell.
 Inside Oh My Shell it is the builtin `omsh`. `omsh script` hands the script to `/bin/sh`, like the shell.
 
 ### `omsh help`
@@ -268,6 +268,16 @@ Show what the AI calls of this shell session used: for each provider used, its n
 Usage: `omsh ai details`
 Example: `omsh ai details` after a `? question`.
 
+### `omsh status`
+One page about this installation: the version; the build date and age (or "unknown" for a build with no release date);
+whether the AI is set up (read from the settings only: no keyring, no network); whether the daily update check is on,
+why it is not running here (the variable `OMSH_NO_UPDATE_CHECK`, CI, or no terminal), and what the last look found;
+the motion level and what decided it; the terminal (`TERM`, size, which streams are terminals, Unicode, color,
+synchronized output if a panel already asked the terminal) and the paths of the settings file and the state folder.
+Nothing is sent and the terminal is not asked anything. On a pipe it prints `label: value` lines with no escape codes.
+Usage: `omsh status`
+Example: `omsh status`
+
 ### `omsh update`
 Download the latest release, check it against `sha256.sum`, try the new program, and rename it over the
 old one. `--check` does not install anything; it says whether a newer release exists, and (like the daily check) it
@@ -284,6 +294,15 @@ Shell is your login shell (if the account database cannot be read, that check ca
 [limitations](user-guide.md#known-limitations) for folders that are links or overlap.
 Usage: `omsh uninstall` (from another shell)
 Example: `omsh uninstall`
+
+## Environment variables
+
+| Variable | What it does |
+|---|---|
+| `OMSH_MOTION` | `on` (or `full`), `reduced` or `off`: how much of the interface moves. It wins over `ui.motion`. |
+| `OMSH_NO_UPDATE_CHECK` | Anything but empty or `0` turns the daily update check, and the line that announces its news, off. |
+| `OMSH_FIRST_RUN` | `plain` makes the first start show three lines of text instead of the welcome and its questions, on a terminal too. |
+| `NO_COLOR` | Anything but empty removes the colors; bold, dim, reverse and underline stay. |
 
 ## Program options (`oh-my-shell`)
 
@@ -311,6 +330,9 @@ Example: `omsh uninstall`
 | `--archive FILE --sums FILE` | Uses local files and downloads nothing (for tests). | |
 | `--base-url URL` | The folder that holds the release files (for tests). The address must start with `https://` or with `http://` followed by `127.0.0.1`, `localhost` or `[::1]`; this is a check of the beginning of the text, so an address with a user name (`http://127.0.0.1:80@host`) is not refused. | |
 | `-h`, `--help` | Prints the options. | `sh -s -- --help` |
+
+Environment: `NO_COLOR` removes the colors of the installer's display and `OMSH_MOTION=off` removes its spinner
+(see the [install section](user-guide.md#install)).
 
 The examples are for `curl ... install.sh | sh -s -- OPTION`; see the
 [install section](user-guide.md#install).
@@ -393,7 +415,7 @@ A critical line is not answered with a key: type `yes` or the target.
 
 | Key | What it does |
 |---|---|
-| Enter, Tab | Changes the chosen switch or choice to its next value and writes it to `config.toml`. `update.check` and `safety.confirm` are shown but not changed here; selecting them shows how to edit the file. |
+| Enter, Tab | Changes the chosen switch or choice to its next value and writes it to `config.toml`. `safety.confirm` is shown but not changed here; selecting it shows how to edit the file. |
 | Shift+Tab | Changes it to the previous value. |
 | Up, Down, Ctrl+P, Ctrl+N, Ctrl+K, Ctrl+J, PageUp, PageDown, Home, End | Move the choice. |
 | Esc, Ctrl+C, Ctrl+G | Closes it. |
@@ -428,6 +450,7 @@ The keys, with the default in brackets:
 - `ui.icons` (`"auto"`): `"unicode"`, `"ascii"` or `"auto"`. Example: `icons = "ascii"`.
 - `ui.style` (`"spaced"`): `"spaced"` or `"plain"`. Spaced prints a blank line and a thin rule before the prompt of every command after the first, and shows how the last command ended at the right of the header (`✓ 4 ms` or `✘ 127`). Plain is the two-line prompt of version 1.0. Example: `style = "plain"`.
 - `ui.greeting` (`"auto"`): `"auto"`, `"always"` or `"never"`. The one-line reminder of keys under the first prompt of a session: `auto` shows it for the first five sessions after the welcome, `always` at every start, `never` not at all. Example: `greeting = "never"`.
+- `ui.ls` (`"ls"`): `"ls"` or `"eza"`. What the word `ls` runs. Oh My Shell does not read the aliases of fish or bash, so a person who uses `alias ls=eza` there says so here. `"eza"` takes effect only while `eza` is on `PATH`: at the start of a shell, `ls` becomes an alias for `eza` (before `init.omsh`, so the file can replace it, and `unalias ls` removes it for one session). If `eza` is not found, `ls` stays the system `ls`. AI plan steps never use aliases. The first-run questions offer it when `eza` is on `PATH`; set it back to `"ls"` to undo. Example: `ls = "eza"`.
 
 ### `[editor]`
 
@@ -477,5 +500,5 @@ The keys, with the default in brackets:
 
 ### `[update]`
 
-- `update.check` (`false`): ask GitHub for the latest release about once a day, after the prompt (the time is kept in a stamp file; if that file cannot be written the check can repeat at every start). Example: `check = true`.
+- `update.check` (`false`): ask GitHub for the latest release about once a day, after the prompt (the time is kept in a stamp file; if that file cannot be written the check can repeat at every start). The news is shown at the next start, in one dim line, at most once in 24 hours. `OMSH_NO_UPDATE_CHECK` turns it off; it never runs in CI. The first-start question sets it. Example: `check = true`.
 - `update.channel` (`"stable"`): only `"stable"` is accepted; it is read and not used. Example: `channel = "stable"`.

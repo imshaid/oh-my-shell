@@ -31,6 +31,8 @@ pub struct Ui {
     pub style: UiStyle,
     /// When the one-line hint bar is shown at the start of a session (`ui.greeting`).
     pub greeting: Greeting,
+    /// What `ls` runs (`ui.ls`).
+    pub ls: LsProgram,
 }
 
 impl Default for Ui {
@@ -41,8 +43,19 @@ impl Default for Ui {
             icons: Icons::Auto,
             style: UiStyle::Spaced,
             greeting: Greeting::Auto,
+            ls: LsProgram::Ls,
         }
     }
+}
+
+/// `ui.ls`: which program the word `ls` runs. Oh My Shell does not read the aliases of fish or
+/// bash, so a person who has `alias ls=eza` there picks it here, once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LsProgram {
+    /// The system `ls` (with the shell's color wrapper).
+    Ls,
+    /// `eza`, when it is on `PATH`; otherwise `ls` stays as it is.
+    Eza,
 }
 
 /// `ui.style`: the layout of the prompt. (`blocks` of the UI spec is not built yet.)
@@ -391,7 +404,10 @@ pub const PROMPT_SEGMENTS: &[&str] = &["cwd", "git", "venv", "status", "duration
 /// The sections and their keys. The loader reports anything else as unknown, and a test checks
 /// that the first-run file mentions every key listed here.
 pub const SECTIONS: &[(&str, &[&str])] = &[
-    ("ui", &["theme", "motion", "icons", "style", "greeting"]),
+    (
+        "ui",
+        &["theme", "motion", "icons", "style", "greeting", "ls"],
+    ),
     ("editor", &["mode", "hints", "abbreviations"]),
     ("prompt", &["left", "right", "transient"]),
     ("history", &["size", "ignore"]),

@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/first_run_panels.rs
+expression: "written(&panel.render(&caps, WIDTH), &caps)"
+---
+⟨34⟩+-⟨0⟩ Welcome to Oh My Shell ⟨34⟩---------------------------------------------------+⟨0⟩
+⟨34⟩|⟨0⟩ Ctrl+R searches history, Ctrl+P opens the palette, and `undo` restores     ⟨34⟩|⟨0⟩
+⟨34⟩|⟨0⟩ deletions.                                                                 ⟨34⟩|⟨0⟩
+⟨34⟩|⟨0⟩ Nothing is sent anywhere unless you set up AI or turn on the update check. ⟨34⟩|⟨0⟩
+⟨34⟩|⟨0⟩ This is shown once.                                                        ⟨34⟩|⟨0⟩
+⟨34⟩|⟨0⟩                                                                            ⟨34⟩|⟨0⟩
+⟨34⟩|⟨0⟩ [⟨4⟩T⟨0⟩ake the tour]  [Set up ⟨4⟩A⟨0⟩I now]  ⟨7⟩ ⟨0⟩⟨4;7⟩S⟨0⟩⟨7⟩kip ⟨0⟩                                   ⟨34⟩|⟨0⟩
+⟨34⟩+-⟨0⟩ ⟨36⟩arrows⟨0⟩ ⟨2;90⟩move, ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose, ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩skip⟨0⟩ ⟨34⟩--------------------------------------+⟨0⟩
+⟨2;90⟩Settings: ⟨0⟩⟨36⟩~/কনফিগ/রিপোর্ট/config.toml⟨0⟩
