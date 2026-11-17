@@ -75,6 +75,15 @@ pub fn ai_tag() -> Line {
     Line::new().tone(Tone::Ai, "ask AI")
 }
 
+/// The dim hint beside the status chip after a command failed, while the AI can explain it:
+/// the key that does it (`Alt+?`). Words and a key, not a color.
+#[must_use]
+pub fn explain_hint() -> Line {
+    Line::new()
+        .then("Alt+?", Style::of(Tone::Dim))
+        .tone(Tone::Dim, " explain")
+}
+
 /// What the hint bar may say about the AI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AiHint {

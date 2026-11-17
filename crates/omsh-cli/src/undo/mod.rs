@@ -13,9 +13,16 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use chrono::{Local, TimeZone};
 use omsh_exec::{JournalCommand, Terminal};
-use omsh_safety::journal::{Action, ItemKind, Journal, Origin, UndoError, one_line};
+use omsh_safety::journal::{
+    Action, ActionInfo, ItemInfo, ItemKind, Journal, Origin, UndoError, one_line,
+};
 use omsh_safety::paths;
 use omsh_safety::trash::{self, Kind};
+use omsh_ui::inline::Ended;
+use omsh_ui::panels::MenuUi;
+use omsh_ui::panels::menu::run_on_terminal;
+use omsh_ui::panels::undo_picker::{UndoEntry, UndoPicker};
+use omsh_ui::{Line, Tone};
 
 pub mod watch;
 
@@ -73,6 +80,9 @@ pub struct Undo {
     data_dir: PathBuf,
     journal: OnceLock<Result<Journal, String>>,
     session: Mutex<Option<Session>>,
+    /// What the `undo` picker needs to be shown; set once by the shell, after the terminal is
+    /// known. Without it `undo` asks in words.
+    menu: OnceLock<MenuUi>,
 }
 
 impl Undo {
@@ -82,7 +92,13 @@ impl Undo {
             data_dir,
             journal: OnceLock::new(),
             session: Mutex::new(None),
+            menu: OnceLock::new(),
         })
+    }
+
+    /// Lets `undo` with no number show the picker (to a person at a terminal).
+    pub fn set_menu(&self, ui: MenuUi) {
+        let _ = self.menu.set(ui);
     }
 
     /// The journal, opened now if it was not. The failure to open is kept: it is not tried
@@ -367,6 +383,18 @@ impl Undo {
                 return 1;
             }
         };
+        if words.is_empty()
+            && terminal.menu_keys()
+            && let Some(ui) = self.menu.get()
+        {
+            let mut choose = |picker: &mut UndoPicker| {
+                run_on_terminal(picker, ui, Box::new(omsh_exec::hung_up)).ok()
+            };
+            if let Some(status) = pick_and_undo(journal, terminal, &mut choose) {
+                return status;
+            }
+            // No picker (nothing to pick from, or it could not be shown): ask in words.
+        }
         let id = match words.as_slice() {
             [] => None,
             [flag] if flag == "--list" || flag == "-l" => return list(journal, terminal),
@@ -444,35 +472,138 @@ impl Undo {
                 return 1;
             }
         }
-        match journal.undo(info.id, &omsh_exec::interrupted) {
-            Ok(report) => {
-                for line in &report.lines {
-                    terminal.out(&format!("{line}\n"));
-                }
-                if report.failed == 0 {
-                    0
-                } else {
-                    terminal.err(&format!(
-                        "oh-my-shell: undo: {} of {} could not be undone; \"undo {}\" tries the rest again\n",
-                        report.failed,
-                        report.failed + report.undone,
-                        info.id
-                    ));
-                    1
-                }
+        run_undo(journal, info.id, terminal)
+    }
+}
+
+/// Undoes action `id` and says what happened. The status is 0 only if everything came back.
+fn run_undo(journal: &Journal, id: i64, terminal: &mut dyn Terminal) -> u8 {
+    match journal.undo(id, &omsh_exec::interrupted) {
+        Ok(report) => {
+            for line in &report.lines {
+                terminal.out(&format!("{line}\n"));
             }
-            Err(UndoError::NotUndoable(why)) => {
-                terminal.err(&format!("oh-my-shell: undo: {why}\n"));
+            if report.failed == 0 {
+                0
+            } else {
+                terminal.err(&format!(
+                    "oh-my-shell: undo: {} of {} could not be undone; \"undo {id}\" tries the rest again\n",
+                    report.failed,
+                    report.failed + report.undone,
+                ));
                 1
             }
-            Err(UndoError::NoSuchAction) => {
-                terminal.err("oh-my-shell: undo: there is no such action\n");
-                1
+        }
+        Err(UndoError::NotUndoable(why)) => {
+            terminal.err(&format!("oh-my-shell: undo: {why}\n"));
+            1
+        }
+        Err(UndoError::NoSuchAction) => {
+            terminal.err("oh-my-shell: undo: there is no such action\n");
+            1
+        }
+        Err(UndoError::Database(why)) => {
+            terminal.err(&format!("oh-my-shell: undo: {why}\n"));
+            1
+        }
+    }
+}
+
+/// How long ago `then_ms` was, in the words the picker shows. Never negative: a clock that went
+/// back reads as "just now".
+fn ago(now_ms: i64, then_ms: i64) -> String {
+    let seconds = (now_ms.saturating_sub(then_ms) / 1000).max(0);
+    match seconds {
+        0..=59 => "just now".to_owned(),
+        60..=3599 => format!("{} min ago", seconds / 60),
+        3600..=86_399 => format!("{} h ago", seconds / 3600),
+        _ => format!("{} d ago", seconds / 86_400),
+    }
+}
+
+/// How many item lines the preview of an action shows.
+const PREVIEW_ITEMS: usize = 5;
+
+/// The rows of the picker for the actions that can still be undone, newest first, with the
+/// actions they stand for (the same order).
+fn picker_entries(journal: &Journal, now_ms: i64) -> (Vec<ActionInfo>, Vec<UndoEntry>) {
+    let actions: Vec<ActionInfo> = journal
+        .list(LIST_ROWS)
+        .into_iter()
+        .filter(|action| {
+            action.origin != Origin::Undo
+                && matches!(action.state.as_str(), "done" | "partial" | "open")
+        })
+        .collect();
+    let entries = actions
+        .iter()
+        .map(|action| {
+            let todo: Vec<ItemInfo> = journal
+                .items(action.id)
+                .into_iter()
+                .filter(|item| item.state != "undone")
+                .collect();
+            let mut preview = vec![
+                Line::new()
+                    .tone(Tone::Dim, "ran in ")
+                    .tone(Tone::Path, &action.cwd.display().to_string())
+                    .tone(Tone::Dim, &format!("  {}", local_time(action.at_ms))),
+            ];
+            for item in todo.iter().rev().take(PREVIEW_ITEMS) {
+                preview.push(
+                    Line::new()
+                        .tone(Tone::Dim, "- ")
+                        .tone(Tone::Plain, &one_line(&describe(item), 200)),
+                );
             }
-            Err(UndoError::Database(why)) => {
-                terminal.err(&format!("oh-my-shell: undo: {why}\n"));
-                1
+            if todo.len() > PREVIEW_ITEMS {
+                preview.push(Line::new().tone(
+                    Tone::Dim,
+                    &format!("... and {} more", todo.len() - PREVIEW_ITEMS),
+                ));
             }
+            UndoEntry {
+                label: one_line(&action.command, LIST_COMMANDS),
+                detail: format!(
+                    "{} item{} · {} · #{}",
+                    todo.len(),
+                    if todo.len() == 1 { "" } else { "s" },
+                    ago(now_ms, action.at_ms),
+                    action.id
+                ),
+                preview,
+            }
+        })
+        .collect();
+    (actions, entries)
+}
+
+/// `undo` with no number, for a person at a terminal: the picker, then the question about the
+/// action picked (Cancel is chosen), then the undo. `choose` shows the picker and says how it
+/// ended (`None`: it could not be shown). Returns the status, or `None` when there is no picker
+/// to show and the caller asks in words.
+fn pick_and_undo(
+    journal: &Journal,
+    terminal: &mut dyn Terminal,
+    choose: &mut dyn FnMut(&mut UndoPicker) -> Option<Ended<usize>>,
+) -> Option<u8> {
+    let (actions, entries) = picker_entries(journal, Local::now().timestamp_millis());
+    if entries.is_empty() {
+        return None;
+    }
+    let mut picker = UndoPicker::new(entries);
+    match choose(&mut picker)? {
+        Ended::Chosen(index) => {
+            let action = actions.get(index)?;
+            Some(run_undo(journal, action.id, terminal))
+        }
+        Ended::Cancelled | Ended::Interrupted => {
+            terminal.err("oh-my-shell: nothing was undone\n");
+            Some(1)
+        }
+        Ended::Closed => {
+            terminal.err("\noh-my-shell: nothing was undone\n");
+            Some(1)
         }
     }
 }

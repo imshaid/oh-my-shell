@@ -235,15 +235,45 @@ that asks (default `dangerous`); critical always asks. The rules cover `rm` of b
 accounts, `curl ... | sh`, `git push --force`, `git reset --hard`, `git clean`, and overwriting a file with `>`. A `sudo` in front raises a
 command that is already flagged by one step.
 
+In a terminal with the line editor, a dangerous line opens a small panel under the prompt. It shows the
+level, the command and each reason (long text is wrapped, never cut), what the command would touch, and a row
+of buttons. The panel goes away when you answer and leaves the screen as it was.
+
 ```
-❯ rm -rf *
-oh-my-shell: this command is dangerous:
+╭─ Run it? ──────────────────────────────────────────────────────────────
+│ this command is dangerous:
 │ rm -rf *
-│ - Deletes files without asking, and folders with everything in them. This cannot be undone, unless you answer t to move it to the trash.
-│   on: *
-│   touches 1 folder
-│   none outside the current folder; none owned by someone else
-│   for example: src
+│ - Deletes files without asking, and folders with everything in them.
+│   This cannot be undone, unless you choose Move to trash.
+│     on: *
+│     touches 1 folder
+│     none outside the current folder; none owned by someone else
+│     for example: src
+│
+│ [Move to trash]  [Run anyway]   Cancel
+╰─ ←→↑↓ move · Enter choose · Esc cancel ────────────────────────────────
+```
+
+**Cancel is chosen when the panel opens**, so pressing Enter at once does nothing. `←` `→` `↑` `↓` and Tab move
+between the buttons, Enter chooses the one that is marked, and `t`, `y` and `n` choose **Move to trash**, **Run
+anyway** and **Cancel** at once. Esc and Ctrl+C cancel (Ctrl+C sets `$?` to 130, as for a program stopped by
+Ctrl+C). **Move to trash** is there only when every `rm` in the line can go to the trash. Anything that was
+typed before the panel appeared, or while it was being prepared, is thrown away: a stray `y` never answers it.
+A critical line has the same panel without buttons: you still have to type `yes` or the target, so one key can
+never run it. If the terminal closes while the panel is open, nothing runs.
+
+Where there is no line editor to give keys to (`TERM=dumb`, a pipe, input that is not typed, the plain reader,
+an AI plan step), the question is plain text, with the same answers (`y`, `yes`, `t`, `trash`; anything else
+cancels):
+
+```
+oh-my-shell: this command is dangerous:
+  rm -rf *
+  - Deletes files without asking, and folders with everything in them. This cannot be undone, unless you answer t to move it to the trash.
+    on: *
+    touches 1 folder
+    none outside the current folder; none owned by someone else
+    for example: src
 Run it? [y/N] (t = move to the trash instead) n
 oh-my-shell: cancelled; nothing ran
 ```
@@ -254,10 +284,23 @@ at `safety.blast_radius_max_entries` entries or `safety.blast_radius_max_ms` mil
 it never prints a number it did not count.
 
 **Trash and undo.** Answer `t` and the `rm` moves the files to the trash (`~/.local/share/oh-my-shell/trash`,
-kept 8 days by default) and writes an undo entry. `undo` puts back the newest recorded action with its original
-permissions; `undo --list` shows them; `undo 3` picks one. A plain `rm file` that the analyzer calls safe just
+kept 8 days by default) and writes an undo entry. `undo` with no number opens a picker (below); `undo --list`
+shows the actions; `undo 3` picks one and asks `Undo it? [y/N]`; everything is put back with its original
+permissions. A plain `rm file` that the analyzer calls safe just
 deletes: only deletions that went through the question or through an AI plan are in the journal. Commands you run
 directly are not journaled.
+
+**The `undo` picker.** At a terminal, `undo` with no number lists the actions that can still be undone, newest
+first, each as the line you typed with its number of items and how long ago. `↑` and `↓` move (type to filter),
+and a preview under the list says where the line ran and what undoing it would do. **Enter does not restore:**
+it opens a question for that action with **Restore** and **Cancel**, and Cancel is chosen, so restoring takes `y`
+(or `←` and Enter). Esc and `n` leave without undoing anything. Without a terminal, or with `undo 3`, the question
+is the plain `Undo it? [y/N]`.
+
+**The explain hint.** After a command fails, and only when an AI provider is set up, the header of the next prompt
+shows a dim `Alt+? explain` before the result (`✘ 127`). `Alt+?` sends the failed command and its exit status, as
+before: its error text is never captured or sent. The hint is not shown after a success, Ctrl+C or Ctrl+Z, with
+`--no-ai` or `ai.enabled = false`, in the `plain` style, or once you have used `Alt+?` at that prompt.
 
 **Not analyzed:** functions when they are called later, files run with `.`/`source`, traps, `init.omsh`, `-c`,
 and scripts. The rules do not know `rsync --delete`, `truncate`, `tee file`, `ssh host 'rm -rf /'`, or a command

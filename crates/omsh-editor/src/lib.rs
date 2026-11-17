@@ -750,6 +750,7 @@ fn neutral_state() -> PromptState {
         last_duration: None,
         separate: false,
         root: nix::unistd::geteuid().is_root(),
+        explain_hint: false,
         git_env: Vec::new(),
     }
 }

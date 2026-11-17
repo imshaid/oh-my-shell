@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use omsh_exec::{JournalCommand, ReadError, Terminal};
 use omsh_safety::journal::Origin;
 
-use super::{Undo, parse_rm, purge_now, purge_old};
+use super::{Undo, ago, parse_rm, pick_and_undo, picker_entries, purge_now, purge_old};
 
 struct Dir(PathBuf);
 
@@ -421,4 +421,189 @@ fn purging_forgets_only_the_rows_older_than_the_cutoff() {
     // A cutoff in 1970: today's action is newer and stays.
     purge_now(&dir.path("data"), &[], Some(1));
     assert_eq!(undo.journal().unwrap().list(10).len(), 1);
+}
+
+// -- the picker (UI upgrade, phase 3) -----------------------------------------------------------
+
+use omsh_ui::inline::Ended;
+use omsh_ui::panels::undo_picker::UndoPicker;
+use omsh_ui::widgets::{Key, Step, Widget};
+
+/// Presses `keys` on the picker the way the menu driver would, and says how it ended.
+fn press(picker: &mut UndoPicker, keys: &[Key]) -> Option<Ended<usize>> {
+    for key in keys {
+        match picker.handle(*key) {
+            Step::Stay => {}
+            Step::Done(index) => return Some(Ended::Chosen(index)),
+            Step::Cancel => return Some(Ended::Cancelled),
+        }
+    }
+    Some(Ended::Closed)
+}
+
+/// Two typed lines trashed (`first` then `second`), so that `second` is the newest.
+fn trashed_twice(dir: &Dir, undo: &Undo) {
+    fs::create_dir(dir.path("build")).unwrap();
+    fs::write(dir.path("build/f"), "f").unwrap();
+    fs::set_permissions(dir.path("build"), fs::Permissions::from_mode(0o750)).unwrap();
+    fs::write(dir.path("old.txt"), "o").unwrap();
+    let mut tty = Tty::default();
+    undo.begin_line("rm -rf build", Origin::Typed);
+    assert_eq!(trash(undo, &dir.0, &["-r", "build"], &mut tty), 0);
+    undo.end_line().unwrap();
+    undo.begin_line("rm old.txt", Origin::Typed);
+    assert_eq!(trash(undo, &dir.0, &["old.txt"], &mut tty), 0);
+    undo.end_line().unwrap();
+}
+
+#[test]
+fn ago_says_how_long_in_the_words_of_the_picker() {
+    let now = 10_000_000_000;
+    for (seconds, text) in [
+        (0, "just now"),
+        (59, "just now"),
+        (60, "1 min ago"),
+        (3599, "59 min ago"),
+        (3600, "1 h ago"),
+        (86_399, "23 h ago"),
+        (86_400, "1 d ago"),
+        (86_400 * 40, "40 d ago"),
+    ] {
+        assert_eq!(ago(now, now - seconds * 1000), text, "{seconds} s");
+    }
+    assert_eq!(
+        ago(now, now + 5_000_000),
+        "just now",
+        "a clock that went back"
+    );
+}
+
+#[test]
+fn the_picker_lists_what_can_be_undone_newest_first_and_leaves_out_what_is_done() {
+    let dir = Dir::new();
+    let undo = dir.undo();
+    trashed_twice(&dir, &undo);
+    let journal = undo.journal().unwrap();
+    let (actions, entries) = picker_entries(journal, super::Local::now().timestamp_millis());
+    assert_eq!(actions.len(), 2);
+    assert_eq!(entries[0].label, "rm old.txt");
+    assert_eq!(entries[1].label, "rm -rf build");
+    assert!(
+        entries[0].detail.contains("1 item") && entries[0].detail.ends_with("#2"),
+        "{}",
+        entries[0].detail
+    );
+    assert!(
+        entries[0].detail.contains("just now"),
+        "{}",
+        entries[0].detail
+    );
+    let preview: Vec<String> = entries[1]
+        .preview
+        .iter()
+        .map(omsh_ui::Line::plain_text)
+        .collect();
+    assert!(preview[0].starts_with("ran in "), "{preview:?}");
+    assert!(preview[1].starts_with("- bring back "), "{preview:?}");
+    // Once undone, an action is no longer offered.
+    assert_eq!(journal.undo(2, &|| false).unwrap().failed, 0);
+    let (actions, _) = picker_entries(journal, super::Local::now().timestamp_millis());
+    assert_eq!(actions.iter().map(|a| a.id).collect::<Vec<_>>(), [1]);
+}
+
+#[test]
+fn enter_alone_never_restores_and_y_after_enter_restores_the_row_that_was_picked() {
+    let dir = Dir::new();
+    let undo = dir.undo();
+    trashed_twice(&dir, &undo);
+    let journal = undo.journal().unwrap();
+
+    // Enter, Enter: the question's default is Cancel.
+    let mut tty = Tty::default();
+    let mut choose = |p: &mut UndoPicker| press(p, &[Key::Enter, Key::Enter]);
+    assert_eq!(pick_and_undo(journal, &mut tty, &mut choose), Some(1));
+    assert!(tty.err.contains("nothing was undone"), "{}", tty.err);
+    assert!(!dir.path("old.txt").exists() && !dir.path("build").exists());
+
+    // Down, Enter, y: the second row (the older action) comes back, the newer one stays.
+    let mut tty = Tty::default();
+    let mut choose = |p: &mut UndoPicker| press(p, &[Key::Down, Key::Enter, Key::Char('y')]);
+    assert_eq!(pick_and_undo(journal, &mut tty, &mut choose), Some(0));
+    assert!(dir.path("build/f").exists());
+    assert_eq!(
+        fs::metadata(dir.path("build"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o750,
+        "the permissions come back too"
+    );
+    assert!(!dir.path("old.txt").exists());
+    assert!(tty.out.contains("restored "), "{}", tty.out);
+}
+
+#[test]
+fn esc_and_a_closed_terminal_undo_nothing_and_say_so() {
+    let dir = Dir::new();
+    let undo = dir.undo();
+    trashed_twice(&dir, &undo);
+    let journal = undo.journal().unwrap();
+    for keys in [
+        &[Key::Esc][..],
+        &[Key::Enter, Key::Esc],
+        &[Key::Enter, Key::Char('n')],
+        &[],
+    ] {
+        let mut tty = Tty::default();
+        let mut choose = |p: &mut UndoPicker| press(p, keys);
+        assert_eq!(
+            pick_and_undo(journal, &mut tty, &mut choose),
+            Some(1),
+            "{keys:?}"
+        );
+        assert!(tty.err.contains("nothing was undone"), "{}", tty.err);
+    }
+    assert!(!dir.path("old.txt").exists() && !dir.path("build").exists());
+    // An interrupt is the same.
+    let mut tty = Tty::default();
+    let mut choose = |_: &mut UndoPicker| Some(Ended::Interrupted);
+    assert_eq!(pick_and_undo(journal, &mut tty, &mut choose), Some(1));
+}
+
+#[test]
+fn with_nothing_to_pick_or_no_picker_the_caller_asks_in_words() {
+    let dir = Dir::new();
+    let undo = dir.undo();
+    let journal = undo.journal().unwrap();
+    let mut tty = Tty::default();
+    let mut never = |_: &mut UndoPicker| -> Option<Ended<usize>> { panic!("nothing to show") };
+    assert_eq!(pick_and_undo(journal, &mut tty, &mut never), None);
+    trashed_twice(&dir, &undo);
+    let mut broken = |_: &mut UndoPicker| None;
+    assert_eq!(pick_and_undo(journal, &mut tty, &mut broken), None);
+    assert!(
+        !dir.path("old.txt").exists(),
+        "a picker that cannot be shown restores nothing"
+    );
+}
+
+#[test]
+fn undo_with_no_terminal_keys_is_the_plain_question_and_the_picker_is_never_used() {
+    let dir = Dir::new();
+    let undo = dir.undo();
+    trashed_twice(&dir, &undo);
+    // `Tty` has no menu keys, whatever the shell set.
+    undo.set_menu(omsh_ui::panels::MenuUi {
+        caps: omsh_ui::Caps::plain(),
+        theme: omsh_ui::Theme::default(),
+    });
+    let mut tty = Tty::answering(&["n"]);
+    assert_eq!(undo.undo(&[], b"", &mut tty), 1);
+    assert_eq!(tty.prompts, ["Undo it? [y/N] "]);
+    assert!(tty.err.contains("undo #2"), "{}", tty.err);
+    assert!(!dir.path("old.txt").exists());
+    let mut tty = Tty::answering(&["y"]);
+    assert_eq!(undo.undo(&[], b"", &mut tty), 0);
+    assert!(dir.path("old.txt").exists());
 }

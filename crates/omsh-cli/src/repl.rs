@@ -28,6 +28,7 @@ use omsh_exec::{
 };
 use omsh_history::{Filter, Store};
 use omsh_ui::caps::{Caps, Out};
+use omsh_ui::panels::MenuUi;
 use omsh_ui::shell_look::{AiHint, marks};
 use omsh_ui::text::render_line;
 use omsh_ui::{Look, Paint, Theme};
@@ -203,6 +204,17 @@ fn run_on(
             },
         )
     });
+    // The safety questions get panels with buttons only for a person with the line editor on a
+    // real terminal; everything else (`TERM=dumb`, the plain reader, a pipe) keeps the text
+    // questions. Decided once.
+    let menu_ui =
+        (interactive && editor.is_some() && caps.interactive() && !caps.dumb).then(|| MenuUi {
+            caps,
+            theme: theme.clone(),
+        });
+    if let (Some(undo), Some(ui)) = (undo.as_deref(), &menu_ui) {
+        undo.set_menu(ui.clone());
+    }
     // The hint bar: one dim line above the first prompt, only where there is a line editor to
     // take the keys it names.
     if editor.is_some()
@@ -232,6 +244,11 @@ fn run_on(
     let mut took: Option<Duration> = None;
     // A command ran since the last prompt was drawn: the next prompt starts with a rule.
     let mut ran_since_prompt = false;
+    // The AI can explain a failure: it is set up and not switched off. Decided once, from the
+    // configuration alone (no keyring, no network), so the prompt does no work for it.
+    let ai_ready = ai.is_some() && greeting::ai_hint(&config, options.no_ai) == AiHint::Ready;
+    // `Alt+?` was used at this prompt: the hint for it is gone until another command ran.
+    let mut explained = false;
     // The last commands typed here, for the AI context (S22). Lines the history ignores are
     // left out of it too.
     let mut recent = ai::recent::Recent::new(
@@ -263,12 +280,19 @@ fn run_on(
         // Taken here: a prompt that is drawn is the one that gets the rule, and the one after a
         // Ctrl+C (which ran nothing) does not.
         let separate = pending.is_empty() && std::mem::take(&mut ran_since_prompt);
+        let explain_hint = ai_ready
+            && !explained
+            && matches!(
+                ai::explain::target(recent.last()),
+                ai::explain::Target::Explain { .. }
+            );
         let next = match editor.as_mut() {
-            Some(editor) => read_edited(editor, &shell, &pending, took, separate),
+            Some(editor) => read_edited(editor, &shell, &pending, took, separate, explain_hint),
             None => read_plain(&mut input, interactive, pending.is_empty()),
         };
         let at_end = match next {
             Next::Line(bytes) => {
+                explained = false;
                 if append_utf8(&mut pending, bytes).is_err() {
                     say("oh-my-shell: the input is not valid UTF-8; the line was skipped");
                     pending.clear();
@@ -295,6 +319,7 @@ fn run_on(
                 continue;
             }
             Next::ExplainLast => {
+                explained = true;
                 // Not a line: nothing is stored in history, `$?` stays, and what was typed
                 // stays in the editor.
                 explain_last_key(ai.as_deref(), &mut shell, &mut files, &mut recent, &paint);
@@ -359,6 +384,7 @@ fn run_on(
                     BlastLimits::from_config(&config.safety),
                     undo.as_deref(),
                     &paint,
+                    menu_ui.as_ref(),
                 ),
             }
         } else {
@@ -758,7 +784,12 @@ fn completion_facts(shell: &Shell) -> Facts {
 
 /// Everything the prompt shows, taken from the shell's own variables (not the process
 /// environment, which a `cd` or `export` does not change).
-fn prompt_state(shell: &Shell, took: Option<Duration>, separate: bool) -> PromptState {
+fn prompt_state(
+    shell: &Shell,
+    took: Option<Duration>,
+    separate: bool,
+    explain_hint: bool,
+) -> PromptState {
     let path = |name: &str| {
         shell
             .var(name)
@@ -777,6 +808,7 @@ fn prompt_state(shell: &Shell, took: Option<Duration>, separate: bool) -> Prompt
         last_duration: took,
         separate,
         root: is_root(),
+        explain_hint,
         // What `git` is given, taken from the shell's variables like everything else here.
         git_env: passed_variables()
             .iter()
@@ -794,10 +826,11 @@ fn read_edited(
     pending: &str,
     took: Option<Duration>,
     separate: bool,
+    explain_hint: bool,
 ) -> Next {
     let typed = if pending.is_empty() {
         editor.read(
-            &prompt_state(shell, took, separate),
+            &prompt_state(shell, took, separate, explain_hint),
             Box::new(ShellCommands::of(shell)),
             completion_facts(shell),
         )

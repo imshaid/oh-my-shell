@@ -457,6 +457,28 @@ impl Session {
         }
     }
 
+    /// Like [`Session::expect_plain`], for text in a **panel**: the panel wraps a long sentence
+    /// over several rows and puts its rail in front of each, so the text the person reads is the
+    /// rows joined: escape sequences, the rail at the start of a row and the line breaks are
+    /// taken out and every run of blanks is one blank, in the output and in `needle`. The cursor
+    /// does not move (a panel is drawn in one piece, and its facts are not in any set order).
+    pub fn expect_flat(&mut self, needle: &str, limit: Duration) {
+        let end = Instant::now() + limit;
+        let want = flatten(needle);
+        loop {
+            let (plain, _) = strip_escapes(&self.transcript[self.cursor..]);
+            if flatten(&plain).contains(&want) {
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "never saw {needle:?} (as the text of the rows of a panel); the terminal showed:\n{}",
+                self.transcript
+            );
+            self.pump(Duration::from_millis(50));
+        }
+    }
+
     /// Waits until `needle` has appeared after the cursor. Panics, with everything shown so far,
     /// if it does not within `limit`.
     pub fn expect(&mut self, needle: &str, limit: Duration) {
@@ -509,6 +531,19 @@ impl Session {
     /// at least [`READ_END_GAP`] must have passed since a Ctrl+C or Ctrl+D.
     pub fn write_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.settle_before_send();
+        self.send(bytes, true)
+    }
+
+    /// Types `bytes` at a **panel** (the "Run it?" question, the `undo` picker): a menu that
+    /// hides the cursor for as long as it is open, so waiting for the cursor to come back (as
+    /// [`write_bytes`](Self::write_bytes) does for the line editor) would only cost a second
+    /// for every key. Wait for the panel's text first (it is drawn in one piece, and the keys
+    /// that were waiting are thrown away just before it); then press.
+    pub fn press(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.send(bytes, false)
+    }
+
+    fn send(&mut self, bytes: &[u8], line_editor: bool) -> io::Result<()> {
         let end = Instant::now() + SHORT;
         let mut sent = 0;
         while sent < bytes.len() {
@@ -529,7 +564,7 @@ impl Session {
         if bytes.iter().any(|b| matches!(b, 3 | 4)) {
             self.last_ender = Some(Instant::now());
         }
-        if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
+        if line_editor && bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
             self.submitted = Some(Submitted {
                 length: self.transcript.len(),
                 text: None,
@@ -823,6 +858,24 @@ fn without_side_drawing(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The text of the rows of a panel as one line of words: the rail at the start of a row (`│` or
+/// `|`) and the line breaks are taken out, and every run of blanks becomes one.
+fn flatten(text: &str) -> String {
+    let rows: Vec<&str> = text
+        .split('\n')
+        .map(|row| {
+            let row = row.trim_matches(['\r', ' ']);
+            row.strip_prefix('│')
+                .or_else(|| row.strip_prefix("| "))
+                .unwrap_or(row)
+        })
+        .collect();
+    rows.join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The text without escape sequences (`ESC [ ... final`, an OSC string `ESC ] ... BEL` or

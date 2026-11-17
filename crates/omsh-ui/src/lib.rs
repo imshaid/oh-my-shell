@@ -17,6 +17,8 @@
 //! - [`shell_look`]: the rule between commands, the status chip, the hint bar and the OSC 133 marks
 //!   (UI upgrade, phase 2).
 //! - [`sync`]: does the terminal understand synchronized output (DEC mode 2026).
+//! - [`panels`]: the "Run it?" question and the `undo` picker (UI upgrade, phase 3), the first
+//!   panels that the shell really shows.
 //!
 //! - [`explorer`], [`fuzzy`], [`screen`], [`style`]: the full-screen history explorer (S27a): its
 //!   state, the small fuzzy matcher, the alternate screen with its panic restore, and the mapping
@@ -31,6 +33,7 @@ pub mod look;
 pub mod motion;
 pub mod paint;
 pub mod palette;
+pub mod panels;
 pub mod screen;
 pub mod settings;
 pub mod shell_look;

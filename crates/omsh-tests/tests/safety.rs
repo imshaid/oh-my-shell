@@ -8,6 +8,7 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use omsh_tests::question::{Answer, MODES, Mode, answer, wait_question};
 use omsh_tests::{Ctx, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
@@ -16,12 +17,14 @@ const DANGEROUS_QUESTION: &str = "Run it? [y/N]";
 const NOTHING_RAN: &str = "cancelled; nothing ran";
 const NOWHERE: &str = "/nonexistent-omsh-safety-test";
 
-/// A shell in the home directory, which holds `proj/build/f`.
-fn shell_with_build(ctx: &Ctx) -> io::Result<Session> {
+/// A shell in the home directory, which holds `proj/build/f`. In `mode` the question is the
+/// panel with buttons or, for `Mode::Dumb`, the text question: every test of an outcome runs in
+/// both, and only the keystrokes differ.
+fn shell_with_build(ctx: &Ctx, mode: Mode) -> io::Result<Session> {
     let build = ctx.home().join("proj/build");
     fs::create_dir_all(&build)?;
     fs::write(build.join("f"), "x\n")?;
-    ctx.launch().cwd(ctx.home()).start()
+    mode.launch(ctx.launch()).cwd(ctx.home()).start()
 }
 
 fn config_dir(ctx: &Ctx) -> io::Result<std::path::PathBuf> {
@@ -39,103 +42,113 @@ fn status_is(term: &mut Session, value: u8) -> io::Result<()> {
 
 #[test]
 fn a_dangerous_line_asks_and_n_keeps_the_files() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_build(ctx)?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain("this command is dangerous:", SHORT);
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("n")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        status_is(&mut term, 1)?;
-        assert!(ctx.home().join("proj/build/f").exists());
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_build(ctx, mode)?;
+            term.command("rm -rf proj/build")?;
+            term.expect_flat("this command is dangerous:", SHORT);
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            status_is(&mut term, 1)?;
+            assert!(ctx.home().join("proj/build/f").exists());
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn the_same_line_runs_after_y() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_build(ctx)?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("y")?;
-        status_is(&mut term, 0)?;
-        assert!(!ctx.home().join("proj/build").exists());
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_build(ctx, mode)?;
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Run)?;
+            status_is(&mut term, 0)?;
+            assert!(!ctx.home().join("proj/build").exists());
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn a_critical_line_needs_yes_or_the_target_typed() {
-    pty_test(BIN, |ctx| {
-        let mut term = ctx.launch().cwd(ctx.home()).start()?;
-        let command = format!("shred {NOWHERE}");
-        // Not enough: the shell asks again for the exact words.
-        term.command(&command)?;
-        term.expect_plain("this command is critical:", SHORT);
-        term.expect_plain(&format!("Type \"yes\" or \"{NOWHERE}\" to run it:"), SHORT);
-        term.line("y")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        status_is(&mut term, 1)?;
-        // The target, as written, runs it: `shred` itself complains about the missing file.
-        term.command(&command)?;
-        term.expect_plain("to run it:", SHORT);
-        term.line(NOWHERE)?;
-        term.expect_plain(&format!("shred: {NOWHERE}"), SHORT);
-        // So does "yes".
-        term.prompt();
-        let mark = term.transcript().len();
-        term.command(&command)?;
-        term.expect_plain("to run it:", SHORT);
-        term.line("yes")?;
-        term.prompt();
-        assert!(
-            term.transcript()[mark..].contains(&format!("shred: {NOWHERE}")),
-            "{}",
-            &term.transcript()[mark..]
-        );
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = mode.launch(ctx.launch()).cwd(ctx.home()).start()?;
+            let command = format!("shred {NOWHERE}");
+            // Not enough: the shell asks again for the exact words.
+            term.command(&command)?;
+            term.expect_plain("this command is critical:", SHORT);
+            term.expect_plain(&format!("Type \"yes\" or \"{NOWHERE}\" to run it:"), SHORT);
+            term.line("y")?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            status_is(&mut term, 1)?;
+            // The target, as written, runs it: `shred` itself complains about the missing file.
+            term.command(&command)?;
+            term.expect_plain("to run it:", SHORT);
+            term.line(NOWHERE)?;
+            term.expect_plain(&format!("shred: {NOWHERE}"), SHORT);
+            // So does "yes".
+            term.prompt();
+            let mark = term.transcript().len();
+            term.command(&command)?;
+            term.expect_plain("to run it:", SHORT);
+            term.line("yes")?;
+            term.prompt();
+            assert!(
+                term.transcript()[mark..].contains(&format!("shred: {NOWHERE}")),
+                "{}",
+                &term.transcript()[mark..]
+            );
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn ctrl_c_at_the_question_cancels_gives_130_and_the_shell_goes_on() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_build(ctx)?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.key(3)?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        status_is(&mut term, 130)?;
-        assert!(ctx.home().join("proj/build/f").exists());
-        term.command("echo still-here")?;
-        term.expect_plain("still-here", SHORT);
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_build(ctx, mode)?;
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::CtrlC)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            status_is(&mut term, 130)?;
+            assert!(ctx.home().join("proj/build/f").exists());
+            term.command("echo still-here")?;
+            term.expect_plain("still-here", SHORT);
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn ctrl_c_at_the_question_leaves_no_interrupt_for_the_next_question() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_build(ctx)?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.key(3)?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        // The very next line asks again. Nothing ran in between that would clear a flag left
-        // by Ctrl+C, so a flag left behind would cancel this question before it is answered.
-        term.command("rm -rf proj/build")?;
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("y")?;
-        status_is(&mut term, 0)?;
-        assert!(!ctx.home().join("proj/build").exists());
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_build(ctx, mode)?;
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::CtrlC)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            // The very next line asks again. Nothing ran in between that would clear a flag left
+            // by Ctrl+C, so a flag left behind would cancel this question before it is answered.
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Run)?;
+            status_is(&mut term, 0)?;
+            assert!(!ctx.home().join("proj/build").exists());
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn a_caution_prints_one_note_and_runs() {
-    pty_test(BIN, |ctx| {
+    pty_test(BIN, move |ctx| {
         fs::write(ctx.home().join("notes.txt"), "old\n")?;
         let mut term = ctx.launch().cwd(ctx.home()).start()?;
         term.command("echo new > notes.txt")?;
@@ -149,7 +162,7 @@ fn a_caution_prints_one_note_and_runs() {
 
 #[test]
 fn a_safe_line_shows_nothing_extra() {
-    pty_test(BIN, |ctx| {
+    pty_test(BIN, move |ctx| {
         let mut term = ctx.launch().cwd(ctx.home()).start()?;
         term.command("echo hello-$((1+1))")?;
         term.expect_plain("hello-2", SHORT);
@@ -163,44 +176,48 @@ fn a_safe_line_shows_nothing_extra() {
 
 #[test]
 fn a_command_inside_a_substitution_or_an_alias_is_still_seen() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_build(ctx)?;
-        term.command("alias del='rm -rf'")?;
-        term.command("del proj/build")?;
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("n")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        term.command("echo $(rm -rf proj/build)")?;
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("n")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        term.prompt();
-        assert!(ctx.home().join("proj/build/f").exists());
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_build(ctx, mode)?;
+            term.command("alias del='rm -rf'")?;
+            term.command("del proj/build")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            term.command("echo $(rm -rf proj/build)")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            term.prompt();
+            assert!(ctx.home().join("proj/build/f").exists());
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn the_confirm_setting_in_config_toml_is_read() {
-    pty_test(BIN, |ctx| {
-        fs::write(
-            config_dir(ctx)?.join("config.toml"),
-            "[safety]\nconfirm = \"critical\"\n",
-        )?;
-        let mut term = shell_with_build(ctx)?;
-        // Dangerous, but below "critical": a note, no question, and it runs.
-        term.command("rm -rf proj/build")?;
-        term.expect_plain("oh-my-shell: dangerous: ", SHORT);
-        status_is(&mut term, 0)?;
-        assert!(!ctx.home().join("proj/build").exists());
-        assert!(!term.transcript().contains(DANGEROUS_QUESTION));
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            fs::write(
+                config_dir(ctx)?.join("config.toml"),
+                "[safety]\nconfirm = \"critical\"\n",
+            )?;
+            let mut term = shell_with_build(ctx, mode)?;
+            // Dangerous, but below "critical": a note, no question, and it runs.
+            term.command("rm -rf proj/build")?;
+            term.expect_plain("oh-my-shell: dangerous: ", SHORT);
+            status_is(&mut term, 0)?;
+            assert!(!ctx.home().join("proj/build").exists());
+            assert!(!term.transcript().contains(DANGEROUS_QUESTION));
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn the_startup_file_is_not_asked_about() {
-    pty_test(BIN, |ctx| {
+    pty_test(BIN, move |ctx| {
         fs::create_dir_all(ctx.home().join("initdir"))?;
         fs::write(ctx.home().join("initdir/f"), "x\n")?;
         fs::write(
@@ -217,7 +234,7 @@ fn the_startup_file_is_not_asked_about() {
 
 #[test]
 fn input_that_is_not_typed_runs_without_a_question() {
-    pty_test(BIN, |ctx| {
+    pty_test(BIN, move |ctx| {
         let dir = ctx.home().join("piped/x");
         fs::create_dir_all(&dir)?;
         let output = run_piped(ctx.home(), "rm -rf piped; echo done-$((1+1))\n")?;
@@ -275,129 +292,312 @@ fn many_files(dir: &Path, stem: &str, ext: &str, count: usize) -> io::Result<()>
 
 #[test]
 fn the_question_shows_what_the_line_would_touch() {
-    pty_test(BIN, |ctx| {
-        generous_time(ctx)?;
-        let mut term = shell_with_build(ctx)?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain("this command is dangerous:", SHORT);
-        // One folder and one file of two bytes, all inside the working directory.
-        term.expect_plain("touches 1 file and 1 folder (2 B of file data)", SHORT);
-        term.expect_plain(
-            "none outside the current folder; none owned by someone else",
-            SHORT,
-        );
-        term.expect_plain("for example: proj/build, proj/build/f", SHORT);
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("n")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        // Looking at the files did not change them.
-        assert!(ctx.home().join("proj/build/f").exists());
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            generous_time(ctx)?;
+            let mut term = shell_with_build(ctx, mode)?;
+            term.command("rm -rf proj/build")?;
+            term.expect_flat("this command is dangerous:", SHORT);
+            // One folder and one file of two bytes, all inside the working directory.
+            term.expect_flat("touches 1 file and 1 folder (2 B of file data)", SHORT);
+            term.expect_flat(
+                "none outside the current folder; none owned by someone else",
+                SHORT,
+            );
+            term.expect_flat("for example: proj/build, proj/build/f", SHORT);
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            // Looking at the files did not change them.
+            assert!(ctx.home().join("proj/build/f").exists());
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn something_outside_the_working_directory_is_counted_as_outside() {
-    pty_test(BIN, |ctx| {
-        generous_time(ctx)?;
-        let mut term = shell_with_build(ctx)?;
-        term.command("cd proj && rm -rf ../proj/build")?;
-        term.expect_plain("touches 1 file and 1 folder", SHORT);
-        term.expect_plain("none outside the current folder", SHORT);
-        term.line("n")?;
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            generous_time(ctx)?;
+            let mut term = shell_with_build(ctx, mode)?;
+            term.command("cd proj && rm -rf ../proj/build")?;
+            term.expect_flat("touches 1 file and 1 folder", SHORT);
+            term.expect_flat("none outside the current folder", SHORT);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            term.command("rm -rf proj")?;
+            term.expect_flat("touches 1 file and 2 folders", SHORT);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            // From inside `proj`, the same folder is "." and `..` leaves it.
+            term.command("cd proj")?;
+            term.command("rm -rf ..")?;
+            term.expect_flat("this command is critical:", SHORT);
+            term.expect_flat("outside the current folder", SHORT);
+            // A critical line is never answered with one key, in either form: it is typed.
+            term.line("n")?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            assert!(ctx.home().join("proj/build/f").exists());
+            term.quit()
+        });
+    }
+}
+
+#[test]
+fn a_pattern_with_many_matches_asks_and_a_small_one_only_notes() {
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            generous_time(ctx)?;
+            let many = ctx.home().join("many");
+            many_files(&many, "f", "tmp", 21)?;
+            let mut term = mode.launch(ctx.launch()).cwd(&many).start()?;
+            term.command("rm *.tmp")?;
+            term.expect_flat("The pattern matches 21 entries.", SHORT);
+            term.expect_flat("touches 21 files", SHORT);
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            assert_eq!(fs::read_dir(&many)?.count(), 21);
+            term.quit()?;
+
+            let few = ctx.home().join("few");
+            many_files(&few, "f", "tmp", 20)?;
+            let mut term = mode.launch(ctx.launch()).cwd(&few).start()?;
+            term.command("rm *.tmp")?;
+            term.expect_plain("oh-my-shell: caution: ", SHORT);
+            status_is(&mut term, 0)?;
+            assert_eq!(fs::read_dir(&few)?.count(), 0);
+            assert!(!term.transcript().contains(DANGEROUS_QUESTION));
+            term.quit()
+        });
+    }
+}
+
+#[test]
+fn find_delete_asks_and_says_what_it_searches_not_what_it_deletes() {
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            generous_time(ctx)?;
+            let tree = ctx.home().join("logs");
+            fs::create_dir_all(tree.join("sub"))?;
+            fs::write(tree.join("a.log"), "x\n")?;
+            fs::write(tree.join("sub/b.log"), "x\n")?;
+            fs::write(tree.join("sub/keep.txt"), "x\n")?;
+            let mut term = mode.launch(ctx.launch()).cwd(&tree).start()?;
+            term.command("find . -name '*.log' -delete")?;
+            term.expect_flat("this command is dangerous:", SHORT);
+            term.expect_flat("searches 3 files and 2 folders (6 B of file data); it deletes only the ones its tests match", SHORT);
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            assert!(tree.join("a.log").exists());
+            term.command("find . -name '*.log' -delete")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Run)?;
+            status_is(&mut term, 0)?;
+            assert!(!tree.join("a.log").exists() && !tree.join("sub/b.log").exists());
+            assert!(tree.join("sub/keep.txt").exists());
+            term.quit()
+        });
+    }
+}
+
+#[test]
+fn the_limits_in_config_toml_decide_where_counting_stops() {
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            fs::write(
+                config_dir(ctx)?.join("config.toml"),
+                "[safety]\nblast_radius_max_entries = 3\nblast_radius_max_ms = 60000\n",
+            )?;
+            let mut term = mode.launch(ctx.launch()).cwd(ctx.home()).start()?;
+            many_files(&ctx.home().join("big"), "f", "dat", 10)?;
+            term.command("rm -rf big")?;
+            term.expect_flat("touches at least 2 files and 1 folder", SHORT);
+            term.expect_flat(
+                "counting stopped at the limit of 3 entries; there is more",
+                SHORT,
+            );
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            assert_eq!(fs::read_dir(ctx.home().join("big"))?.count(), 10);
+            term.quit()
+        });
+    }
+}
+
+// -- the panel with buttons (UI upgrade, phase 3) ------------------------------------------------
+//
+// These are about the panel only (a terminal with the line editor). The outcomes of every
+// answer are also tested above in both forms of the question.
+
+/// A shell with the panel, and a `proj/build` to lose.
+fn panel_shell(ctx: &Ctx) -> io::Result<Session> {
+    shell_with_build(ctx, Mode::Panel)
+}
+
+#[test]
+fn a_key_typed_with_the_line_never_answers_the_panel() {
+    pty_test(BIN, move |ctx| {
+        let mut term = panel_shell(ctx)?;
+        term.prompt();
+        // The line, its Enter and `y` all arrive in one piece, as when a script or a paste types
+        // ahead. The `y` was typed before the question existed: it answers nothing.
+        term.press(b"rm -rf proj/build\ryes\r")?;
+        wait_question(&mut term, Mode::Panel);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        term.pump(std::time::Duration::from_millis(100));
+        assert!(
+            ctx.home().join("proj/build/f").exists(),
+            "a key typed ahead ran the line"
+        );
+        assert!(
+            !term.transcript().contains(NOTHING_RAN),
+            "a key typed ahead answered the question: {}",
+            term.transcript()
+        );
+        // Still waiting: Esc is the answer now.
+        answer_esc(&mut term)?;
         term.expect_plain(NOTHING_RAN, SHORT);
-        term.command("rm -rf proj")?;
-        term.expect_plain("touches 1 file and 2 folders", SHORT);
-        term.line("n")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        // From inside `proj`, the same folder is "." and `..` leaves it.
-        term.command("cd proj")?;
-        term.command("rm -rf ..")?;
-        term.expect_plain("this command is critical:", SHORT);
-        term.expect_plain("outside the current folder", SHORT);
-        term.line("n")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
+        status_is(&mut term, 1)?;
         assert!(ctx.home().join("proj/build/f").exists());
         term.quit()
     });
 }
 
 #[test]
-fn a_pattern_with_many_matches_asks_and_a_small_one_only_notes() {
-    pty_test(BIN, |ctx| {
+fn a_key_typed_while_the_question_is_prepared_never_answers_it() {
+    pty_test(BIN, move |ctx| {
+        // A tree big enough that counting it takes a moment: the question is not on the screen
+        // yet when the key arrives.
         generous_time(ctx)?;
-        let many = ctx.home().join("many");
-        many_files(&many, "f", "tmp", 21)?;
-        let mut term = ctx.launch().cwd(&many).start()?;
-        term.command("rm *.tmp")?;
-        term.expect_plain("The pattern matches 21 entries.", SHORT);
-        term.expect_plain("touches 21 files", SHORT);
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("n")?;
+        many_files(&ctx.home().join("proj/big"), "f", "dat", 4000)?;
+        let mut term = panel_shell(ctx)?;
+        term.prompt();
+        term.line("rm -rf proj")?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        term.press(b"y")?;
+        wait_question(&mut term, Mode::Panel);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        term.pump(std::time::Duration::from_millis(100));
+        assert!(
+            ctx.home().join("proj/build/f").exists(),
+            "a key typed before the question was drawn answered it"
+        );
+        answer(&mut term, Mode::Panel, Answer::Cancel)?;
         term.expect_plain(NOTHING_RAN, SHORT);
-        assert_eq!(fs::read_dir(&many)?.count(), 21);
-        term.quit()?;
+        term.quit()
+    });
+}
 
-        let few = ctx.home().join("few");
-        many_files(&few, "f", "tmp", 20)?;
-        let mut term = ctx.launch().cwd(&few).start()?;
-        term.command("rm *.tmp")?;
-        term.expect_plain("oh-my-shell: caution: ", SHORT);
-        status_is(&mut term, 0)?;
-        assert_eq!(fs::read_dir(&few)?.count(), 0);
-        assert!(!term.transcript().contains(DANGEROUS_QUESTION));
+/// Esc, as a terminal sends it.
+fn answer_esc(term: &mut Session) -> io::Result<()> {
+    term.press(b"\x1b")
+}
+
+#[test]
+fn enter_alone_and_esc_cancel_and_the_status_says_so() {
+    for keys in [&b"\r"[..], b"\x1b"] {
+        pty_test(BIN, move |ctx| {
+            let mut term = panel_shell(ctx)?;
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, Mode::Panel);
+            term.press(keys)?;
+            term.expect_plain(NOTHING_RAN, SHORT);
+            status_is(&mut term, 1)?;
+            assert!(ctx.home().join("proj/build/f").exists(), "{keys:?}");
+            term.quit()
+        });
+    }
+}
+
+#[test]
+fn the_arrow_keys_move_between_the_buttons_and_enter_chooses() {
+    // From Cancel, one step back is "Run anyway" (no trash is offered for `rm -rf` of a folder
+    // in a home with no journal under --no-config); every direction key does it.
+    for key in [&b"\x1b[D"[..], b"\x1b[A", b"\x1b[Z"] {
+        pty_test(BIN, move |ctx| {
+            fs::create_dir_all(ctx.home().join("proj/build"))?;
+            fs::write(ctx.home().join("proj/build/f"), "x\n")?;
+            let mut term = ctx.launch().arg("--no-config").cwd(ctx.home()).start()?;
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, Mode::Panel);
+            term.press(key)?;
+            term.press(b"\r")?;
+            status_is(&mut term, 0)?;
+            assert!(!ctx.home().join("proj/build").exists(), "{key:?}");
+            term.quit()
+        });
+    }
+    // And forward from Cancel wraps to the first button, which here is "Run anyway" too.
+    for key in [&b"\x1b[C"[..], b"\x1b[B", b"\t"] {
+        pty_test(BIN, move |ctx| {
+            fs::create_dir_all(ctx.home().join("proj/build"))?;
+            fs::write(ctx.home().join("proj/build/f"), "x\n")?;
+            let mut term = ctx.launch().arg("--no-config").cwd(ctx.home()).start()?;
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, Mode::Panel);
+            term.press(key)?;
+            term.press(b"\r")?;
+            status_is(&mut term, 0)?;
+            assert!(!ctx.home().join("proj/build").exists(), "{key:?}");
+            term.quit()
+        });
+    }
+}
+
+#[test]
+fn the_panel_goes_away_and_the_cursor_comes_back() {
+    pty_test(BIN, move |ctx| {
+        let mut term = panel_shell(ctx)?;
+        term.command("rm -rf proj/build")?;
+        wait_question(&mut term, Mode::Panel);
+        let shown = term.transcript().len();
+        assert!(
+            term.transcript()[..shown].contains("\x1b[?25l"),
+            "the cursor is hidden while the panel is open"
+        );
+        answer(&mut term, Mode::Panel, Answer::Cancel)?;
+        term.expect_plain(NOTHING_RAN, SHORT);
+        status_is(&mut term, 1)?;
+        let text = term.transcript();
+        let hide = text.rfind("\x1b[?25l").unwrap();
+        let show = text.rfind("\x1b[?25h").unwrap();
+        assert!(show > hide, "the cursor must be shown again: {text:?}");
+        // Cleared from the panel's first row to the end of the screen.
+        assert!(text[hide..].contains("\x1b[J"), "{text:?}");
         term.quit()
     });
 }
 
 #[test]
-fn find_delete_asks_and_says_what_it_searches_not_what_it_deletes() {
-    pty_test(BIN, |ctx| {
-        generous_time(ctx)?;
-        let tree = ctx.home().join("logs");
-        fs::create_dir_all(tree.join("sub"))?;
-        fs::write(tree.join("a.log"), "x\n")?;
-        fs::write(tree.join("sub/b.log"), "x\n")?;
-        fs::write(tree.join("sub/keep.txt"), "x\n")?;
-        let mut term = ctx.launch().cwd(&tree).start()?;
-        term.command("find . -name '*.log' -delete")?;
-        term.expect_plain("this command is dangerous:", SHORT);
-        term.expect_plain(
-            "searches 3 files and 2 folders (6 B of file data); it deletes only the ones its tests match",
-            SHORT,
-        );
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("n")?;
-        term.expect_plain(NOTHING_RAN, SHORT);
-        assert!(tree.join("a.log").exists());
-        term.command("find . -name '*.log' -delete")?;
-        term.expect_plain(DANGEROUS_QUESTION, SHORT);
-        term.line("y")?;
-        status_is(&mut term, 0)?;
-        assert!(!tree.join("a.log").exists() && !tree.join("sub/b.log").exists());
-        assert!(tree.join("sub/keep.txt").exists());
-        term.quit()
+fn a_hang_up_at_the_panel_ends_the_shell_and_runs_nothing() {
+    pty_test(BIN, move |ctx| {
+        let mut term = panel_shell(ctx)?;
+        term.command("rm -rf proj/build")?;
+        wait_question(&mut term, Mode::Panel);
+        term.hang_up_terminal()?;
+        let status = term.wait_exit(SHORT);
+        assert_eq!(status.code(), Some(129));
+        assert!(ctx.home().join("proj/build/f").exists());
+        Ok(())
     });
 }
 
 #[test]
-fn the_limits_in_config_toml_decide_where_counting_stops() {
-    pty_test(BIN, |ctx| {
-        fs::write(
-            config_dir(ctx)?.join("config.toml"),
-            "[safety]\nblast_radius_max_entries = 3\nblast_radius_max_ms = 60000\n",
-        )?;
-        let mut term = ctx.launch().cwd(ctx.home()).start()?;
-        many_files(&ctx.home().join("big"), "f", "dat", 10)?;
-        term.command("rm -rf big")?;
-        term.expect_plain("touches at least 2 files and 1 folder", SHORT);
-        term.expect_plain(
-            "counting stopped at the limit of 3 entries; there is more",
+fn the_panel_wraps_a_long_reason_instead_of_cutting_it() {
+    pty_test(BIN, move |ctx| {
+        let mut term = panel_shell(ctx)?;
+        term.command("rm -rf proj/build")?;
+        // The whole sentence, over more than one row of an 80-column window.
+        term.expect_flat(
+            "Deletes files without asking, and folders with everything in them. This cannot be undone, unless you choose Move to trash.",
             SHORT,
         );
-        term.line("n")?;
+        wait_question(&mut term, Mode::Panel);
+        answer(&mut term, Mode::Panel, Answer::Cancel)?;
         term.expect_plain(NOTHING_RAN, SHORT);
-        assert_eq!(fs::read_dir(ctx.home().join("big"))?.count(), 10);
         term.quit()
     });
 }

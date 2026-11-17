@@ -16,12 +16,17 @@ use omsh_config::ConfirmLevel;
 use omsh_editor::working_directory;
 use omsh_exec::{
     ExitStatus, Io, LineResult, Outcome, Prepared, ReadError, Shell, Span, TRASH, Terminal,
-    clear_interrupt,
+    clear_interrupt, hung_up,
 };
 use omsh_safety::blast::Radius;
 use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level, Paths, analyze};
-use omsh_ui::{Paint, Token};
+use omsh_ui::inline::Ended;
+use omsh_ui::panels::menu::{current_caps, run_on_terminal};
+use omsh_ui::panels::run_it::{RunChoice, RunIt, static_panel};
+use omsh_ui::panels::{MenuUi, inner_width};
+use omsh_ui::text::{render, wrap};
+use omsh_ui::{Line, Paint, Token, Tone};
 
 use crate::probe::ShellProbe;
 use crate::radius::{self, BlastLimits};
@@ -62,8 +67,12 @@ pub fn run_line(
     blast: BlastLimits,
     undo: Option<&Undo>,
     paint: &Paint,
+    menu: Option<&MenuUi>,
 ) -> LineResult {
-    run_line_outcome(shell, text, at_end, files, confirm, blast, undo, paint).0
+    run_line_outcome(
+        shell, text, at_end, files, confirm, blast, undo, paint, menu,
+    )
+    .0
 }
 
 /// Like [`run_line`], and also says whether the line was really run: `false` when it could not
@@ -82,6 +91,7 @@ pub fn run_line_outcome(
     blast: BlastLimits,
     undo: Option<&Undo>,
     paint: &Paint,
+    menu: Option<&MenuUi>,
 ) -> (LineResult, bool) {
     let prepared = match shell.prepare(text, at_end) {
         Ok(prepared) => prepared,
@@ -98,6 +108,7 @@ pub fn run_line_outcome(
             Some(blast),
             offer_trash,
             paint,
+            menu,
             &mut terminal,
         )
     };
@@ -228,11 +239,17 @@ pub fn decide(
     paint: &Paint,
     terminal: &mut dyn Terminal,
 ) -> Decision {
-    decide_with(analysis, text, confirm, blast, false, paint, terminal)
+    decide_with(analysis, text, confirm, blast, false, paint, None, terminal)
 }
 
 /// Like [`decide`]; with `offer_trash` the question also takes `t`: run it, with the `rm`s
-/// moved to the trash instead.
+/// moved to the trash instead. With `menu`, and a person at a real terminal
+/// ([`Terminal::menu_keys`]), the question is the panel with buttons (UI upgrade, phase 3); in
+/// every other case it is the text and the `[y/N]` line of before, with the same answers.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pieces of the shell the question needs"
+)]
 pub fn decide_with(
     analysis: &Analysis,
     text: &str,
@@ -240,6 +257,7 @@ pub fn decide_with(
     blast: Option<BlastLimits>,
     offer_trash: bool,
     paint: &Paint,
+    menu: Option<&MenuUi>,
     terminal: &mut dyn Terminal,
 ) -> Decision {
     let level = analysis.level();
@@ -263,6 +281,41 @@ pub fn decide_with(
         Some(limits) => radius::measure(&asking, limits),
         None => vec![None; asking.len()],
     };
+    let critical: Vec<&str> = asking
+        .iter()
+        .filter(|finding| finding.level == Level::Critical)
+        .filter_map(|finding| finding.target.as_deref())
+        .collect();
+    if let Some(ui) = panel_for(menu, terminal) {
+        let room = inner_width(&current_caps(ui));
+        let body = panel_body(
+            level,
+            text,
+            &asking,
+            &radii,
+            blast.unwrap_or_default(),
+            if offer_trash {
+                Trash::Button
+            } else {
+                Trash::No
+            },
+            room,
+        );
+        let tone = tone_of(level);
+        if level == Level::Critical {
+            // Not answered with one key: the panel is drawn once and the typed question follows.
+            let caps = current_caps(ui);
+            let lines = static_panel(tone, body, &caps, caps.panel_width(u16::MAX));
+            let mut text = render(&lines, &ui.theme, &caps).join("\n");
+            text.push('\n');
+            terminal.err(&text);
+            return ask_with(level, &critical, false, paint, terminal);
+        }
+        if let Some(decision) = ask_panel(ui, tone, body, offer_trash, terminal) {
+            return decision;
+        }
+        // The panel could not be shown: ask in words, as everywhere else.
+    }
     terminal.err(&panel(
         paint,
         level,
@@ -276,12 +329,57 @@ pub fn decide_with(
             Trash::No
         },
     ));
-    let critical: Vec<&str> = asking
-        .iter()
-        .filter(|finding| finding.level == Level::Critical)
-        .filter_map(|finding| finding.target.as_deref())
-        .collect();
     ask_with(level, &critical, offer_trash, paint, terminal)
+}
+
+/// The panel's settings when this question is to be a panel: only when the shell has them **and**
+/// a person is at a real terminal ([`Terminal::menu_keys`]). Everything else gets the text.
+fn panel_for<'a>(menu: Option<&'a MenuUi>, terminal: &dyn Terminal) -> Option<&'a MenuUi> {
+    menu.filter(|_| terminal.menu_keys())
+}
+
+/// Shows the panel with its buttons and turns the answer into a decision. `None` when the panel
+/// cannot be shown at all (the caller asks in words). **Anything but a clear "run" or "trash" is
+/// a cancel**: Esc, Ctrl+C, the default button, a closed terminal, a hang-up.
+fn ask_panel(
+    ui: &MenuUi,
+    tone: Tone,
+    body: Vec<Line>,
+    offer_trash: bool,
+    terminal: &mut dyn Terminal,
+) -> Option<Decision> {
+    let mut widget = RunIt::new(tone, body, offer_trash);
+    let ended = run_on_terminal(&mut widget, ui, Box::new(hung_up)).ok()?;
+    Some(decision_of(ended, terminal))
+}
+
+/// What a finished panel means.
+fn decision_of(ended: Ended<RunChoice>, terminal: &mut dyn Terminal) -> Decision {
+    match ended {
+        Ended::Chosen(RunChoice::Run) => Decision::Run,
+        Ended::Chosen(RunChoice::Trash) => Decision::Trash,
+        Ended::Chosen(RunChoice::Cancel) | Ended::Cancelled => {
+            terminal.err("oh-my-shell: cancelled; nothing ran\n");
+            Decision::Cancel(DECLINED)
+        }
+        Ended::Interrupted => {
+            terminal.err("oh-my-shell: cancelled; nothing ran\n");
+            Decision::Cancel(INTERRUPTED)
+        }
+        Ended::Closed => {
+            terminal.err("\noh-my-shell: cancelled; nothing ran\n");
+            Decision::Cancel(DECLINED)
+        }
+    }
+}
+
+/// The rail color of the panel for a level.
+fn tone_of(level: Level) -> Tone {
+    match level {
+        Level::Critical | Level::Dangerous => Tone::Danger,
+        Level::Caution => Tone::Warn,
+        Level::Safe => Tone::Ok,
+    }
 }
 
 /// Asks the question for `level`: "Run it? [y/N]" for a dangerous line, and for a critical one
@@ -364,6 +462,8 @@ pub(crate) enum Trash {
     No,
     /// The question offers `t`: the person may have the `rm` go to the trash instead.
     Offered,
+    /// The panel has a "Move to trash" button.
+    Button,
     /// The `rm` goes to the trash. The caller says so itself, in its own words.
     Yes,
 }
@@ -382,8 +482,14 @@ pub(crate) fn reason_text(finding: &Finding, trash: Trash) -> String {
             "{} This cannot be undone, unless you answer t to move it to the trash.",
             finding.reason
         ),
+        Trash::Button if finding.rule.trash_alternative => format!(
+            "{} This cannot be undone, unless you choose Move to trash.",
+            finding.reason
+        ),
         // `find -delete` and the like never go to the trash, whatever happens to the `rm`s.
-        Trash::Offered | Trash::Yes => format!("{} This cannot be undone.", finding.reason),
+        Trash::Offered | Trash::Button | Trash::Yes => {
+            format!("{} This cannot be undone.", finding.reason)
+        }
     }
 }
 
@@ -449,6 +555,82 @@ fn panel(
                     out.push_str(&line);
                 }
                 out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// The rows of the panel with buttons: the level in words and color, the command, one line for
+/// each reason, the target and what it would touch. The same facts as [`panel`], as styled lines
+/// (user text is made harmless when a line is made). Text is **wrapped** to `room` columns, never
+/// cut: a reason or the end of a command is the very thing a person must read before answering.
+fn panel_body(
+    level: Level,
+    text: &str,
+    findings: &[&Finding],
+    radii: &[Option<Radius>],
+    blast: BlastLimits,
+    trash: Trash,
+    room: usize,
+) -> Vec<Line> {
+    let tone = tone_of(level);
+    // The same words as the text panel, with the level in its color.
+    let mut out = vec![
+        Line::new()
+            .tone(Tone::Plain, "this command is ")
+            .tone(tone, level.name())
+            .tone(Tone::Plain, ":"),
+    ];
+    let mut lines = text.trim_end().lines();
+    for line in lines.by_ref().take(SHOWN_LINES) {
+        for row in wrap(&shorten(line), room) {
+            out.push(Line::new().tone(Tone::Plain, &row));
+        }
+    }
+    if lines.next().is_some() {
+        out.push(Line::new().tone(Tone::Dim, "..."));
+    }
+    // `first` goes before the first row, `indent` before the others.
+    let wrapped = |out: &mut Vec<Line>, first: &str, indent: &str, tone: Tone, text: &str| {
+        let inside = room.saturating_sub(first.chars().count()).max(8);
+        for (index, row) in wrap(text, inside).iter().enumerate() {
+            out.push(
+                Line::new()
+                    .tone(Tone::Dim, if index == 0 { first } else { indent })
+                    .tone(tone, row),
+            );
+        }
+    };
+    for (index, finding) in findings.iter().enumerate() {
+        wrapped(
+            &mut out,
+            "- ",
+            "  ",
+            Tone::Plain,
+            &reason_text(finding, trash),
+        );
+        if let Some(target) = &finding.target {
+            wrapped(
+                &mut out,
+                "    on: ",
+                "        ",
+                Tone::Path,
+                &shorten(target),
+            );
+        }
+        if let Some(Some(found)) = radii.get(index) {
+            let cwd = finding
+                .files
+                .as_ref()
+                .and_then(|files| files.cwd.as_deref());
+            for line in radius::lines(found, cwd, blast) {
+                let tone = if line.starts_with("for example:") {
+                    Tone::Dim
+                } else {
+                    Tone::Plain
+                };
+                wrapped(&mut out, "    ", "    ", tone, &line);
             }
         }
     }
@@ -971,6 +1153,7 @@ mod tests {
             None,
             offer,
             &Paint::plain(),
+            None,
             &mut terminal,
         );
         (decision, terminal)
@@ -1071,5 +1254,234 @@ mod tests {
         // `a` is in the trash; `command rm b` ran for good.
         assert!(!dir.0.join("a").exists() && !dir.0.join("b").exists());
         assert_eq!(undo.journal().unwrap().latest_undoable().unwrap().items, 1);
+    }
+
+    // -- the panel with buttons (UI upgrade, phase 3) ------------------------------------------
+
+    use super::{Trash, decision_of, panel_body};
+    use omsh_ui::inline::Ended;
+    use omsh_ui::panels::run_it::RunChoice;
+    use omsh_ui::{Caps, Theme};
+
+    #[test]
+    fn a_finished_panel_runs_only_on_a_clear_run_or_trash() {
+        let said = |ended| {
+            let mut terminal = Scripted::new(&[]);
+            let decision = decision_of(ended, &mut terminal);
+            (decision, terminal.err)
+        };
+        assert_eq!(said(Ended::Chosen(RunChoice::Run)).0, Decision::Run);
+        assert_eq!(said(Ended::Chosen(RunChoice::Trash)).0, Decision::Trash);
+        for (ended, status) in [
+            (Ended::Chosen(RunChoice::Cancel), 1),
+            (Ended::Cancelled, 1),
+            (Ended::Interrupted, 130),
+            (Ended::Closed, 1),
+        ] {
+            let (decision, err) = said(ended);
+            assert_eq!(decision, Decision::Cancel(status));
+            assert!(err.contains("cancelled; nothing ran"), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_without_keys_gets_the_question_in_words_even_when_a_panel_is_wanted() {
+        use omsh_ui::panels::MenuUi;
+        let ui = MenuUi {
+            caps: Caps::plain(),
+            theme: Theme::default(),
+        };
+        let (_, prepared, analysis) = analysis_of("rm -rf build");
+        for answer in ["y", "t", "n", ""] {
+            let mut terminal = Scripted::new(&[Ok(answer)]);
+            let decision = decide_with(
+                &analysis,
+                prepared.text(),
+                D,
+                None,
+                true,
+                &Paint::plain(),
+                Some(&ui),
+                &mut terminal,
+            );
+            assert_eq!(
+                terminal.prompts,
+                ["Run it? [y/N] (t = move to the trash instead) "]
+            );
+            let expected = match answer {
+                "y" => Decision::Run,
+                "t" => Decision::Trash,
+                _ => Decision::Cancel(1),
+            };
+            assert_eq!(decision, expected, "{answer:?}");
+            assert!(terminal.err.contains("this command is dangerous:"));
+        }
+    }
+
+    fn rows_of(body: &[omsh_ui::Line]) -> Vec<String> {
+        body.iter().map(omsh_ui::Line::plain_text).collect()
+    }
+
+    #[test]
+    fn the_panel_body_says_the_level_the_command_and_every_reason() {
+        let (_, prepared, analysis) = analysis_of("git clean -f; rm -rf build");
+        let asking: Vec<_> = analysis.at_least(omsh_safety::Level::Dangerous).collect();
+        let body = panel_body(
+            analysis.level(),
+            prepared.text(),
+            &asking,
+            &vec![None; asking.len()],
+            BlastLimits::default(),
+            Trash::Button,
+            76,
+        );
+        let rows = rows_of(&body);
+        assert_eq!(rows[0], "this command is dangerous:");
+        assert_eq!(rows[1], "git clean -f; rm -rf build");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Deletes files without asking"))
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("unless you choose Move to trash")),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|row| row == "    on: build"), "{rows:?}");
+        // The caution is a note above the panel, not a row of it.
+        assert!(!rows.iter().any(|row| row.contains("git does not track")));
+    }
+
+    #[test]
+    fn without_the_trash_button_the_reason_does_not_promise_it() {
+        let (_, prepared, analysis) = analysis_of("rm -rf build");
+        let asking: Vec<_> = analysis.at_least(omsh_safety::Level::Dangerous).collect();
+        let body = panel_body(
+            analysis.level(),
+            prepared.text(),
+            &asking,
+            &vec![None; asking.len()],
+            BlastLimits::default(),
+            Trash::No,
+            76,
+        );
+        let rows = rows_of(&body);
+        let words = rows
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(words.contains("This cannot be undone."), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("Move to trash")));
+    }
+
+    #[test]
+    fn a_narrow_panel_wraps_the_reasons_and_the_command_and_never_cuts_them() {
+        let line = "rm -rf some/long/folder/name another/long/folder/name";
+        let (_, prepared, analysis) = analysis_of(line);
+        let asking: Vec<_> = analysis.at_least(omsh_safety::Level::Dangerous).collect();
+        let reasons: String = asking.iter().map(|f| f.reason.clone()).collect();
+        for room in [30, 50, 76] {
+            let body = panel_body(
+                analysis.level(),
+                prepared.text(),
+                &asking,
+                &vec![None; asking.len()],
+                BlastLimits::default(),
+                Trash::No,
+                room,
+            );
+            let rows = rows_of(&body);
+            assert!(
+                rows.iter().all(|row| omsh_ui::text::width(row) <= room),
+                "{room}: {rows:?}"
+            );
+            let squeezed: String = rows.concat().chars().filter(|c| *c != ' ').collect();
+            for word in line.split(' ') {
+                assert!(
+                    squeezed.contains(word.replace(' ', "").as_str()),
+                    "{room}: {word} in {rows:?}"
+                );
+            }
+            let reason: String = reasons.chars().filter(|c| *c != ' ').collect();
+            assert!(
+                squeezed.contains(&reason),
+                "{room}: the reason is whole in {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hostile_command_is_inert_in_the_panel_rows() {
+        let line = "rm -rf 'a\x1b[2J\x1b]0;owned\x07\u{202e}b'";
+        let (_, prepared, analysis) = analysis_of(line);
+        let asking: Vec<_> = analysis.at_least(omsh_safety::Level::Dangerous).collect();
+        let body = panel_body(
+            analysis.level(),
+            prepared.text(),
+            &asking,
+            &vec![None; asking.len()],
+            BlastLimits::default(),
+            Trash::No,
+            76,
+        );
+        let caps = Caps::plain();
+        let out = omsh_ui::text::render(&body, &Theme::default(), &caps).join("\n");
+        assert!(
+            !out.contains('\x1b') && !out.contains('\u{202e}') && !out.contains('\u{7}'),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn without_a_terminal_the_question_is_exactly_the_text_of_before() {
+        // The non-TTY look of the safety question (a pipe, `TERM=dumb`, the plain reader): the
+        // text panel and the `[y/N]` line, byte for byte, with no escape and no box.
+        let (decision, terminal) = ask("rm -rf build", D, &[Ok("n")]);
+        assert_eq!(decision, Decision::Cancel(1));
+        assert_eq!(
+            terminal.err,
+            "oh-my-shell: this command is dangerous:\n  rm -rf build\n  - Deletes files without asking, and folders with everything in them. This cannot be undone.\n    on: build\noh-my-shell: cancelled; nothing ran\n"
+        );
+        assert_eq!(terminal.prompts, ["Run it? [y/N] "]);
+        assert!(!terminal.err.contains('\x1b') && !terminal.err.contains('╭'));
+        let (_, terminal) = ask("rm -rf /", D, &[Ok("no")]);
+        assert_eq!(terminal.prompts, ["Type \"yes\" or \"/\" to run it: "]);
+    }
+
+    /// A terminal that says a person is at it.
+    struct WithKeys;
+
+    impl Terminal for WithKeys {
+        fn input_is_terminal(&self) -> bool {
+            true
+        }
+        fn out(&mut self, _text: &str) {}
+        fn err(&mut self, _text: &str) {}
+        fn read_line(&mut self, _: &str, _: bool, _: &mut Vec<u8>) -> Result<(), ReadError> {
+            Err(ReadError::EndOfInput)
+        }
+        fn interrupted(&self) -> bool {
+            false
+        }
+        fn menu_keys(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_panel_needs_both_the_settings_and_a_person_at_a_terminal() {
+        use super::panel_for;
+        use omsh_ui::panels::MenuUi;
+        let ui = MenuUi {
+            caps: Caps::plain(),
+            theme: Theme::default(),
+        };
+        assert!(panel_for(Some(&ui), &WithKeys).is_some());
+        assert!(panel_for(None, &WithKeys).is_none(), "no settings: words");
+        assert!(
+            panel_for(Some(&ui), &Scripted::new(&[])).is_none(),
+            "no keys (a pipe, a script, a test): words"
+        );
     }
 }

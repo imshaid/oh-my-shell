@@ -208,8 +208,10 @@ Usage: `unalias [-a] NAME...`
 Example: `unalias ll`
 
 ### `undo`
-Put back files that a deletion moved to the trash (interactive shell only). With no number it takes the
-newest recorded action.
+Put back files that a deletion moved to the trash (interactive shell only). With no number, at a terminal, it opens
+a picker of the actions that can be undone (`↑` `↓` move, type to filter, Enter reviews, then `y` restores and
+`n` or Esc leaves; Cancel is chosen first, so Enter alone restores nothing); without a terminal it takes the
+newest recorded action and asks `Undo it? [y/N]`. With a number it asks the same question for that action.
 Usage: `undo [--list | NUMBER]`
 Example: `undo --list`
 
@@ -326,7 +328,7 @@ The editor is [reedline](https://crates.io/crates/reedline); the usual emacs key
 | Up, Down | Walk through the history. |
 | Ctrl+R | Opens the history explorer. |
 | Ctrl+P | Opens the command palette (in emacs, vi insert and vi normal mode). |
-| Alt+? | Explains why the last command failed (AI). The typed text stays. |
+| Alt+? | Explains why the last command failed (AI). The typed text stays. After a failure, and when the AI is set up, the prompt shows a dim `Alt+? explain` before the result. |
 | Ctrl+C | Drops the half-typed line. |
 | Ctrl+D | On an empty line, leaves the shell. |
 | Ctrl+Z | While a program runs: stops it (the job is kept; `fg` or `bg` continues it). |
@@ -334,6 +336,31 @@ The editor is [reedline](https://crates.io/crates/reedline); the usual emacs key
 
 A line that starts with `?` is an AI request ([user guide](user-guide.md#ai-help)); `??` explains a command and
 `cmd | ? question` asks about its output.
+
+### The question before a risky line ("Run it?")
+
+A dangerous line opens a panel with three buttons (`Move to trash` only when the trash can take the `rm`). It is
+shown only to a person at a terminal with the line editor; everywhere else the question is the text `Run it? [y/N]`.
+
+| Key | What it does |
+|---|---|
+| `←` `→` `↑` `↓`, Tab, Shift+Tab | Move between the buttons (Cancel is chosen when the panel opens). |
+| Enter | Chooses the marked button. |
+| `t` | Move to trash: runs the line with its `rm`s going to the trash. |
+| `y` | Run anyway. |
+| `n`, Esc | Cancel: nothing runs, `$?` is 1. |
+| Ctrl+C | Cancel, `$?` is 130. |
+
+A critical line is not answered with a key: type `yes` or the target.
+
+### The `undo` picker
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` | Move between the actions. Type to filter. |
+| Enter | Opens the question for the marked action (nothing is restored yet). |
+| `y` | Restore (at the question). |
+| `n`, Esc | Leave without undoing anything. |
 
 ### The history explorer (Ctrl+R)
 

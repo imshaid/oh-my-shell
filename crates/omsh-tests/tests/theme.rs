@@ -11,11 +11,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use omsh_tests::fakehttp::Server;
+use omsh_tests::question::{Answer, MODES, Mode, answer, wait_question};
 use omsh_tests::{Ctx, Launch, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
 
-const QUESTION: &str = "Run it? [y/N]";
 const BRAILLE: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 fn config_dir(ctx: &Ctx) -> io::Result<PathBuf> {
@@ -27,14 +27,24 @@ fn config_dir(ctx: &Ctx) -> io::Result<PathBuf> {
 /// A shell in the home directory (which holds `proj/build/f`) with colors on and a UTF-8
 /// locale, reading `config.toml` with `config` in it.
 fn colored(ctx: &Ctx, config: &str) -> io::Result<Session> {
+    colored_in(ctx, config, Mode::Panel)
+}
+
+/// Like [`colored`]; for `Mode::Dumb` the shell reads with the plain reader (`INSIDE_EMACS`, so
+/// that the terminal still takes colors) and the question is the text one, drawn in color.
+fn colored_in(ctx: &Ctx, config: &str, mode: Mode) -> io::Result<Session> {
     fs::create_dir_all(ctx.home().join("proj/build"))?;
     fs::write(ctx.home().join("proj/build/f"), "x\n")?;
     fs::write(config_dir(ctx)?.join("config.toml"), config)?;
-    ctx.launch()
+    let launch = ctx
+        .launch()
         .env("NO_COLOR", "")
         .env("LANG", "C.UTF-8")
-        .cwd(ctx.home())
-        .start()
+        .cwd(ctx.home());
+    match mode {
+        Mode::Panel => launch.start(),
+        Mode::Dumb => launch.env("INSIDE_EMACS", "1").start(),
+    }
 }
 
 fn theme_file(ctx: &Ctx, name: &str, text: &str) -> io::Result<()> {
@@ -45,10 +55,21 @@ fn theme_file(ctx: &Ctx, name: &str, text: &str) -> io::Result<()> {
 
 // -- the safety question ------------------------------------------------------------------------
 
+/// The text of the question from its first row to the end of what is on the screen: what the
+/// panel (or the text panel) wrote, without the prompts before it.
+fn question_text(term: &Session) -> &str {
+    let text = term.transcript();
+    let at = text
+        .rfind("this command is")
+        .unwrap_or_else(|| panic!("the question was not shown:\n{text}"));
+    &text[at..]
+}
+
 #[test]
-fn the_dangerous_panel_has_a_red_bar_and_a_red_level_word() {
+fn the_text_panel_has_a_red_bar_and_a_red_level_word() {
+    // The plain reader keeps the text question, in color: the bar, the level word, the key.
     pty_test(BIN, |ctx| {
-        let mut term = colored(ctx, "")?;
+        let mut term = colored_in(ctx, "", Mode::Dumb)?;
         term.command("rm -rf proj/build")?;
         term.expect("this command is \x1b[31mdangerous\x1b[0m:", SHORT);
         // The bar replaces the two blanks in front of each line.
@@ -63,90 +84,179 @@ fn the_dangerous_panel_has_a_red_bar_and_a_red_level_word() {
 }
 
 #[test]
-fn no_color_keeps_the_bar_and_drops_the_color() {
+fn the_panel_has_a_red_rail_a_red_level_word_and_cyan_keys() {
     pty_test(BIN, |ctx| {
-        fs::create_dir_all(ctx.home().join("proj/build"))?;
-        let mut term = ctx
-            .launch()
-            .env("LANG", "C.UTF-8") // NO_COLOR=1 stays
-            .cwd(ctx.home())
-            .start()?;
+        let mut term = colored(ctx, "")?;
         term.command("rm -rf proj/build")?;
-        term.expect_plain("this command is dangerous:", SHORT);
-        term.expect_plain("│ rm -rf proj/build", SHORT);
-        term.expect_plain("│ - Deletes files without asking", SHORT);
-        term.expect_plain(QUESTION, SHORT);
-        term.line("n")?;
-        term.expect_plain("cancelled; nothing ran", SHORT);
+        term.expect("this command is \x1b[31mdangerous\x1b[0m:", SHORT);
+        term.expect("\x1b[31m│\x1b[0m rm -rf proj/build", SHORT);
+        term.expect(
+            "\x1b[31m│\x1b[0m \x1b[2;90m- \x1b[0mDeletes files without asking",
+            SHORT,
+        );
+        wait_question(&mut term, Mode::Panel);
+        // The chosen button is reversed, and the keys in the bottom rule are in the key color.
         assert!(
-            !term.transcript().contains("\x1b[31m") && !term.transcript().contains("\x1b[34m"),
-            "NO_COLOR: no color at all:\n{}",
+            term.transcript().contains("\x1b[7m"),
+            "{}",
             term.transcript()
         );
+        assert!(
+            question_text(&term).contains("\x1b[36mEnter\x1b[0m"),
+            "{}",
+            question_text(&term)
+        );
+        answer(&mut term, Mode::Panel, Answer::Cancel)?;
+        term.expect_plain("cancelled; nothing ran", SHORT);
         Ok(())
     });
+}
+
+#[test]
+fn no_color_keeps_the_bar_and_drops_the_color() {
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            fs::create_dir_all(ctx.home().join("proj/build"))?;
+            let launch = ctx
+                .launch()
+                .env("LANG", "C.UTF-8") // NO_COLOR=1 stays
+                .cwd(ctx.home());
+            let mut term = match mode {
+                Mode::Panel => launch.start()?,
+                Mode::Dumb => launch.env("INSIDE_EMACS", "1").start()?,
+            };
+            term.command("rm -rf proj/build")?;
+            term.expect_plain("this command is dangerous:", SHORT);
+            term.expect_plain("│ rm -rf proj/build", SHORT);
+            term.expect_plain("│ - Deletes files without asking", SHORT);
+            wait_question(&mut term, mode);
+            // What the question wrote has no color; the editor's own paint is not looked at.
+            let shown = question_text(&term).to_owned();
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain("cancelled; nothing ran", SHORT);
+            for color in [
+                "\x1b[31m",
+                "\x1b[34m",
+                "\x1b[36m",
+                "\x1b[32m",
+                "\x1b[90m",
+                "\x1b[2;90m",
+            ] {
+                assert!(!shown.contains(color), "NO_COLOR: {color:?} in:\n{shown}");
+            }
+            if mode == Mode::Panel {
+                assert!(
+                    shown.contains("\x1b[7m"),
+                    "the chosen button stays reversed:\n{shown}"
+                );
+            }
+            Ok(())
+        });
+    }
 }
 
 #[test]
 fn in_the_c_locale_the_bar_is_ascii() {
-    pty_test(BIN, |ctx| {
-        fs::create_dir_all(ctx.home().join("proj/build"))?;
-        let mut term = ctx.launch().cwd(ctx.home()).start()?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain("| rm -rf proj/build", SHORT);
-        term.expect_plain("| - Deletes files without asking", SHORT);
-        term.line("n")?;
-        term.expect_plain("cancelled; nothing ran", SHORT);
-        assert!(!term.transcript().contains('│'), "{}", term.transcript());
-        Ok(())
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            fs::create_dir_all(ctx.home().join("proj/build"))?;
+            let mut term = mode.launch(ctx.launch()).cwd(ctx.home()).start()?;
+            term.command("rm -rf proj/build")?;
+            term.expect_plain("| rm -rf proj/build", SHORT);
+            term.expect_plain("| - Deletes files without asking", SHORT);
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain("cancelled; nothing ran", SHORT);
+            assert!(!term.transcript().contains('│'), "{}", term.transcript());
+            Ok(())
+        });
+    }
 }
 
 #[test]
 fn a_delete_that_may_go_to_the_trash_does_not_say_it_cannot_be_undone() {
-    pty_test(BIN, |ctx| {
-        let mut term = colored(ctx, "")?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain("This cannot be undone, unless you answer t", SHORT);
-        term.expect_plain("(t = move to the trash instead)", SHORT);
-        term.line("n")?;
-        term.expect_plain("cancelled; nothing ran", SHORT);
-        Ok(())
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = colored_in(ctx, "", mode)?;
+            term.command("rm -rf proj/build")?;
+            match mode {
+                Mode::Panel => term.expect_flat(
+                    "This cannot be undone, unless you choose Move to trash.",
+                    SHORT,
+                ),
+                Mode::Dumb => {
+                    term.expect_flat("This cannot be undone, unless you answer t", SHORT);
+                    term.expect_flat("(t = move to the trash instead)", SHORT);
+                }
+            }
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain("cancelled; nothing ran", SHORT);
+            Ok(())
+        });
+    }
 }
 
 #[test]
 fn a_delete_for_good_says_so() {
-    pty_test(BIN, |ctx| {
-        let mut term = colored(ctx, "")?;
-        // `find -delete` never goes to the trash.
-        term.command("find proj/build -delete")?;
-        term.expect_plain(
-            "without asking about each one. This cannot be undone.",
-            SHORT,
-        );
-        term.line("n")?;
-        term.expect_plain("cancelled; nothing ran", SHORT);
-        Ok(())
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = colored_in(ctx, "", mode)?;
+            // `find -delete` never goes to the trash.
+            term.command("find proj/build -delete")?;
+            term.expect_flat(
+                "without asking about each one. This cannot be undone.",
+                SHORT,
+            );
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain("cancelled; nothing ran", SHORT);
+            Ok(())
+        });
+    }
 }
 
 // -- theme files ---------------------------------------------------------------------------------
 
 #[test]
-fn a_theme_file_changes_the_colors() {
+fn a_theme_file_changes_the_colors_of_the_text_question() {
     pty_test(BIN, |ctx| {
         theme_file(
             ctx,
             "mine",
             "[tokens]\ndanger = \"magenta\"\naccent = \"green\"\n",
         )?;
-        let mut term = colored(ctx, "[ui]\ntheme = \"mine\"\n")?;
+        let mut term = colored_in(ctx, "[ui]\ntheme = \"mine\"\n", Mode::Dumb)?;
         term.command("rm -rf proj/build")?;
         term.expect("this command is \x1b[35mdangerous\x1b[0m:", SHORT);
         term.expect("\x1b[35m│\x1b[0m rm -rf proj/build", SHORT);
         term.expect("Run it? \x1b[32m[y/N]\x1b[0m", SHORT);
         term.line("n")?;
+        term.expect_plain("cancelled; nothing ran", SHORT);
+        Ok(())
+    });
+}
+
+#[test]
+fn a_theme_file_changes_the_colors_of_the_panel_and_the_failure_symbol() {
+    pty_test(BIN, |ctx| {
+        theme_file(
+            ctx,
+            "mine",
+            "[tokens]\ndanger = \"magenta\"\nkey = \"green\"\n",
+        )?;
+        let mut term = colored(ctx, "[ui]\ntheme = \"mine\"\n")?;
+        term.command("rm -rf proj/build")?;
+        term.expect("this command is \x1b[35mdangerous\x1b[0m:", SHORT);
+        term.expect("\x1b[35m│\x1b[0m rm -rf proj/build", SHORT);
+        wait_question(&mut term, Mode::Panel);
+        // The keys of the bottom rule are in the `key` token.
+        assert!(
+            question_text(&term).contains("\x1b[32mEnter\x1b[0m"),
+            "{}",
+            question_text(&term)
+        );
+        answer(&mut term, Mode::Panel, Answer::Cancel)?;
         term.expect_plain("cancelled; nothing ran", SHORT);
         // The failure symbol of the prompt is the same token.
         term.command("false")?;
@@ -181,7 +291,8 @@ fn a_broken_theme_file_is_reported_and_the_shell_starts_with_nord() {
         fs::create_dir_all(ctx.home().join("proj/build"))?;
         term.command("rm -rf proj/build")?;
         term.expect("this command is \x1b[35mdangerous\x1b[0m:", SHORT);
-        term.line("n")?;
+        wait_question(&mut term, Mode::Panel);
+        answer(&mut term, Mode::Panel, Answer::Cancel)?;
         term.expect_plain("cancelled; nothing ran", SHORT);
         term.command("echo still-here")?;
         term.expect_plain("still-here", SHORT);

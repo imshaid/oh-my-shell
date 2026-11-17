@@ -449,6 +449,7 @@ pub fn pipe(
             pipe_env.blast,
             pipe_env.undo,
             env.paint,
+            None,
         );
         // Let go of the writing end, or the reader never sees the end of the output.
         drop(table);

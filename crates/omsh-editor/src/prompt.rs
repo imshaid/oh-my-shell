@@ -77,6 +77,10 @@ pub struct PromptState {
     pub separate: bool,
     /// The shell runs as root: the indicator is `#`.
     pub root: bool,
+    /// The last command failed in a way the AI can be asked about, and it can be asked: the
+    /// spaced layout shows `Alt+? explain` before the status chip. Decided by the shell once for
+    /// each prompt from what it already knows; the prompt does no work for it.
+    pub explain_hint: bool,
     /// The shell's values of the variables that `git` is given (see
     /// [`passed_variables`](crate::passed_variables)). Only the git segment reads them.
     pub git_env: Vec<(OsString, OsString)>,
@@ -186,8 +190,17 @@ impl ShellPrompt {
                         if std::mem::replace(&mut chip_done, true) {
                             continue;
                         }
-                        shell_look::chip(state.last_status, state.last_duration, look.unicode)
-                            .map(|chip| tones.line(&chip))
+                        let chip =
+                            shell_look::chip(state.last_status, state.last_duration, look.unicode)
+                                .map(|chip| tones.line(&chip));
+                        // The hint comes first, so the result stays at the edge. Only after a
+                        // failure: a chip is always there then (there is a status to show).
+                        match chip {
+                            Some(chip) if state.explain_hint && state.last_status != 0 => Some(
+                                format!("{} {chip}", tones.line(&shell_look::explain_hint())),
+                            ),
+                            other => other,
+                        }
                     }
                     _ => text_of(segment),
                 };
@@ -431,6 +444,7 @@ mod tests {
             last_duration: None,
             separate: false,
             root: false,
+            explain_hint: false,
             git_env: Vec::new(),
         }
     }
@@ -931,6 +945,63 @@ mod tests {
         );
         flag.store(false, Ordering::Relaxed);
         assert_eq!(right(&p), "✓ 4 ms", "and gone again");
+    }
+
+    fn failed_with_hint(hint: bool, status: u8) -> PromptState {
+        PromptState {
+            explain_hint: hint,
+            ..ran(status, Duration::from_millis(3))
+        }
+    }
+
+    #[test]
+    fn a_failure_shows_the_explain_hint_dim_before_the_chip_when_the_shell_says_so() {
+        let look = spaced(&[Segment::Cwd], &DEFAULT_RIGHT);
+        let p = build(&look, &failed_with_hint(true, 127));
+        assert_eq!(right(&p), "Alt+? explain ✘ 127");
+        let raw = p.render_prompt_right();
+        assert!(raw.starts_with("\x1b[2"), "dim: {raw:?}");
+        assert!(
+            raw.ends_with("\x1b[31m✘ 127\x1b[0m"),
+            "the result stays at the edge: {raw:?}"
+        );
+        // Words, not only a color: with NO_COLOR the hint is still there.
+        let mut plain = spaced(&[Segment::Cwd], &DEFAULT_RIGHT);
+        plain.caps = terminal(true, true);
+        assert!(right(&build(&plain, &failed_with_hint(true, 1))).starts_with("Alt+? explain "));
+    }
+
+    #[test]
+    fn the_explain_hint_is_not_shown_without_the_say_so_after_a_success_or_in_the_plain_layout() {
+        let look = spaced(&[Segment::Cwd], &DEFAULT_RIGHT);
+        assert_eq!(right(&build(&look, &failed_with_hint(false, 127))), "✘ 127");
+        let ok = PromptState {
+            explain_hint: true,
+            ..ran(0, Duration::from_millis(4))
+        };
+        assert_eq!(right(&build(&look, &ok)), "✓ 4 ms");
+        assert_eq!(
+            right(&build(
+                &look,
+                &PromptState {
+                    explain_hint: true,
+                    ..state()
+                }
+            )),
+            ""
+        );
+        let plain = self::look(&[Segment::Cwd], &[Segment::Status]);
+        assert!(!right(&build(&plain, &failed_with_hint(true, 127))).contains("Alt+?"));
+    }
+
+    #[test]
+    fn the_explain_hint_is_ascii_in_the_ascii_look() {
+        let mut look = spaced(&[Segment::Cwd], &DEFAULT_RIGHT);
+        look.unicode = false;
+        look.caps = terminal(false, false);
+        let p = build(&look, &failed_with_hint(true, 127));
+        assert_eq!(right(&p), "Alt+? explain x 127");
+        assert!(p.render_prompt_right().is_ascii());
     }
 
     #[test]

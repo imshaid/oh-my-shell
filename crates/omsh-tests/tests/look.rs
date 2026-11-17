@@ -11,6 +11,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use omsh_tests::fakehttp::Server;
 use omsh_tests::session::strip_escapes;
 use omsh_tests::{Ctx, SHORT, Session, pty_test};
 
@@ -635,6 +636,138 @@ fn a_slow_command_shows_its_time() {
             plain.contains("ok 2.2 s") || plain.contains("ok 2.3 s"),
             "{plain}"
         );
+        term.quit()
+    });
+}
+
+// -- the explain hint (phase 3) -----------------------------------------------------------------
+
+/// A shell whose AI is set up (a fake server on this machine), with the hint bar off.
+fn with_ai(ctx: &Ctx, server: &Server) -> io::Result<()> {
+    config(
+        ctx,
+        &format!(
+            "[ui]\ngreeting = \"never\"\n[ai]\nprovider = \"openai-compatible\"\nmodel = \"m\"\nbase_url = \"{}\"\n",
+            server.url("/v1")
+        ),
+    )
+}
+
+fn offline_launch(ctx: &Ctx) -> omsh_tests::Launch {
+    ctx.launch().env(
+        "DBUS_SESSION_BUS_ADDRESS",
+        "unix:path=/nonexistent/omsh-test-bus",
+    )
+}
+
+/// The text of the prompt that was drawn last: from the last `$ ` back to the line before it.
+fn last_header(term: &Session) -> String {
+    let text = text_of(term).replace('\r', "");
+    let rows: Vec<&str> = text.lines().collect();
+    rows.iter()
+        .rev()
+        .find(|row| row.contains("x 1") || row.contains("ok ") || row.contains("Alt+?"))
+        .copied()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn after_a_failure_the_prompt_says_alt_question_mark_explains_when_the_ai_is_ready() {
+    pty_test(BIN, |ctx| {
+        let server = Server::start_answering(Duration::ZERO, false, &["It failed."])?;
+        with_ai(ctx, &server)?;
+        let mut term = offline_launch(ctx).start()?;
+        term.command("false")?;
+        term.prompt();
+        let header = last_header(&term);
+        assert!(header.contains("Alt+? explain x 1"), "{header:?}");
+        // After a success there is nothing to explain.
+        term.command("true")?;
+        term.prompt();
+        let header = last_header(&term);
+        assert!(!header.contains("Alt+?"), "{header:?}");
+        assert!(server.requests().is_empty(), "the hint is not a request");
+        term.quit()
+    });
+}
+
+#[test]
+fn the_hint_is_not_shown_when_nothing_can_be_asked() {
+    // No AI set up, `--no-ai`, and `ai.enabled = false`: no hint, only the result.
+    for (name, config_text, arg) in [
+        ("not set up", "[ui]\ngreeting = \"never\"\n", None),
+        (
+            "--no-ai",
+            "[ui]\ngreeting = \"never\"\n[ai]\nprovider = \"ollama\"\nmodel = \"m\"\n",
+            Some("--no-ai"),
+        ),
+        (
+            "switched off",
+            "[ui]\ngreeting = \"never\"\n[ai]\nenabled = false\n",
+            None,
+        ),
+    ] {
+        pty_test(BIN, move |ctx| {
+            config(ctx, config_text)?;
+            let mut launch = ctx.launch();
+            if let Some(arg) = arg {
+                launch = launch.arg(arg);
+            }
+            let mut term = launch.start()?;
+            term.command("false")?;
+            term.prompt();
+            let header = last_header(&term);
+            assert!(header.contains("x 1"), "{name}: {header:?}");
+            assert!(!header.contains("Alt+?"), "{name}: {header:?}");
+            term.quit()
+        });
+    }
+}
+
+#[test]
+fn the_hint_is_not_shown_in_the_plain_style() {
+    pty_test(BIN, |ctx| {
+        let server = Server::start_answering(Duration::ZERO, false, &["x"])?;
+        config(
+            ctx,
+            &format!(
+                "[ui]\ngreeting = \"never\"\nstyle = \"plain\"\n[ai]\nprovider = \"openai-compatible\"\nmodel = \"m\"\nbase_url = \"{}\"\n",
+                server.url("/v1")
+            ),
+        )?;
+        let mut term = offline_launch(ctx).start()?;
+        term.command("false")?;
+        term.prompt();
+        assert!(!text_of(&term).contains("Alt+?"), "{}", text_of(&term));
+        term.quit()
+    });
+}
+
+#[test]
+fn the_hint_goes_once_alt_question_mark_has_been_used() {
+    pty_test(BIN, |ctx| {
+        let server = Server::start_answering(Duration::ZERO, false, &["It failed because."])?;
+        with_ai(ctx, &server)?;
+        let mut term = offline_launch(ctx).start()?;
+        term.command("false")?;
+        term.prompt();
+        assert!(last_header(&term).contains("Alt+? explain"));
+        let from = term.transcript().len();
+        term.write_bytes(b"\x1b?")?;
+        term.expect("It failed because.", SHORT);
+        let answered = from
+            + term.transcript()[from..]
+                .find("It failed because.")
+                .unwrap();
+        painted(&mut term, answered);
+        // The prompt that came back keeps the result and no longer offers the key.
+        let text = text_of(&term);
+        let after = &text[text.rfind("It failed because.").unwrap()..];
+        assert!(after.contains("x 1"), "{after:?}");
+        assert!(!after.contains("Alt+?"), "{after:?}");
+        assert_eq!(server.requests().len(), 1, "one explanation was asked for");
+        term.cancel_line()?;
         term.quit()
     });
 }

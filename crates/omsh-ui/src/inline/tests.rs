@@ -294,6 +294,9 @@ fn colors_come_from_the_theme_and_are_dropped_for_a_pipe() {
 struct ScriptedKeys {
     inputs: VecDeque<io::Result<Input>>,
     waits: Vec<Option<Duration>>,
+    /// How many keys were read when each `discard` happened.
+    discards: Vec<usize>,
+    read: usize,
 }
 
 impl ScriptedKeys {
@@ -301,6 +304,8 @@ impl ScriptedKeys {
         ScriptedKeys {
             inputs: inputs.into_iter().map(Ok).collect(),
             waits: Vec::new(),
+            discards: Vec::new(),
+            read: 0,
         }
     }
 }
@@ -308,7 +313,12 @@ impl ScriptedKeys {
 impl KeySource for ScriptedKeys {
     fn next(&mut self, wait: Option<Duration>) -> io::Result<Input> {
         self.waits.push(wait);
+        self.read += 1;
         self.inputs.pop_front().unwrap_or(Ok(Input::Closed))
+    }
+
+    fn discard(&mut self) {
+        self.discards.push(self.read);
     }
 }
 
@@ -480,4 +490,65 @@ fn run_writes_nothing_and_refuses_when_nobody_can_answer() {
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert!(out.is_empty());
     }
+}
+
+#[test]
+fn ctrl_c_is_told_from_esc_by_run_menu() {
+    let run_with = |input: Input| {
+        let mut keys = ScriptedKeys::new(vec![input]);
+        let mut out = Vec::new();
+        run_menu(&mut buttons(), &mut keys, &mut out, &theme(), &caps()).unwrap()
+    };
+    assert_eq!(run_with(Input::Interrupted), Ended::Interrupted);
+    assert_eq!(run_with(Input::Key(Key::Esc)), Ended::Cancelled);
+    assert_eq!(run_with(Input::Closed), Ended::Closed);
+    assert_eq!(run_with(Input::Key(Key::Enter)), Ended::Chosen(2));
+}
+
+#[test]
+fn waiting_keys_are_discarded_before_the_first_drawing_and_after_the_menu_is_gone() {
+    let mut keys = ScriptedKeys::new(vec![Input::Key(Key::Left), Input::Key(Key::Enter)]);
+    let mut out = Vec::new();
+    run_menu(&mut buttons(), &mut keys, &mut out, &theme(), &caps()).unwrap();
+    // Once before any key was read (so nothing typed before the menu can answer it), once after
+    // the last one (so nothing typed for it reaches the next prompt).
+    assert_eq!(keys.discards, [0, 2]);
+}
+
+#[test]
+fn the_discard_after_the_menu_also_happens_when_the_menu_fails() {
+    struct Failing(Vec<usize>);
+    impl KeySource for Failing {
+        fn next(&mut self, _wait: Option<Duration>) -> io::Result<Input> {
+            Err(io::Error::other("the terminal broke"))
+        }
+        fn discard(&mut self) {
+            self.0.push(0);
+        }
+    }
+    let mut keys = Failing(Vec::new());
+    let mut out = Vec::new();
+    let result = run_menu(&mut buttons(), &mut keys, &mut out, &theme(), &caps());
+    assert!(result.is_err());
+    assert_eq!(keys.0.len(), 2);
+    assert!(String::from_utf8(out).unwrap().ends_with("\x1b[?25h"));
+}
+
+#[test]
+fn a_ctrl_c_event_is_an_interrupt_and_a_plain_c_is_a_letter() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let key = |code, modifiers| Event::Key(KeyEvent::new(code, modifiers));
+    assert_eq!(
+        input_of(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Some(Input::Interrupted)
+    );
+    assert_eq!(
+        input_of(&key(KeyCode::Char('c'), KeyModifiers::NONE)),
+        Some(Input::Key(Key::Char('c')))
+    );
+    assert_eq!(
+        input_of(&key(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+        None
+    );
+    assert_eq!(input_of(&Event::FocusGained), None);
 }

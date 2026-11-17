@@ -94,6 +94,13 @@ pub trait Terminal {
     }
     /// Whether Ctrl+C was pressed. Checked while waiting for the network.
     fn interrupted(&self) -> bool;
+    /// Whether a person is at a real terminal for this command: standard input **and** standard
+    /// error are terminals, so that a panel can be drawn on one and keys read from the other. A
+    /// scripted terminal, a pipe, `undo 2>file` and `< /dev/null` are all `false`, and the
+    /// caller then asks its plain text question. False by default.
+    fn menu_keys(&self) -> bool {
+        false
+    }
 }
 
 /// What the `omsh` builtin runs. Implemented by the program that owns the shell.
@@ -238,6 +245,15 @@ impl Terminal for Handle<'_> {
 
     fn interrupted(&self) -> bool {
         self.shell.interrupted()
+    }
+
+    fn menu_keys(&self) -> bool {
+        let is_terminal = |fd: u32| {
+            self.io
+                .get(fd)
+                .is_some_and(|slot| slot.as_fd().is_terminal())
+        };
+        is_terminal(0) && is_terminal(2)
     }
 }
 

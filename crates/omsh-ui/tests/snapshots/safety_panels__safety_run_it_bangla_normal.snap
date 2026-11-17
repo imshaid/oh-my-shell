@@ -1,0 +1,57 @@
+---
+source: crates/omsh-ui/tests/safety_panels.rs
+expression: "format!(\"when it opens (Cancel chosen):\\n{first}\\n\\nafter Left:\\n{moved}\\n\\nno trash offered:\\n{two}\\n\\nin 36 columns:\\n{narrow}\")"
+---
+when it opens (Cancel chosen):
+⟨31⟩╭─⟨0⟩ Run it? ⟨31⟩───────────────────────────────────────────────────────────⟨0⟩
+⟨31⟩│⟨0⟩ this command is ⟨31⟩dangerous⟨0⟩:
+⟨31⟩│⟨0⟩ rm -rf রিপোর্ট.txt ক্ষত্রিয়-তালিকা.md
+⟨31⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩Deletes files without asking, and folders with everything in
+⟨31⟩│⟨0⟩ ⟨2;90⟩  ⟨0⟩them. This cannot be undone, unless you choose Move to trash.
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩রিপোর্ট.txt⟨0⟩
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩ক্ষত্রিয়-তালিকা.md⟨0⟩
+⟨31⟩│⟨0⟩     touches 3 files and 1 folder (14 KiB of file data)
+⟨31⟩│⟨0⟩ 
+⟨31⟩│⟨0⟩ [Move ⟨4⟩t⟨0⟩o trash]  [Run an⟨4⟩y⟨0⟩way]  ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
+⟨31⟩╰─⟨0⟩ ⟨36⟩←→↑↓⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨31⟩─────────────────────────────⟨0⟩
+
+after Left:
+⟨31⟩╭─⟨0⟩ Run it? ⟨31⟩───────────────────────────────────────────────────────────⟨0⟩
+⟨31⟩│⟨0⟩ this command is ⟨31⟩dangerous⟨0⟩:
+⟨31⟩│⟨0⟩ rm -rf রিপোর্ট.txt ক্ষত্রিয়-তালিকা.md
+⟨31⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩Deletes files without asking, and folders with everything in
+⟨31⟩│⟨0⟩ ⟨2;90⟩  ⟨0⟩them. This cannot be undone, unless you choose Move to trash.
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩রিপোর্ট.txt⟨0⟩
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩ক্ষত্রিয়-তালিকা.md⟨0⟩
+⟨31⟩│⟨0⟩     touches 3 files and 1 folder (14 KiB of file data)
+⟨31⟩│⟨0⟩ 
+⟨31⟩│⟨0⟩ [Move ⟨4⟩t⟨0⟩o trash]  ⟨7⟩ Run an⟨0⟩⟨4;7⟩y⟨0⟩⟨7⟩way ⟨0⟩  [Ca⟨4⟩n⟨0⟩cel]
+⟨31⟩╰─⟨0⟩ ⟨36⟩←→↑↓⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨31⟩─────────────────────────────⟨0⟩
+
+no trash offered:
+⟨31⟩╭─⟨0⟩ Run it? ⟨31⟩───────────────────────────────────────────────────────────⟨0⟩
+⟨31⟩│⟨0⟩ this command is ⟨31⟩dangerous⟨0⟩:
+⟨31⟩│⟨0⟩ rm -rf রিপোর্ট.txt ক্ষত্রিয়-তালিকা.md
+⟨31⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩Deletes files without asking, and folders with everything in
+⟨31⟩│⟨0⟩ ⟨2;90⟩  ⟨0⟩them. This cannot be undone, unless you choose Move to trash.
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩রিপোর্ট.txt⟨0⟩
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩ক্ষত্রিয়-তালিকা.md⟨0⟩
+⟨31⟩│⟨0⟩     touches 3 files and 1 folder (14 KiB of file data)
+⟨31⟩│⟨0⟩ 
+⟨31⟩│⟨0⟩ [Run an⟨4⟩y⟨0⟩way]  ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
+⟨31⟩╰─⟨0⟩ ⟨36⟩←→↑↓⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨31⟩─────────────────────────────⟨0⟩
+
+in 36 columns:
+⟨31⟩╭─⟨0⟩ Run it? ⟨31⟩─────────────────────────⟨0⟩
+⟨31⟩│⟨0⟩ this command is ⟨31⟩dangerous⟨0⟩:
+⟨31⟩│⟨0⟩ rm -rf রিপোর্ট.txt ক্ষত্রিয়-তালিকা.md
+⟨31⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩Deletes files without asking, a…
+⟨31⟩│⟨0⟩ ⟨2;90⟩  ⟨0⟩them. This cannot be undone, un…
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩রিপোর্ট.txt⟨0⟩
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩ক্ষত্রিয়-তালিকা.md⟨0⟩
+⟨31⟩│⟨0⟩     touches 3 files and 1 folder …
+⟨31⟩│⟨0⟩ 
+⟨31⟩│⟨0⟩ [Move ⟨4⟩t⟨0⟩o trash]
+⟨31⟩│⟨0⟩ [Run an⟨4⟩y⟨0⟩way]
+⟨31⟩│⟨0⟩ ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
+⟨31⟩╰─⟨0⟩ ⟨36⟩←→↑↓⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩…⟨0⟩

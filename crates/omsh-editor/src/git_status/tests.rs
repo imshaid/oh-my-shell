@@ -450,6 +450,7 @@ fn a_prompt_reads_the_git_segment_when_it_is_drawn() {
         last_duration: None,
         separate: false,
         root: false,
+        explain_hint: false,
         git_env: Vec::new(),
     };
     let prompt = ShellPrompt::new(&look, &state, String::new).with_git(handle);

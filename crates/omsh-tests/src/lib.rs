@@ -37,6 +37,7 @@ pub mod fakehttp;
 pub mod fakerelease;
 pub mod files;
 pub mod procfs;
+pub mod question;
 pub mod sandbox;
 pub mod session;
 pub mod skip;

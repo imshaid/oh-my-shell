@@ -292,6 +292,48 @@ pub fn fit(text: &str, cols: usize, unicode: bool) -> String {
     Line::plain(text).fit(cols, unicode).plain_text()
 }
 
+/// `text` broken into rows of at most `cols` columns, at a blank where there is one and in the
+/// middle of a word where there is not. Nothing is dropped except the blank at a break, so a
+/// command keeps its spacing. Never empty: an empty text is one empty row. For text that must be
+/// read whole (a reason, a command), where [`fit`] would hide the end of it.
+#[must_use]
+pub fn wrap(text: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(1);
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > cols {
+            if c == ' ' {
+                // The blank that does not fit is the break.
+                rows.push(std::mem::take(&mut row));
+                used = 0;
+                continue;
+            }
+            // Break at the last blank of the row if there is one that is not the first thing in
+            // it, else in the middle of the word.
+            match row.rfind(' ').filter(|at| *at > 0) {
+                Some(at) => {
+                    let rest = row[at + 1..].to_owned();
+                    row.truncate(at);
+                    rows.push(std::mem::take(&mut row));
+                    row = rest;
+                    used = width(&row);
+                }
+                None => {
+                    rows.push(std::mem::take(&mut row));
+                    used = 0;
+                }
+            }
+        }
+        row.push(c);
+        used += w;
+    }
+    rows.push(row);
+    rows
+}
+
 /// The longest start of `text` that is at most `room` columns wide. Characters of no width
 /// (combining marks) that follow the last one that fits are kept with it.
 fn cut_to(text: &str, room: usize) -> String {
@@ -656,5 +698,35 @@ mod tests {
         assert_eq!(Line::plain("ab").padded_to(5).plain_text(), "ab   ");
         assert_eq!(Line::plain("日").padded_to(4).width(), 4);
         assert_eq!(Line::plain("abcdef").padded_to(3).plain_text(), "abcdef");
+    }
+
+    #[test]
+    fn wrap_breaks_at_blanks_and_loses_nothing_else() {
+        assert_eq!(wrap("one two three four", 9), ["one two", "three", "four"]);
+        assert_eq!(wrap("", 5), [""]);
+        assert_eq!(wrap("fits", 4), ["fits"]);
+        // Spacing inside a row is kept: a command is shown as it was typed.
+        assert_eq!(wrap("rm  \"a  b\"", 20), ["rm  \"a  b\""]);
+    }
+
+    #[test]
+    fn wrap_cuts_a_word_that_is_longer_than_a_row() {
+        assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("x abcdefghij", 4), ["x", "abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn wrap_never_makes_a_row_wider_than_asked_and_keeps_every_letter() {
+        let text = "rm -rf /home/me/রিপোর্ট নথি/ছবি.png ক্ষত্রিয়-তালিকা.md and more words here";
+        for cols in 4..40 {
+            let rows = wrap(text, cols);
+            assert!(
+                rows.iter().all(|row| width(row) <= cols),
+                "{cols}: {rows:?}"
+            );
+            let joined: String = rows.concat().chars().filter(|c| *c != ' ').collect();
+            let original: String = text.chars().filter(|c| *c != ' ').collect();
+            assert_eq!(joined, original, "{cols}");
+        }
     }
 }

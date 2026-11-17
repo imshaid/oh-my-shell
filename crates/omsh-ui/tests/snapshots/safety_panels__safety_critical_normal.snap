@@ -1,0 +1,12 @@
+---
+source: crates/omsh-ui/tests/safety_panels.rs
+expression: "written(&lines, &caps)"
+---
+⟨31⟩╭─⟨0⟩ Run it? ⟨31⟩───────────────────────────────────────────────────────────⟨0⟩
+⟨31⟩│⟨0⟩ this command is ⟨31⟩critical⟨0⟩:
+⟨31⟩│⟨0⟩ rm -rf /
+⟨31⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩Deletes the system, your home folder, or everything in one of
+⟨31⟩│⟨0⟩ ⟨2;90⟩  ⟨0⟩them. This cannot be undone.
+⟨31⟩│⟨0⟩ ⟨2;90⟩    on: ⟨0⟩⟨36⟩/⟨0⟩
+⟨31⟩│⟨0⟩     touches 3 files and 1 folder (14 KiB of file data)
+⟨31⟩╰─────────────────────────────────────────────────────────────────────⟨0⟩

@@ -11,13 +11,29 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use omsh_tests::fakehttp::Server;
+use omsh_tests::question::{Answer, MODES, Mode, answer, undo_question, wait_question};
 use omsh_tests::{Ctx, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
 
-const QUESTION: &str = "Run it? [y/N] (t = move to the trash instead)";
+/// Waits for the question about a line the trash can take, and checks it offers the trash in
+/// the words of its form: the "Move to trash" button, or `(t = move to the trash instead)`.
+fn wait_trash_question(term: &mut Session, mode: Mode) {
+    wait_question(term, mode);
+    assert!(trash_offered(term, mode), "{}", term.transcript());
+}
 
-fn mode(path: &Path) -> u32 {
+/// True if the question on the screen offers to move the files to the trash.
+fn trash_offered(term: &Session, mode: Mode) -> bool {
+    match mode {
+        Mode::Panel => term.transcript().contains("Move to trash"),
+        Mode::Dumb => term
+            .transcript()
+            .contains("(t = move to the trash instead)"),
+    }
+}
+
+fn perms(path: &Path) -> u32 {
     fs::symlink_metadata(path).map_or(0, |data| data.permissions().mode() & 0o7777)
 }
 
@@ -34,157 +50,163 @@ fn data(ctx: &Ctx) -> PathBuf {
 }
 
 /// A shell in the home directory with `proj/build/{f,sub/g}` and `proj/secret`.
-fn shell_with_project(ctx: &Ctx) -> io::Result<Session> {
+fn shell_with_project(ctx: &Ctx, mode: Mode) -> io::Result<Session> {
     let proj = ctx.home().join("proj");
     make(&proj.join("build/f"), "f\n", 0o640)?;
     make(&proj.join("build/sub/g"), "g\n", 0o755)?;
     fs::set_permissions(proj.join("build"), fs::Permissions::from_mode(0o750))?;
     fs::set_permissions(proj.join("build/sub"), fs::Permissions::from_mode(0o700))?;
     make(&proj.join("secret"), "s\n", 0o600)?;
-    ctx.launch().cwd(ctx.home()).start()
+    mode.launch(ctx.launch()).cwd(ctx.home()).start()
 }
 
 #[test]
 fn t_moves_to_the_trash_and_undo_restores_the_files_with_their_permissions() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_project(ctx)?;
-        term.command("rm -rf proj/build proj/secret")?;
-        term.expect_plain("this command is dangerous:", SHORT);
-        term.expect_plain(QUESTION, SHORT);
-        term.line("t")?;
-        term.expect_plain(
-            "moved 2 items to the trash; \"undo\" brings them back (#1)",
-            SHORT,
-        );
-        term.prompt();
-        let proj = ctx.home().join("proj");
-        assert!(!proj.join("build").exists() && !proj.join("secret").exists());
-        // They are in the trash, in a folder of their own.
-        let trash = data(ctx).join("trash");
-        let folders: Vec<_> = fs::read_dir(&trash)?.flatten().collect();
-        assert_eq!(folders.len(), 1);
-        assert_eq!(mode(&trash), 0o700);
-        assert_eq!(mode(&data(ctx).join("undo.db")), 0o600);
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_project(ctx, mode)?;
+            term.command("rm -rf proj/build proj/secret")?;
+            term.expect_plain("this command is dangerous:", SHORT);
+            wait_trash_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Trash)?;
+            term.expect_plain(
+                "moved 2 items to the trash; \"undo\" brings them back (#1)",
+                SHORT,
+            );
+            term.prompt();
+            let proj = ctx.home().join("proj");
+            assert!(!proj.join("build").exists() && !proj.join("secret").exists());
+            // They are in the trash, in a folder of their own.
+            let trash = data(ctx).join("trash");
+            let folders: Vec<_> = fs::read_dir(&trash)?.flatten().collect();
+            assert_eq!(folders.len(), 1);
+            assert_eq!(perms(&trash), 0o700);
+            assert_eq!(perms(&data(ctx).join("undo.db")), 0o600);
 
-        term.command("undo")?;
-        term.expect_plain("undo #1", SHORT);
-        term.expect_plain("- bring back ", SHORT);
-        term.expect_plain("Undo it? [y/N]", SHORT);
-        term.line("y")?;
-        term.expect_plain("restored ", SHORT);
-        term.prompt();
-        // The whole point: everything is back, as it was.
-        assert_eq!(fs::read_to_string(proj.join("build/f"))?, "f\n");
-        assert_eq!(fs::read_to_string(proj.join("build/sub/g"))?, "g\n");
-        assert_eq!(fs::read_to_string(proj.join("secret"))?, "s\n");
-        assert_eq!(mode(&proj.join("build")), 0o750);
-        assert_eq!(mode(&proj.join("build/f")), 0o640);
-        assert_eq!(mode(&proj.join("build/sub")), 0o700);
-        assert_eq!(mode(&proj.join("build/sub/g")), 0o755);
-        assert_eq!(mode(&proj.join("secret")), 0o600);
+            term.command("undo")?;
+            if mode == Mode::Dumb {
+                term.expect_plain("undo #1", SHORT);
+            }
+            term.expect_plain("- bring back ", SHORT);
+            undo_question(&mut term, mode, true)?;
+            term.expect_plain("restored ", SHORT);
+            term.prompt();
+            // The whole point: everything is back, as it was.
+            assert_eq!(fs::read_to_string(proj.join("build/f"))?, "f\n");
+            assert_eq!(fs::read_to_string(proj.join("build/sub/g"))?, "g\n");
+            assert_eq!(fs::read_to_string(proj.join("secret"))?, "s\n");
+            assert_eq!(perms(&proj.join("build")), 0o750);
+            assert_eq!(perms(&proj.join("build/f")), 0o640);
+            assert_eq!(perms(&proj.join("build/sub")), 0o700);
+            assert_eq!(perms(&proj.join("build/sub/g")), 0o755);
+            assert_eq!(perms(&proj.join("secret")), 0o600);
 
-        // And a second `undo` has nothing left.
-        term.command("undo")?;
-        term.expect_plain("nothing to undo", SHORT);
-        term.quit()
-    });
+            // And a second `undo` has nothing left.
+            term.command("undo")?;
+            term.expect_plain("nothing to undo", SHORT);
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn undo_asks_and_n_changes_nothing_and_list_shows_the_action() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_project(ctx)?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain(QUESTION, SHORT);
-        term.line("t")?;
-        term.expect_plain("moved 1 item to the trash", SHORT);
-        term.prompt();
-        term.command("undo --list")?;
-        term.expect_plain("typed  1 item  rm -rf proj/build", SHORT);
-        term.prompt();
-        term.command("undo")?;
-        term.expect_plain("Undo it? [y/N]", SHORT);
-        term.line("n")?;
-        term.expect_plain("nothing was undone", SHORT);
-        term.prompt();
-        assert!(!ctx.home().join("proj/build").exists());
-        term.command("undo 1")?;
-        term.expect_plain("Undo it? [y/N]", SHORT);
-        term.line("y")?;
-        term.expect_plain("restored ", SHORT);
-        term.prompt();
-        assert!(ctx.home().join("proj/build/f").exists());
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_project(ctx, mode)?;
+            term.command("rm -rf proj/build")?;
+            wait_trash_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Trash)?;
+            term.expect_plain("moved 1 item to the trash", SHORT);
+            term.prompt();
+            term.command("undo --list")?;
+            term.expect_plain("typed  1 item  rm -rf proj/build", SHORT);
+            term.prompt();
+            term.command("undo")?;
+            undo_question(&mut term, mode, false)?;
+            term.expect_plain("nothing was undone", SHORT);
+            term.prompt();
+            assert!(!ctx.home().join("proj/build").exists());
+            term.command("undo 1")?;
+            term.expect_plain("Undo it? [y/N]", SHORT);
+            term.line("y")?;
+            term.expect_plain("restored ", SHORT);
+            term.prompt();
+            assert!(ctx.home().join("proj/build/f").exists());
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn y_still_deletes_for_good_and_leaves_nothing_in_the_trash() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_project(ctx)?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain(QUESTION, SHORT);
-        term.line("y")?;
-        term.prompt();
-        assert!(!ctx.home().join("proj/build").exists());
-        assert!(!data(ctx).join("undo.db").exists(), "nothing was journaled");
-        term.command("undo")?;
-        term.expect_plain("nothing to undo", SHORT);
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_project(ctx, mode)?;
+            term.command("rm -rf proj/build")?;
+            wait_trash_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Run)?;
+            term.prompt();
+            assert!(!ctx.home().join("proj/build").exists());
+            assert!(!data(ctx).join("undo.db").exists(), "nothing was journaled");
+            term.command("undo")?;
+            term.expect_plain("nothing to undo", SHORT);
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn a_line_the_trash_cannot_cover_is_not_offered_the_option() {
-    pty_test(BIN, |ctx| {
-        let mut term = shell_with_project(ctx)?;
-        // `command rm` is a wrapper: the trash does not replace it, so `t` is not offered.
-        term.command("command rm -rf proj/build")?;
-        term.expect_plain("Run it? [y/N]", SHORT);
-        term.line("n")?;
-        term.expect_plain("cancelled; nothing ran", SHORT);
-        assert!(
-            !term.transcript().contains("move to the trash instead"),
-            "{}",
-            term.transcript()
-        );
-        // A critical line is never offered it either.
-        term.command("rm -rf /nonexistent-omsh-trash-test")?;
-        term.expect_plain("Run it? [y/N]", SHORT);
-        term.line("n")?;
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let mut term = shell_with_project(ctx, mode)?;
+            // `command rm` is a wrapper: the trash does not replace it, so `t` is not offered.
+            term.command("command rm -rf proj/build")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.expect_plain("cancelled; nothing ran", SHORT);
+            assert!(!trash_offered(&term, mode), "{}", term.transcript());
+            // A critical line is never offered it either.
+            term.command("rm -rf /nonexistent-omsh-trash-test")?;
+            wait_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn the_trash_is_off_under_no_config() {
-    pty_test(BIN, |ctx| {
-        make(&ctx.home().join("proj/build/f"), "f\n", 0o644)?;
-        let mut term = ctx.launch().arg("--no-config").cwd(ctx.home()).start()?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain("Run it? [y/N]", SHORT);
-        assert!(
-            !term.transcript().contains("move to the trash instead"),
-            "{}",
-            term.transcript()
-        );
-        term.line("n")?;
-        term.prompt();
-        term.command("undo")?;
-        term.expect_plain("undo: not available in this shell", SHORT);
-        term.command("__omsh_trash -rf proj/build")?;
-        term.expect_plain(
-            "the trash is not available in this shell; nothing was deleted",
-            SHORT,
-        );
-        term.prompt();
-        assert!(
-            ctx.home().join("proj/build/f").exists(),
-            "nothing was deleted"
-        );
-        assert!(!data(ctx).exists(), "--no-config writes nothing");
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            make(&ctx.home().join("proj/build/f"), "f\n", 0o644)?;
+            let mut term = mode
+                .launch(ctx.launch())
+                .arg("--no-config")
+                .cwd(ctx.home())
+                .start()?;
+            term.command("rm -rf proj/build")?;
+            wait_question(&mut term, mode);
+            assert!(!trash_offered(&term, mode), "{}", term.transcript());
+            answer(&mut term, mode, Answer::Cancel)?;
+            term.prompt();
+            term.command("undo")?;
+            term.expect_plain("undo: not available in this shell", SHORT);
+            term.command("__omsh_trash -rf proj/build")?;
+            term.expect_plain(
+                "the trash is not available in this shell; nothing was deleted",
+                SHORT,
+            );
+            term.prompt();
+            assert!(
+                ctx.home().join("proj/build/f").exists(),
+                "nothing was deleted"
+            );
+            assert!(!data(ctx).exists(), "--no-config writes nothing");
+            term.quit()
+        });
+    }
 }
 
 #[test]
@@ -294,74 +316,76 @@ fn configure(ctx: &Ctx, server: &Server) -> io::Result<()> {
 
 #[test]
 fn an_ai_plan_deletes_through_the_trash_and_undo_brings_it_back() {
-    pty_test(BIN, |ctx| {
-        make(&ctx.home().join("proj/build/f"), "f\n", 0o640)?;
-        let answer = plan(&[("Remove build", "rm -rf proj/build", "high")]);
-        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
-        configure(ctx, &server)?;
-        let mut term = ctx
-            .launch()
-            .env(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/nonexistent/omsh-test-bus",
-            )
-            .cwd(ctx.home())
-            .start()?;
-        term.command("? remove the build folder")?;
-        term.expect_plain("rm goes to the trash; undo can bring it back", SHORT);
-        term.write_bytes(b"\r")?;
-        term.expect_plain("Run it? [y/N]", SHORT);
-        term.line("y")?;
-        term.expect_plain("moved 1 item to the trash", SHORT);
-        term.expect_plain("plan done (1 step)", SHORT);
-        term.prompt();
-        assert!(!ctx.home().join("proj/build").exists());
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            make(&ctx.home().join("proj/build/f"), "f\n", 0o640)?;
+            let answer = plan(&[("Remove build", "rm -rf proj/build", "high")]);
+            let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+            configure(ctx, &server)?;
+            let mut term = mode
+                .launch(ctx.launch())
+                .env(
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "unix:path=/nonexistent/omsh-test-bus",
+                )
+                .cwd(ctx.home())
+                .start()?;
+            term.command("? remove the build folder")?;
+            term.expect_plain("rm goes to the trash; undo can bring it back", SHORT);
+            term.write_bytes(b"\r")?;
+            term.expect_plain("Run it? [y/N]", SHORT);
+            term.line("y")?;
+            term.expect_plain("moved 1 item to the trash", SHORT);
+            term.expect_plain("plan done (1 step)", SHORT);
+            term.prompt();
+            assert!(!ctx.home().join("proj/build").exists());
 
-        term.command("undo --list")?;
-        term.expect_plain("plan  1 item  rm -rf proj/build", SHORT);
-        term.prompt();
-        term.command("undo")?;
-        term.expect_plain("Undo it? [y/N]", SHORT);
-        term.line("y")?;
-        term.expect_plain("restored ", SHORT);
-        term.prompt();
-        assert_eq!(fs::read_to_string(ctx.home().join("proj/build/f"))?, "f\n");
-        assert_eq!(mode(&ctx.home().join("proj/build/f")), 0o640);
-        term.quit()
-    });
+            term.command("undo --list")?;
+            term.expect_plain("plan  1 item  rm -rf proj/build", SHORT);
+            term.prompt();
+            term.command("undo")?;
+            undo_question(&mut term, mode, true)?;
+            term.expect_plain("restored ", SHORT);
+            term.prompt();
+            assert_eq!(fs::read_to_string(ctx.home().join("proj/build/f"))?, "f\n");
+            assert_eq!(perms(&ctx.home().join("proj/build/f")), 0o640);
+            term.quit()
+        });
+    }
 }
 
 #[test]
 fn an_ai_plan_that_makes_and_moves_files_can_be_undone() {
-    pty_test(BIN, |ctx| {
-        make(&ctx.home().join("a.txt"), "a\n", 0o644)?;
-        let answer = plan(&[("Tidy", "mkdir out && mv a.txt out/", "low")]);
-        let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
-        configure(ctx, &server)?;
-        let mut term = ctx
-            .launch()
-            .env(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/nonexistent/omsh-test-bus",
-            )
-            .cwd(ctx.home())
-            .start()?;
-        term.command("? tidy up")?;
-        term.expect_plain("undo can reverse: mkdir, mv", SHORT);
-        term.write_bytes(b"\r")?;
-        term.expect_plain("recorded 2 changes", SHORT);
-        term.expect_plain("plan done (1 step)", SHORT);
-        term.prompt();
-        assert!(ctx.home().join("out/a.txt").exists());
-        term.command("undo")?;
-        term.expect_plain("Undo it? [y/N]", SHORT);
-        term.line("y")?;
-        term.expect_plain("renamed ", SHORT);
-        term.prompt();
-        assert!(ctx.home().join("a.txt").exists());
-        assert!(!ctx.home().join("out").exists());
-        term.quit()
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            make(&ctx.home().join("a.txt"), "a\n", 0o644)?;
+            let answer = plan(&[("Tidy", "mkdir out && mv a.txt out/", "low")]);
+            let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+            configure(ctx, &server)?;
+            let mut term = mode
+                .launch(ctx.launch())
+                .env(
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "unix:path=/nonexistent/omsh-test-bus",
+                )
+                .cwd(ctx.home())
+                .start()?;
+            term.command("? tidy up")?;
+            term.expect_plain("undo can reverse: mkdir, mv", SHORT);
+            term.write_bytes(b"\r")?;
+            term.expect_plain("recorded 2 changes", SHORT);
+            term.expect_plain("plan done (1 step)", SHORT);
+            term.prompt();
+            assert!(ctx.home().join("out/a.txt").exists());
+            term.command("undo")?;
+            undo_question(&mut term, mode, true)?;
+            term.expect_plain("renamed ", SHORT);
+            term.prompt();
+            assert!(ctx.home().join("a.txt").exists());
+            assert!(!ctx.home().join("out").exists());
+            term.quit()
+        });
+    }
 }
 
 // -- another file system ----------------------------------------------------------------------
@@ -369,70 +393,71 @@ fn an_ai_plan_that_makes_and_moves_files_can_be_undone() {
 #[test]
 fn a_trash_on_another_file_system_is_a_verified_copy_and_undo_restores_it_exactly() {
     use std::os::unix::fs::{MetadataExt, symlink};
-    pty_test(BIN, |ctx| {
-        let shm = PathBuf::from(format!("/dev/shm/omsh-xdev-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&shm);
-        if fs::create_dir_all(&shm).is_err()
-            || fs::metadata(&shm)?.dev() == fs::metadata(ctx.home())?.dev()
-        {
-            omsh_tests::skip::skip(
-                "a_trash_on_another_file_system",
-                "/dev/shm is missing or on the same file system as the test's home folder",
-            );
-            return Ok(());
-        }
-        // Removed whatever happens next.
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let shm = PathBuf::from(format!("/dev/shm/omsh-xdev-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&shm);
+            if fs::create_dir_all(&shm).is_err()
+                || fs::metadata(&shm)?.dev() == fs::metadata(ctx.home())?.dev()
+            {
+                omsh_tests::skip::skip(
+                    "a_trash_on_another_file_system",
+                    "/dev/shm is missing or on the same file system as the test's home folder",
+                );
+                return Ok(());
             }
-        }
-        let _cleanup = Cleanup(shm.clone());
+            // Removed whatever happens next.
+            struct Cleanup(PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = fs::remove_dir_all(&self.0);
+                }
+            }
+            let _cleanup = Cleanup(shm.clone());
 
-        let proj = ctx.home().join("proj");
-        make(&proj.join("build/f"), "f\n", 0o640)?;
-        make(&proj.join("build/sub/g"), "g\n", 0o755)?;
-        symlink("f", proj.join("build/link"))?;
-        fs::set_permissions(proj.join("build/sub"), fs::Permissions::from_mode(0o500))?;
-        let before = fs::metadata(proj.join("build/f"))?.mtime();
+            let proj = ctx.home().join("proj");
+            make(&proj.join("build/f"), "f\n", 0o640)?;
+            make(&proj.join("build/sub/g"), "g\n", 0o755)?;
+            symlink("f", proj.join("build/link"))?;
+            fs::set_permissions(proj.join("build/sub"), fs::Permissions::from_mode(0o500))?;
+            let before = fs::metadata(proj.join("build/f"))?.mtime();
 
-        let mut term = ctx
-            .launch()
-            .env("XDG_DATA_HOME", &shm.to_string_lossy())
-            .cwd(ctx.home())
-            .start()?;
-        term.command("rm -rf proj/build")?;
-        term.expect_plain(QUESTION, SHORT);
-        term.line("t")?;
-        term.expect_plain("moved 1 item to the trash", SHORT);
-        term.prompt();
-        assert!(!proj.join("build").exists());
-        // The copy is in the other file system's trash, whole.
-        let mut found = Vec::new();
-        for entry in walk(&shm.join("oh-my-shell/trash")) {
-            found.push(entry);
-        }
-        assert!(
-            found.iter().any(|p| p.ends_with("build/sub/g")),
-            "{found:?}"
-        );
+            let mut term = mode
+                .launch(ctx.launch())
+                .env("XDG_DATA_HOME", &shm.to_string_lossy())
+                .cwd(ctx.home())
+                .start()?;
+            term.command("rm -rf proj/build")?;
+            wait_trash_question(&mut term, mode);
+            answer(&mut term, mode, Answer::Trash)?;
+            term.expect_plain("moved 1 item to the trash", SHORT);
+            term.prompt();
+            assert!(!proj.join("build").exists());
+            // The copy is in the other file system's trash, whole.
+            let mut found = Vec::new();
+            for entry in walk(&shm.join("oh-my-shell/trash")) {
+                found.push(entry);
+            }
+            assert!(
+                found.iter().any(|p| p.ends_with("build/sub/g")),
+                "{found:?}"
+            );
 
-        term.command("undo")?;
-        term.expect_plain("Undo it? [y/N]", SHORT);
-        term.line("y")?;
-        term.expect_plain("restored ", SHORT);
-        term.prompt();
-        assert_eq!(fs::read_to_string(proj.join("build/f"))?, "f\n");
-        assert_eq!(fs::read_link(proj.join("build/link"))?, Path::new("f"));
-        assert_eq!(mode(&proj.join("build/f")), 0o640);
-        assert_eq!(mode(&proj.join("build/sub")), 0o500);
-        assert_eq!(mode(&proj.join("build/sub/g")), 0o755);
-        assert_eq!(fs::metadata(proj.join("build/f"))?.mtime(), before);
-        // A folder without write permission cannot be removed with the test's home folder.
-        fs::set_permissions(proj.join("build/sub"), fs::Permissions::from_mode(0o700))?;
-        term.quit()
-    });
+            term.command("undo")?;
+            undo_question(&mut term, mode, true)?;
+            term.expect_plain("restored ", SHORT);
+            term.prompt();
+            assert_eq!(fs::read_to_string(proj.join("build/f"))?, "f\n");
+            assert_eq!(fs::read_link(proj.join("build/link"))?, Path::new("f"));
+            assert_eq!(perms(&proj.join("build/f")), 0o640);
+            assert_eq!(perms(&proj.join("build/sub")), 0o500);
+            assert_eq!(perms(&proj.join("build/sub/g")), 0o755);
+            assert_eq!(fs::metadata(proj.join("build/f"))?.mtime(), before);
+            // A folder without write permission cannot be removed with the test's home folder.
+            fs::set_permissions(proj.join("build/sub"), fs::Permissions::from_mode(0o700))?;
+            term.quit()
+        });
+    }
 }
 
 /// Every path under `root`, files and folders.

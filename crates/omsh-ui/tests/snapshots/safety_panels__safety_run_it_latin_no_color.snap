@@ -1,0 +1,57 @@
+---
+source: crates/omsh-ui/tests/safety_panels.rs
+expression: "format!(\"when it opens (Cancel chosen):\\n{first}\\n\\nafter Left:\\n{moved}\\n\\nno trash offered:\\n{two}\\n\\nin 36 columns:\\n{narrow}\")"
+---
+when it opens (Cancel chosen):
+╭─ Run it? ───────────────────────────────────────────────────────────
+│ this command is dangerous:
+│ rm -rf build/output.o notes final.txt
+│ ⟨2⟩- ⟨0⟩Deletes files without asking, and folders with everything in
+│ ⟨2⟩  ⟨0⟩them. This cannot be undone, unless you choose Move to trash.
+│ ⟨2⟩    on: ⟨0⟩build/output.o
+│ ⟨2⟩    on: ⟨0⟩notes final.txt
+│     touches 3 files and 1 folder (14 KiB of file data)
+│ 
+│ [Move ⟨4⟩t⟨0⟩o trash]  [Run an⟨4⟩y⟨0⟩way]  ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
+╰─ ←→↑↓ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩cancel⟨0⟩ ─────────────────────────────
+
+after Left:
+╭─ Run it? ───────────────────────────────────────────────────────────
+│ this command is dangerous:
+│ rm -rf build/output.o notes final.txt
+│ ⟨2⟩- ⟨0⟩Deletes files without asking, and folders with everything in
+│ ⟨2⟩  ⟨0⟩them. This cannot be undone, unless you choose Move to trash.
+│ ⟨2⟩    on: ⟨0⟩build/output.o
+│ ⟨2⟩    on: ⟨0⟩notes final.txt
+│     touches 3 files and 1 folder (14 KiB of file data)
+│ 
+│ [Move ⟨4⟩t⟨0⟩o trash]  ⟨7⟩ Run an⟨0⟩⟨4;7⟩y⟨0⟩⟨7⟩way ⟨0⟩  [Ca⟨4⟩n⟨0⟩cel]
+╰─ ←→↑↓ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩cancel⟨0⟩ ─────────────────────────────
+
+no trash offered:
+╭─ Run it? ───────────────────────────────────────────────────────────
+│ this command is dangerous:
+│ rm -rf build/output.o notes final.txt
+│ ⟨2⟩- ⟨0⟩Deletes files without asking, and folders with everything in
+│ ⟨2⟩  ⟨0⟩them. This cannot be undone, unless you choose Move to trash.
+│ ⟨2⟩    on: ⟨0⟩build/output.o
+│ ⟨2⟩    on: ⟨0⟩notes final.txt
+│     touches 3 files and 1 folder (14 KiB of file data)
+│ 
+│ [Run an⟨4⟩y⟨0⟩way]  ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
+╰─ ←→↑↓ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩cancel⟨0⟩ ─────────────────────────────
+
+in 36 columns:
+╭─ Run it? ─────────────────────────
+│ this command is dangerous:
+│ rm -rf build/output.o notes final…
+│ ⟨2⟩- ⟨0⟩Deletes files without asking, a…
+│ ⟨2⟩  ⟨0⟩them. This cannot be undone, un…
+│ ⟨2⟩    on: ⟨0⟩build/output.o
+│ ⟨2⟩    on: ⟨0⟩notes final.txt
+│     touches 3 files and 1 folder …
+│ 
+│ [Move ⟨4⟩t⟨0⟩o trash]
+│ [Run an⟨4⟩y⟨0⟩way]
+│ ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
+╰─ ←→↑↓ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩…⟨0⟩
