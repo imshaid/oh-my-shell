@@ -22,9 +22,11 @@ Three ways, all from <https://github.com/imshaid/oh-my-shell>:
 **The install script** puts `oh-my-shell` in `~/.local/bin`, and the short name `omsh` beside it when that name is free:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/imshaid/oh-my-shell/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/imshaid/oh-my-shell/releases/latest/download/install.sh | sh
 ```
+
+For a stricter download, add `--proto '=https' --tlsv1.2` after `curl`: the first lets curl start only with an https
+address, the second refuses TLS older than 1.2.
 
 It makes the short name `omsh` only when that name is free (another file called `omsh` is left alone, with a
 warning). It never runs `chsh`, never edits your shell's startup files, and touches `/etc/shells` only with

@@ -1,21 +1,42 @@
-/* Oh My Shell: the one style sheet of docs/index.html. No images, no fonts, nothing loaded. */
+/* Oh My Shell: the one style sheet of docs/index.html.
+   Flat colors, borders and spacing only. No images, no fonts, nothing loaded. */
 
 :root {
   --bg: #0f1216;
-  --panel: #171c24;
+  --surface: #171c24;
   --rule: #2b3340;
   --fg: #d8dee9;
   --muted: #9aa5b6;
-  --accent: #88c0d0;
-  /* The terminal block: the 16 ANSI names the shell uses, drawn with this page's own colors. */
-  --red: #e27d86;
-  --green: #a3be8c;
-  --yellow: #ebcb8b;
-  --blue: #81a1c1;
-  --magenta: #c49bbf;
-  --cyan: #88c0d0;
-  --gray: #8f99ab;
-  --dim: #8590a3;
+  /* The one accent: the red of the shell's own "dangerous" panel. */
+  --accent: #e27d86;
+  /* The terminal block is dark in both schemes, as a terminal is. The shell names only the 16
+     ANSI colors; these are this page's values for them. */
+  --t-bg: #12161c;
+  --t-rule: #2b3340;
+  --t-fg: #d8dee9;
+  --t-red: #e27d86;
+  --t-yellow: #ebcb8b;
+  --t-blue: #81a1c1;
+  --t-cyan: #88c0d0;
+  --t-gray: #8f99ab;
+  --t-dim: #8590a3;
+  --t-marked: #1d2430;
+  /* Four sizes, no more. */
+  --small: 0.8125rem;
+  --text: 0.9375rem;
+  --mid: 1.25rem;
+  --big: 2rem;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f3ec;
+    --surface: #ebe7dc;
+    --rule: #c9c2b2;
+    --fg: #1c1f24;
+    --muted: #535963;
+    --accent: #a52a35;
+  }
 }
 
 * {
@@ -26,29 +47,50 @@ html {
   background: var(--bg);
   color: var(--fg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
-  font-size: 0.9375rem;
-  line-height: 1.6;
+  font-size: 100%;
+  line-height: 1.5;
 }
 
+/* One window when there is room: the bar, the stage, the footer. Never a lock: a short window,
+   a zoomed page or a small phone simply scrolls. */
 body {
+  display: grid;
+  font-size: var(--text);
+  grid-template-rows: auto 1fr auto;
   margin: 0 auto;
-  max-width: 90ch;
-  padding: 1rem 1rem 3rem;
+  max-width: 94rem;
+  min-height: 100svh;
+  padding: 0 1.25rem;
 }
 
 a {
-  color: var(--accent);
+  color: inherit;
   text-decoration: underline;
-  text-underline-offset: 0.15em;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
 }
 
 a:hover {
-  color: var(--fg);
+  text-decoration-thickness: 2px;
 }
 
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+p,
+ul,
+dl,
+figure,
+table {
+  margin: 0;
+}
+
+code {
+  background: var(--surface);
+  font-family: inherit;
+  padding: 0 0.2em;
 }
 
 .skip {
@@ -57,95 +99,166 @@ a:hover {
 }
 
 .skip:focus {
-  background: var(--panel);
+  background: var(--surface);
   left: 1rem;
   padding: 0.25rem 0.5rem;
-  top: 1rem;
+  top: 0.5rem;
+}
+
+/* The top bar. */
+header {
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.5rem;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+}
+
+/* The mark: the prompt sign cut out of a square of the accent. */
+.mark {
+  background: var(--accent);
+  color: var(--bg);
+  display: inline-block;
+  font-weight: bold;
+  height: 1.5rem;
+  line-height: 1.5rem;
+  text-align: center;
+  width: 1.5rem;
+}
+
+#version {
+  color: var(--muted);
+  font-size: var(--small);
 }
 
 nav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 1rem;
+  gap: 1.25rem;
+}
+
+/* The stage: words on the left, the terminal on the right, the panel tabs under both. */
+main {
+  align-content: start;
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 0;
+  position: relative;
+}
+
+.install {
+  display: grid;
+  gap: 0.5rem;
+}
+
+/* The bar beside the headline has the shape of the bar of the shell's own panel. */
+.lead {
+  border-left: 3px solid var(--accent);
+  padding-left: 1rem;
 }
 
 h1 {
-  font-size: 2rem;
-  line-height: 1.2;
-  margin: 2.5rem 0 0.5rem;
-}
-
-h1::before {
-  color: var(--accent);
-  content: "\276F ";
-}
-
-h2 {
-  border-top: 1px solid var(--rule);
-  font-size: 1.25rem;
-  margin: 3rem 0 1rem;
-  padding-top: 1.5rem;
-}
-
-h3 {
-  color: var(--accent);
-  font-size: 1rem;
-  margin: 0 0 0.5rem;
-}
-
-p,
-ul,
-dl,
-table,
-figure {
-  margin: 0 0 1rem;
-}
-
-ul {
-  padding-left: 1.5rem;
+  font-size: min(var(--big), 7.4vw);
+  line-height: 1.15;
+  margin: 0 0 0.35rem;
 }
 
 .tagline {
-  color: var(--accent);
-  font-size: 1.125rem;
-}
-
-.note,
-figcaption {
   color: var(--muted);
-  font-size: 0.875rem;
-}
-
-code {
-  color: var(--yellow);
-  font-family: inherit;
+  line-height: 1.3;
 }
 
 pre {
-  background: var(--panel);
-  border: 1px solid var(--rule);
-  border-radius: 6px;
   font-family: inherit;
-  margin: 0 0 0.5rem;
-  overflow-x: auto;
-  padding: 1rem;
-}
-
-pre code {
-  color: var(--fg);
+  margin: 0;
 }
 
 #install-command {
-  border-color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--fg);
   cursor: pointer;
+  font-size: var(--small);
+  overflow-wrap: anywhere;
+  padding: 0.6rem 0.75rem;
   -webkit-user-select: all;
   user-select: all;
+  white-space: pre-wrap;
 }
 
-/* The terminal block. */
+#install-command code {
+  background: none;
+  padding: 0;
+}
+
+.note,
+figcaption,
+.notes {
+  color: var(--muted);
+  font-size: var(--small);
+}
+
+/* The points: a word, then what the docs say. A list, not boxes. */
+.points > div {
+  border-top: 1px solid var(--rule);
+  padding: 0.4rem 0;
+}
+
+.points dt {
+  font-weight: bold;
+}
+
+.points dd {
+  margin: 0;
+}
+
+#limits-line dt {
+  color: var(--accent);
+}
+
+/* The terminal block. In one column its notes come after the points, so that the points and
+   the limits stay near the top. */
+.show {
+  display: contents;
+}
+
+.points {
+  order: 1;
+}
+
+.notes {
+  order: 2;
+}
+
+.panels {
+  order: 3;
+}
+
+
 .term {
-  font-size: 0.875rem;
-  line-height: 1.35;
+  background: var(--t-bg);
+  border: 1px solid var(--t-rule);
+  color: var(--t-fg);
+  font-size: var(--small);
+  line-height: 1.3;
+  overflow: auto;
+  padding: 0.6rem 1rem;
+}
+
+#scene-wide {
+  display: none;
+}
+
+#scene-narrow {
+  font-size: min(0.75rem, 2.9vw);
+  max-height: 11rem;
+  padding: 0.5rem;
 }
 
 .term .b {
@@ -157,65 +270,118 @@ pre code {
 }
 
 .term .c1 {
-  color: var(--red);
-}
-
-.term .c2 {
-  color: var(--green);
+  color: var(--t-red);
 }
 
 .term .c3 {
-  color: var(--yellow);
+  color: var(--t-yellow);
 }
 
 .term .c4 {
-  color: var(--blue);
-}
-
-.term .c5 {
-  color: var(--magenta);
+  color: var(--t-blue);
 }
 
 .term .c6 {
-  color: var(--cyan);
+  color: var(--t-cyan);
 }
 
 .term .c8 {
-  color: var(--gray);
+  color: var(--t-gray);
 }
 
 .term .d {
-  color: var(--dim);
+  color: var(--t-dim);
 }
 
 .term .cur {
-  background: var(--fg);
-  color: var(--panel);
+  background: var(--t-fg);
 }
 
-.cards {
+@media (prefers-reduced-motion: no-preference) {
+  .term .cur {
+    animation: blink 1.2s steps(1) infinite;
+  }
+}
+
+@keyframes blink {
+  50% {
+    background: var(--t-bg);
+  }
+}
+
+figcaption {
+  margin-top: 0.3rem;
+}
+
+.notes {
   display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 0.25rem;
+  list-style: none;
+  padding: 0;
 }
 
-.card {
-  background: var(--panel);
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 1rem;
+.notes li {
+  border-left: 3px solid var(--rule);
+  padding-left: 0.6rem;
 }
 
-.card p:last-child {
-  margin-bottom: 0;
+.notes li:hover {
+  border-left-color: var(--accent);
+  color: var(--fg);
 }
 
-/* Rows of a description list: side by side when there is room, stacked on a narrow screen. */
+/* Pointing at a note marks the rows of the screen it is about. */
+main:has(.n1:hover) #scene-wide [data-l="2"],
+main:has(.n2:hover) #scene-wide [data-l="3"],
+main:has(.n2:hover) #scene-wide [data-l="4"],
+main:has(.n3:hover) #scene-wide [data-l="7"],
+main:has(.n3:hover) #scene-wide [data-l="8"],
+main:has(.n3:hover) #scene-wide [data-l="9"],
+main:has(.n3:hover) #scene-wide [data-l="10"],
+main:has(.n3:hover) #scene-wide [data-l="11"],
+main:has(.n3:hover) #scene-wide [data-l="12"],
+main:has(.n3:hover) #scene-wide [data-l="13"],
+main:has(.n3:hover) #scene-wide [data-l="14"] {
+  background: var(--t-marked);
+}
+
+/* The panels. Narrow: a list that opens in place. Wide: tabs, and the open one lies over the
+   terminal column. */
+.panels {
+  border-top: 1px solid var(--rule);
+}
+
+details {
+  border-bottom: 1px solid var(--rule);
+}
+
+summary {
+  cursor: pointer;
+  font-weight: bold;
+  padding: 0.5rem 0;
+}
+
+details[open] > summary {
+  color: var(--accent);
+}
+
+.body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.25rem 0 1rem;
+}
+
+.body ul {
+  display: grid;
+  gap: 0.25rem;
+  padding-left: 1.25rem;
+}
+
 .rows > div {
   border-top: 1px solid var(--rule);
   display: grid;
-  gap: 0.25rem 1rem;
-  padding: 0.75rem 0;
+  gap: 0.2rem 1rem;
+  padding: 0.5rem 0;
 }
 
 .rows dt {
@@ -227,26 +393,12 @@ pre code {
 }
 
 .rows .src {
-  font-size: 0.875rem;
+  color: var(--muted);
+  font-size: var(--small);
 }
 
 .rows .src a {
   margin-right: 0.75rem;
-}
-
-@media (min-width: 48rem) {
-  .rows.two > div {
-    grid-template-columns: 18rem 1fr;
-  }
-
-  .rows.three > div {
-    grid-template-columns: 13rem 1fr 9rem;
-  }
-
-  .rows .src a {
-    display: block;
-    margin-right: 0;
-  }
 }
 
 table {
@@ -257,7 +409,7 @@ table {
 th,
 td {
   border-top: 1px solid var(--rule);
-  padding: 0.5rem 0.75rem 0.5rem 0;
+  padding: 0.4rem 0.75rem 0.4rem 0;
   text-align: left;
   vertical-align: top;
 }
@@ -274,37 +426,161 @@ td:nth-child(n + 2) {
 footer {
   border-top: 1px solid var(--rule);
   color: var(--muted);
-  font-size: 0.875rem;
-  margin-top: 3rem;
-  padding-top: 1.5rem;
+  font-size: var(--small);
+  padding: 0.6rem 0;
 }
 
-/* On paper: black on white, and the terminal block without its colors. */
+/* A narrow screen fills each line of the command; a wider one breaks it between words. */
+@media (max-width: 43.99rem) {
+  #install-command {
+    word-break: break-all;
+  }
+}
+
+/* Room for the 76-column screen. */
+@media (min-width: 44rem) {
+  #scene-wide {
+    display: block;
+  }
+
+  #scene-narrow {
+    display: none;
+  }
+}
+
+/* Two columns, and the panels as tabs. */
+@media (min-width: 68rem) {
+  main {
+    --gap: 2.5rem;
+    column-gap: var(--gap);
+    grid-template-areas:
+      "lead show"
+      "install show"
+      "points show"
+      "panels panels";
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    grid-template-rows: auto auto 1fr auto;
+  }
+
+  .lead {
+    grid-area: lead;
+  }
+
+  .install {
+    grid-area: install;
+  }
+
+  .show {
+    align-content: start;
+    display: grid;
+    gap: 0.6rem;
+    grid-area: show;
+  }
+
+  .points {
+    grid-area: points;
+  }
+
+  .tagline {
+    font-size: var(--mid);
+  }
+
+  #install-command {
+    font-size: var(--text);
+    padding: 0.75rem 1rem;
+  }
+
+  .points > div {
+    display: grid;
+    gap: 0 1rem;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+  }
+
+  .panels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 1.75rem;
+    grid-area: panels;
+  }
+
+  details {
+    border-bottom: 0;
+  }
+
+  summary {
+    list-style: none;
+    padding: 0.6rem 0;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  summary::before {
+    content: "+ ";
+  }
+
+  details[open] > summary::before {
+    content: "- ";
+  }
+
+  .body {
+    background: var(--bg);
+    border: 1px solid var(--fg);
+    bottom: 3.25rem;
+    overflow: auto;
+    padding: 1rem 1.25rem;
+    position: absolute;
+    right: 0;
+    top: 1rem;
+    width: calc((100% - var(--gap)) * 6 / 11);
+  }
+
+  .rows.two > div {
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+}
+
+/* A large window: everything a step bigger, so the stage is not lost in it. */
+@media (min-width: 100rem) and (min-height: 56rem) {
+  html {
+    font-size: 118%;
+  }
+}
+
+/* On paper: every panel is printed, black on white. */
 @media print {
   :root {
     --bg: #ffffff;
-    --panel: #ffffff;
+    --surface: #ffffff;
     --rule: #999999;
     --fg: #111111;
     --muted: #333333;
     --accent: #111111;
-    --red: #111111;
-    --green: #111111;
-    --yellow: #111111;
-    --blue: #111111;
-    --magenta: #111111;
-    --cyan: #111111;
-    --gray: #444444;
-    --dim: #444444;
+    --t-bg: #ffffff;
+    --t-rule: #999999;
+    --t-fg: #111111;
+    --t-red: #111111;
+    --t-yellow: #111111;
+    --t-blue: #111111;
+    --t-cyan: #111111;
+    --t-gray: #444444;
+    --t-dim: #444444;
   }
 
   nav,
   .skip,
-  .note {
+  #scene-narrow {
     display: none;
   }
 
-  pre {
+  #scene-wide {
+    display: block;
     white-space: pre-wrap;
+  }
+
+  .body {
+    position: static;
+    width: auto;
   }
 }

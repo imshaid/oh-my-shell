@@ -421,11 +421,45 @@ fn the_site_is_static_files() {
         fold(&read(&root().join("README.md"))).contains(&fold(description)),
         "the meta description is not the README's first paragraph"
     );
+    // What a link preview shows is the same README text, not a second wording.
+    let preview = nodes
+        .iter()
+        .find(|node| attr(node, "property") == Some("og:description"))
+        .and_then(|node| attr(node, "content"))
+        .unwrap_or_else(|| panic!("no og:description"));
+    assert_eq!(preview, description);
+
+    // The panels are `<details>` that share one name (the browser then opens one at a time),
+    // each with its `<summary>` first: nothing here needs a script.
+    let mut panels = 0;
+    for (index, node) in nodes.iter().enumerate() {
+        if !is_open(node, "details") {
+            continue;
+        }
+        panels += 1;
+        assert_eq!(
+            attr(node, "name"),
+            Some("panel"),
+            "a <details> without name=\"panel\""
+        );
+        let first = nodes[index + 1..]
+            .iter()
+            .find(|node| !matches!(node, Node::Text(text) if text.trim().is_empty()));
+        assert!(
+            first.is_some_and(|node| is_open(node, "summary")),
+            "a <details> that does not begin with its <summary>"
+        );
+    }
+    assert!(panels >= 4, "only {panels} panels");
+    let css = site("style.css");
+    for scheme in ["prefers-color-scheme: light", "prefers-reduced-motion"] {
+        assert!(css.contains(scheme), "style.css has no rule for {scheme}");
+    }
 }
 
 #[test]
 fn the_site_loads_nothing_but_its_style_sheet() {
-    const ELEMENTS: [&str; 34] = [
+    const ELEMENTS: [&str; 36] = [
         "html",
         "head",
         "meta",
@@ -460,8 +494,10 @@ fn the_site_loads_nothing_but_its_style_sheet() {
         "dt",
         "dd",
         "div",
+        "details",
+        "summary",
     ];
-    const ATTRIBUTES: [&str; 12] = [
+    const ATTRIBUTES: [&str; 14] = [
         "lang",
         "charset",
         "name",
@@ -474,10 +510,22 @@ fn the_site_loads_nothing_but_its_style_sheet() {
         "role",
         "aria-label",
         "scope",
+        "aria-hidden",
+        "data-basis",
     ];
     let nodes = parse(&site("index.html"));
+    // The rows of the terminal blocks carry their number; nothing else may.
+    let scenes: Vec<(usize, usize)> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| {
+            is_open(node, "pre") && attr(node, "id").is_some_and(|id| id.starts_with("scene"))
+        })
+        .map(|(index, _)| (index, end_of(&nodes, index)))
+        .collect();
+    assert!(!scenes.is_empty(), "no terminal block on the page");
     let mut links = Vec::new();
-    for node in &nodes {
+    for (index, node) in nodes.iter().enumerate() {
         let Node::Open(name, attrs) = node else {
             continue;
         };
@@ -486,9 +534,26 @@ fn the_site_loads_nothing_but_its_style_sheet() {
             "<{name}> is not allowed on the page"
         );
         for (key, _) in attrs {
+            let allowed = match key.as_str() {
+                "data-doc" => true,
+                "property" | "media" => name == "meta",
+                "data-l" => scenes
+                    .iter()
+                    .any(|(start, end)| (*start..*end).contains(&index)),
+                key => ATTRIBUTES.contains(&key),
+            };
             assert!(
-                ATTRIBUTES.contains(&key.as_str()) || key == "data-doc",
-                "the attribute {key} (on <{name}>) is not allowed on the page"
+                allowed,
+                "the attribute {key} (on <{name}>) is not allowed there"
+            );
+        }
+        // A tag in the head may describe the page in words; it may not name an address.
+        if name == "meta"
+            && let Some(content) = attr(node, "content")
+        {
+            assert!(
+                !content.contains("://") && !content.starts_with("//"),
+                "a <meta> names an address: {content}"
             );
         }
         if attr(node, "href").is_some() {
@@ -511,6 +576,21 @@ fn the_site_loads_nothing_but_its_style_sheet() {
     );
     let css = site("style.css");
     for bad in ["url(", "@import", "@font-face", "//", "http"] {
+        assert!(!css.contains(bad), "style.css contains {bad}");
+    }
+    // Flat colors, borders and spacing only; and the page is never locked to the window.
+    for bad in [
+        "gradient(",
+        "backdrop-filter",
+        "filter",
+        "blur(",
+        "box-shadow",
+        "text-shadow",
+        "overflow: hidden",
+        "overflow:hidden",
+        "position: fixed",
+        "position:fixed",
+    ] {
         assert!(!css.contains(bad), "style.css contains {bad}");
     }
 }
@@ -617,6 +697,61 @@ fn the_site_says_what_the_docs_say() {
         quotes > 50,
         "only {quotes} quoted passages; is the reader broken?"
     );
+
+    // The page's own short words (a headline): each names the sentence of the docs it rests on,
+    // and there are few of them and they are short.
+    let mut own_lines = 0;
+    for (open, node) in nodes.iter().enumerate() {
+        let Some(basis) = attr(node, "data-basis") else {
+            continue;
+        };
+        own_lines += 1;
+        let text = fold(&text_of(&nodes[open..end_of(&nodes, open)], false));
+        if text.chars().count() > 60 {
+            wrong.push(format!("own words longer than 60 characters: {text}"));
+        }
+        match basis.split_once(": ") {
+            Some((source, sentence)) if SOURCES.contains(&source) => {
+                if !fold(&read(&root().join(source))).contains(&fold(sentence)) {
+                    wrong.push(format!("the basis is not in {source}: {sentence}"));
+                }
+            }
+            _ => wrong.push(format!(
+                "a data-basis that is not `FILE: sentence`: {basis}"
+            )),
+        }
+    }
+    if own_lines > 3 {
+        wrong.push(format!(
+            "{own_lines} passages of own words; at most 3 are allowed"
+        ));
+    }
+
+    // The limits are on the main screen, not only inside a panel.
+    let limits = nodes
+        .iter()
+        .position(|node| attr(node, "id") == Some("limits-line"))
+        .unwrap_or_else(|| panic!("no limits line on the page"));
+    let inside_a_panel = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| is_open(node, "details"))
+        .any(|(open, _)| (open..end_of(&nodes, open)).contains(&limits));
+    if inside_a_panel {
+        wrong.push("the limits line is inside a panel".to_owned());
+    }
+    let limits = &nodes[limits..end_of(&nodes, limits)];
+    let said: Vec<String> = limits
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| attr(node, "data-doc").is_some())
+        .map(|(open, _)| quoted(&limits[open..end_of(limits, open)]))
+        .collect();
+    for needed in ["It is young", "POSIX-compatible subset", "aarch64"] {
+        if !said.iter().any(|quote| quote.contains(needed)) {
+            wrong.push(format!("the limits line does not quote: {needed}"));
+        }
+    }
 
     // The page's own words: no number the docs do not have, and never the short name.
     let docs: String = pages().iter().map(|page| read(page)).collect();

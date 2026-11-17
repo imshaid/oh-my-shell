@@ -19,8 +19,7 @@ before you make it your login shell; the installers never run `chsh`.
 Linux, x86_64 or aarch64, glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+).
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/imshaid/oh-my-shell/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/imshaid/oh-my-shell/releases/latest/download/install.sh | sh
 ```
 
 This puts `oh-my-shell` in `~/.local/bin`, and the short name `omsh` next to it if that name is free (a different file
