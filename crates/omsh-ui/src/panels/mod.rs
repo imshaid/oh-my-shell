@@ -10,9 +10,43 @@
 use crate::caps::Caps;
 use crate::theme::Theme;
 
+pub mod choose;
+pub mod details;
+pub mod facts;
+pub mod info;
 pub mod menu;
+pub mod meter;
+pub mod plan;
 pub mod run_it;
+pub mod set_up;
+pub mod step;
 pub mod undo_picker;
+
+/// Helpers for the unit tests of the panels.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use omsh_config::{Icons, Motion};
+
+    use crate::caps::{Caps, CapsFacts, Out};
+
+    /// The caps of a color terminal, 100 columns wide, with the given motion and charset.
+    pub fn caps(motion: Motion, unicode: bool) -> Caps {
+        caps_with(motion, unicode, false)
+    }
+
+    pub fn caps_with(motion: Motion, unicode: bool, no_color: bool) -> Caps {
+        let facts = CapsFacts {
+            stdin_tty: true,
+            stdout_tty: true,
+            stderr_tty: true,
+            utf8: unicode,
+            no_color,
+            size: Some((100, 30)),
+            ..CapsFacts::default()
+        };
+        Caps::decide(facts, Out::Stderr, Icons::Auto, Some(motion))
+    }
+}
 
 /// The widest a panel is drawn, in columns.
 pub const MAX_WIDTH: u16 = 100;

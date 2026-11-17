@@ -15,7 +15,7 @@ use omsh_exec::{ExitStatus, Io, LineResult, Outcome, Shell, Trigger, trigger};
 use omsh_history::{Entry, Query, SETTLE};
 use omsh_ui::Paint;
 
-use super::plan::{Failure, PlanSetup, TerminalSource, ask, provider_for};
+use super::plan::{Failure, PlanSetup, Reporter, TerminalSource, ask, provider_for};
 use crate::history::{History, local_time, render};
 use crate::repl::directory;
 
@@ -154,6 +154,7 @@ pub fn run(
     let PlanSetup {
         mut connect,
         settings,
+        calls,
         ..
     } = match setup {
         Ok(setup) => setup,
@@ -192,9 +193,23 @@ pub fn run(
     let first = history_search_request(request, &today_text(now));
     let label = format!("Asking {} ({})", kind.label(), settings.model);
     let check = |answer: &str| HistoryFilter::parse(answer);
-    let (outcome, _) = {
+    let reporter = Reporter {
+        calls: &calls,
+        model: &settings.model,
+        ui: None,
+        in_panel: false,
+    };
+    let (outcome, _, _) = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        ask(provider, &first, &check, &label, env.paint, &mut *terminal)
+        ask(
+            provider,
+            &first,
+            &check,
+            &label,
+            env.paint,
+            &mut *terminal,
+            &reporter,
+        )
     };
     let filter = match outcome {
         Ok((filter, _)) => filter,

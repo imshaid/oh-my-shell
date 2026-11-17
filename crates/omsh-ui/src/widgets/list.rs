@@ -72,6 +72,16 @@ impl List {
         self
     }
 
+    /// This list with the row of item `index` chosen (and in the window), when it is shown.
+    #[must_use]
+    pub fn start_at(mut self, index: usize) -> Self {
+        if let Some(position) = self.shown.iter().position(|shown| *shown == index) {
+            self.cursor = position;
+            self.keep_chosen_in_the_window();
+        }
+        self
+    }
+
     /// What has been typed to filter.
     #[must_use]
     pub fn typed(&self) -> &str {

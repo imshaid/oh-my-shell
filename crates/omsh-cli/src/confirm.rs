@@ -231,6 +231,7 @@ pub(crate) const fn threshold(confirm: ConfirmLevel) -> Level {
 
 /// Says what is wrong with the line and asks, if the analysis calls for it. With `blast`, the
 /// panel counts what the file commands in it would touch (§12.3); without, it does not (tests).
+#[cfg(test)]
 pub fn decide(
     analysis: &Analysis,
     text: &str,
@@ -371,6 +372,39 @@ fn decision_of(ended: Ended<RunChoice>, terminal: &mut dyn Terminal) -> Decision
             Decision::Cancel(DECLINED)
         }
     }
+}
+
+/// The question after `Enter` on a plan that has a step at `level` (UI upgrade, phase 4): the
+/// plan was shown, and a step at the level that asks needs one more answer. With `menu` and a
+/// person at a real terminal it is the "Run it?" panel, with Cancel chosen; a critical plan keeps
+/// the typed `yes` or target. In every other case it is the line and the question of before,
+/// word for word.
+pub fn ask_plan(
+    level: Level,
+    critical: &[&str],
+    paint: &Paint,
+    menu: Option<&MenuUi>,
+    terminal: &mut dyn Terminal,
+) -> Decision {
+    if level != Level::Critical
+        && let Some(ui) = panel_for(menu, terminal)
+    {
+        let body = vec![
+            Line::new()
+                .tone(Tone::Plain, "this plan has a ")
+                .tone(tone_of(level), level.name())
+                .tone(Tone::Plain, " step"),
+            Line::plain("Every step was shown above; nothing has run yet."),
+        ];
+        if let Some(decision) = ask_panel(ui, tone_of(level), body, false, terminal) {
+            return decision;
+        }
+    }
+    terminal.err(&format!(
+        "oh-my-shell: this plan has a {} step\n",
+        level.name()
+    ));
+    ask(level, critical, paint, terminal)
 }
 
 /// The rail color of the panel for a level.

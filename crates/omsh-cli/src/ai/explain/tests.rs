@@ -193,6 +193,8 @@ fn go(fake: FakeProvider, flow: Flow<'_>, setup: Setup) -> Ran {
                 base_url: None,
             },
             context: omsh_config::AiContext::default(),
+            calls: Arc::new(crate::ai::usage::Calls::standard()),
+            menu: None,
         }
     };
     let available = |connects: &Arc<AtomicU32>, fake: &Arc<FakeProvider>| {
@@ -263,6 +265,7 @@ fn the_tokens_the_server_reported_are_shown_after_the_answer_with_the_real_time(
             .reporting(omsh_ai::Usage {
                 input: Some(1204),
                 output: Some(310),
+                ..Default::default()
             }),
         Flow::Command("ls"),
         Setup::default(),

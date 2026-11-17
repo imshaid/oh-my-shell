@@ -10,6 +10,7 @@ use omsh_config::Provider as Kind;
 
 use crate::error::ProviderError;
 use crate::keys::{KeyError, KeyStore};
+use crate::models::Limit;
 use crate::provider::{ChatEvent, ChatRequest, EventStream, Provider, Usage};
 use crate::secret::Secret;
 
@@ -29,6 +30,10 @@ pub struct FakeProvider {
     models: Vec<String>,
     /// What `take_usage` gives, set when a request starts.
     usage: Mutex<Option<Usage>>,
+    /// What `context_limit` finds, if the fake "knows" the window.
+    limit: Option<Limit>,
+    /// What `chat_models` gives (the text models), if the fake has such a list.
+    chat_models: Option<Vec<String>>,
 }
 
 impl FakeProvider {
@@ -40,6 +45,8 @@ impl FakeProvider {
             seen: Mutex::default(),
             models: Vec::new(),
             usage: Mutex::default(),
+            limit: None,
+            chat_models: None,
         }
     }
 
@@ -103,6 +110,20 @@ impl FakeProvider {
         self
     }
 
+    /// The context window `context_limit` finds.
+    #[must_use]
+    pub const fn with_limit(mut self, limit: Limit) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// The list `chat_models` gives: the models that chat in text (Gemini's filter).
+    #[must_use]
+    pub fn with_chat_models(mut self, models: &[&str]) -> Self {
+        self.chat_models = Some(models.iter().map(|m| (*m).to_owned()).collect());
+        self
+    }
+
     /// The requests received so far.
     #[must_use]
     pub fn requests(&self) -> Vec<ChatRequest> {
@@ -157,6 +178,16 @@ impl Provider for FakeProvider {
     fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>> {
         let models = self.models.clone();
         async move { Ok(models) }.boxed()
+    }
+
+    fn context_limit(&self) -> BoxFuture<'_, Option<Limit>> {
+        let limit = self.limit;
+        async move { limit }.boxed()
+    }
+
+    fn chat_models(&self) -> BoxFuture<'_, Option<Vec<String>>> {
+        let models = self.chat_models.clone();
+        async move { models }.boxed()
     }
 }
 

@@ -1,0 +1,11 @@
+---
+source: crates/omsh-ui/tests/ai_panels.rs
+expression: "written(&panel.render(&caps, WIDTH), &caps)"
+---
+⟨35⟩+-⟨0⟩ Choose a model ⟨35⟩------------------------------------------------------------⟨0⟩
+⟨35⟩|⟨0⟩ Type to filter. Esc lets you type a name that is not in the list.
+⟨35⟩|⟨0⟩ ⟨2;90⟩filter _⟨0⟩
+⟨35⟩|⟨0⟩   gemini-2.5-flash
+⟨35⟩|⟨0⟩ ⟨36⟩> ⟨0⟩⟨7⟩gemini-2.5-pro⟨0⟩
+⟨35⟩|⟨0⟩ ⟨2;90⟩2 models that chat, of 5 in all⟨0⟩
+⟨35⟩+-⟨0⟩ ⟨36⟩Up/Down⟨0⟩ ⟨2;90⟩move, ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose, ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel, ⟨0⟩⟨36⟩Tab⟨0⟩ ⟨2;90⟩show all⟨0⟩ ⟨35⟩----------------------⟨0⟩

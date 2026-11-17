@@ -12,6 +12,12 @@
 use omsh_ai::{ErrorKind, Policy, ProviderError, Secret, Settings, key_may_go_to, runtime, verify};
 use omsh_config::{AiChoice, AiState, Provider as Kind, check_url, set_ai};
 use omsh_exec::{ReadError, Terminal};
+use omsh_ui::inline::Ended;
+use omsh_ui::panels::MenuUi;
+use omsh_ui::panels::choose::Choose;
+use omsh_ui::panels::menu::run_on_terminal;
+use omsh_ui::text::Line;
+use omsh_ui::widgets::list::ListItem;
 
 use super::{CANCELLED, Inner};
 
@@ -223,6 +229,34 @@ impl Inner {
 
     // -- questions ---------------------------------------------------------------------
 
+    /// The panel settings, when the questions may be lists: this shell draws panels and a person
+    /// is at a terminal that takes keys.
+    fn panel_for<'a>(&'a self, t: &dyn Terminal) -> Option<&'a MenuUi> {
+        self.menu.as_ref().filter(|_| t.menu_keys())
+    }
+
+    /// The provider as a list to filter. `None` when the list could not be shown or the person
+    /// pressed Esc: the numbered question follows then.
+    fn provider_panel(&self, ui: &MenuUi, notes: &[&str]) -> Option<Step<Kind>> {
+        let items: Vec<ListItem> = Kind::ALL
+            .iter()
+            .zip(notes)
+            .map(|(kind, note)| ListItem::new(kind.label(), note))
+            .collect();
+        let current = self.ai.provider.map(Kind::label);
+        let mut panel = Choose::new("Choose a provider", "providers", items, current);
+        match run_on_terminal(&mut panel, ui, Box::new(omsh_exec::hung_up)) {
+            Ok(Ended::Chosen(label)) => Kind::ALL
+                .iter()
+                .copied()
+                .find(|kind| kind.label() == label)
+                .map(Ok),
+            Ok(Ended::Interrupted) => Some(Err(Stop::Cancelled)),
+            Ok(Ended::Closed) => Some(Err(Stop::EndOfInput)),
+            Ok(Ended::Cancelled) | Err(_) => None,
+        }
+    }
+
     fn ask_provider(&self, t: &mut dyn Terminal) -> Step<Kind> {
         let mut menu = String::from("Choose a provider:\n");
         let notes = [
@@ -232,6 +266,11 @@ impl Inner {
             "",
             "LM Studio, llama.cpp, vLLM and the like",
         ];
+        if let Some(ui) = self.panel_for(t)
+            && let Some(picked) = self.provider_panel(ui, &notes)
+        {
+            return picked;
+        }
         for (number, (kind, note)) in Kind::ALL.iter().zip(notes).enumerate() {
             let note = if note.is_empty() {
                 String::new()
@@ -393,6 +432,16 @@ impl Inner {
         };
         models.sort();
         models.dedup();
+        // With a panel the list is not cut: it can be filtered, and Gemini's chat models come
+        // first. Esc there goes on to the typed question below.
+        if let Some(ui) = self.panel_for(t)
+            && !models.is_empty()
+        {
+            let chat = self.list_chat_models(t, draft);
+            if let Some(picked) = self.model_panel(ui, &models, chat, draft) {
+                return picked.map(Some);
+            }
+        }
         models.truncate(LIST_LIMIT);
         if models.is_empty() {
             let hint = if draft.kind == Kind::Ollama {
@@ -440,6 +489,61 @@ impl Inner {
             }
         }
         failed("no model was chosen")
+    }
+
+    /// The models that chat in text, when the provider can tell (Gemini). `None` when it cannot
+    /// or the lookup failed: the list then shows every model, as it did before.
+    fn list_chat_models(&self, t: &dyn Terminal, draft: &Draft) -> Option<Vec<String>> {
+        let provider = (self.env.make_provider)(&draft.settings(""), draft.key.as_ref()).ok()?;
+        runtime::block_on(
+            async move {
+                let result = provider.chat_models().await;
+                drop(provider);
+                result
+            },
+            &|| t.interrupted(),
+        )
+        .ok()
+        .flatten()
+        .filter(|list| !list.is_empty())
+    }
+
+    /// The model as a list to filter. With `chat`, those come first and `Tab` shows all of them.
+    fn model_panel(
+        &self,
+        ui: &MenuUi,
+        all: &[String],
+        chat: Option<Vec<String>>,
+        draft: &Draft,
+    ) -> Option<Step<String>> {
+        let rows = |names: &[String]| -> Vec<ListItem> {
+            names.iter().map(|name| ListItem::new(name, "")).collect()
+        };
+        let intro = vec![Line::plain(
+            "Type to filter. Esc lets you type a name that is not in the list.",
+        )];
+        let mut panel = match &chat {
+            Some(chat) => Choose::new(
+                "Choose a model",
+                "models",
+                rows(chat),
+                draft.keep_model.as_deref(),
+            )
+            .with_all(rows(all)),
+            None => Choose::new(
+                "Choose a model",
+                "models",
+                rows(all),
+                draft.keep_model.as_deref(),
+            ),
+        }
+        .intro(intro);
+        match run_on_terminal(&mut panel, ui, Box::new(omsh_exec::hung_up)) {
+            Ok(Ended::Chosen(name)) => Some(Ok(name)),
+            Ok(Ended::Interrupted) => Some(Err(Stop::Cancelled)),
+            Ok(Ended::Closed) => Some(Err(Stop::EndOfInput)),
+            Ok(Ended::Cancelled) | Err(_) => None,
+        }
     }
 
     fn list_models(&self, t: &dyn Terminal, draft: &Draft) -> Result<Vec<String>, ProviderError> {

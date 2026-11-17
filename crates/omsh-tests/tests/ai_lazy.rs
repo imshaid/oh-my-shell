@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use omsh_tests::fakehttp::Server;
+use omsh_tests::question::{MODES, plan_key, wait_plan};
 use omsh_tests::{Ctx, Launch, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
@@ -191,44 +192,46 @@ fn a_request_shows_a_socket_and_leaves_none_behind() {
 /// has its own provider, dropped when the request ends.
 #[test]
 fn a_plan_panel_holds_no_socket_while_it_waits() {
-    pty_test(BIN, |ctx| {
-        let answer = r#"{"summary":"Do the thing","steps":[{"title":"Say","command":"echo hi","explanation":"x","risk":"low","needs_root":false}]}"#;
-        // Keep-alive on: the server leaves connections open, as the real providers do.
-        let server = Server::start_answering(Duration::ZERO, true, &[answer])?;
-        write_config(
-            ctx,
-            &format!(
-                "[ai]\nprovider = \"openai-compatible\"\nmodel = \"m\"\nbase_url = \"{}\"\n",
-                server.url("/v1")
-            ),
-        )?;
-        let mut term = launch(ctx).start()?;
-        let pid = term.shell_pid();
-        let no_socket_soon = |term: &mut Session, when: &str| {
-            let mut left = sockets(pid);
-            for _ in 0..100 {
-                if left.is_empty() {
-                    break;
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let answer = r#"{"summary":"Do the thing","steps":[{"title":"Say","command":"echo hi","explanation":"x","risk":"low","needs_root":false}]}"#;
+            // Keep-alive on: the server leaves connections open, as the real providers do.
+            let server = Server::start_answering(Duration::ZERO, true, &[answer])?;
+            write_config(
+                ctx,
+                &format!(
+                    "[ai]\nprovider = \"openai-compatible\"\nmodel = \"m\"\nbase_url = \"{}\"\n",
+                    server.url("/v1")
+                ),
+            )?;
+            let mut term = mode.launch(launch(ctx)).start()?;
+            let pid = term.shell_pid();
+            let no_socket_soon = |term: &mut Session, when: &str| {
+                let mut left = sockets(pid);
+                for _ in 0..100 {
+                    if left.is_empty() {
+                        break;
+                    }
+                    term.pump(Duration::from_millis(20));
+                    left = sockets(pid);
                 }
-                term.pump(Duration::from_millis(20));
-                left = sockets(pid);
-            }
-            assert_eq!(left, Vec::<String>::new(), "a socket {when}");
-        };
+                assert_eq!(left, Vec::<String>::new(), "a socket {when}");
+            };
 
-        term.command("? say hi")?;
-        term.expect("[Enter] run", SHORT);
-        no_socket_soon(&mut term, "while the first panel waits");
-        term.write_bytes(b"c")?;
-        term.expect_plain("chat> ", SHORT);
-        no_socket_soon(&mut term, "at the chat line");
-        term.line("again")?;
-        term.expect_plain("after 1 chat turn", SHORT);
-        no_socket_soon(&mut term, "while the panel after a chat turn waits");
-        term.write_bytes(b"\x1b")?;
-        term.expect("cancelled; nothing ran", SHORT);
-        Ok(())
-    });
+            term.command("? say hi")?;
+            wait_plan(&mut term, mode);
+            no_socket_soon(&mut term, "while the first panel waits");
+            plan_key(&mut term, mode, b"c")?;
+            term.expect_plain("chat> ", SHORT);
+            no_socket_soon(&mut term, "at the chat line");
+            term.line("again")?;
+            term.expect_plain("after 1 chat turn", SHORT);
+            no_socket_soon(&mut term, "while the panel after a chat turn waits");
+            plan_key(&mut term, mode, b"\x1b")?;
+            term.expect("cancelled; nothing ran", SHORT);
+            Ok(())
+        });
+    }
 }
 
 #[test]

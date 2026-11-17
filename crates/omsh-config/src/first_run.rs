@@ -103,6 +103,10 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # contain a user name or password. A key is sent only to https:// addresses and to this
 # computer (localhost, 127.0.0.1, ::1).
 # base_url = "http://localhost:11434"
+# The size of the model's context window in tokens (1 to 100000000). Without it, the shell asks
+# Gemini, Anthropic and a loaded Ollama model for it after you have sent a request, and shows
+# "limit unknown" for the others.
+# context_limit = 128000
 
 # What may be sent along with a request. Each item can be turned off. `os` is the name of the
 # system, `cwd` the working directory, `git` whether it is inside a git repository and the
@@ -114,6 +118,14 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 #cwd = true
 #git = true
 #recent_commands = true
+
+# The line under each AI answer on a terminal. `fields` is a list of: "model", "effort",
+# "time", "in", "out", "thinking", "cached", "total", "ctx", "speed". A number the server did
+# not report is shown as a dash. `thinking_warn`: a warning when the thinking tokens are at
+# least this many times the answer (0 turns it off).
+#[ai.inline]
+#fields = ["time", "in", "out"]
+#thinking_warn = 4
 
 #[notify]
 # A desktop notification when a command that ran a while has ended, so that you can look away

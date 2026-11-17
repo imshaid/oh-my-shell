@@ -180,7 +180,12 @@ pub struct Ai {
     pub model: Option<String>,
     /// Address of an OpenAI-compatible server (or a non-default Ollama).
     pub base_url: Option<String>,
+    /// The size of the model's context window in tokens, when the person says it. Without it
+    /// the shell asks the provider where the provider can tell (U4); it wins over what the
+    /// provider says.
+    pub context_limit: Option<u32>,
     pub context: AiContext,
+    pub inline: AiInline,
 }
 
 impl Default for Ai {
@@ -190,7 +195,33 @@ impl Default for Ai {
             provider: None,
             model: None,
             base_url: None,
+            context_limit: None,
             context: AiContext::default(),
+            inline: AiInline::default(),
+        }
+    }
+}
+
+/// The names `[ai.inline] fields` accepts: what the line under an AI answer may show (U4).
+pub const INLINE_FIELDS: &[&str] = &[
+    "model", "effort", "time", "in", "out", "thinking", "cached", "total", "ctx", "speed",
+];
+
+/// `[ai.inline]`: the line under each AI answer on a terminal (U4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiInline {
+    /// What the line shows, in this order; every name is one of [`INLINE_FIELDS`].
+    pub fields: Vec<String>,
+    /// A warning appears when the thinking tokens are at least this many times the answer's
+    /// tokens. 0 turns the warning off.
+    pub thinking_warn: u32,
+}
+
+impl Default for AiInline {
+    fn default() -> Self {
+        Self {
+            fields: ["time", "in", "out"].map(str::to_owned).to_vec(),
+            thinking_warn: 4,
         }
     }
 }
@@ -375,9 +406,18 @@ pub const SECTIONS: &[(&str, &[&str])] = &[
     ),
     (
         "ai",
-        &["enabled", "provider", "model", "base_url", "context"],
+        &[
+            "enabled",
+            "provider",
+            "model",
+            "base_url",
+            "context_limit",
+            "context",
+            "inline",
+        ],
     ),
     ("ai.context", &["os", "cwd", "git", "recent_commands"]),
+    ("ai.inline", &["fields", "thinking_warn"]),
     ("notify", &["enabled", "min_seconds", "ignore"]),
     ("update", &["check", "channel"]),
 ];

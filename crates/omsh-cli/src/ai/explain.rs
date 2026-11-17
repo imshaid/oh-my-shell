@@ -22,16 +22,18 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use omsh_ai::{
-    ChatRequest, ErrorKind, Output, OutputAsk, PlanContext, Policy, Provider, Settings,
+    ChatRequest, ErrorKind, Output, OutputAsk, PlanContext, Policy, Provider, Settings, alongside,
     answer_about_output, explain_command, explain_failure, hides_secret_in, runtime, stream_text,
 };
 use omsh_config::ConfirmLevel;
 use omsh_exec::{ExitStatus, Io, LineResult, Outcome, Shell, Terminal};
 use omsh_safety::Level;
 use omsh_ui::Paint;
+use omsh_ui::panels::MenuUi;
 
 use super::plan::{PlanSetup, TerminalSource, gather, provider_for};
 use super::recent::{Last, Recent};
+use super::usage::Calls;
 use super::wait::WaitLine;
 use crate::confirm;
 use crate::radius::BlastLimits;
@@ -91,15 +93,27 @@ fn printable(text: &str) -> String {
         .collect()
 }
 
-/// Asks, and writes the answer to standard output as it arrives.
+/// Where the numbers of a call go: the session's record of its calls, and how to show the line
+/// under the answer.
+struct Calling<'a> {
+    calls: &'a Calls,
+    model: &'a str,
+    ui: Option<&'a MenuUi>,
+}
+
+/// Asks, and writes the answer to standard output as it arrives. The call is recorded; a person
+/// at a terminal that takes keys gets the info line, everyone else the plain tokens line.
 fn stream_answer(
     provider: Box<dyn Provider>,
     request: &ChatRequest,
     label: &str,
     paint: &Paint,
     terminal: &mut dyn Terminal,
+    calling: &Calling<'_>,
 ) -> Ended {
     let kind = provider.kind();
+    let rich = calling.ui.filter(|_| terminal.menu_keys());
+    let probe = rich.is_some() && calling.calls.config_limit().is_none();
     let wait = WaitLine::start(label, paint, terminal);
     let shown = Cell::new(false);
     let ended_with_newline = Cell::new(true);
@@ -129,24 +143,46 @@ fn stream_answer(
     let outcome = runtime::block_on(
         async {
             let policy = Policy::standard();
-            let result = stream_text(provider.as_ref(), request, &policy, &mut on_piece).await;
+            // The size of the window is asked next to the request, never before the answer.
+            let window = async {
+                if probe {
+                    provider.context_limit().await
+                } else {
+                    None
+                }
+            };
+            let (result, limit) = alongside(
+                stream_text(provider.as_ref(), request, &policy, &mut on_piece),
+                window,
+            )
+            .await;
             let usage = provider.take_usage();
             // Inside the runtime, so that no connection outlives the request (S20).
             drop(provider);
-            (result, usage)
+            (result, usage, limit)
         },
         &watch,
     );
-    let (outcome, usage) = match outcome {
-        Ok((result, usage)) => (Ok(result), usage),
-        Err(error) => (Err(error), None),
+    let (outcome, usage, limit) = match outcome {
+        Ok((result, usage, limit)) => (Ok(result), usage, limit),
+        Err(error) => (Err(error), None, None),
     };
     wait.clear(&mut **terminal.borrow_mut());
     let mut terminal = terminal.borrow_mut();
     if shown.get() && !ended_with_newline.get() {
         terminal.out("\n");
     }
-    wait.report(&mut **terminal, usage);
+    // The provider answered, or at least began to: the call counts.
+    let record = matches!(&outcome, Ok(Ok(_))).then(|| {
+        calling
+            .calls
+            .record(kind, calling.model, usage, wait.elapsed(), limit)
+    });
+    match (rich, &record) {
+        (Some(ui), Some(record)) => terminal.err(&calling.calls.info_text(ui, record)),
+        (Some(_), None) => {}
+        (None, _) => wait.report(&mut **terminal, usage),
+    }
     match outcome {
         Ok(Ok(text)) if text.trim().is_empty() => Ended::Failed("the model gave no answer".into()),
         Ok(Ok(_)) => Ended::Answered,
@@ -164,6 +200,7 @@ fn ask(
     request: &ChatRequest,
     env: &mut ExplainEnv<'_>,
     what: &str,
+    calling: &Calling<'_>,
 ) -> u8 {
     let provider = match provider_for(connect, settings.kind) {
         Ok(provider) => provider,
@@ -175,7 +212,14 @@ fn ask(
     let label = format!("Asking {} ({})", settings.kind.label(), settings.model);
     let ended = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        stream_answer(provider, request, &label, env.paint, &mut *terminal)
+        stream_answer(
+            provider,
+            request,
+            &label,
+            env.paint,
+            &mut *terminal,
+            calling,
+        )
     };
     match ended {
         Ended::Answered => 0,
@@ -199,6 +243,8 @@ pub fn command(setup: PlanSetup, text: &str, mut env: ExplainEnv<'_>) -> LineRes
         mut connect,
         settings,
         context,
+        calls,
+        menu,
     } = setup;
     let ctx = PlanContext::build(gather(env.shell, &context, env.recent), &context);
     // What the safety analyzer says, locally. If the text is not a command it simply says
@@ -224,7 +270,18 @@ pub fn command(setup: PlanSetup, text: &str, mut env: ExplainEnv<'_>) -> LineRes
         );
     }
     let request = explain_command(text, &ctx);
-    let status = ask(&mut connect, &settings, &request, &mut env, "??");
+    let status = ask(
+        &mut connect,
+        &settings,
+        &request,
+        &mut env,
+        "??",
+        &Calling {
+            calls: &calls,
+            model: &settings.model,
+            ui: menu.as_ref(),
+        },
+    );
     finish(env.shell, status)
 }
 
@@ -294,6 +351,8 @@ pub fn last(
         mut connect,
         settings,
         context,
+        calls,
+        menu,
     } = setup;
     let ctx = PlanContext::build(gather(env.shell, &context, env.recent), &context);
     if hides_secret_in(&[&command], &ctx, None) {
@@ -311,7 +370,18 @@ pub fn last(
         ),
     );
     let request = explain_failure(&command, status, &ctx);
-    let code = ask(&mut connect, &settings, &request, &mut env, "??");
+    let code = ask(
+        &mut connect,
+        &settings,
+        &request,
+        &mut env,
+        "??",
+        &Calling {
+            calls: &calls,
+            model: &settings.model,
+            ui: menu.as_ref(),
+        },
+    );
     done(&mut env, code)
 }
 
@@ -414,6 +484,8 @@ pub fn pipe(
         mut connect,
         settings,
         context,
+        calls,
+        menu,
     } = setup;
 
     let Ok((reader, writer)) = std::io::pipe() else {
@@ -499,7 +571,18 @@ pub fn pipe(
         },
         &ctx,
     );
-    let code = ask(&mut connect, &settings, &request, &mut env, "?");
+    let code = ask(
+        &mut connect,
+        &settings,
+        &request,
+        &mut env,
+        "?",
+        &Calling {
+            calls: &calls,
+            model: &settings.model,
+            ui: menu.as_ref(),
+        },
+    );
     // The status of the line is the command's own unless the question could not be answered.
     finish(
         env.shell,

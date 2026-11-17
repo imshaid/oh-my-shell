@@ -263,6 +263,11 @@ Remove the stored key of the chosen provider.
 Usage: `omsh ai forget`
 Example: `omsh ai forget`
 
+### `omsh ai details`
+Show what the AI calls of this shell session used: for each provider used, its newest call with the model, the context window (used, limit, percent), and the tokens in, thinking, out, cached and total, the time and, for Ollama, the speed (marked as derived). A number the provider did not report is shown as a dash, never as 0. On a terminal it is a table with a tab for each provider (`←→` switch, `Esc` close); in a pipe it is the same rows as text. With no call made yet it says so and ends with status 1. The program `omsh` has no session, so from outside the shell it always says that.
+Usage: `omsh ai details`
+Example: `omsh ai details` after a `? question`.
+
 ### `omsh update`
 Download the latest release, check it against `sha256.sum`, try the new program, and rename it over the
 old one. `--check` does not install anything; it says whether a newer release exists, and (like the daily check) it
@@ -401,7 +406,12 @@ A change applies at the next start of the shell.
 |---|---|
 | Safety question for a dangerous line | Type `y` or `yes` and Enter to run it; `t` (or `trash`) runs it with `rm` moving files to the trash, where that is possible; anything else, Enter alone, Ctrl+C and Ctrl+D cancel. |
 | Safety question for a critical line | Type `yes` or the target's name; anything else cancels. There is no trash choice. |
-| AI plan panel | Enter runs; `e` edits the command; `c` chats (asks for a change); `v` shows the last request as it was sent (control characters removed; earlier plans and refused retries appear only as character counts); Esc cancels. |
+| AI plan panel (a terminal with the line editor) | Enter or `y` runs all; `s` step by step; `e` edits a command (with several steps, a digit or `↑↓` and Enter picks which; Esc goes back); `c` chats; `v` shows the last request as it was sent (control characters removed; earlier plans and refused retries appear only as character counts); `i` shows the details of the call; Tab shows or hides more numbers; `←` `→` move between the buttons; `n`, `q` and Esc cancel; Ctrl+C cancels with `$?` 130. |
+| AI plan panel (`TERM=dumb`, the plain reader, a pipe) | The text panel: Enter or `y` runs; `e` edits; `c` chats; `v` shows the last request; Esc, `n` and `q` cancel. |
+| Question before one step of a plan run step by step | `y` or Enter runs the step; `s` skips it; `n` and Esc stop the plan; Ctrl+C stops it with `$?` 130. |
+| "AI is not set up" (`? question` before the setup) | `s` sets the AI up and then sends the question; `n`, Esc and Enter (Not now is chosen) send nothing. |
+| Lists of `omsh ai setup` | Type to filter; `↑` `↓` move; Enter chooses; Tab switches between a provider's chat models and all of its models (Gemini); Esc leaves the model list and lets you type a name. |
+| Details of a call (`omsh ai details`, `i`) | `←` `→` switch provider; Enter, `q` or Esc close. |
 | `omsh tour` | Enter, `n` or Space next; `b` back; `q` or Esc leaves. |
 
 ## Settings (`config.toml`)
@@ -449,11 +459,15 @@ The keys, with the default in brackets:
 - `ai.provider` (unset): `"ollama"`, `"anthropic"`, `"openai"`, `"gemini"` or `"openai-compatible"`; written by `omsh ai setup`. Example: `provider = "ollama"`.
 - `ai.model` (unset): the model name. Example: `model = "llama3.2"`.
 - `ai.base_url` (unset): the address of an OpenAI-compatible server or of an Ollama on another computer. Example: `base_url = "http://localhost:11434"`.
+- `ai.context_limit` (unset): the size of the model's context window in tokens, 1 to 100000000, when you know it. It wins over what a provider says. Without it the shell asks Gemini, Anthropic and a loaded Ollama model after you have sent a request, and shows "limit unknown" for OpenAI and compatible servers. Example: `context_limit = 128000`.
 - `ai.context` (a table): what may be sent along with a request, the four keys below.
 - `ai.context.os` (`true`): the name of the system. Example: `os = false`.
 - `ai.context.cwd` (`true`): the working directory. Example: `cwd = false`.
 - `ai.context.git` (`true`): whether the folder is in a git repository, and the branch. Example: `git = false`.
 - `ai.context.recent_commands` (`true`): the last 3 commands with their exit status, never their output. Example: `recent_commands = false`.
+- `ai.inline` (a table): the line under each AI answer on a terminal, the two keys below.
+- `ai.inline.fields` (`["time", "in", "out"]`): what the line shows, in this order: `"model"`, `"effort"`, `"time"`, `"in"`, `"out"`, `"thinking"`, `"cached"`, `"total"`, `"ctx"`, `"speed"`. A number the server did not report is shown as a dash, never as 0. Example: `fields = ["model", "time", "in", "out", "ctx"]`.
+- `ai.inline.thinking_warn` (`4`): a warning when the thinking tokens are at least this many times the answer's tokens; `0` turns it off. Example: `thinking_warn = 0`.
 
 ### `[notify]`
 

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use omsh_tests::fakehttp::Server;
+use omsh_tests::question::{MODES, Mode, plan_key, wait_plan};
 use omsh_tests::{Ctx, Launch, SHORT, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
@@ -335,23 +336,26 @@ fn ctrl_c_while_waiting_for_the_answer_cancels_and_the_prompt_comes_back() {
 
 #[test]
 fn a_failed_plan_step_offers_the_explanation() {
-    pty_test(BIN, |ctx| {
-        let plan = r#"{"summary":"Fail","steps":[{"title":"Fail","command":"sh -c 'exit 5'","explanation":"x","risk":"low","needs_root":false}]}"#;
-        let server = Server::start_answering(Duration::ZERO, false, &[plan, "It exited with 5."])?;
-        configure(ctx, &server, "")?;
-        let mut term = launch(ctx).start()?;
-        term.command("? make it fail")?;
-        term.expect("[Enter] run", SHORT);
-        term.write_bytes(b"\r")?;
-        term.expect_plain("type ?? (or press Alt+?) to ask why it failed", SHORT);
-        term.command("??")?;
-        term.expect("It exited with 5.", SHORT);
-        let requests = chat_requests(&server);
-        assert_eq!(requests.len(), 2);
-        assert!(requests[1].contains("exit 5"), "{}", requests[1]);
-        term.sync("end")?;
-        Ok(())
-    });
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let plan = r#"{"summary":"Fail","steps":[{"title":"Fail","command":"sh -c 'exit 5'","explanation":"x","risk":"low","needs_root":false}]}"#;
+            let server =
+                Server::start_answering(Duration::ZERO, false, &[plan, "It exited with 5."])?;
+            configure(ctx, &server, "")?;
+            let mut term = mode.launch(launch(ctx)).start()?;
+            term.command("? make it fail")?;
+            wait_plan(&mut term, mode);
+            plan_key(&mut term, mode, b"\r")?;
+            term.expect_plain("type ?? (or press Alt+?) to ask why it failed", SHORT);
+            term.command("??")?;
+            term.expect("It exited with 5.", SHORT);
+            let requests = chat_requests(&server);
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].contains("exit 5"), "{}", requests[1]);
+            term.sync("end")?;
+            Ok(())
+        });
+    }
 }
 
 /// A 429 that says `Retry-After: 1` is waited out: the second request comes at least a second
@@ -401,4 +405,30 @@ fn a_retry_after_over_ten_seconds_is_reported_and_not_waited_for() {
         assert_eq!(chats, 1, "no second try");
         term.quit()
     });
+}
+
+/// UI upgrade, phase 4: under an answer, a person at a terminal with keys gets the info line, and
+/// everyone else the plain line the shell has always printed, byte for byte.
+#[test]
+fn the_line_under_an_answer_is_the_info_line_on_a_terminal_and_the_plain_line_elsewhere() {
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let server = Server::start_answering(
+                Duration::ZERO,
+                false,
+                &["@usage 1204 310 200 | It lists files."],
+            )?;
+            configure(ctx, &server, "")?;
+            let mut term = mode.launch(launch(ctx)).start()?;
+            term.command("?? ls")?;
+            term.expect("It lists files.", SHORT);
+            match mode {
+                // The thinking tokens are split from the answer's: 110 out, not 310.
+                Mode::Panel => term.expect_plain("in 1,204, out 110", SHORT),
+                Mode::Dumb => term.expect_plain(", 1,204 tokens in, 310 out", SHORT),
+            }
+            term.prompt();
+            Ok(())
+        });
+    }
 }

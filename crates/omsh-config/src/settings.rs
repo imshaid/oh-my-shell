@@ -189,6 +189,24 @@ pub const SETTINGS: &[Setting] = &[
         "Address of a local or compatible server.",
     ),
     setting(
+        "ai.context_limit",
+        Kind::Number,
+        false,
+        "Size of the model's context window in tokens, when you know it.",
+    ),
+    setting(
+        "ai.inline.fields",
+        Kind::List,
+        false,
+        "What the line under an AI answer shows.",
+    ),
+    setting(
+        "ai.inline.thinking_warn",
+        Kind::Number,
+        false,
+        "Warn when thinking tokens are this many times the answer. 0 is off.",
+    ),
+    setting(
         "ai.context.os",
         Kind::Bool,
         true,
@@ -397,6 +415,12 @@ pub fn display(config: &Config, key: &str) -> String {
             "(not set)"
         }
         .to_owned(),
+        "ai.context_limit" => config
+            .ai
+            .context_limit
+            .map_or_else(|| "(not set)".to_owned(), |tokens| tokens.to_string()),
+        "ai.inline.fields" => list(&config.ai.inline.fields),
+        "ai.inline.thinking_warn" => config.ai.inline.thinking_warn.to_string(),
         "ai.context.os" => config.ai.context.os.to_string(),
         "ai.context.cwd" => config.ai.context.cwd.to_string(),
         "ai.context.git" => config.ai.context.git.to_string(),

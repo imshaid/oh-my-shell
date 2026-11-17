@@ -681,3 +681,58 @@ fn motion_on_is_the_same_as_full() {
     assert!(parsed.problems.is_empty(), "{:?}", messages(&parsed));
     assert_eq!(parsed.config.ui.motion, Some(Motion::Full));
 }
+
+#[test]
+fn the_context_limit_and_the_inline_line_are_read() {
+    let parsed = parse(
+        "[ai]\ncontext_limit = 128000\n[ai.inline]\nfields = [\"model\", \"ctx\", \"model\"]\nthinking_warn = 0\n",
+    );
+    assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
+    let ai = parsed.config.ai;
+    assert_eq!(ai.context_limit, Some(128_000));
+    assert_eq!(
+        ai.inline.fields,
+        ["model", "ctx"],
+        "a name given twice is shown once"
+    );
+    assert_eq!(ai.inline.thinking_warn, 0);
+    let default = parse("");
+    assert_eq!(default.config.ai.context_limit, None);
+    assert_eq!(default.config.ai.inline.fields, ["time", "in", "out"]);
+    assert_eq!(default.config.ai.inline.thinking_warn, 4);
+}
+
+#[test]
+fn a_bad_inline_name_or_limit_is_reported_and_the_default_is_kept() {
+    for (text, message) in [
+        (
+            "[ai.inline]\nfields = [\"time\", \"cost\"]",
+            "which is not one of",
+        ),
+        ("[ai.inline]\nfields = [1]", "ai.inline.fields"),
+        (
+            "[ai.inline]\nthinking_warn = 5000",
+            "ai.inline.thinking_warn must be",
+        ),
+        ("[ai.inline]\nfeilds = []", "feilds"),
+        ("[ai]\ncontext_limit = 0", "ai.context_limit must be"),
+        ("[ai]\ncontext_limit = \"big\"", "ai.context_limit"),
+    ] {
+        let parsed = parse(text);
+        assert!(
+            parsed.problems.iter().any(|p| p.message.contains(message)),
+            "{text}: {:?}",
+            parsed.problems
+        );
+        assert_eq!(
+            parsed.config.ai.inline,
+            omsh_config_default_inline(),
+            "{text}"
+        );
+        assert_eq!(parsed.config.ai.context_limit, None, "{text}");
+    }
+}
+
+fn omsh_config_default_inline() -> crate::AiInline {
+    crate::AiInline::default()
+}

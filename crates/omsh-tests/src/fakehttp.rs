@@ -45,8 +45,32 @@ pub struct Server {
 /// What chat requests are answered with, in order; the last answer is repeated.
 type Answers = Arc<Mutex<VecDeque<String>>>;
 
+/// The counts a server reports: tokens in, tokens out (thinking included) and thinking.
+type Counts = (u32, u32, u32);
+
+/// `1204 310 200 | the text` as the counts and the text.
+fn parse_usage(spec: &str) -> Option<(Counts, String)> {
+    let (numbers, text) = spec.split_once('|')?;
+    let mut numbers = numbers.split_whitespace().map(|n| n.parse::<u32>().ok());
+    let counts = (numbers.next()??, numbers.next()??, numbers.next()??);
+    Some((counts, text.trim_start().to_owned()))
+}
+
 /// The server-sent-event body of a chat answer that says `content`.
 fn chat_body(content: &str) -> String {
+    chat_body_with(content, None)
+}
+
+/// Like [`chat_body`], with a last chunk that carries the token counts when `usage` is given.
+fn chat_body_with(content: &str, usage: Option<Counts>) -> String {
+    let report = usage.map_or_else(String::new, |(input, output, thinking)| {
+        format!(
+            "data: {{\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\
+             \"choices\":[],\"usage\":{{\"prompt_tokens\":{input},\"completion_tokens\":{output},\
+             \"total_tokens\":{},\"completion_tokens_details\":{{\"reasoning_tokens\":{thinking}}}}}}}\n\n",
+            input + output
+        )
+    });
     let mut escaped = String::new();
     for c in content.chars() {
         match c {
@@ -65,7 +89,7 @@ fn chat_body(content: &str) -> String {
          \"finish_reason\":null}}]}}\n\n\
          data: {{\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\
          \"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
-         data: [DONE]\n\n"
+         {report}data: [DONE]\n\n"
     )
 }
 
@@ -233,7 +257,12 @@ fn serve_one(
             let _ = (sent.is_ok(), out.flush());
             return false;
         }
-        ("text/event-stream", chat_body(&content))
+        // `@usage 1204 310 200 | text`: the answer `text`, and a final chunk that reports 1,204
+        // tokens in, 310 out (200 of them thinking), as a server does that was asked for counts.
+        match content.strip_prefix("@usage ").and_then(parse_usage) {
+            Some((usage, text)) => ("text/event-stream", chat_body_with(&text, Some(usage))),
+            None => ("text/event-stream", chat_body(&content)),
+        }
     } else {
         ("application/json", MODELS.to_owned())
     };

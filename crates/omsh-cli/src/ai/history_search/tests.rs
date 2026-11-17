@@ -119,6 +119,8 @@ fn setup_with(fake: &Arc<FakeProvider>, connects: &Arc<AtomicU32>) -> PlanSetup 
             base_url: None,
         },
         context: omsh_config::AiContext::default(),
+        calls: Arc::new(crate::ai::usage::Calls::standard()),
+        menu: None,
     }
 }
 

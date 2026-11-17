@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use omsh_tests::fakehttp::Server;
-use omsh_tests::question::{Answer, MODES, Mode, answer, wait_question};
+use omsh_tests::question::{Answer, MODES, Mode, answer, plan_key, wait_plan, wait_question};
 use omsh_tests::{Ctx, Launch, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
@@ -463,12 +463,15 @@ fn plan_of(steps: &[(&str, &str)]) -> String {
 }
 
 #[test]
-fn the_plan_panel_has_the_ai_colored_bar_and_accent_keys() {
+fn the_text_plan_has_the_ai_colored_bar_and_accent_keys() {
     pty_test(BIN, |ctx| {
         let answer = plan_of(&[("First", "true")]);
         let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
         configure(ctx, &server, "")?;
-        let mut term = ai_launch(ctx).env("NO_COLOR", "").start()?;
+        let mut term = ai_launch(ctx)
+            .env("NO_COLOR", "")
+            .env("INSIDE_EMACS", "1")
+            .start()?;
         term.command("? do it")?;
         term.expect(
             "\x1b[35mplan from OpenAI-compatible server (model-one)\x1b[0m",
@@ -484,29 +487,57 @@ fn the_plan_panel_has_the_ai_colored_bar_and_accent_keys() {
 }
 
 #[test]
-fn a_failed_step_marks_the_steps_that_did_not_run() {
+fn the_plan_panel_has_the_ai_colored_rail_the_risk_word_and_the_keys() {
     pty_test(BIN, |ctx| {
-        let answer = plan_of(&[
-            ("First", "true"),
-            ("Second", "false"),
-            ("Third", "touch third"),
-        ]);
+        let answer = plan_of(&[("First", "true")]);
         let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
         configure(ctx, &server, "")?;
-        let mut term = ai_launch(ctx).start()?;
+        let mut term = ai_launch(ctx).env("NO_COLOR", "").start()?;
         term.command("? do it")?;
-        term.expect_plain("[Enter] run", SHORT);
-        term.write_bytes(b"\r")?;
-        term.expect_plain("[1/3] First", SHORT);
-        term.expect_plain("✓", SHORT);
-        term.expect_plain("[2/3] Second", SHORT);
-        term.expect_plain("✗ (status 1)", SHORT);
-        term.expect_plain("– 3. Third (not run)", SHORT);
-        term.expect_plain("step 2 did not succeed", SHORT);
-        assert!(
-            !term.transcript().contains("never\r\n"),
-            "step 3 must not run"
-        );
+        wait_plan(&mut term, Mode::Panel);
+        let seen = term.transcript();
+        // The rail is the AI color, the risk is a word with its own color, and the keys of the
+        // bottom rule are in the key color.
+        assert!(seen.contains("\x1b[35m│\x1b[0m"), "{seen:?}");
+        assert!(seen.contains("1. First  \x1b[32msafe\x1b[0m"), "{seen:?}");
+        assert!(seen.contains("\x1b[36mEnter\x1b[0m"), "{seen:?}");
+        plan_key(&mut term, Mode::Panel, b"\x1b")?;
+        term.expect_plain("cancelled; nothing ran", SHORT);
         Ok(())
     });
+}
+
+#[test]
+fn a_failed_step_marks_the_steps_that_did_not_run() {
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let answer = plan_of(&[
+                ("First", "true"),
+                ("Second", "false"),
+                ("Third", "touch third"),
+            ]);
+            let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+            configure(ctx, &server, "")?;
+            let launch = ai_launch(ctx);
+            let mut term = match mode {
+                Mode::Panel => launch.start()?,
+                // The plain reader, in color, as the other tests of this file do.
+                Mode::Dumb => launch.env("INSIDE_EMACS", "1").start()?,
+            };
+            term.command("? do it")?;
+            wait_plan(&mut term, mode);
+            plan_key(&mut term, mode, b"\r")?;
+            term.expect_plain("[1/3] First", SHORT);
+            term.expect_plain("✓", SHORT);
+            term.expect_plain("[2/3] Second", SHORT);
+            term.expect_plain("✗ (status 1)", SHORT);
+            term.expect_plain("– 3. Third (not run)", SHORT);
+            term.expect_plain("step 2 did not succeed", SHORT);
+            assert!(
+                !term.transcript().contains("never\r\n"),
+                "step 3 must not run"
+            );
+            Ok(())
+        });
+    }
 }

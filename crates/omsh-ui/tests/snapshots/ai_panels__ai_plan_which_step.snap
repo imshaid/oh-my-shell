@@ -1,0 +1,9 @@
+---
+source: crates/omsh-ui/tests/ai_panels.rs
+expression: "written(&expanded.render(&caps, WIDTH), &caps)"
+---
+⟨35⟩╭─⟨0⟩ Edit which step? ⟨35⟩──────────────────────────────────────────────────────────⟨0⟩
+⟨35⟩│⟨0⟩ ⟨36⟩❯ ⟨0⟩⟨7⟩1. Look at the file  safe⟨0⟩
+⟨35⟩│⟨0⟩   2. Copy it  ⟨2;90⟩caution⟨0⟩
+⟨35⟩│⟨0⟩   3. Remove it  ⟨2;90⟩danger⟨0⟩
+⟨35⟩╰─⟨0⟩ ⟨36⟩1-9⟨0⟩ ⟨2;90⟩pick · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩back⟨0⟩ ⟨35⟩────────────────────────────────────────⟨0⟩

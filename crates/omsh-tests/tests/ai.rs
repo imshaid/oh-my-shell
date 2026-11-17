@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use nix::sys::termios::LocalFlags;
 use omsh_tests::fakehttp::Server;
+use omsh_tests::question::{MODES, Mode, pick_model, pick_provider};
 use omsh_tests::{Ctx, Launch, SHORT, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
@@ -42,117 +43,115 @@ fn contains_bytes(haystack: &[u8], needle: &str) -> bool {
 /// Done-when of S20: setup stores a key and uses it at once, in the same session.
 #[test]
 fn setup_stores_the_key_checks_it_and_the_same_session_uses_it() {
-    pty_test(BIN, |ctx| {
-        let server = Server::start(Duration::ZERO)?;
-        let mut term = launch(ctx).start()?;
+    for mode in MODES {
+        pty_test(BIN, move |ctx| {
+            let server = Server::start(Duration::ZERO)?;
+            let mut term = mode.launch(launch(ctx)).start()?;
 
-        term.command("omsh ai setup")?;
-        term.expect("Choose a provider", SHORT);
-        term.expect("Number (1-5)", SHORT);
-        term.line("5")?;
-        term.expect("Server address", SHORT);
-        term.line(&server.url("/v1"))?;
-        term.expect("API key", SHORT);
-        // While the key is asked, the terminal does not echo.
-        assert!(
-            !term.termios()?.local_flags.contains(LocalFlags::ECHO),
-            "echo must be off at the key prompt"
-        );
-        term.line(KEY)?;
-        term.expect("model-one", SHORT);
-        term.expect("Model (number or name)", SHORT);
-        term.line("1")?;
-        term.expect(
-            "AI is set up: OpenAI-compatible server, model model-one",
-            SHORT,
-        );
-        term.prompt();
-        // And echo is on again afterwards: `stty` prints `-echo` when it is off.
-        term.command("echo tty-$(stty -a | grep -c ' -echo ')-end")?;
-        term.expect("tty-0-end", SHORT);
-
-        // The key went to the credentials file: directory 0700, file 0600.
-        let credentials = config_dir(ctx).join("credentials");
-        assert_eq!(
-            fs::metadata(config_dir(ctx))?.permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            fs::metadata(&credentials)?.permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            fs::read_to_string(&credentials)?,
-            format!("openai-compatible={KEY}\n")
-        );
-        // The settings went to config.toml, with its comments, and the key did not.
-        let config = fs::read_to_string(config_dir(ctx).join("config.toml"))?;
-        assert!(
-            config.contains("# The AI layer is off until you set up a provider."),
-            "{config}"
-        );
-        assert!(
-            config.contains("[ai]\nprovider = \"openai-compatible\"\n"),
-            "{config}"
-        );
-        assert!(config.contains("model = \"model-one\"\n"), "{config}");
-        assert!(
-            config.contains(&format!("base_url = \"{}\"", server.url("/v1"))),
-            "{config}"
-        );
-        assert!(!config.contains(KEY), "{config}");
-        // Nothing on the screen shows the key.
-        assert!(!term.transcript().contains(KEY), "{}", term.transcript());
-
-        // The same session uses it: no restart, no `source`.
-        term.command("omsh ai test")?;
-        term.expect("ok: OpenAI-compatible server answered in ", SHORT);
-        term.prompt();
-
-        // Every request carried the key, to the address that was chosen.
-        let seen = server.requests();
-        let paths: Vec<_> = seen.iter().map(|r| r.path().to_owned()).collect();
-        assert_eq!(
-            paths,
-            ["/v1/models", "/v1/chat/completions", "/v1/chat/completions"],
-            "the list of models, the check, the test"
-        );
-        for request in &seen {
-            assert_eq!(
-                request.header("authorization"),
-                Some(format!("Bearer {KEY}").as_str()),
-                "{}",
-                request.line
-            );
-        }
-        assert!(
-            seen[1].body.contains("\"model\":\"model-one\""),
-            "{}",
-            seen[1].body
-        );
-
-        // The key is not in the environment of the shell or of a program it starts.
-        term.command("echo env-count-$(env | grep -c 'sk-tes[t]-')-end")?;
-        term.expect("env-count-0-end", SHORT);
-        let environ = fs::read(format!("/proc/{}/environ", term.shell_pid()))?;
-        assert!(
-            !contains_bytes(&environ, "sk-test-"),
-            "the shell's own environment"
-        );
-
-        // And not in the history, which sees the commands typed and nothing more.
-        term.quit()?;
-        let data = ctx.home().join(".local/share/oh-my-shell");
-        for entry in fs::read_dir(&data)? {
-            let path = entry?.path();
+            term.command("omsh ai setup")?;
+            pick_provider(&mut term, mode, "compat", "5")?;
+            term.expect("Server address", SHORT);
+            term.line(&server.url("/v1"))?;
+            term.expect("API key", SHORT);
+            // While the key is asked, the terminal does not echo.
             assert!(
-                !contains_bytes(&fs::read(&path)?, KEY),
-                "{} holds the key",
-                path.display()
+                !term.termios()?.local_flags.contains(LocalFlags::ECHO),
+                "echo must be off at the key prompt"
             );
-        }
-        Ok(())
-    });
+            term.line(KEY)?;
+            pick_model(&mut term, mode, "model-one", "model-one", "1")?;
+            term.expect(
+                "AI is set up: OpenAI-compatible server, model model-one",
+                SHORT,
+            );
+            term.prompt();
+            // And echo is on again afterwards: `stty` prints `-echo` when it is off.
+            term.command("echo tty-$(stty -a | grep -c ' -echo ')-end")?;
+            term.expect("tty-0-end", SHORT);
+
+            // The key went to the credentials file: directory 0700, file 0600.
+            let credentials = config_dir(ctx).join("credentials");
+            assert_eq!(
+                fs::metadata(config_dir(ctx))?.permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&credentials)?.permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::read_to_string(&credentials)?,
+                format!("openai-compatible={KEY}\n")
+            );
+            // The settings went to config.toml, with its comments, and the key did not.
+            let config = fs::read_to_string(config_dir(ctx).join("config.toml"))?;
+            assert!(
+                config.contains("# The AI layer is off until you set up a provider."),
+                "{config}"
+            );
+            assert!(
+                config.contains("[ai]\nprovider = \"openai-compatible\"\n"),
+                "{config}"
+            );
+            assert!(config.contains("model = \"model-one\"\n"), "{config}");
+            assert!(
+                config.contains(&format!("base_url = \"{}\"", server.url("/v1"))),
+                "{config}"
+            );
+            assert!(!config.contains(KEY), "{config}");
+            // Nothing on the screen shows the key.
+            assert!(!term.transcript().contains(KEY), "{}", term.transcript());
+
+            // The same session uses it: no restart, no `source`.
+            term.command("omsh ai test")?;
+            term.expect("ok: OpenAI-compatible server answered in ", SHORT);
+            term.prompt();
+
+            // Every request carried the key, to the address that was chosen.
+            let seen = server.requests();
+            let paths: Vec<_> = seen.iter().map(|r| r.path().to_owned()).collect();
+            assert_eq!(
+                paths,
+                ["/v1/models", "/v1/chat/completions", "/v1/chat/completions"],
+                "the list of models, the check, the test"
+            );
+            for request in &seen {
+                assert_eq!(
+                    request.header("authorization"),
+                    Some(format!("Bearer {KEY}").as_str()),
+                    "{}",
+                    request.line
+                );
+            }
+            assert!(
+                seen[1].body.contains("\"model\":\"model-one\""),
+                "{}",
+                seen[1].body
+            );
+
+            // The key is not in the environment of the shell or of a program it starts.
+            term.command("echo env-count-$(env | grep -c 'sk-tes[t]-')-end")?;
+            term.expect("env-count-0-end", SHORT);
+            let environ = fs::read(format!("/proc/{}/environ", term.shell_pid()))?;
+            assert!(
+                !contains_bytes(&environ, "sk-test-"),
+                "the shell's own environment"
+            );
+
+            // And not in the history, which sees the commands typed and nothing more.
+            term.quit()?;
+            let data = ctx.home().join(".local/share/oh-my-shell");
+            for entry in fs::read_dir(&data)? {
+                let path = entry?.path();
+                assert!(
+                    !contains_bytes(&fs::read(&path)?, KEY),
+                    "{} holds the key",
+                    path.display()
+                );
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Ctrl+C at the hidden prompt: nothing is saved, and the terminal is left as it was found.
@@ -164,8 +163,7 @@ fn ctrl_c_at_the_key_prompt_saves_nothing_and_gives_the_echo_back() {
         let before = fs::read_to_string(config_dir(ctx).join("config.toml"))?;
 
         term.command("omsh ai setup")?;
-        term.expect("Number (1-5)", SHORT);
-        term.line("5")?;
+        pick_provider(&mut term, Mode::Panel, "compat", "5")?;
         term.expect("Server address", SHORT);
         term.line(&server.url("/v1"))?;
         term.expect("API key", SHORT);
@@ -215,7 +213,7 @@ fn ctrl_c_at_the_key_prompt_saves_nothing_and_gives_the_echo_back() {
 #[test]
 fn a_plain_http_address_elsewhere_stops_before_the_key_is_asked() {
     pty_test(BIN, |ctx| {
-        let mut term = launch(ctx).start()?;
+        let mut term = launch(ctx).dumb().start()?;
         let before = fs::read_to_string(config_dir(ctx).join("config.toml"))?;
         term.command("omsh ai setup")?;
         term.expect("Number (1-5)", SHORT);
@@ -295,7 +293,7 @@ fn status_in_a_fresh_shell_says_what_to_do() {
 fn the_wrong_answer_to_a_question_is_met_and_asked_again() {
     pty_test(BIN, |ctx| {
         let server = Server::start(Duration::ZERO)?;
-        let mut term = launch(ctx).start()?;
+        let mut term = launch(ctx).dumb().start()?;
         term.command("omsh ai setup")?;
         term.expect("Number (1-5)", SHORT);
         term.line("banana")?;

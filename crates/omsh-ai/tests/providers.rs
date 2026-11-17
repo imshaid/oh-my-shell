@@ -368,7 +368,9 @@ fn the_tokens_the_server_reports_are_kept_once_and_a_server_that_reports_none_gi
         p.take_usage(),
         Some(Usage {
             input: Some(1204),
-            output: Some(310)
+            output: Some(310),
+            total: Some(1514),
+            ..Default::default()
         })
     );
     assert_eq!(p.take_usage(), None, "taken once");
@@ -773,4 +775,358 @@ fn the_models_ollama_has() {
     let p = provider(Kind::Ollama, server.url(""), false);
     let models = runtime::block_on(p.models(), &no_cancel).unwrap().unwrap();
     assert_eq!(models, ["llama3.2:latest", "qwen"]);
+}
+
+// -- the normalized usage (U4) ----------------------------------------------------------
+
+/// An OpenAI-style stream whose last chunk carries `usage` (a JSON object as text).
+fn openai_with(usage: &str) -> Canned {
+    ok(
+        SSE,
+        &format!(
+            "data: {{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\
+             \"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"K\"}},\
+             \"finish_reason\":\"stop\"}}]}}\n\n\
+             data: {{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\
+             \"model\":\"m\",\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n"
+        ),
+    )
+}
+
+fn usage_after(kind: Kind, path: &str, answer: Canned) -> Usage {
+    let server = Server::start(vec![answer]);
+    let p = provider(kind, server.url(path), true);
+    events(&p).unwrap();
+    p.take_usage().unwrap()
+}
+
+#[test]
+fn openai_reasoning_is_part_of_the_completion_and_is_split_out_once() {
+    let usage = usage_after(
+        Kind::OpenAiCompatible,
+        "/v1",
+        openai_with(
+            "{\"prompt_tokens\":1000,\"completion_tokens\":310,\"total_tokens\":1310,\
+             \"prompt_tokens_details\":{\"cached_tokens\":64},\
+             \"completion_tokens_details\":{\"reasoning_tokens\":200}}",
+        ),
+    );
+    assert_eq!(usage.input, Some(1000));
+    assert_eq!(usage.thinking, Some(200));
+    assert_eq!(usage.output, Some(110), "the answer without the reasoning");
+    assert_eq!(
+        usage.completion(),
+        Some(310),
+        "the two add up to the server's count"
+    );
+    assert_eq!(usage.cached, Some(64));
+    assert_eq!(
+        usage.total,
+        Some(1310),
+        "the server's total, thinking not added again"
+    );
+    assert_eq!(usage.tokens_per_sec(), None, "only Ollama reports a time");
+}
+
+#[test]
+fn a_count_the_server_does_not_send_is_none_never_zero() {
+    let usage = usage_after(
+        Kind::OpenAiCompatible,
+        "/v1",
+        openai_with("{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}"),
+    );
+    assert_eq!(usage.thinking, None);
+    assert_eq!(usage.cached, None);
+    assert_eq!(usage.output, Some(3));
+}
+
+#[test]
+fn a_reasoning_count_larger_than_the_completion_is_not_believed() {
+    let usage = usage_after(
+        Kind::OpenAiCompatible,
+        "/v1",
+        openai_with(
+            "{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10,\
+             \"completion_tokens_details\":{\"reasoning_tokens\":50}}",
+        ),
+    );
+    assert_eq!(usage.thinking, None);
+    assert_eq!(usage.output, Some(3));
+}
+
+fn gemini_with(usage: &str) -> Canned {
+    ok(
+        SSE,
+        &format!(
+            "data: {{\"candidates\":[{{\"content\":{{\"role\":\"model\",\"parts\":[{{\"text\":\"K\"}}]}},\
+             \"finishReason\":\"STOP\"}}],\"usageMetadata\":{usage}}}\r\n\r\n"
+        ),
+    )
+}
+
+#[test]
+fn gemini_thoughts_are_split_from_the_candidates_and_the_servers_total_is_kept() {
+    let usage = usage_after(
+        Kind::Gemini,
+        "",
+        gemini_with(
+            "{\"promptTokenCount\":100,\"candidatesTokenCount\":20,\"thoughtsTokenCount\":30,\
+             \"totalTokenCount\":150,\"cachedContentTokenCount\":40}",
+        ),
+    );
+    assert_eq!(usage.input, Some(100));
+    assert_eq!(usage.thinking, Some(30));
+    assert_eq!(usage.output, Some(20));
+    assert_eq!(usage.cached, Some(40));
+    assert_eq!(usage.total, Some(150));
+}
+
+#[test]
+fn gemini_without_thoughts_keeps_the_thinking_count_unknown() {
+    let usage = usage_after(
+        Kind::Gemini,
+        "",
+        gemini_with(
+            "{\"promptTokenCount\":100,\"candidatesTokenCount\":20,\"totalTokenCount\":120}",
+        ),
+    );
+    assert_eq!(
+        usage.thinking, None,
+        "reported missing for some models: stays unknown"
+    );
+    assert_eq!(usage.output, Some(20));
+    assert_eq!(usage.total, Some(120));
+}
+
+#[test]
+fn anthropic_input_is_the_sum_of_new_and_cached_tokens_and_thinking_is_inside_the_output() {
+    let server = Server::start(vec![ok(
+        SSE,
+        "event: message_start\n\
+         data: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\
+         \"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\
+         \"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":100,\
+         \"cache_read_input_tokens\":50,\"output_tokens\":1}}}\n\n\
+         event: content_block_start\n\
+         data: {\"type\":\"content_block_start\",\"index\":0,\
+         \"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+         event: content_block_delta\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\
+         \"delta\":{\"type\":\"text_delta\",\"text\":\"K\"}}\n\n\
+         event: content_block_stop\n\
+         data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+         event: message_delta\n\
+         data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\
+         \"usage\":{\"output_tokens\":40,\"output_tokens_details\":{\"thinking_tokens\":25}}}\n\n\
+         event: message_stop\n\
+         data: {\"type\":\"message_stop\"}\n\n",
+    )]);
+    let p = provider(Kind::Anthropic, server.url(""), true);
+    events(&p).unwrap();
+    let usage = p.take_usage().expect("anthropic reports tokens");
+    assert_eq!(
+        usage.input,
+        Some(160),
+        "10 new + 100 written to the cache + 50 read from it"
+    );
+    assert_eq!(usage.cached, Some(50));
+    assert_eq!(usage.thinking, Some(25));
+    assert_eq!(
+        usage.output,
+        Some(15),
+        "40 output tokens, 25 of them thinking"
+    );
+    assert_eq!(
+        usage.total,
+        Some(200),
+        "genai's own sum: Anthropic sends no total"
+    );
+}
+
+#[test]
+fn ollama_generation_time_is_read_from_the_last_frame_and_the_speed_is_derived() {
+    let line = |content: &str, done: &str| {
+        format!(
+            "{{\"model\":\"m\",\"created_at\":\"2026-11-10T00:00:00Z\",\
+             \"message\":{{\"role\":\"assistant\",\"content\":\"{content}\"}},\"done\":{done}}}\n"
+        )
+    };
+    let server = Server::start(vec![ok(
+        "application/x-ndjson",
+        &(line("K", "false")
+            + "{\"model\":\"m\",\"created_at\":\"2026-11-10T00:00:00Z\",\
+               \"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\
+               \"done_reason\":\"stop\",\"total_duration\":9000000000,\
+               \"load_duration\":100,\"prompt_eval_count\":12,\"prompt_eval_duration\":777,\
+               \"eval_count\":40,\"eval_duration\":2000000000}\n"),
+    )]);
+    let p = provider(Kind::Ollama, server.url(""), false);
+    events(&p).unwrap();
+    let usage = p.take_usage().expect("ollama reports tokens");
+    assert_eq!(usage.input, Some(12));
+    assert_eq!(usage.output, Some(40));
+    assert_eq!(
+        usage.eval_nanos,
+        Some(2_000_000_000),
+        "eval_duration, not prompt_eval_duration"
+    );
+    assert_eq!(usage.tokens_per_sec(), Some(20.0));
+}
+
+// -- model facts: the context window and Gemini's chat models (U4) ----------------------
+
+fn json_answer(body: &str) -> Canned {
+    ok("application/json", body)
+}
+
+fn limit_of(p: &dyn Provider) -> Option<omsh_ai::Limit> {
+    runtime::block_on(p.context_limit(), &no_cancel).unwrap()
+}
+
+#[test]
+fn gemini_window_comes_from_models_get_and_the_key_is_in_a_header_only() {
+    let server = Server::start(vec![json_answer(
+        "{\"name\":\"models/test-model\",\"inputTokenLimit\":1048576}",
+    )]);
+    let p = provider(Kind::Gemini, server.url(""), true);
+    let found = limit_of(&p).expect("a limit");
+    assert_eq!(found.tokens, 1_048_576);
+    assert_eq!(found.source, omsh_ai::LimitSource::Gemini);
+    let seen = server.only_request();
+    assert_eq!(seen.path(), "/models/test-model");
+    assert_eq!(seen.header("x-goog-api-key"), Some(KEY));
+    assert!(
+        !seen.line.contains(KEY) && !seen.line.contains("key="),
+        "{}",
+        seen.line
+    );
+}
+
+#[test]
+fn anthropic_window_is_max_input_tokens_and_null_means_unknown() {
+    let server = Server::start(vec![json_answer(
+        "{\"id\":\"test-model\",\"max_input_tokens\":200000}",
+    )]);
+    let p = provider(Kind::Anthropic, server.url(""), true);
+    assert_eq!(limit_of(&p).map(|l| l.tokens), Some(200_000));
+    let seen = server.only_request();
+    assert_eq!(seen.path(), "/models/test-model");
+    assert_eq!(seen.header("x-api-key"), Some(KEY));
+    assert!(seen.header("anthropic-version").is_some());
+
+    let server = Server::start(vec![json_answer(
+        "{\"id\":\"test-model\",\"max_input_tokens\":null}",
+    )]);
+    let p = provider(Kind::Anthropic, server.url(""), true);
+    assert_eq!(limit_of(&p), None, "a null window stays unknown, not 0");
+}
+
+#[test]
+fn ollama_window_is_the_one_of_the_loaded_model_and_no_key_is_sent() {
+    let server = Server::start(vec![json_answer(
+        "{\"models\":[{\"name\":\"other\",\"context_length\":999},\
+         {\"name\":\"test-model\",\"model\":\"test-model\",\"context_length\":8192}]}",
+    )]);
+    let p = provider(Kind::Ollama, server.url(""), false);
+    let found = limit_of(&p).expect("a limit");
+    assert_eq!(found.tokens, 8192);
+    assert_eq!(found.source, omsh_ai::LimitSource::OllamaLoaded);
+    let seen = server.only_request();
+    assert_eq!(seen.path(), "/api/ps");
+    assert!(
+        seen.headers
+            .iter()
+            .all(|(n, _)| n != "authorization" && n != "x-api-key")
+    );
+
+    // A model that is not loaded has no window to report.
+    let server = Server::start(vec![json_answer("{\"models\":[]}")]);
+    let p = provider(Kind::Ollama, server.url(""), false);
+    assert_eq!(limit_of(&p), None);
+}
+
+#[test]
+fn openai_is_not_asked_at_all() {
+    let server = Server::start(vec![json_answer("{}")]);
+    let p = provider(Kind::OpenAiCompatible, server.url("/v1"), true);
+    assert_eq!(limit_of(&p), None);
+    let p = provider(Kind::OpenAi, server.url("/v1"), true);
+    assert_eq!(limit_of(&p), None);
+    assert!(
+        server.requests().is_empty(),
+        "no request for a provider that cannot answer"
+    );
+}
+
+#[test]
+fn a_failed_lookup_is_remembered_so_the_model_is_asked_about_once() {
+    let server = Server::start(vec![status(500, "{\"error\":\"secret detail\"}")]);
+    let p = provider(Kind::Gemini, server.url(""), true);
+    assert_eq!(limit_of(&p), None);
+    assert_eq!(limit_of(&p), None);
+    assert_eq!(server.requests().len(), 1, "the failure is cached too");
+}
+
+#[test]
+fn a_server_that_never_answers_gives_none_within_the_lookup_limit() {
+    let (addr, _connected) = silent_server();
+    let p = provider(Kind::Gemini, format!("http://{addr}"), true);
+    let started = Instant::now();
+    assert_eq!(limit_of(&p), None);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn gemini_list_follows_the_pages_and_keeps_chat_models_only() {
+    let page_one = "{\"models\":[\
+        {\"name\":\"models/gemini-2.5-flash\",\"supportedGenerationMethods\":[\"generateContent\",\"countTokens\"]},\
+        {\"name\":\"models/gemini-2.5-flash-image\",\"supportedGenerationMethods\":[\"generateContent\"]}],\
+        \"nextPageToken\":\"tok en/1\"}";
+    let page_two = "{\"models\":[\
+        {\"name\":\"models/text-embedding-004\",\"supportedGenerationMethods\":[\"embedContent\"]},\
+        {\"name\":\"models/gemini-2.5-pro\",\"supportedGenerationMethods\":[\"generateContent\"]},\
+        {\"name\":\"models/gemini-live-2.5-flash\",\"supportedGenerationMethods\":[\"bidiGenerateContent\"]}]}";
+    let server = Server::start(vec![json_answer(page_one), json_answer(page_two)]);
+    let p = provider(Kind::Gemini, server.url(""), true);
+    let list = runtime::block_on(p.chat_models(), &no_cancel).unwrap();
+    assert_eq!(
+        list,
+        Some(vec![
+            "gemini-2.5-flash".to_owned(),
+            "gemini-2.5-pro".to_owned()
+        ])
+    );
+    let seen = server.requests();
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen[1].line.contains("pageToken=tok%20en%2F1"),
+        "{}",
+        seen[1].line
+    );
+    for request in &seen {
+        assert_eq!(request.header("x-goog-api-key"), Some(KEY));
+        assert!(!request.line.contains(KEY));
+    }
+}
+
+#[test]
+fn when_the_gemini_list_cannot_be_read_there_is_no_filtered_list() {
+    let server = Server::start(vec![status(403, "{}")]);
+    let p = provider(Kind::Gemini, server.url(""), true);
+    assert_eq!(
+        runtime::block_on(p.chat_models(), &no_cancel).unwrap(),
+        None
+    );
+    // Other providers have no such list either.
+    let server = Server::start(vec![json_answer("{}")]);
+    let p = provider(Kind::OpenAiCompatible, server.url("/v1"), true);
+    assert_eq!(
+        runtime::block_on(p.chat_models(), &no_cancel).unwrap(),
+        None
+    );
+    assert!(server.requests().is_empty());
 }

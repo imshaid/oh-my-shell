@@ -1,0 +1,11 @@
+---
+source: crates/omsh-ui/tests/ai_panels.rs
+expression: "written(&panel.render(&caps, WIDTH), &caps)"
+---
+⟨35⟩╭─⟨0⟩ Step 3 of 3 ⟨35⟩───────────────────────────────────────────────────────────────⟨0⟩
+⟨35⟩│⟨0⟩ Remove it  ⟨31⟩danger⟨0⟩
+⟨35⟩│⟨0⟩ ⟨2;90⟩$ ⟨0⟩rm -rf build/output.o
+⟨35⟩│⟨0⟩ Deletes the file for good.
+⟨35⟩│⟨0⟩ 
+⟨35⟩│⟨0⟩ ⟨7⟩ Run step ⟨0⟩  [⟨4⟩S⟨0⟩kip]  [Stop]
+⟨35⟩╰─⟨0⟩ ⟨36⟩←→⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩stop⟨0⟩ ⟨35⟩─────────────────────────────────────────⟨0⟩

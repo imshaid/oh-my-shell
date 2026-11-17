@@ -26,6 +26,7 @@ mod explain;
 mod genai_provider;
 mod history_search;
 mod keys;
+mod models;
 mod plan;
 mod prompt;
 mod provider;
@@ -56,11 +57,15 @@ pub use history_search::{
 pub use keys::{
     CredentialsFile, KeyError, KeyStore, Keys, SecretService, Stored, parse_credentials,
 };
+pub use models::{
+    GeminiModel, LOOKUP_TIMEOUT, Limit, LimitSource, alongside, gemini_models,
+    looks_like_text_model, text_models,
+};
 pub use plan::{MAX_COMMAND_CHARS, MAX_STEPS, ModelRisk, Plan, PlanError, Step, placeholder_in};
 pub use prompt::{PLAN_MAX_TOKENS, PlanRequest, hides_secret, plan_request, retry_request};
 pub use provider::{
     ChatEvent, ChatRequest, EventStream, Message, Provider, Role, Usage, collect_text,
-    collect_text_counting, stream_text, verify,
+    collect_text_counting, stream_text, thousands, verify,
 };
 pub use retry::{Policy, retry};
 pub use secret::Secret;

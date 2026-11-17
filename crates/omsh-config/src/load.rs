@@ -20,8 +20,8 @@ use toml::de::{DeTable, DeValue};
 use crate::first_run;
 use crate::paths::Paths;
 use crate::schema::{
-    Ai, Channel, Config, ConfirmLevel, EditMode, Greeting, Icons, Motion, Notify, PROMPT_SEGMENTS,
-    Provider, SECTIONS, Ui, UiStyle,
+    Ai, Channel, Config, ConfirmLevel, EditMode, Greeting, INLINE_FIELDS, Icons, Motion, Notify,
+    PROMPT_SEGMENTS, Provider, SECTIONS, Ui, UiStyle,
 };
 
 /// A file larger than this is not a configuration file.
@@ -755,6 +755,36 @@ fn read_ai(r: &mut Reader<'_>, table: &DeTable<'_>, ai: &mut Ai) {
             Ok(()) => ai.base_url = Some(url.to_owned()),
             // The text is not repeated: it may hold a password.
             Err(why) => r.error(&span, format!("ai.base_url {why}; using the default")),
+        }
+    }
+    if let Some(tokens) = r.integer(table, "ai", "context_limit", 1..=100_000_000) {
+        ai.context_limit = Some(tokens);
+    }
+    if let Some(inline) = r.section(table, "ai", "inline") {
+        r.unknown(inline, "ai.inline");
+        if let Some(names) = r.strings(inline, "ai.inline", "fields") {
+            let bad = names.iter().find(|(name, _)| !INLINE_FIELDS.contains(name));
+            if let Some((name, span)) = bad {
+                r.error(
+                    span,
+                    format!(
+                        "ai.inline.fields has \"{}\", which is not one of {}; using the default",
+                        name.escape_debug(),
+                        INLINE_FIELDS.join(", ")
+                    ),
+                );
+            } else {
+                let mut fields: Vec<String> = Vec::new();
+                for (name, _) in names {
+                    if !fields.iter().any(|f| f == name) {
+                        fields.push(name.to_owned());
+                    }
+                }
+                ai.inline.fields = fields;
+            }
+        }
+        if let Some(times) = r.integer(inline, "ai.inline", "thinking_warn", 0..=1000) {
+            ai.inline.thinking_warn = times;
         }
     }
     if let Some(context) = r.section(table, "ai", "context") {

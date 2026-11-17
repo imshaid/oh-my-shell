@@ -101,6 +101,11 @@ impl WaitLine {
         ))
     }
 
+    /// The time since the wait started.
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
     /// Erases the line, if one was drawn.
     pub fn clear(&self, terminal: &mut dyn Terminal) {
         if self.last_draw.take().is_some() {
@@ -164,6 +169,7 @@ mod tests {
         Some(omsh_ai::Usage {
             input: Some(input),
             output: Some(output),
+            ..Default::default()
         })
     }
 

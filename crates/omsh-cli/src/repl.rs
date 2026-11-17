@@ -215,6 +215,11 @@ fn run_on(
     if let (Some(undo), Some(ui)) = (undo.as_deref(), &menu_ui) {
         undo.set_menu(ui.clone());
     }
+    // The AI panels (the plan, its steps, the details of a call, "AI is not set up") are shown
+    // under the same rule.
+    if let (Some(ai), Some(ui)) = (ai.as_deref(), &menu_ui) {
+        ai.set_menu(ui.clone());
+    }
     // The hint bar: one dim line above the first prompt, only where there is a line editor to
     // take the keys it names.
     if editor.is_some()
@@ -374,6 +379,7 @@ fn run_on(
                     &paint,
                     &mut editor,
                     undo.as_deref(),
+                    menu_ui.as_ref(),
                 ),
                 _ => confirm::run_line(
                     &mut shell,
@@ -530,6 +536,7 @@ fn ai_line(
     paint: &Paint,
     editor: &mut Option<Editor>,
     undo: Option<&Undo>,
+    menu: Option<&MenuUi>,
 ) -> LineResult {
     let fail = |shell: &mut Shell, status: ExitStatus| {
         shell.set_last_status(status);
@@ -599,8 +606,20 @@ fn ai_line(
     let setup = match ai.plan_setup() {
         Ok(setup) => setup,
         Err(why) => {
-            say(&format!("oh-my-shell: ?: {why}"));
-            return fail(shell, ExitStatus(1));
+            // Not set up yet, and a person at a terminal with buttons: offer the setup, and
+            // answer the question once it works (UI upgrade, phase 4).
+            let offered = match menu {
+                Some(ui) => ai::offer_setup(ai, ui, shell, files, &why),
+                None => ai::Offer::Unavailable,
+            };
+            match offered {
+                ai::Offer::Ready(setup) => *setup,
+                ai::Offer::Declined(status) => return fail(shell, ExitStatus(status)),
+                ai::Offer::Unavailable => {
+                    say(&format!("oh-my-shell: ?: {why}"));
+                    return fail(shell, ExitStatus(1));
+                }
+            }
         }
     };
     let mut edit = |text: &str| match editor {
@@ -624,6 +643,7 @@ fn ai_line(
             paint,
             undo,
             edit: &mut edit,
+            menu,
         },
     )
 }

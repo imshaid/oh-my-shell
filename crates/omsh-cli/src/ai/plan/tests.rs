@@ -213,6 +213,8 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             base_url: None,
         },
         context: setup.context.unwrap_or_default(),
+        calls: Arc::new(crate::ai::usage::Calls::standard()),
+        menu: None,
     };
     let result = run(
         plan_setup,
@@ -228,6 +230,7 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             paint: &Paint::plain(),
             undo: setup.undo.as_deref(),
             edit: &mut edit,
+            menu: None,
         },
     );
     let state = tty.0.into_inner();
@@ -426,8 +429,16 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         paint: &Paint::plain(),
         undo: None,
         edit: &mut edit,
+        menu: None,
     };
-    let result = execute(&mut env, &[step, marker]);
+    let result = execute(
+        &mut env,
+        &[step, marker],
+        Mode {
+            menu: None,
+            stepwise: false,
+        },
+    );
     let LineResult::Ran(outcome) = result else {
         panic!("{result:?}")
     };
@@ -617,6 +628,7 @@ fn the_tokens_the_server_reported_are_shown_once_after_the_wait_and_never_made_u
         .reporting(omsh_ai::Usage {
             input: Some(2048),
             output: Some(96),
+            ..Default::default()
         });
     let ran = go(
         fake,
@@ -1612,8 +1624,16 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         paint: &Paint::plain(),
         undo: None,
         edit: &mut edit,
+        menu: None,
     };
-    let result = execute(&mut env, &[step]);
+    let result = execute(
+        &mut env,
+        &[step],
+        Mode {
+            menu: None,
+            stepwise: false,
+        },
+    );
     let LineResult::Ran(outcome) = result else {
         panic!("{result:?}")
     };

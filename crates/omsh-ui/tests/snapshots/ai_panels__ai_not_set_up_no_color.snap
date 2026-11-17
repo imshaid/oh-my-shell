@@ -1,0 +1,11 @@
+---
+source: crates/omsh-ui/tests/ai_panels.rs
+expression: "written(&NotSetUp::new().render(&caps, WIDTH), &caps)"
+---
+╭─ AI is not set up ──────────────────────────────────────────────────────────
+│ Nothing was sent: there is no model to ask yet.
+│ Setup asks for a provider and a model, checks them with one small
+│ request, then answers your question.
+│ 
+│ [⟨4⟩S⟨0⟩et up AI now]  ⟨7⟩ ⟨0⟩⟨4;7⟩N⟨0⟩⟨7⟩ot now ⟨0⟩
+╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩not now⟨0⟩ ──────────────────────────────────────

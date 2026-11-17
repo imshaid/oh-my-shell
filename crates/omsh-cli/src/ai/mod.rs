@@ -22,6 +22,7 @@ pub mod recent;
 mod setup;
 #[cfg(test)]
 mod tests;
+pub mod usage;
 mod wait;
 
 use std::path::PathBuf;
@@ -34,6 +35,7 @@ use omsh_ai::{
 };
 use omsh_config::{Ai, AiState, Config, Paths, Provider as Kind};
 use omsh_exec::{OmshCommand, Terminal};
+use omsh_ui::panels::MenuUi;
 
 /// Builds the provider for some settings and a key. Replaced in tests, which have no network.
 pub type MakeProvider = Arc<
@@ -71,12 +73,20 @@ struct Inner {
     no_ai: bool,
     state: AiState,
     env: Environment,
+    /// The panels with buttons, when this shell draws them: `omsh ai setup` then offers the
+    /// provider and the model as lists you can filter.
+    menu: Option<MenuUi>,
 }
 
 /// The hook behind the `omsh` builtin. Shared by every copy of the shell; commands run one at
 /// a time.
 pub struct AiSession {
     inner: Mutex<Inner>,
+    /// The AI calls of this session, for the info line and `omsh ai details`. Outside the lock:
+    /// a plan keeps it while it runs.
+    calls: Arc<usage::Calls>,
+    /// What panels with buttons need, when this shell may draw them (set once at start).
+    menu: Mutex<Option<MenuUi>>,
 }
 
 impl AiSession {
@@ -88,8 +98,47 @@ impl AiSession {
                 no_ai,
                 state: AiState::new(&config.ai, no_ai),
                 env,
+                menu: None,
             }),
+            calls: Arc::new(usage::Calls::new(&config.ai)),
+            menu: Mutex::new(None),
         }
+    }
+
+    /// `omsh ai details`: the numbers of the AI calls made in this shell session, one table for
+    /// each provider used. On a terminal with keys it is the details panel; anywhere else it is
+    /// the same rows as text. With no call yet it says so (status 1): nothing is made up.
+    fn details(&self, terminal: &mut dyn Terminal) -> u8 {
+        let tabs = self.calls.tabs();
+        if tabs.is_empty() {
+            terminal.err("omsh: ai: details: no AI call has been made in this shell session yet\n");
+            return 1;
+        }
+        if let Some(ui) = self.menu().filter(|_| terminal.menu_keys()) {
+            let mut panel = omsh_ui::panels::details::Details::new(tabs.clone(), tabs.len() - 1);
+            if omsh_ui::panels::menu::run_on_terminal(&mut panel, &ui, Box::new(omsh_exec::hung_up))
+                .is_ok()
+            {
+                return 0;
+            }
+        }
+        terminal.out(&details_text(&tabs));
+        0
+    }
+
+    /// Lets the AI flows draw panels with buttons (a line editor on a real terminal).
+    pub fn set_menu(&self, ui: MenuUi) {
+        self.lock().menu = Some(ui.clone());
+        *self.menu.lock().unwrap_or_else(PoisonError::into_inner) = Some(ui);
+    }
+
+    /// The panel settings, if this shell draws panels.
+    #[must_use]
+    pub fn menu(&self) -> Option<MenuUi> {
+        self.menu
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -101,7 +150,7 @@ impl AiSession {
 /// The words that can follow `omsh ai`, in the order [`USAGE`] lists them. A test keeps this list,
 /// the usage text, the dispatch in `OmshCommand::run` and `docs/commands.md` in step.
 #[cfg(test)]
-pub(crate) const AI_COMMANDS: &[&str] = &["setup", "status", "test", "forget"];
+pub(crate) const AI_COMMANDS: &[&str] = &["setup", "status", "test", "forget", "details"];
 
 const USAGE: &str = "\
 usage: omsh ai <command>
@@ -109,6 +158,7 @@ usage: omsh ai <command>
   status   show the settings and where the key is kept
   test     send one small request to check the key and the model
   forget   remove the stored key of the chosen provider
+  details  show what the AI calls of this shell session used (tokens, time, context)
 ";
 
 const OMSH_USAGE: &str = "\
@@ -145,6 +195,7 @@ impl OmshCommand for AiSession {
             ["ai", "setup"] => self.lock().setup(terminal),
             ["ai", "test"] => self.lock().test(terminal),
             ["ai", "forget"] => self.lock().forget(terminal),
+            ["ai", "details"] => self.details(terminal),
             ["ai", other, ..] => {
                 terminal.err(&format!("omsh: ai: {other}: unknown command\n{USAGE}"));
                 USAGE_STATUS
@@ -179,7 +230,113 @@ impl AiSession {
             connect: Box::new(move || make(&own, key.as_ref())),
             settings,
             context: inner.ai.context.clone(),
+            calls: Arc::clone(&self.calls),
+            menu: inner.menu.clone(),
         })
+    }
+}
+
+/// The details of the calls as plain text, one block for each provider (a pipe, `TERM=dumb`).
+fn details_text(tabs: &[omsh_ui::panels::facts::CallFacts]) -> String {
+    use omsh_ui::panels::facts::{group, seconds};
+    let dash = "-";
+    let count = |n: Option<u32>| n.map_or_else(|| dash.to_owned(), group);
+    let mut out = String::new();
+    for facts in tabs {
+        out.push_str(&format!("{}\n", facts.provider));
+        let mut row = |label: &str, value: String| out.push_str(&format!("  {label:<10}{value}\n"));
+        row("model", facts.model.clone());
+        row(
+            "effort",
+            facts.effort.clone().unwrap_or_else(|| dash.to_owned()),
+        );
+        row(
+            "context",
+            match (facts.context_used, facts.context_limit) {
+                (used, Some(limit)) => format!("{} / {}", count(used), group(limit)),
+                (used, None) => format!("{} / limit unknown", count(used)),
+            },
+        );
+        row("input", count(facts.input));
+        row("thinking", count(facts.thinking));
+        row("output", count(facts.output));
+        row("cached", count(facts.cached));
+        row("total", count(facts.total));
+        row("time", facts.time.map_or_else(|| dash.to_owned(), seconds));
+        row(
+            "speed",
+            facts
+                .tokens_per_sec
+                .map_or_else(|| dash.to_owned(), |s| format!("{s:.1} tok/s (derived)")),
+        );
+        if let Some(note) = &facts.limit_note {
+            out.push_str(&format!("  {note}\n"));
+        }
+    }
+    out.push_str("  ctx is approximate: it is the last call's total\n");
+    out
+}
+
+/// What happened when a `? question` found the AI not set up and offered to set it up.
+pub enum Offer {
+    /// The setup worked: the question can be sent.
+    Ready(Box<plan::PlanSetup>),
+    /// The person said no (or the setup did not finish); the question is not sent. The status the
+    /// line ends with.
+    Declined(u8),
+    /// There was nothing to offer (the AI is off, or there is no panel): say why in words.
+    Unavailable,
+}
+
+/// The "AI is not set up" panel of a `? question` (UI upgrade, phase 4), shown only when the
+/// state really is "not set up yet", a person is at a terminal that takes keys, and the shell can
+/// draw panels. **Set up AI now** runs the same wizard as `omsh ai setup` and, if that works,
+/// hands back what the question needs; **Not now** (the chosen button, so `Enter` alone never
+/// starts a setup) says what happened and sends nothing.
+pub fn offer_setup(
+    ai: &AiSession,
+    ui: &MenuUi,
+    shell: &mut omsh_exec::Shell,
+    files: &mut omsh_exec::Io,
+    why: &str,
+) -> Offer {
+    use omsh_ui::inline::Ended;
+    use omsh_ui::panels::menu::run_on_terminal;
+    use omsh_ui::panels::set_up::{NotSetUp, SetUpChoice};
+
+    if !matches!(ai.lock().state, AiState::NotSetUp) {
+        return Offer::Unavailable;
+    }
+    let mut source = plan::RealTerminal;
+    {
+        let terminal = plan::TerminalSource::open(&mut source, shell, files);
+        if !terminal.menu_keys() {
+            return Offer::Unavailable;
+        }
+    }
+    let mut panel = NotSetUp::new();
+    let ended = match run_on_terminal(&mut panel, ui, Box::new(omsh_exec::hung_up)) {
+        Ok(ended) => ended,
+        Err(_) => return Offer::Unavailable,
+    };
+    let mut terminal = plan::TerminalSource::open(&mut source, shell, files);
+    match ended {
+        Ended::Chosen(SetUpChoice::SetUp) => {
+            let status = ai.lock().setup(&mut *terminal);
+            drop(terminal);
+            match (status, ai.plan_setup()) {
+                (0, Ok(setup)) => Offer::Ready(Box::new(setup)),
+                (status, _) => Offer::Declined(if status == 0 { 1 } else { status }),
+            }
+        }
+        Ended::Interrupted => {
+            terminal.err(&format!("oh-my-shell: ?: {why}\n"));
+            Offer::Declined(CANCELLED)
+        }
+        Ended::Chosen(SetUpChoice::NotNow) | Ended::Cancelled | Ended::Closed => {
+            terminal.err(&format!("oh-my-shell: ?: {why}\n"));
+            Offer::Declined(1)
+        }
     }
 }
 

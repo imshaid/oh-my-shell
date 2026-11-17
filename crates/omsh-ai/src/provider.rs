@@ -11,6 +11,7 @@ use futures::{Stream, StreamExt};
 use omsh_config::Provider as Kind;
 
 use crate::error::ProviderError;
+use crate::models::Limit;
 use crate::retry::{Policy, retry, wait_before_retry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,20 +82,54 @@ pub enum ChatEvent {
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ProviderError>> + Send>>;
 
 /// The tokens a server says a request used. Only what the server reported: nothing is estimated,
-/// and a server that reports nothing gives no `Usage` at all (§15.2: real numbers only).
+/// and a server that reports nothing gives no `Usage` at all (§15.2: real numbers only). A count
+/// the server did not give is `None`, never 0.
+///
+/// `output` and `thinking` are two parts of what the server calls the completion: the model's
+/// reasoning is counted inside the completion by every provider genai talks to, so `output` is the
+/// completion minus the reasoning, and the two never count the same token twice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
-    /// Tokens the server counted in the request.
+    /// Tokens the server counted in the request (for Anthropic, with the cache tokens).
     pub input: Option<u32>,
-    /// Tokens the server counted in the answer.
+    /// Tokens of the answer itself: the completion without the reasoning.
     pub output: Option<u32>,
+    /// Tokens the model spent reasoning, when the server says so.
+    pub thinking: Option<u32>,
+    /// Tokens of the request that the server read from its cache.
+    pub cached: Option<u32>,
+    /// The total as the server (or genai, for Anthropic and Ollama) gives it.
+    pub total: Option<u32>,
+    /// Nanoseconds the server says it spent generating (Ollama's `eval_duration`).
+    pub eval_nanos: Option<u64>,
 }
 
 impl Usage {
-    /// `1,204 tokens in, 310 out`, `310 tokens out`, or `None` when nothing is known.
+    /// The whole completion: the answer and the reasoning.
+    #[must_use]
+    pub fn completion(&self) -> Option<u32> {
+        match (self.output, self.thinking) {
+            (Some(output), Some(thinking)) => output.checked_add(thinking),
+            (Some(output), None) => Some(output),
+            (None, Some(thinking)) => Some(thinking),
+            (None, None) => None,
+        }
+    }
+
+    /// Tokens a second, **derived** from the server's own count and generation time (only Ollama
+    /// reports a time). `None` when either is missing or the time is 0.
+    #[must_use]
+    pub fn tokens_per_sec(&self) -> Option<f64> {
+        let nanos = self.eval_nanos.filter(|n| *n > 0)?;
+        let tokens = self.completion().filter(|n| *n > 0)?;
+        Some(f64::from(tokens) / (nanos as f64 / 1e9))
+    }
+
+    /// `1,204 tokens in, 310 out`, `310 tokens out`, or `None` when nothing is known. This is
+    /// the line a pipe or a plain terminal gets: it does not change with the richer panels.
     #[must_use]
     pub fn describe(&self) -> Option<String> {
-        match (self.input, self.output) {
+        match (self.input, self.completion()) {
             (Some(input), Some(output)) => Some(format!(
                 "{} tokens in, {} out",
                 thousands(input),
@@ -108,7 +143,7 @@ impl Usage {
 }
 
 /// `1204` as `1,204`.
-fn thousands(n: u32) -> String {
+pub fn thousands(n: u32) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -139,6 +174,19 @@ pub trait Provider: Send + Sync {
     fn take_usage(&self) -> Option<Usage> {
         None
     }
+
+    /// How large the context window of the model is, from the provider (U4). Asked next to a
+    /// request, never before it; `None` when the provider does not say or the lookup failed.
+    /// A lookup that is dropped before it ends remembers nothing.
+    fn context_limit(&self) -> BoxFuture<'_, Option<Limit>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    /// The models that chat in text, when the provider can tell them from the others (Gemini).
+    /// `None` means "no such list": the caller shows `models()` as it is.
+    fn chat_models(&self) -> BoxFuture<'_, Option<Vec<String>>> {
+        Box::pin(std::future::ready(None))
+    }
 }
 
 /// A provider that is shared keeps working as one (a test keeps a handle on the fake it hands
@@ -158,6 +206,14 @@ impl<T: Provider + ?Sized> Provider for std::sync::Arc<T> {
 
     fn take_usage(&self) -> Option<Usage> {
         (**self).take_usage()
+    }
+
+    fn context_limit(&self) -> BoxFuture<'_, Option<Limit>> {
+        (**self).context_limit()
+    }
+
+    fn chat_models(&self) -> BoxFuture<'_, Option<Vec<String>>> {
+        (**self).chat_models()
     }
 }
 
@@ -278,11 +334,13 @@ mod tests {
         let both = Usage {
             input: Some(1204),
             output: Some(310),
+            ..Default::default()
         };
         assert_eq!(both.describe().as_deref(), Some("1,204 tokens in, 310 out"));
         let big = Usage {
             input: Some(1_234_567),
             output: Some(0),
+            ..Default::default()
         };
         assert_eq!(
             big.describe().as_deref(),
@@ -291,14 +349,69 @@ mod tests {
         let only_out = Usage {
             input: None,
             output: Some(12),
+            ..Default::default()
         };
         assert_eq!(only_out.describe().as_deref(), Some("12 tokens out"));
         let only_in = Usage {
             input: Some(1000),
             output: None,
+            ..Default::default()
         };
         assert_eq!(only_in.describe().as_deref(), Some("1,000 tokens in"));
         assert_eq!(Usage::default().describe(), None);
+    }
+
+    #[test]
+    fn the_plain_line_counts_the_thinking_in_the_out_as_the_server_does() {
+        // 310 completion tokens, 200 of them thinking: the plain line says 310 (what a pipe has
+        // always shown), and the rich line says 110 and 200 apart.
+        let usage = Usage {
+            input: Some(1204),
+            output: Some(110),
+            thinking: Some(200),
+            ..Default::default()
+        };
+        assert_eq!(usage.completion(), Some(310));
+        assert_eq!(
+            usage.describe().as_deref(),
+            Some("1,204 tokens in, 310 out")
+        );
+    }
+
+    #[test]
+    fn the_speed_needs_a_generation_time_and_a_count() {
+        let usage = Usage {
+            output: Some(30),
+            thinking: Some(10),
+            eval_nanos: Some(2_000_000_000),
+            ..Default::default()
+        };
+        assert_eq!(usage.tokens_per_sec(), Some(20.0));
+        assert_eq!(
+            Usage {
+                eval_nanos: Some(0),
+                ..usage
+            }
+            .tokens_per_sec(),
+            None
+        );
+        assert_eq!(
+            Usage {
+                eval_nanos: None,
+                ..usage
+            }
+            .tokens_per_sec(),
+            None
+        );
+        assert_eq!(
+            Usage {
+                output: None,
+                thinking: None,
+                ..usage
+            }
+            .tokens_per_sec(),
+            None
+        );
     }
 
     #[test]
@@ -322,6 +435,7 @@ mod tests {
             .reporting(Usage {
                 input: Some(5),
                 output: Some(1),
+                ..Default::default()
             })
             .says(&["b"]);
         run(collect_text(
@@ -334,7 +448,8 @@ mod tests {
             fake.take_usage(),
             Some(Usage {
                 input: Some(5),
-                output: Some(1)
+                output: Some(1),
+                ..Default::default()
             })
         );
         assert_eq!(fake.take_usage(), None, "taken once");

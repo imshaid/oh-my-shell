@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use omsh_tests::fakehttp::Server;
-use omsh_tests::question::{Answer, MODES, Mode, answer, undo_question, wait_question};
+use omsh_tests::question::{
+    Answer, MODES, Mode, answer, answer as reply, plan_key, undo_question, wait_question,
+};
 use omsh_tests::{Ctx, SHORT, Session, pty_test};
 
 const BIN: &str = env!("CARGO_BIN_EXE_omsh-pty-shell");
@@ -319,8 +321,8 @@ fn an_ai_plan_deletes_through_the_trash_and_undo_brings_it_back() {
     for mode in MODES {
         pty_test(BIN, move |ctx| {
             make(&ctx.home().join("proj/build/f"), "f\n", 0o640)?;
-            let answer = plan(&[("Remove build", "rm -rf proj/build", "high")]);
-            let server = Server::start_answering(Duration::ZERO, false, &[&answer])?;
+            let plan_json = plan(&[("Remove build", "rm -rf proj/build", "high")]);
+            let server = Server::start_answering(Duration::ZERO, false, &[&plan_json])?;
             configure(ctx, &server)?;
             let mut term = mode
                 .launch(ctx.launch())
@@ -332,9 +334,9 @@ fn an_ai_plan_deletes_through_the_trash_and_undo_brings_it_back() {
                 .start()?;
             term.command("? remove the build folder")?;
             term.expect_plain("rm goes to the trash; undo can bring it back", SHORT);
-            term.write_bytes(b"\r")?;
-            term.expect_plain("Run it? [y/N]", SHORT);
-            term.line("y")?;
+            plan_key(&mut term, mode, b"\r")?;
+            wait_question(&mut term, mode);
+            reply(&mut term, mode, Answer::Run)?;
             term.expect_plain("moved 1 item to the trash", SHORT);
             term.expect_plain("plan done (1 step)", SHORT);
             term.prompt();

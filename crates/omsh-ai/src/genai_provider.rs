@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 use crate::destination::{key_may_go_to, server_of};
 use crate::error::{ErrorKind, ProviderError};
+use crate::models::Limit;
 use crate::provider::{ChatEvent, ChatRequest, EventStream, Provider, Role, Usage};
 use crate::runtime::prepare_tls;
 use crate::secret::Secret;
@@ -72,6 +73,9 @@ pub struct GenaiProvider {
     key: Option<Arc<Zeroizing<String>>>,
     /// What the server said the last request used; see [`Provider::take_usage`].
     usage: Arc<Mutex<Option<Usage>>>,
+    /// Ollama's generation time of the last request, read from its final frame (genai does not
+    /// pass it on). Set by [`EvalTime`] while the stream runs.
+    eval: Arc<Mutex<Option<u64>>>,
 }
 
 const fn adapter_for(kind: Kind) -> AdapterKind {
@@ -149,6 +153,7 @@ impl GenaiProvider {
             endpoint,
             key,
             usage: Arc::default(),
+            eval: Arc::default(),
         })
     }
 }
@@ -161,10 +166,15 @@ impl Provider for GenaiProvider {
     fn chat(&self, request: ChatRequest) -> EventStream {
         let client = self.client.clone();
         let model = self.settings.model.clone();
-        let (request, options) = to_genai(request);
+        let (request, mut options) = to_genai(request);
         // A new request forgets the number of the one before.
         *self.usage.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self.eval.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        if self.adapter == AdapterKind::Ollama {
+            options = options.with_raw_frame_sink_arc(Arc::new(EvalTime(Arc::clone(&self.eval))));
+        }
         let usage = Arc::clone(&self.usage);
+        let eval = Arc::clone(&self.eval);
         let events = stream::once(async move {
             match client
                 .exec_chat_stream(model.as_str(), request, Some(&options))
@@ -182,8 +192,9 @@ impl Provider for GenaiProvider {
                     Ok(ChatStreamEvent::Chunk(chunk)) => Some(Ok(ChatEvent::Text(chunk.content))),
                     Ok(ChatStreamEvent::End(end)) if !finished => {
                         finished = true;
+                        let nanos = eval.lock().unwrap_or_else(PoisonError::into_inner).take();
                         *usage.lock().unwrap_or_else(PoisonError::into_inner) =
-                            end.captured_usage.as_ref().and_then(usage_of);
+                            end.captured_usage.as_ref().and_then(|u| usage_of(u, nanos));
                         Some(Ok(ChatEvent::Done))
                     }
                     Ok(_) => None,
@@ -199,6 +210,39 @@ impl Provider for GenaiProvider {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
+    }
+
+    fn context_limit(&self) -> BoxFuture<'_, Option<Limit>> {
+        let kind = self.settings.kind;
+        let model = self.settings.model.clone();
+        let endpoint = Arc::clone(&self.endpoint);
+        let key = self.key.clone();
+        async move {
+            crate::models::context_limit(
+                kind,
+                &endpoint,
+                &model,
+                key.as_ref().map(|key| key.as_str()),
+            )
+            .await
+        }
+        .boxed()
+    }
+
+    fn chat_models(&self) -> BoxFuture<'_, Option<Vec<String>>> {
+        let kind = self.settings.kind;
+        let endpoint = Arc::clone(&self.endpoint);
+        let key = self.key.clone();
+        async move {
+            if kind != Kind::Gemini {
+                return None;
+            }
+            let list =
+                crate::models::gemini_models(&endpoint, key.as_ref().map(|key| key.as_str()))
+                    .await?;
+            Some(crate::models::text_models(&list))
+        }
+        .boxed()
     }
 
     fn models(&self) -> BoxFuture<'_, Result<Vec<String>, ProviderError>> {
@@ -247,15 +291,59 @@ fn to_genai(request: ChatRequest) -> Pieces {
     (out, options)
 }
 
-/// What genai captured, as ours. A count that is missing or not a positive number is left out; a
-/// report with neither count is no report.
-fn usage_of(usage: &genai::chat::Usage) -> Option<Usage> {
+/// What genai captured, as ours. A count that is missing or negative is left out; a report with
+/// nothing in it is no report.
+///
+/// genai gives `completion_tokens` as the whole completion for every provider (Gemini's thoughts
+/// are added to it by genai, Anthropic's `output_tokens` and OpenAI's `completion_tokens` already
+/// contain the reasoning), and the reasoning separately in the details. So the answer's own share
+/// is the completion minus the reasoning, and a reasoning count that is larger than the
+/// completion cannot be right and is dropped. Anthropic's input is genai's sum of the new and the
+/// cached tokens. A cache count of 0 is left out: genai writes 0 where the server said nothing.
+fn usage_of(usage: &genai::chat::Usage, eval_nanos: Option<u64>) -> Option<Usage> {
     let count = |n: Option<i32>| n.and_then(|n| u32::try_from(n).ok());
+    let completion = count(usage.completion_tokens);
+    let thinking = usage
+        .completion_tokens_details
+        .as_ref()
+        .and_then(|details| count(details.reasoning_tokens))
+        .filter(|thinking| completion.is_none_or(|completion| *thinking <= completion));
+    let output = match (completion, thinking) {
+        (Some(completion), Some(thinking)) => Some(completion - thinking),
+        (completion, _) => completion,
+    };
+    let cached = usage
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|details| count(details.cached_tokens))
+        .filter(|cached| *cached > 0);
     let usage = Usage {
         input: count(usage.prompt_tokens),
-        output: count(usage.completion_tokens),
+        output,
+        thinking,
+        cached,
+        total: count(usage.total_tokens),
+        eval_nanos,
     };
     (usage != Usage::default()).then_some(usage)
+}
+
+/// Reads Ollama's `eval_duration` (nanoseconds spent generating) from the final frame of a
+/// stream. genai captures the token counts of that frame and drops the times.
+struct EvalTime(Arc<Mutex<Option<u64>>>);
+
+impl genai::chat::ChatFrameSink for EvalTime {
+    fn on_frame(&self, _ctx: &genai::chat::FrameCtx, frame: genai::chat::RawFrameRef<'_>) {
+        if !frame.data.contains("eval_duration") {
+            return;
+        }
+        let nanos = frame
+            .json()
+            .and_then(|value| value.get("eval_duration")?.as_u64());
+        if nanos.is_some() {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) = nanos;
+        }
+    }
 }
 
 /// Short wording for a genai error. genai's own text can hold the request, the response body

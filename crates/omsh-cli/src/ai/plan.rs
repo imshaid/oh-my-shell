@@ -24,14 +24,15 @@
 
 use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use omsh_ai::{
-    ChatRequest, Conversation, ErrorKind, Gathered, GitState, ModelRisk, Plan, PlanContext,
+    ChatRequest, Conversation, ErrorKind, Gathered, GitState, Limit, ModelRisk, Plan, PlanContext,
     PlanError, PlanRequest, Policy, Provider, ProviderError, Role, SOFT_TURN_LIMIT, Settings,
-    collect_text_counting, follow_up_hides_secret, hides_secret, plan_request, retry_request,
-    runtime,
+    alongside, collect_text_counting, follow_up_hides_secret, hides_secret, plan_request,
+    retry_request, runtime,
 };
 use omsh_config::{AiContext, ConfirmLevel};
 use omsh_editor::Head;
@@ -39,9 +40,11 @@ use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, TRAS
 use omsh_safety::blast::Radius;
 use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level};
+use omsh_ui::panels::MenuUi;
 use omsh_ui::{Paint, Token};
 
 use super::recent::Recent;
+use super::usage::{Calls, Record};
 use super::wait::WaitLine;
 use crate::confirm::{self, Decision, StartDir, Trash};
 use crate::history::History;
@@ -96,6 +99,10 @@ pub struct PlanSetup {
     pub connect: Connect,
     pub settings: Settings,
     pub context: AiContext,
+    /// The calls of this session, for the info line and the details (UI upgrade, phase 4).
+    pub calls: Arc<Calls>,
+    /// The panels with buttons, when this shell draws them (for the info line of an answer).
+    pub menu: Option<MenuUi>,
 }
 
 /// What the person did when asked to change a command.
@@ -142,6 +149,8 @@ pub struct PlanEnv<'a> {
     pub undo: Option<&'a Undo>,
     /// Changes the text of a command in the line editor.
     pub edit: &'a mut dyn FnMut(&str) -> Edited,
+    /// What the panels with buttons need. `None`: every question is asked in words, as before.
+    pub menu: Option<&'a MenuUi>,
 }
 
 // -- masking and context --------------------------------------------------------------------
@@ -345,16 +354,15 @@ pub(crate) struct Sent {
     first_answer_chars: Option<usize>,
 }
 
-/// Asks, checks the answer, and asks once more with the error if it was no good. Ends with the
-/// provider dropped, inside the runtime (see `omsh_ai::runtime::block_on`).
-async fn attempts<T>(
-    provider: Box<dyn Provider>,
+/// Asks, checks the answer, and asks once more with the error if it was no good.
+async fn rounds<T>(
+    provider: &dyn Provider,
     first: &ChatRequest,
     check: &dyn Fn(&str) -> Result<T, PlanError>,
     received: &AtomicUsize,
     tries: &AtomicUsize,
     sent: &RefCell<Option<Sent>>,
-) -> (Result<(T, String), Failure>, Option<omsh_ai::Usage>) {
+) -> Result<(T, String), Failure> {
     let policy = Policy::standard();
     let mut request = first.clone();
     let mut first_answer_chars = None;
@@ -365,14 +373,13 @@ async fn attempts<T>(
             request: request.clone(),
             first_answer_chars,
         });
-        let answer =
-            match collect_text_counting(provider.as_ref(), &request, &policy, received).await {
-                Ok(answer) => answer,
-                Err(error) => {
-                    outcome = Err(Failure::Provider(error));
-                    break;
-                }
-            };
+        let answer = match collect_text_counting(provider, &request, &policy, received).await {
+            Ok(answer) => answer,
+            Err(error) => {
+                outcome = Err(Failure::Provider(error));
+                break;
+            }
+        };
         match check(&answer) {
             Ok(value) => {
                 outcome = Ok((value, answer));
@@ -385,14 +392,72 @@ async fn attempts<T>(
             Err(error) => outcome = Err(Failure::Invalid(error)),
         }
     }
+    outcome
+}
+
+/// What a request gave back.
+struct Answered<T> {
+    result: Result<(T, String), Failure>,
+    /// What the server counted for the last answer.
+    usage: Option<omsh_ai::Usage>,
+    /// The window of the model, if it was asked for and found while the request ran.
+    limit: Option<Limit>,
+}
+
+/// Runs [`rounds`]. With `probe`, the size of the model's context window is asked for next to the
+/// request: the answer is never held up by it, and a lookup that has not finished when the answer
+/// is in is dropped. Ends with the provider dropped, inside the runtime (see
+/// `omsh_ai::runtime::block_on`).
+async fn attempts<T>(
+    provider: Box<dyn Provider>,
+    first: &ChatRequest,
+    check: &dyn Fn(&str) -> Result<T, PlanError>,
+    received: &AtomicUsize,
+    tries: &AtomicUsize,
+    sent: &RefCell<Option<Sent>>,
+    probe: bool,
+) -> Answered<T> {
+    let (result, limit) = {
+        let window = async {
+            if probe {
+                provider.context_limit().await
+            } else {
+                None
+            }
+        };
+        alongside(
+            rounds(provider.as_ref(), first, check, received, tries, sent),
+            window,
+        )
+        .await
+    };
     // What the server counted for the last answer, before the provider goes.
     let usage = provider.take_usage();
     drop(provider);
-    (outcome, usage)
+    Answered {
+        result,
+        usage,
+        limit,
+    }
+}
+
+/// What [`ask`] gives back: the result, what was sent last, and the call, if the provider answered.
+pub(crate) type Asked<T> = (Result<(T, String), Failure>, Option<Sent>, Option<Record>);
+
+/// How the numbers of a call are shown after it, and where they are kept.
+pub(crate) struct Reporter<'a> {
+    pub calls: &'a Calls,
+    pub model: &'a str,
+    /// Set when the shell may draw panels with buttons; the info line then replaces the plain
+    /// `3.2 s, 1,204 tokens in, 310 out`, on a terminal that takes keys.
+    pub ui: Option<&'a MenuUi>,
+    /// The plan panel carries the info line itself: nothing is printed after the call.
+    pub in_panel: bool,
 }
 
 /// Runs [`attempts`] and shows the wait: on a terminal one line that is redrawn with the real
-/// time and the number of characters that have arrived; otherwise one plain line.
+/// time and the number of characters that have arrived; otherwise one plain line. The call is
+/// recorded when the provider answered.
 pub(crate) fn ask<T>(
     provider: Box<dyn Provider>,
     first: &ChatRequest,
@@ -400,10 +465,16 @@ pub(crate) fn ask<T>(
     label: &str,
     paint: &Paint,
     terminal: &mut dyn Terminal,
-) -> (Result<(T, String), Failure>, Option<Sent>) {
+    reporter: &Reporter<'_>,
+) -> Asked<T> {
     let received = AtomicUsize::new(0);
     let tries = AtomicUsize::new(1);
     let sent = RefCell::new(None);
+    let kind = provider.kind();
+    // The rich look (and the lookup of the window that goes with it) is only for a person at a
+    // terminal that takes keys; every other flow keeps the plain line and sends no extra request.
+    let rich = reporter.ui.filter(|_| terminal.menu_keys());
+    let probe = rich.is_some() && reporter.calls.config_limit().is_none();
     let wait = WaitLine::start(label, paint, terminal);
     let terminal = RefCell::new(terminal);
     let watch = || {
@@ -423,16 +494,39 @@ pub(crate) fn ask<T>(
         false
     };
     let outcome = runtime::block_on(
-        attempts(provider, first, check, &received, &tries, &sent),
+        attempts(provider, first, check, &received, &tries, &sent, probe),
         &watch,
     );
     wait.clear(&mut **terminal.borrow_mut());
-    let (result, usage) = match outcome {
-        Ok((result, usage)) => (result, usage),
-        Err(error) => (Err(Failure::Provider(error)), None),
+    let elapsed = wait.elapsed();
+    let answered = match outcome {
+        Ok(answered) => answered,
+        Err(error) => Answered {
+            result: Err(Failure::Provider(error)),
+            usage: None,
+            limit: None,
+        },
     };
-    wait.report(&mut **terminal.borrow_mut(), usage);
-    (result, sent.into_inner())
+    let Answered {
+        result,
+        usage,
+        limit,
+    } = answered;
+    // The provider answered (even if the plan was no good): the call counts.
+    let record = (!matches!(result, Err(Failure::Provider(_)))).then(|| {
+        reporter
+            .calls
+            .record(kind, reporter.model, usage, elapsed, limit)
+    });
+    let mut terminal = terminal.borrow_mut();
+    match (rich, record.as_ref()) {
+        (Some(ui), Some(record)) if !reporter.in_panel => {
+            terminal.err(&reporter.calls.info_text(ui, record));
+        }
+        (Some(_), _) => {}
+        (None, _) => wait.report(&mut **terminal, usage),
+    }
+    (result, sent.into_inner(), record)
 }
 
 // -- the panel ------------------------------------------------------------------------------
@@ -544,62 +638,75 @@ fn panel_text(
                 &format!("[{}{note}]", rating.level.name())
             )
         ));
-        block(&mut out, "     $ ", "       ", &step.command);
-        if step.edited {
-            out.push_str("     (your edit; the model's explanation was for its own command)\n");
-        } else if !step.explanation.trim().is_empty() {
-            block(&mut out, "     ", "     ", &step.explanation);
-        }
-        if step.needs_root {
-            out.push_str(
-                "     needs root: the plan does not add sudo; it may fail until you decide how \
-                 to run it\n",
-            );
-        }
-        let mut counted = false;
-        // Whether the plan's `rm`s go through the trash decides what a delete's reason says.
-        let trash = if journal
-            && !step.analysis.deletes.is_empty()
-            && step
-                .analysis
-                .deletes
-                .iter()
-                .all(|site| site.trashable.is_ok())
-        {
-            Trash::Yes
-        } else {
-            Trash::No
-        };
-        for (at, finding) in step.analysis.findings.iter().enumerate() {
-            out.push_str("     - ");
-            out.push_str(&confirm::reason_text(finding, trash));
-            out.push('\n');
-            if let Some(target) = &finding.target {
-                out.push_str("       on: ");
-                out.push_str(&paint.token(Token::Path, &shorten(target)));
-                out.push('\n');
-            }
-            if let Some(Some(found)) = step.radii.get(at) {
-                counted = true;
-                let cwd = finding.files.as_ref().and_then(|f| f.cwd.as_deref());
-                for line in radius::lines(found, cwd, blast) {
-                    out.push_str("       ");
-                    if line.starts_with("for example:") {
-                        out.push_str(&paint.token(Token::Dim, &line));
-                    } else {
-                        out.push_str(&line);
-                    }
-                    out.push('\n');
-                }
-            }
-        }
-        if counted && index > 0 {
-            out.push_str("       (counted now, before the steps above have run)\n");
-        }
-        undo_lines(paint, &mut out, &step.analysis, journal);
+        step_body(paint, index, step, blast, journal, &mut out);
     }
     out.push('\n');
     out
+}
+
+/// The lines under the title of one step: the command, the explanation, what it needs, the
+/// reasons, the counts and what `undo` can do. Each line starts with five blanks.
+fn step_body(
+    paint: &Paint,
+    index: usize,
+    step: &Reviewed,
+    blast: BlastLimits,
+    journal: bool,
+    out: &mut String,
+) {
+    block(out, "     $ ", "       ", &step.command);
+    if step.edited {
+        out.push_str("     (your edit; the model's explanation was for its own command)\n");
+    } else if !step.explanation.trim().is_empty() {
+        block(out, "     ", "     ", &step.explanation);
+    }
+    if step.needs_root {
+        out.push_str(
+            "     needs root: the plan does not add sudo; it may fail until you decide how \
+                 to run it\n",
+        );
+    }
+    let mut counted = false;
+    // Whether the plan's `rm`s go through the trash decides what a delete's reason says.
+    let trash = if journal
+        && !step.analysis.deletes.is_empty()
+        && step
+            .analysis
+            .deletes
+            .iter()
+            .all(|site| site.trashable.is_ok())
+    {
+        Trash::Yes
+    } else {
+        Trash::No
+    };
+    for (at, finding) in step.analysis.findings.iter().enumerate() {
+        out.push_str("     - ");
+        out.push_str(&confirm::reason_text(finding, trash));
+        out.push('\n');
+        if let Some(target) = &finding.target {
+            out.push_str("       on: ");
+            out.push_str(&paint.token(Token::Path, &shorten(target)));
+            out.push('\n');
+        }
+        if let Some(Some(found)) = step.radii.get(at) {
+            counted = true;
+            let cwd = finding.files.as_ref().and_then(|f| f.cwd.as_deref());
+            for line in radius::lines(found, cwd, blast) {
+                out.push_str("       ");
+                if line.starts_with("for example:") {
+                    out.push_str(&paint.token(Token::Dim, &line));
+                } else {
+                    out.push_str(&line);
+                }
+                out.push('\n');
+            }
+        }
+    }
+    if counted && index > 0 {
+        out.push_str("       (counted now, before the steps above have run)\n");
+    }
+    undo_lines(paint, out, &step.analysis, journal);
 }
 
 /// What `undo` can and cannot do for a step: which of its `rm`s go through the trash, and
@@ -733,6 +840,8 @@ enum Choice {
     Edit(usize),
     /// Send a follow-up message and get a new plan.
     Chat,
+    /// Run the plan, asking before each step (only from the panel with buttons).
+    StepByStep,
     Cancel(u8),
 }
 
@@ -798,6 +907,8 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         mut connect,
         settings,
         context: allowed,
+        calls,
+        ..
     } = setup;
     let kind = settings.kind;
     if request.trim().is_empty() {
@@ -828,9 +939,28 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     let label = format!("Asking {} ({})", kind.label(), settings.model);
     let checker = env.shell.clone();
     let check = |answer: &str| check_answer(&checker, answer);
-    let (outcome, sent) = {
+    // Panels with buttons: only with a menu **and** a person at a real terminal.
+    let menu: Option<MenuUi> = {
+        let terminal = env.tty.open(env.shell, env.files);
+        view::can_show(env.menu, &*terminal)
+    };
+    let reporter = Reporter {
+        calls: &calls,
+        model: &settings.model,
+        ui: env.menu,
+        in_panel: menu.is_some(),
+    };
+    let (outcome, sent, mut record) = {
         let mut terminal = env.tty.open(env.shell, env.files);
-        ask(provider, &first, &check, &label, env.paint, &mut *terminal)
+        ask(
+            provider,
+            &first,
+            &check,
+            &label,
+            env.paint,
+            &mut *terminal,
+            &reporter,
+        )
     };
     // What `[v]` shows: the request that was really sent last (a second try, if there was one).
     let mut view = sent_view(
@@ -851,6 +981,10 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
             return finish(env.shell, INTERRUPTED);
         }
         Err(failure) => {
+            // The panel would have carried the numbers of the call; with no plan they go here.
+            if let (Some(ui), Some(record)) = (&menu, &record) {
+                say(&mut env, &calls.info_text(ui, record));
+            }
             say(
                 &mut env,
                 &format!("oh-my-shell: ?: {}\n", failure_line(&failure, kind)),
@@ -864,24 +998,44 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
     for step in &mut steps {
         count_step(step, env.confirm, env.blast);
     }
-    loop {
+    let mut expanded = false;
+    let stepwise = loop {
         let journal = env.undo.is_some() && env.shell.has_journal();
-        let text = panel(
-            env.paint,
-            &summary,
-            &settings,
-            &steps,
-            env.blast,
-            journal,
-            conversation.turns(),
-        );
-        let choice = {
-            let mut terminal = env.tty.open(env.shell, env.files);
-            terminal.err(&text);
-            choose(&mut *terminal, steps.len(), &view, env.paint)
+        let shown = menu.as_ref().and_then(|ui| {
+            view::plan_choice(
+                &mut env,
+                ui,
+                &calls,
+                &settings,
+                &summary,
+                &steps,
+                journal,
+                conversation.turns(),
+                record.as_ref(),
+                &mut expanded,
+                &view,
+            )
+        });
+        let choice = match shown {
+            Some(choice) => choice,
+            None => {
+                let text = panel(
+                    env.paint,
+                    &summary,
+                    &settings,
+                    &steps,
+                    env.blast,
+                    journal,
+                    conversation.turns(),
+                );
+                let mut terminal = env.tty.open(env.shell, env.files);
+                terminal.err(&text);
+                choose(&mut *terminal, steps.len(), &view, env.paint)
+            }
         };
         match choice {
-            Choice::Run => break,
+            Choice::Run => break false,
+            Choice::StepByStep => break true,
             Choice::Cancel(status) => {
                 if status == INTERRUPTED {
                     say(&mut env, "\n");
@@ -891,20 +1045,22 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
             }
             Choice::Edit(index) => edit_step(&mut env, &mut steps, index),
             Choice::Chat => {
-                if let Some(new) = chat_turn(
+                if let Some((new, new_record)) = chat_turn(
                     &mut env,
                     &mut connect,
                     &settings,
+                    &calls,
                     &mut conversation,
                     &steps,
                     &mut view,
                 ) {
                     summary = new.summary;
                     steps = new.steps;
+                    record = new_record.or(record);
                 }
             }
         }
-    }
+    };
 
     // -- a critical step also needs the target typed
     let critical: Vec<String> = steps
@@ -917,15 +1073,24 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         .map(|step| step.rating().level)
         .max()
         .unwrap_or(Level::Safe);
-    if steps
+    // Step by step asks at each step, with the step in front of the person; the one question for
+    // the whole plan is for a plan that runs all at once.
+    if stepwise {
+        // Nothing to ask now.
+    } else if steps
         .iter()
         .any(|step| step.analysis.level() == Level::Critical)
     {
         let targets: Vec<&str> = critical.iter().map(String::as_str).collect();
         let decision = {
             let mut terminal = env.tty.open(env.shell, env.files);
-            terminal.err("oh-my-shell: this plan has a critical step\n");
-            confirm::ask(Level::Critical, &targets, env.paint, &mut *terminal)
+            confirm::ask_plan(
+                Level::Critical,
+                &targets,
+                env.paint,
+                menu.as_ref(),
+                &mut *terminal,
+            )
         };
         if let Decision::Cancel(code) = decision {
             return finish(env.shell, code);
@@ -935,18 +1100,21 @@ pub fn run(setup: PlanSetup, request: &str, mut env: PlanEnv<'_>) -> LineResult 
         // asks once more here, with the counts above, as `[safety] confirm` says.
         let decision = {
             let mut terminal = env.tty.open(env.shell, env.files);
-            terminal.err(&format!(
-                "oh-my-shell: this plan has a {} step\n",
-                top.name()
-            ));
-            confirm::ask(top, &[], env.paint, &mut *terminal)
+            confirm::ask_plan(top, &[], env.paint, menu.as_ref(), &mut *terminal)
         };
         if let Decision::Cancel(code) = decision {
             return finish(env.shell, code);
         }
     }
 
-    execute(&mut env, &steps)
+    execute(
+        &mut env,
+        &steps,
+        Mode {
+            menu: menu.as_ref(),
+            stepwise,
+        },
+    )
 }
 
 /// Reads a model's answer as a plan whose every command parses in this shell.
@@ -967,10 +1135,11 @@ fn chat_turn(
     env: &mut PlanEnv<'_>,
     connect: &mut Connect,
     settings: &Settings,
+    calls: &Calls,
     conversation: &mut Conversation,
     steps: &[Reviewed],
     view: &mut String,
-) -> Option<Checked> {
+) -> Option<(Checked, Option<Record>)> {
     let kind = settings.kind;
     let text = {
         let mut line = Vec::new();
@@ -1030,7 +1199,17 @@ fn chat_turn(
     );
     let checker = env.shell.clone();
     let check = |answer: &str| check_answer(&checker, answer);
-    let (outcome, sent) = {
+    let in_panel = {
+        let terminal = env.tty.open(env.shell, env.files);
+        view::can_show(env.menu, &*terminal).is_some()
+    };
+    let reporter = Reporter {
+        calls,
+        model: &settings.model,
+        ui: env.menu,
+        in_panel,
+    };
+    let (outcome, sent, record) = {
         let mut terminal = env.tty.open(env.shell, env.files);
         ask(
             provider,
@@ -1039,6 +1218,7 @@ fn chat_turn(
             &label,
             env.paint,
             &mut *terminal,
+            &reporter,
         )
     };
     // `[v]` shows what was sent last, even if the answer was no good.
@@ -1051,9 +1231,12 @@ fn chat_turn(
             for step in &mut checked.steps {
                 count_step(step, env.confirm, env.blast);
             }
-            Some(checked)
+            Some((checked, record))
         }
         Err(failure) => {
+            if in_panel && let (Some(ui), Some(record)) = (env.menu, &record) {
+                say(env, &calls.info_text(ui, record));
+            }
             if matches!(&failure, Failure::Provider(error) if error.kind == ErrorKind::Cancelled) {
                 omsh_exec::clear_interrupt();
                 say(env, "\n");
@@ -1114,15 +1297,43 @@ fn rechain(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], from: usize) {
     }
 }
 
-/// Runs the steps in order and stops at the first one that fails.
-fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
+/// How the steps run.
+#[derive(Clone, Copy)]
+struct Mode<'a> {
+    /// The panels with buttons, when this terminal can show them.
+    menu: Option<&'a MenuUi>,
+    /// Ask before each step (Run step, Skip, Stop). Only with a menu.
+    stepwise: bool,
+}
+
+/// Runs the steps in order and stops at the first one that fails. Step by step, each step is
+/// asked about first; a skipped step is skipped, and every step is analyzed again at its turn
+/// against the shell as it is then, so that a step that depended on a skipped one is judged for
+/// what it really does.
+fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineResult {
     let total = steps.len();
+    let mut skipped = 0_usize;
     let glyphs = env.paint.glyphs();
     let ok = env.paint.token(Token::Success, glyphs.ok);
     let failed = env.paint.token(Token::Danger, glyphs.fail);
     let mut last = 0_u8;
     for (index, step) in steps.iter().enumerate() {
         let number = index + 1;
+        if let (true, Some(ui)) = (mode.stepwise, mode.menu) {
+            match view::step_question(ui, index, total, step) {
+                view::StepAnswer::Run => {}
+                view::StepAnswer::Skip => {
+                    skipped += 1;
+                    let line = view::skipped_line(env.paint, number, &step.title);
+                    say(env, &line);
+                    continue;
+                }
+                view::StepAnswer::Stop(status) => {
+                    omsh_exec::clear_interrupt();
+                    return stopped_by_choice(env, steps, index, status);
+                }
+            }
+        }
         let mut head = format!(
             "\n{} {}\n",
             env.paint
@@ -1143,16 +1354,21 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
         };
         // An earlier step may have changed what this one touches.
         let fresh = confirm::review(env.shell, &prepared);
-        if fresh.level() > step.analysis.level() {
+        let riskier = fresh.level() > step.analysis.level();
+        if riskier || mode.stepwise {
             let decision = {
                 let mut terminal = env.tty.open(env.shell, env.files);
-                terminal.err("oh-my-shell: this step is riskier than the plan showed\n");
-                confirm::decide(
+                if riskier {
+                    terminal.err("oh-my-shell: this step is riskier than the plan showed\n");
+                }
+                confirm::decide_with(
                     &fresh,
                     prepared.text(),
                     env.confirm,
                     Some(env.blast),
+                    false,
                     env.paint,
+                    mode.menu,
                     &mut *terminal,
                 )
             };
@@ -1244,6 +1460,11 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             return stopped(env, steps, number, last, offer);
         }
     }
+    let left_out = if skipped > 0 {
+        format!(", {skipped} skipped")
+    } else {
+        String::new()
+    };
     say(
         env,
         &format!(
@@ -1251,13 +1472,41 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed]) -> LineResult {
             env.paint.token(
                 Token::Success,
                 &format!(
-                    "plan done ({total} step{})",
+                    "plan done ({total} step{}{left_out})",
                     if total == 1 { "" } else { "s" }
                 )
             )
         ),
     );
     finish(env.shell, last)
+}
+
+/// The person stopped a plan that runs step by step, before step `index` (counting from 0).
+fn stopped_by_choice(
+    env: &mut PlanEnv<'_>,
+    steps: &[Reviewed],
+    index: usize,
+    status: u8,
+) -> LineResult {
+    let skip = env.paint.glyphs().skip;
+    let mut lines = String::from("\n");
+    for (at, step) in steps.iter().enumerate().skip(index) {
+        let line = format!("{skip} {}. {} (not run)", at + 1, shorten(&step.title));
+        lines.push_str("  ");
+        lines.push_str(&env.paint.token(Token::Dim, &line));
+        lines.push('\n');
+    }
+    say(env, &lines);
+    let left = steps.len() - index;
+    say(
+        env,
+        &format!(
+            "oh-my-shell: stopped before step {}; the remaining {left} step{} did not run\n",
+            index + 1,
+            if left == 1 { "" } else { "s" }
+        ),
+    );
+    finish(env.shell, status)
 }
 
 /// The plan ends at step `number` with `status`.
@@ -1302,6 +1551,8 @@ fn stopped(
     }
     finish(env.shell, status)
 }
+
+mod view;
 
 #[cfg(test)]
 mod tests;

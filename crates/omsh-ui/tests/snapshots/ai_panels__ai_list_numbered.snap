@@ -1,0 +1,9 @@
+---
+source: crates/omsh-ui/tests/ai_panels.rs
+expression: text
+---
+Choose a provider
+  1) Ollama (local)  runs on this computer, needs no key
+  2) Anthropic
+  3) মডেল-এক
+Choose 1-3:
