@@ -163,9 +163,9 @@ redirect_of() { # redirect_of URL
 # Decides, once, how things are shown. The display is "fancy" only when standard output is a
 # terminal that is not dumb.
 ui_init() {
-    ui_fancy=0; ui_color=0; ui_unicode=0; ui_motion=0
+    ui_fancy=0; ui_unicode=0; ui_motion=0
     ui_cursor_hidden=0; ui_spin_pid=""
-    ui_green=""; ui_red=""; ui_cyan=""; ui_dim=""; ui_off=""
+    ui_green=""; ui_cyan=""; ui_dim=""; ui_off=""
     if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
         ui_fancy=1
     fi
@@ -173,9 +173,7 @@ ui_init() {
     ui_off=$(printf '\033[0m')
     ui_dim=$(printf '\033[2m')
     if [ -z "${NO_COLOR:-}" ]; then
-        ui_color=1
         ui_green=$(printf '\033[32m')
-        ui_red=$(printf '\033[31m')
         ui_cyan=$(printf '\033[36m')
     fi
     case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
@@ -204,7 +202,7 @@ ui_mark() { # ui_mark ok|fail
 
 # Centiseconds since boot, from /proc/uptime (this installer is for Linux). 0 if unreadable.
 ui_cs() {
-    read -r cs_up cs_rest < /proc/uptime 2>/dev/null || { printf '0'; return 0; }
+    read -r cs_up _ < /proc/uptime 2>/dev/null || { printf '0'; return 0; }
     cs_value="${cs_up%.*}${cs_up#*.}"
     while [ "${cs_value#0}" != "$cs_value" ]; do cs_value=${cs_value#0}; done
     printf '%s' "${cs_value:-0}"
@@ -248,7 +246,7 @@ ui_frame() {
         esac
     else
         case $(($1 % 4)) in
-            0) printf '%s' '|' ;; 1) printf '%s' '/' ;; 2) printf '%s' '-' ;; *) printf '%s' '\' ;;
+            0) printf '%s' '|' ;; 1) printf '%s' '/' ;; 2) printf '%s' '-' ;; *) printf '\134' ;;
         esac
     fi
 }
@@ -393,8 +391,9 @@ path_fix() { # path_fix DIR
     pf_tilde=$1
     pf_var=$1
     if [ -n "$pf_home" ]; then
+        # shellcheck disable=SC2088  # a literal ~ is wanted: it is text shown to the person
         case "$1" in
-            "$pf_home"/*) pf_tilde="~/${1#"$pf_home"/}"; pf_var="\$HOME/${1#"$pf_home"/}" ;;
+            "$pf_home"/*) pf_tilde='~/'"${1#"$pf_home"/}"; pf_var="\$HOME/${1#"$pf_home"/}" ;;
         esac
     fi
     case "${SHELL:-}" in

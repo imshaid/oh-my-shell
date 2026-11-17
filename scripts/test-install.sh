@@ -204,11 +204,12 @@ check "--help prints the usage and exits 0" sh -c "sh '$installer' --help | grep
 path_note() { # path_note SHELL -> the output of an install whose bin directory is not in PATH
     pn_home=$t/home-path-$(basename "$1"); mkdir -p "$pn_home"
     env HOME="$pn_home" SHELL="$1" sh "$installer" --archive "$rel/$name" --sums "$rel/sha256.sum" 2>&1
-    test -z "$(ls -A "$pn_home" | grep -v '^.local$')"
+    test -z "$(find "$pn_home" -mindepth 1 -maxdepth 1 ! -name .local)"
 }
 fish_out=$(path_note /usr/bin/fish) || bad "PATH note, fish: a startup file was made"
 if printf '%s\n' "$fish_out" | grep -q '^    fish_add_path ~/.local/bin$'; then ok "PATH note, fish: fish_add_path ~/.local/bin"; else bad "PATH note, fish: $fish_out"; fi
 bash_out=$(path_note /bin/bash) || bad "PATH note, bash: a startup file was made"
+# shellcheck disable=SC2016  # the line is searched for as written, with a literal $HOME
 if printf '%s\n' "$bash_out" | grep -q 'Add this line to ~/.bashrc:' && printf '%s\n' "$bash_out" | grep -qF '    export PATH="$HOME/.local/bin:$PATH"'; then ok "PATH note, bash: the export line and the file"; else bad "PATH note, bash: $bash_out"; fi
 zsh_out=$(path_note /usr/bin/zsh) || bad "PATH note, zsh: a startup file was made"
 if printf '%s\n' "$zsh_out" | grep -q 'Add this line to ~/.zshrc:'; then ok "PATH note, zsh: the file"; else bad "PATH note, zsh: $zsh_out"; fi
