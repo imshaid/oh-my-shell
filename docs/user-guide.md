@@ -40,7 +40,8 @@ the generic `export` line for any other shell). It only prints it: it never edit
 **What the installer shows.** On a terminal it shows a header, a spinner for each step that settles into `✓`, a
 real download line (percent and speed, only when the server says how big the file is), and, at the end, the time
 the new program took for `--version`, measured by running it ten times. A pipe, a file or `TERM=dumb` gets one
-plain line for each step and no escape codes. `NO_COLOR` removes the colors, a locale that is not UTF-8 gives
+plain line for each step and no escape codes. A step that fails is settled into `✘` (`x` in ASCII) with its label on a line
+of its own, and the message and what curl or wget said follow on lines of their own. `NO_COLOR` removes the colors, a locale that is not UTF-8 gives
 ASCII symbols, and `OMSH_MOTION=off` removes the spinner.
 
 **A `.deb` package** (Debian, Ubuntu): download `oh-my-shell_<version>-1_amd64.deb` (or `_arm64.deb`) from the

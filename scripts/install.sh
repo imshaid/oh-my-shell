@@ -34,6 +34,19 @@ say() { printf '%s\n' "$*"; }
 warn() { printf 'install.sh: %s\n' "$*" >&2; }
 # A step that is still drawn (a spinner) is wiped first, so the message starts on a clean line.
 die() { ui_abort; warn "$*"; exit 1; }
+# A failed download or lookup: the step is settled (see ui_abort), then the message, then what
+# curl or wget said, a few lines at most, each on a line of its own and with anything that is not
+# printable text taken out. `net_err` is the file their error output went to.
+die_net() { # die_net MESSAGE
+    ui_abort
+    warn "$1"
+    if [ -n "${net_err:-}" ] && [ -s "$net_err" ]; then
+        tail -n 4 "$net_err" | tr -cd '[:print:]\n' | while IFS= read -r net_line; do
+            printf '  %s\n' "$net_line" >&2
+        done
+    fi
+    exit 1
+}
 
 usage() {
     cat <<'TEXT'
@@ -129,15 +142,19 @@ fetch() { # fetch URL FILE
     if have curl; then
         fetch_proto='=https'
         case "$1" in http://*) fetch_proto='=http' ;; esac
-        curl --proto "$fetch_proto" --tlsv1.2 -fsSL -o "$2" "$1" || die "download failed: $1"
+        curl --proto "$fetch_proto" --tlsv1.2 -fsSL -o "$2" "$1" 2>"${net_err:-/dev/null}" \
+            || die_net "download failed: $1"
     elif have wget; then
-        wget -q -O "$2" "$1" || die "download failed: $1"
+        wget -nv --tries=3 -O "$2" "$1" 2>"${net_err:-/dev/null}" || die_net "download failed: $1"
     else
         die "needs curl or wget"
     fi
 }
 
 # Where URL ($1) redirects to, without following it. Prints nothing when it does not redirect.
+# It runs inside $( ), so it never calls die (that would end only the subshell, with a spinner
+# still drawn): on a failure it returns 1 with the program's own words in $net_err, and the
+# caller says what happened.
 # This is how the latest release is found: github.com/<repo>/releases/latest answers with a
 # redirect to .../releases/tag/<tag>. The GitHub API is not used: it allows an address only 60
 # requests an hour.
@@ -147,13 +164,14 @@ redirect_of() { # redirect_of URL
         fetch_proto='=https'
         case "$1" in http://*) fetch_proto='=http' ;; esac
         curl --proto "$fetch_proto" --tlsv1.2 -fsS -o /dev/null -w '%{redirect_url}' "$1" \
-            || die "cannot reach $1"
+            2>"${net_err:-/dev/null}" || return 1
     elif have wget; then
         # wget stops at the redirect (exit status 8) and, with -S, prints the headers.
-        wget_headers=$(wget --max-redirect=0 -S -O /dev/null "$1" 2>&1 || true)
+        wget_headers=$(wget --tries=3 --max-redirect=0 -S -O /dev/null "$1" 2>&1 || true)
         printf '%s\n' "$wget_headers" | sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*//p' | head -n 1
     else
-        die "needs curl or wget"
+        printf '%s\n' "needs curl or wget" >"${net_err:-/dev/null}"
+        return 1
     fi
 }
 
@@ -163,9 +181,9 @@ redirect_of() { # redirect_of URL
 # Decides, once, how things are shown. The display is "fancy" only when standard output is a
 # terminal that is not dumb.
 ui_init() {
-    ui_fancy=0; ui_unicode=0; ui_motion=0
+    ui_fancy=0; ui_unicode=0; ui_motion=0; ui_label=""
     ui_cursor_hidden=0; ui_spin_pid=""
-    ui_green=""; ui_cyan=""; ui_dim=""; ui_off=""
+    ui_green=""; ui_red=""; ui_cyan=""; ui_dim=""; ui_off=""
     if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "${TERM:-}" != dumb ]; then
         ui_fancy=1
     fi
@@ -174,6 +192,7 @@ ui_init() {
     ui_dim=$(printf '\033[2m')
     if [ -z "${NO_COLOR:-}" ]; then
         ui_green=$(printf '\033[32m')
+        ui_red=$(printf '\033[31m')
         ui_cyan=$(printf '\033[36m')
     fi
     case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
@@ -308,14 +327,21 @@ ui_spin_stop() {
     fi
 }
 
-# Called by die: wipes a spinner that is still drawn.
+# Called by die: the spinner is stopped and wiped, and the step that was running is settled as
+# failed, a mark and its label on a line of its own, so the message that follows starts on a
+# new line. Nothing is drawn for a failure outside a step.
 ui_abort() {
     [ "${ui_fancy:-0}" -eq 1 ] || return 0
     ui_spin_stop
+    if [ -n "${ui_label:-}" ]; then
+        printf '  %s%s%s %s\n' "$ui_red" "$(ui_mark fail)" "$ui_off" "$ui_label"
+        ui_label=""
+    fi
 }
 
 # A step begins. Fancy: the spinner. Plain: the line $2, if there is one.
 ui_begin() { # ui_begin LABEL [PLAIN LINE]
+    ui_label=$1
     if [ "$ui_fancy" -eq 1 ]; then
         ui_spin_start "$1"
     elif [ -n "${2:-}" ]; then
@@ -325,6 +351,7 @@ ui_begin() { # ui_begin LABEL [PLAIN LINE]
 
 # A step is done. Fancy: the mark, the label and the detail. Plain: the line $3, if there is one.
 ui_done() { # ui_done LABEL DETAIL [PLAIN LINE]
+    ui_label=""
     if [ "$ui_fancy" -eq 1 ]; then
         ui_spin_stop
         printf '  %s%s%s %s%-12s%s %s\n' "$ui_green" "$(ui_mark ok)" "$ui_off" "$ui_dim" "$1" "$ui_off" "$2"
@@ -336,14 +363,16 @@ ui_done() { # ui_done LABEL DETAIL [PLAIN LINE]
 # The release file, with a progress line on a terminal.
 fetch_progress() { # fetch_progress URL FILE LABEL
     check_address "$1"
+    ui_label=$3
     fp_head="$work/headers"
     : > "$fp_head"
     if have curl; then
         fp_proto='=https'
         case "$1" in http://*) fp_proto='=http' ;; esac
-        curl --proto "$fp_proto" --tlsv1.2 -fsSL -D "$fp_head" -o "$2" "$1" &
+        # Its own words go to a file: written to the screen they would land in the spinner line.
+        curl --proto "$fp_proto" --tlsv1.2 -fsSL -D "$fp_head" -o "$2" "$1" 2>"$net_err" &
     elif have wget; then
-        wget -S -o "$fp_head" -O "$2" "$1" &
+        wget -S --tries=3 -o "$fp_head" -O "$2" "$1" &
     else
         die "needs curl or wget"
     fi
@@ -355,7 +384,12 @@ fetch_progress() { # fetch_progress URL FILE LABEL
     wait "$dl_pid" || fp_status=$?
     dl_pid=""
     ui_spin_stop
-    [ "$fp_status" -eq 0 ] || die "download failed: $1"
+    if [ "$fp_status" -ne 0 ]; then
+        # wget logs everything, headers included, in one file: its own words are the lines that
+        # do not start with a blank.
+        if ! have curl; then grep -v '^[[:space:]]' "$fp_head" >"$net_err" 2>/dev/null || true; fi
+        die_net "download failed: $1"
+    fi
     fp_bytes=$({ wc -c < "$2"; } 2>/dev/null || echo 0)
     fp_bytes=$((fp_bytes + 0))
     fp_cs=$(($(ui_cs) - fp_started))
@@ -478,6 +512,7 @@ main() {
     sums=""
     base_url=""
     work=""
+    net_err=""
     dl_pid=""
     ui_init
     # Before anything is drawn: every way out gives the cursor back and removes the work folder.
@@ -536,6 +571,7 @@ main() {
     fi
 
     work=$(mktemp -d) || die "cannot make a temporary directory"
+    net_err="$work/net-error"
 
     name="oh-my-shell-$target.tar.gz"
     if [ -n "$archive" ]; then
@@ -549,7 +585,8 @@ main() {
         if [ -z "$base_url" ]; then
             if [ -z "$version" ]; then
                 ui_begin "looking for the latest release" "Looking for the latest release..."
-                location=$(redirect_of "$web/$REPO/releases/latest")
+                location=$(redirect_of "$web/$REPO/releases/latest") \
+                    || die_net "cannot reach $web/$REPO/releases/latest"
                 tag=$(tag_from_location "$location")
                 [ -n "$tag" ] || die "cannot read the latest release (is there one yet?)"
                 ui_done "release" "$tag"

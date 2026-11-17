@@ -339,6 +339,99 @@ PYTHON
         check "Ctrl+C during the download: the cursor was hidden and is shown again" sh -c "[ \"\$(grep -c '${esc}\\[?25l' '$t/tty-int')\" -ge 1 ] && [ \"\$(grep -c '${esc}\\[?25h' '$t/tty-int')\" -ge 1 ]"
         check "Ctrl+C during the download: no work folder is left" sh -c "test -z \"\$(ls -A '$t/tmp-int')\""
         check "Ctrl+C during the download: nothing was installed" test ! -e "$home/.local/bin/oh-my-shell"
+
+        # A failed step settles into a failure mark with its label on a line of its own, and the
+        # message and what curl said follow on lines of their own. The server accepts the request,
+        # keeps the spinner drawing for a moment and then drops the connection without an answer.
+        # What is left on the screen is worked out by a small terminal emulator (a carriage return
+        # and "clear the line" overwrite what was drawn), because a stripped transcript cannot
+        # tell a spinner that was wiped from one that stayed.
+        cat > "$t/screen.py" <<'PYTHON'
+import re, sys
+data = sys.stdin.buffer.read().decode('utf8', 'replace')
+lines, cur, col, i = [], [], 0, 0
+while i < len(data):
+    c = data[i]
+    if c == '\x1b':
+        m = re.match(r'\x1b\[([0-9;?]*)([A-Za-z])', data[i:])
+        if m:
+            if m.group(2) == 'K' and m.group(1) in ('2', ''):
+                cur = []
+            i += m.end()
+            continue
+        i += 1
+        continue
+    if c == '\r':
+        col = 0
+    elif c == '\n':
+        lines.append(''.join(cur).rstrip()); cur, col = [], 0
+    else:
+        while len(cur) < col:
+            cur.append(' ')
+        if col < len(cur):
+            cur[col] = c
+        else:
+            cur.append(c)
+        col += 1
+    i += 1
+if cur:
+    lines.append(''.join(cur).rstrip())
+print('\n'.join(lines))
+PYTHON
+        python3 - "$t/slow.py" <<'PYTHON'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace("    def do_GET(self):\n", "    def do_GET(self):\n        if mode == 'drop':\n            time.sleep(1.2)\n            return\n", 1)
+open(p, 'w').write(s)
+PYTHON
+        slow_server drop
+        failing_run() { # failing_run NAME "env assignments" "installer options" [script]  -> $t/fail-NAME(.screen)
+            fr_script=${4:-$installer}
+            fr_home=$t/home-fail-$1; mkdir -p "$fr_home"
+            if script -qec "env HOME='$fr_home' TERM=xterm-256color $2 sh '$fr_script' --bin-dir '$fr_home/bin' $3" /dev/null > "$t/fail-$1" 2>&1; then fr_status=0; else fr_status=1; fi
+            python3 "$t/screen.py" < "$t/fail-$1" > "$t/fail-$1.screen"
+            return "$fr_status"
+        }
+        # The three looks, each failing at the lookup of the latest release and at the download.
+        for look in "uni|LANG=C.UTF-8|✘" "nocolor|LANG=C.UTF-8 NO_COLOR=1|✘" "ascii|LANG=C LC_ALL=C|x"; do
+            fl_name=${look%%|*}; fl_rest=${look#*|}; fl_env=${fl_rest%%|*}; fl_mark=${fl_rest#*|}
+            for step in lookup download; do
+                if [ "$step" = lookup ]; then
+                    fl_label="looking for the latest release"; fl_opts=""
+                    fl_env_run="$fl_env OMSH_RELEASE_SERVER=http://127.0.0.1:$slow_port"
+                    fl_message="install.sh: cannot reach http://127.0.0.1:$slow_port/"
+                else
+                    fl_label="downloading oh-my-shell-$target.tar.gz"; fl_opts="--base-url http://127.0.0.1:$slow_port"
+                    fl_env_run="$fl_env"
+                    fl_message="install.sh: download failed: http://127.0.0.1:$slow_port/"
+                fi
+                if failing_run "$fl_name-$step" "$fl_env_run" "$fl_opts"; then
+                    bad "failure ($fl_name, $step): the installer should have failed"
+                else
+                    ok "failure ($fl_name, $step): the installer ended with an error status"
+                fi
+                fl_screen=$t/fail-$fl_name-$step.screen
+                check "failure ($fl_name, $step): the step is settled as $fl_mark with its label on its own line" grep -qxF "  $fl_mark $fl_label" "$fl_screen"
+                check "failure ($fl_name, $step): the message and curl's words are on lines of their own" sh -c "grep -A2 -xF '  $fl_mark $fl_label' '$fl_screen' | tail -n 2 | { IFS= read -r first; IFS= read -r second; case \"\$first\" in '$fl_message'*) ;; *) exit 1 ;; esac; case \"\$second\" in '  curl: ('*) ;; *) exit 1 ;; esac; }"
+                check "failure ($fl_name, $step): no spinner frame stays on the screen" sh -c "! grep -q -E '[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|^  [|/\\\\-] (looking|downloading)' '$fl_screen'"
+                check "failure ($fl_name, $step): the cursor is shown again" sh -c "[ \"\$(grep -c '${esc}\\[?25h' '$t/fail-$fl_name-$step')\" -ge \"\$(grep -c '${esc}\\[?25l' '$t/fail-$fl_name-$step')\" ]"
+            done
+        done
+        check "failure: a color terminal draws the mark in red" grep -q "${esc}\\[31m" "$t/fail-uni-lookup"
+        check "failure: NO_COLOR draws no color at all" sh -c "! grep -q -E '${esc}\\[3[0-7]m' '$t/fail-nocolor-lookup' '$t/fail-nocolor-download'"
+        # The wget branch (curl hidden by editing a copy of the script).
+        if command -v wget >/dev/null 2>&1; then
+            sed 's/have curl/false/g' "$installer" > "$t/install-wget.sh"
+            if failing_run wget "LANG=C.UTF-8" "--base-url http://127.0.0.1:$slow_port" "$t/install-wget.sh"; then
+                bad "failure (wget): the installer should have failed"
+            else
+                ok "failure (wget): the installer ended with an error status"
+            fi
+            check "failure (wget): the step is settled and wget's words follow on lines of their own" sh -c "grep -A3 -xF '  ✘ downloading oh-my-shell-$target.tar.gz' '$t/fail-wget.screen' | sed -n '2p;3p' | grep -q -E '^(install.sh: download failed|  )'"
+            check "failure (wget): no spinner frame stays on the screen" sh -c "! grep -q -E '[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]' '$t/fail-wget.screen'"
+        fi
+        kill "$slow_pid" 2>/dev/null || true
     else
         echo "skip: no python3 or curl; the download display was not tested"
     fi
