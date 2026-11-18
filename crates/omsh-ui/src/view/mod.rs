@@ -7,3 +7,5 @@ pub mod draw;
 pub mod input;
 pub mod run;
 pub mod select;
+#[cfg(test)]
+pub(crate) mod testkit;

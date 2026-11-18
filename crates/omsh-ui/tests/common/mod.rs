@@ -54,8 +54,45 @@ pub fn assert_palette_only(text: &str) {
     }
 }
 
+/// Fails if text written while the faint attribute (SGR 2) is on holds a letter or a digit.
+/// Faint is for decoration (a rule, a separator, the empty part of a bar). Text that carries
+/// information is drawn at full weight, because faint text is hard to read on some terminal
+/// themes. Faint is on from a sequence with parameter 2 until a reset (0 or an empty list).
+pub fn assert_faint_is_decoration(text: &str) {
+    let mut faint = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            let mut params = String::new();
+            for next in chars.by_ref() {
+                if next == 'm' {
+                    break;
+                }
+                params.push(next);
+            }
+            let list: Vec<&str> = params.split(';').collect();
+            if params.is_empty() || list.contains(&"0") {
+                faint = false;
+            }
+            if list.contains(&"2") {
+                faint = true;
+            }
+        } else if faint && c.is_alphanumeric() {
+            panic!("faint text holds {c:?} in {:?}", visible_inner(text));
+        }
+    }
+}
+
 /// `text` with every SGR sequence shown as `⟨parameters⟩`, so a snapshot says what was written.
+/// It also fails on faint letters and digits (see [`assert_faint_is_decoration`]), so every
+/// panel snapshot checks the rule.
 pub fn visible(text: &str) -> String {
+    assert_faint_is_decoration(text);
+    visible_inner(text)
+}
+
+fn visible_inner(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

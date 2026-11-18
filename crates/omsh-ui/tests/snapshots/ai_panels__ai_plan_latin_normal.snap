@@ -3,23 +3,23 @@ source: crates/omsh-ui/tests/ai_panels.rs
 expression: "written(&lines, &caps)"
 ---
 ⟨35⟩╭─⟨0⟩ Plan from Gemini (gemini-2.5-flash) ⟨35⟩───────────────────────────────────────⟨0⟩
-⟨35⟩│⟨0⟩ ⟨32⟩ctx ≈ 1,514 / 32,768  4%⟨0⟩  ⟨32⟩█⟨0⟩⟨2;90⟩░░░░░░░░░⟨0⟩
+⟨35⟩│⟨0⟩ ⟨32⟩ctx ≈ 1,514 / 32,768  4%⟨0⟩  ⟨32⟩█⟨0⟩⟨2⟩░░░░░░░░░⟨0⟩
 ⟨35⟩│⟨0⟩ 
 ⟨35⟩│⟨0⟩ Back the file up, then remove it.
 ⟨35⟩│⟨0⟩ 
 ⟨35⟩│⟨0⟩ 1. Look at the file  ⟨32⟩safe⟨0⟩
-⟨35⟩│⟨0⟩    ⟨2;90⟩$ ⟨0⟩ls -l build/output.o
+⟨35⟩│⟨0⟩    $ ls -l build/output.o
 ⟨35⟩│⟨0⟩    Lists it.
 ⟨35⟩│⟨0⟩ 
 ⟨35⟩│⟨0⟩ 2. Copy it  ⟨33⟩caution⟨0⟩
-⟨35⟩│⟨0⟩    ⟨2;90⟩$ ⟨0⟩cp build/output.o backup
+⟨35⟩│⟨0⟩    $ cp build/output.o backup
 ⟨35⟩│⟨0⟩    Makes a copy.
 ⟨35⟩│⟨0⟩ 
 ⟨35⟩│⟨0⟩ 3. Remove it  ⟨31⟩danger⟨0⟩
-⟨35⟩│⟨0⟩    ⟨2;90⟩$ ⟨0⟩rm -rf build/output.o
+⟨35⟩│⟨0⟩    $ rm -rf build/output.o
 ⟨35⟩│⟨0⟩    Deletes the file for good.
 ⟨35⟩│⟨0⟩ 
-⟨35⟩│⟨0⟩ ⟨2;90⟩3.2 s · in 1,204 · out 110 · ctx ≈ 1,514 / 32,768  4%⟨0⟩
+⟨35⟩│⟨0⟩ 3.2 s⟨2⟩ · ⟨0⟩in 1,204⟨2⟩ · ⟨0⟩out 110⟨2⟩ · ⟨0⟩ctx ≈ 1,514 / 32,768  4%
 ⟨35⟩│⟨0⟩ 
 ⟨35⟩│⟨0⟩ ⟨7⟩ Run all ⟨0⟩  [⟨4⟩S⟨0⟩tep by step]  [⟨4⟩E⟨0⟩dit]  [⟨4⟩C⟨0⟩hat]  [Ca⟨4⟩n⟨0⟩cel]
-⟨35⟩╰─⟨0⟩ ⟨36⟩Enter⟨0⟩ ⟨2;90⟩run · ⟨0⟩⟨36⟩←→⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩v⟨0⟩ ⟨2;90⟩context · ⟨0⟩⟨36⟩i⟨0⟩ ⟨2;90⟩details · ⟨0⟩⟨36⟩Tab⟨0⟩ ⟨2;90⟩more · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨35⟩───────⟨0⟩
+⟨35⟩╰─⟨0⟩ ⟨36⟩Enter⟨0⟩ run⟨2⟩ · ⟨0⟩⟨36⟩←→⟨0⟩ move⟨2⟩ · ⟨0⟩⟨36⟩v⟨0⟩ context⟨2⟩ · ⟨0⟩⟨36⟩i⟨0⟩ details⟨2⟩ · ⟨0⟩⟨36⟩Tab⟨0⟩ more⟨2⟩ · ⟨0⟩⟨36⟩Esc⟨0⟩ cancel ⟨35⟩───────⟨0⟩

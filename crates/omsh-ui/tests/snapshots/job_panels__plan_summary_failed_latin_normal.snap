@@ -3,8 +3,8 @@ source: crates/omsh-ui/tests/job_panels.rs
 expression: "written(&lines, &caps)"
 ---
 ⟨31⟩╭─⟨0⟩ Plan ⟨31⟩──────────────────────────────────────────────────────────────────────⟨0⟩
-⟨31⟩│⟨0⟩ ⟨31⟩███⟨0⟩⟨2;90⟩░░░░░░░⟨0⟩  ⟨31⟩1 of 3 done⟨0⟩⟨2;90⟩  1:14⟨0⟩
-⟨31⟩│⟨0⟩ ⟨32⟩✓ 1. ⟨0⟩⟨2;90⟩Go into the project folder⟨0⟩
+⟨31⟩│⟨0⟩ ⟨31⟩███⟨0⟩⟨2⟩░░░░░░░⟨0⟩  ⟨31⟩1 of 3 done⟨0⟩  1:14
+⟨31⟩│⟨0⟩ ⟨32⟩✓ 1. ⟨0⟩Go into the project folder
 ⟨31⟩│⟨0⟩ ⟨31⟩✗ 2. ⟨0⟩Compress build/output.o⟨31⟩  (failed)⟨0⟩
-⟨31⟩│⟨0⟩ ⟨2;90⟩– 3. Copy the archive  (not run)⟨0⟩
+⟨31⟩│⟨0⟩ – 3. Copy the archive  (not run)
 ⟨31⟩╰─────────────────────────────────────────────────────────────────────────────⟨0⟩

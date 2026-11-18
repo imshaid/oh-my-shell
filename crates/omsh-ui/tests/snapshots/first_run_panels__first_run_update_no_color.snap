@@ -10,4 +10,4 @@ expression: "written(&StayUpdated::new().render(&caps, WIDTH), &caps)"
 │ You can change this later: Ctrl+P, Settings, update.check.                 │
 │                                                                            │
 │ [⟨4⟩Y⟨0⟩es, check daily]  ⟨7⟩ ⟨0⟩⟨4;7⟩N⟨0⟩⟨7⟩o, I'll run omsh update --check myself ⟨0⟩              │
-╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩no⟨0⟩ ──────────────────────────────────────────╯
+╰─ ←→ move⟨2⟩ · ⟨0⟩Enter choose⟨2⟩ · ⟨0⟩Esc no ──────────────────────────────────────────╯

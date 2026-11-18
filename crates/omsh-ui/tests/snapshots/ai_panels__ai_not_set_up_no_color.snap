@@ -8,4 +8,4 @@ expression: "written(&NotSetUp::new().render(&caps, WIDTH), &caps)"
 │ request, then answers your question.
 │ 
 │ [⟨4⟩S⟨0⟩et up AI now]  ⟨7⟩ ⟨0⟩⟨4;7⟩N⟨0⟩⟨7⟩ot now ⟨0⟩
-╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩not now⟨0⟩ ──────────────────────────────────────
+╰─ ←→ move⟨2⟩ · ⟨0⟩Enter choose⟨2⟩ · ⟨0⟩Esc not now ──────────────────────────────────────

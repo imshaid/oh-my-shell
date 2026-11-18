@@ -3,12 +3,12 @@ source: crates/omsh-ui/tests/first_run_panels.rs
 expression: "written(&render_status(&rows(path), &caps, WIDTH), &caps)"
 ---
 ╭─ Oh My Shell status ────────────────────────────────────────────────────────
-│ ⟨2⟩Version⟨0⟩       1.1.0
-│ ⟨2⟩Build⟨0⟩         2026-09-01, 77 days old (old: omsh update --check)
-│ ⟨2⟩AI⟨0⟩            ready: gemini, gemini-2.5-flash
-│ ⟨2⟩Update check⟨0⟩  on, once a day
-│ ⟨2⟩Last look⟨0⟩     2026-11-16 12:00, newest is 1.1.0
-│ ⟨2⟩Motion⟨0⟩        full (automatic)
-│ ⟨2⟩Terminal⟨0⟩      xterm-256color, 80x24
-│ ⟨2⟩Config file⟨0⟩   ~/কনফিগ/রিপোর্ট/config.toml
+│ Version       1.1.0
+│ Build         2026-09-01, 77 days old (old: omsh update --check)
+│ AI            ready: gemini, gemini-2.5-flash
+│ Update check  on, once a day
+│ Last look     2026-11-16 12:00, newest is 1.1.0
+│ Motion        full (automatic)
+│ Terminal      xterm-256color, 80x24
+│ Config file   ~/কনফিগ/রিপোর্ট/config.toml
 ╰─────────────────────────────────────────────────────────────────────────────

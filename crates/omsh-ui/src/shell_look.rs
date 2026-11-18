@@ -80,8 +80,8 @@ pub fn ai_tag() -> Line {
 #[must_use]
 pub fn explain_hint() -> Line {
     Line::new()
-        .then("Alt+?", Style::of(Tone::Dim))
-        .tone(Tone::Dim, " explain")
+        .then("Alt+?", Style::of(Tone::Muted))
+        .tone(Tone::Muted, " explain")
 }
 
 /// The line that takes the hint bar's place when the daily check found a newer release.
@@ -90,11 +90,11 @@ pub fn explain_hint() -> Line {
 pub fn update_notice(newest: &str, unicode: bool) -> Line {
     let arrow = if unicode { "↑" } else { "^" };
     let separator = if unicode { " · " } else { " - " };
-    let dim = Style::of(Tone::Dim);
+    let muted = Style::of(Tone::Muted);
     Line::new()
-        .then(&format!("{arrow} omsh {newest} available"), dim)
-        .then(separator, dim)
-        .then("run: ", dim)
+        .then(&format!("{arrow} omsh {newest} available"), muted)
+        .then(separator, Style::of(Tone::Dim))
+        .then("run: ", muted)
         .then("omsh update", Style::of(Tone::Key))
 }
 
@@ -103,11 +103,11 @@ pub fn update_notice(newest: &str, unicode: bool) -> Line {
 #[must_use]
 pub fn old_build_notice(days: u64, unicode: bool) -> Line {
     let separator = if unicode { " · " } else { " - " };
-    let dim = Style::of(Tone::Dim);
+    let muted = Style::of(Tone::Muted);
     Line::new()
-        .then(&format!("this build is {days} days old"), dim)
-        .then(separator, dim)
-        .then("check for a new one: ", dim)
+        .then(&format!("this build is {days} days old"), muted)
+        .then(separator, Style::of(Tone::Dim))
+        .then("check for a new one: ", muted)
         .then("omsh update --check", Style::of(Tone::Key))
 }
 
@@ -127,16 +127,17 @@ pub enum AiHint {
 pub fn hint_bar(ai: AiHint, unicode: bool) -> Line {
     let separator = if unicode { " · " } else { " - " };
     let key = Style::of(Tone::Key);
-    let dim = Style::of(Tone::Dim);
+    let glue = Style::of(Tone::Dim);
+    let words = Style::of(Tone::Muted);
     let mut line = Line::new();
     let item = |line: &mut Line, keys: &str, what: &str| {
         if !line.is_empty() {
-            line.push(separator, dim);
+            line.push(separator, glue);
         }
         line.push(keys, key);
         if !what.is_empty() {
-            line.push(" ", dim);
-            line.push(what, dim);
+            line.push(" ", words);
+            line.push(what, words);
         }
     };
     if ai != AiHint::Off {
@@ -287,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_bar_marks_keys_and_dims_the_words() {
+    fn the_hint_bar_marks_keys_and_dims_only_the_glue() {
         let line = hint_bar(AiHint::Ready, true);
         let tone_of = |what: &str| {
             line.spans()
@@ -296,7 +297,8 @@ mod tests {
                 .map(|s| s.style.tone)
         };
         assert_eq!(tone_of("Ctrl+P"), Some(Tone::Key));
-        assert_eq!(tone_of("palette"), Some(Tone::Dim));
+        assert_eq!(tone_of("palette"), Some(Tone::Muted));
+        // The words are at full weight; only the dot between two hints is faint.
         assert_eq!(tone_of("·"), Some(Tone::Dim));
     }
 

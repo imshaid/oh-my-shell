@@ -49,7 +49,7 @@ pub fn render(rows: &[Row], caps: &Caps, width: u16) -> Vec<Line> {
         let pad = labels - crate::text::width(row.label);
         panel = panel.line(
             Line::new()
-                .tone(Tone::Dim, row.label)
+                .tone(Tone::Muted, row.label)
                 .tone(Tone::Plain, &" ".repeat(pad + 2))
                 .tone(row.tone, &crate::text::harmless(&row.value)),
         );

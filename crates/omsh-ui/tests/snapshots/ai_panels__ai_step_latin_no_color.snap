@@ -4,8 +4,8 @@ expression: "written(&panel.render(&caps, WIDTH), &caps)"
 ---
 ╭─ Step 3 of 3 ───────────────────────────────────────────────────────────────
 │ Remove it  danger
-│ ⟨2⟩$ ⟨0⟩rm -rf build/output.o
+│ $ rm -rf build/output.o
 │ Deletes the file for good.
 │ 
 │ ⟨7⟩ Run step ⟨0⟩  [⟨4⟩S⟨0⟩kip]  [Stop]
-╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩stop⟨0⟩ ─────────────────────────────────────────
+╰─ ←→ move⟨2⟩ · ⟨0⟩Enter choose⟨2⟩ · ⟨0⟩Esc stop ─────────────────────────────────────────

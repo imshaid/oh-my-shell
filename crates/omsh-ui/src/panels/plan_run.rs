@@ -83,7 +83,7 @@ impl RowState {
             Self::Ask => Tone::Key,
             Self::Paused => Tone::Warn,
             Self::Background => Tone::Info,
-            Self::Skipped | Self::NotRun | Self::Pending => Tone::Dim,
+            Self::Skipped | Self::NotRun | Self::Pending => Tone::Muted,
         }
     }
 }
@@ -168,7 +168,10 @@ impl Progress {
                 .then(&empty.repeat(CELLS - cells), Style::of(Tone::Dim))
                 .then("  ", Style::PLAIN)
                 .then(&counts, Style::of(tone))
-                .then(&format!("  {}", clock(self.elapsed)), Style::of(Tone::Dim)),
+                .then(
+                    &format!("  {}", clock(self.elapsed)),
+                    Style::of(Tone::Muted),
+                ),
         ];
         for (index, row) in self.rows.iter().enumerate() {
             let mut line = Line::new()
@@ -190,7 +193,7 @@ impl Progress {
 fn row_text_tone(state: RowState) -> Tone {
     match state {
         RowState::Ask | RowState::Paused | RowState::Background | RowState::Failed => Tone::Plain,
-        RowState::Done | RowState::Skipped | RowState::NotRun | RowState::Pending => Tone::Dim,
+        RowState::Done | RowState::Skipped | RowState::NotRun | RowState::Pending => Tone::Muted,
     }
 }
 
@@ -300,7 +303,7 @@ impl Widget for PausePanel {
         panel = panel.lines(self.body.iter().cloned());
         panel = panel.line(Line::new());
         panel = panel.lines(self.buttons.render(caps, width.saturating_sub(2)));
-        panel = panel.line(Line::new().tone(Tone::Dim, self.chosen().explain()));
+        panel = panel.line(Line::new().tone(Tone::Muted, self.chosen().explain()));
         open(&panel, caps, width)
     }
 }

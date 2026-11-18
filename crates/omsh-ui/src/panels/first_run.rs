@@ -124,7 +124,7 @@ impl Widget for Welcome {
             let room = usize::from(width.min(MAX_WIDTH)).saturating_sub(10).max(8);
             rows.push(
                 Line::new()
-                    .tone(Tone::Dim, "Settings: ")
+                    .tone(Tone::Muted, "Settings: ")
                     .tone(Tone::Path, &fit(path, room, caps.unicode)),
             );
         }

@@ -155,7 +155,7 @@ fn the_palette_entry_opens_the_panel_and_keeps_what_was_typed() {
         term.write_bytes(b"echo kee$((1+1))")?;
         term.key(CTRL_P)?;
         term.expect("\x1b[?1049h", SHORT);
-        term.expect_plain("Up/Down move", SHORT);
+        term.expect_words("Up/Down move", SHORT);
         term.write_bytes(b"Jobs")?;
         term.write_bytes(b"\r")?;
         term.expect("\x1b[?1049l", SHORT);

@@ -84,7 +84,7 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, context: &Context) {
         };
         let y = list.y + list_rows - 1;
         frame.render_widget(
-            Paragraph::new(Span::styled(message, styles.dim)),
+            Paragraph::new(Span::styled(message, styles.muted)),
             Rect::new(area.x, y, width, 1),
         );
     }
@@ -94,13 +94,13 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, context: &Context) {
         .map(|item| detail_line(item, context))
         .unwrap_or_default();
     frame.render_widget(
-        Paragraph::new(Span::styled(detail_text, styles.dim)),
+        Paragraph::new(Span::styled(detail_text, styles.muted)),
         detail,
     );
     frame.render_widget(
         Paragraph::new(Span::styled(
             note_for_width(context.window, usize::from(width)),
-            styles.dim,
+            styles.muted,
         )),
         note,
     );
@@ -202,7 +202,7 @@ fn row_line(
     let mut spans = vec![
         Span::styled(mark, styles.accent),
         Span::styled(sign, styles.danger),
-        Span::styled(age, styles.secondary(selected)),
+        Span::styled(age, styles.muted),
     ];
     spans.extend(spans_with_matches(&item.command, places, room, styles));
     Line::from(spans)
@@ -299,6 +299,23 @@ mod tests {
             .collect()
     }
 
+    /// Faint text is for decoration. Ages, the detail line and the footer words are drawn at
+    /// full weight, because faint text is hard to read on some terminal themes.
+    #[test]
+    fn faint_cells_hold_no_letter_or_digit() {
+        for (color, unicode) in [(true, true), (false, true), (true, false)] {
+            for typed in ["", "git", "zzzz"] {
+                let mut model = sample();
+                model.paste(typed);
+                let terminal = screen(&mut model, &context(color, unicode), 80, 12);
+                crate::view::testkit::assert_faint_is_decoration(
+                    terminal.backend().buffer(),
+                    &format!("explorer, typed {typed:?}, color {color}, unicode {unicode}"),
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_layout_at_80_by_24() {
         let mut model = sample();
@@ -381,9 +398,10 @@ mod tests {
         assert!(o.modifier.contains(Modifier::REVERSED));
     }
 
-    /// Dim text on the chosen row (reverse video) is hard to read, so the chosen row has none.
+    /// Faint text on the chosen row (reverse video) is hard to read, so the chosen row has none;
+    /// and the age on any row is at full weight (it is a fixed column left of the command).
     #[test]
-    fn the_chosen_row_has_no_dim_text_and_the_others_keep_it() {
+    fn no_row_has_faint_text_and_the_age_is_at_full_weight() {
         for color in [true, false] {
             let mut model = sample();
             let terminal = screen(&mut model, &context(color, true), 80, 24);
@@ -393,7 +411,11 @@ mod tests {
                 (0..80).all(|x| !buffer[(x, 19)].modifier.contains(Modifier::DIM)),
                 "the chosen row has dim cells (color {color})"
             );
-            assert!(buffer[(5, 18)].modifier.contains(Modifier::DIM));
+            let row: String = (0..80).map(|x| buffer[(x, 18)].symbol()).collect();
+            let at = row
+                .find('h')
+                .expect("the age of the second item is in hours");
+            assert!(!buffer[(at as u16, 18)].modifier.contains(Modifier::DIM));
         }
     }
 
@@ -410,9 +432,8 @@ mod tests {
                 assert_eq!(cell.bg, ratatui::style::Color::Reset);
             }
         }
-        // Reverse video still shows the chosen row, and dim still marks the age.
+        // Reverse video still shows the chosen row.
         assert!(buffer[(12, 19)].modifier.contains(Modifier::REVERSED));
-        assert!(buffer[(5, 18)].modifier.contains(Modifier::DIM));
     }
 
     #[test]

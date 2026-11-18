@@ -4,8 +4,8 @@ expression: "written(&panel.render(&caps, WIDTH), &caps)"
 ---
 ╭─ Choose a model ────────────────────────────────────────────────────────────
 │ Type to filter. Esc lets you type a name that is not in the list.
-│ ⟨2⟩filter ▏⟨0⟩
+│ filter ⟨2⟩▏⟨0⟩
 │   gemini-2.5-flash
 │ ❯ ⟨7⟩gemini-2.5-pro⟨0⟩
-│ ⟨2⟩2 models that chat, of 5 in all⟨0⟩
-╰─ ↑↓ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩cancel · ⟨0⟩Tab ⟨2⟩show all⟨0⟩ ────────────────────────
+│ 2 models that chat, of 5 in all
+╰─ ↑↓ move⟨2⟩ · ⟨0⟩Enter choose⟨2⟩ · ⟨0⟩Esc cancel⟨2⟩ · ⟨0⟩Tab show all ────────────────────────

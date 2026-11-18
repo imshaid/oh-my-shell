@@ -545,9 +545,9 @@ fn picker_entries(journal: &Journal, now_ms: i64) -> (Vec<ActionInfo>, Vec<UndoE
                 .collect();
             let mut preview = vec![
                 Line::new()
-                    .tone(Tone::Dim, "ran in ")
+                    .tone(Tone::Muted, "ran in ")
                     .tone(Tone::Path, &action.cwd.display().to_string())
-                    .tone(Tone::Dim, &format!("  {}", local_time(action.at_ms))),
+                    .tone(Tone::Muted, &format!("  {}", local_time(action.at_ms))),
             ];
             for item in todo.iter().rev().take(PREVIEW_ITEMS) {
                 preview.push(
@@ -558,7 +558,7 @@ fn picker_entries(journal: &Journal, now_ms: i64) -> (Vec<ActionInfo>, Vec<UndoE
             }
             if todo.len() > PREVIEW_ITEMS {
                 preview.push(Line::new().tone(
-                    Tone::Dim,
+                    Tone::Muted,
                     &format!("... and {} more", todo.len() - PREVIEW_ITEMS),
                 ));
             }

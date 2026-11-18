@@ -62,21 +62,21 @@ pub(super) fn body_lines(text: &str, cols: usize) -> Vec<Line> {
 /// The part of a line that is a label, the color of the rest, and the color of the label.
 fn classify(rest: &str) -> (&'static str, Tone, Tone) {
     if rest.starts_with("$ ") {
-        ("$ ", Tone::Plain, Tone::Dim)
+        ("$ ", Tone::Plain, Tone::Muted)
     } else if rest.starts_with("on: ") {
-        ("on: ", Tone::Path, Tone::Dim)
+        ("on: ", Tone::Path, Tone::Muted)
     } else if rest.starts_with("for example:") {
-        ("", Tone::Dim, Tone::Dim)
+        ("", Tone::Muted, Tone::Muted)
     } else if rest.starts_with("- deletes for good") || rest.starts_with("- not undoable") {
-        ("- ", Tone::Warn, Tone::Dim)
+        ("- ", Tone::Warn, Tone::Muted)
     } else if rest.starts_with("- ") {
-        ("- ", Tone::Plain, Tone::Dim)
+        ("- ", Tone::Plain, Tone::Muted)
     } else if rest.starts_with("needs root:") {
         ("needs root:", Tone::Plain, Tone::Warn)
     } else if rest.starts_with("rm goes to the trash") {
         ("", Tone::Ok, Tone::Ok)
     } else if rest.starts_with('(') {
-        ("", Tone::Dim, Tone::Dim)
+        ("", Tone::Muted, Tone::Muted)
     } else {
         ("", Tone::Plain, Tone::Plain)
     }
@@ -137,7 +137,7 @@ fn footer(turns: usize) -> Vec<Line> {
         vec![
             Line::new(),
             Line::new().tone(
-                Tone::Dim,
+                Tone::Muted,
                 &format!(
                     "chat turn {turns}: if only a command needs changing, Edit may be quicker"
                 ),
@@ -311,7 +311,7 @@ pub(super) fn skipped_line(paint: &Paint, number: usize, title: &str) -> String 
         paint.glyphs().skip,
         super::shorten(title)
     );
-    format!("  {}\n", paint.token(omsh_ui::Token::Dim, &line))
+    format!("  {}\n", paint.token(omsh_ui::Token::Muted, &line))
 }
 
 /// `terminal` is only used to tell that the panel can be shown.

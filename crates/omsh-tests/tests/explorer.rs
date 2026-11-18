@@ -83,7 +83,7 @@ fn press_ctrl_r(term: &mut Session) -> io::Result<()> {
 
 /// Waits for the end of the first drawing: the note about what the list covers.
 fn first_drawing_done(term: &mut Session) {
-    term.expect_plain("Looks at the newest 10,000 runs only", SHORT);
+    term.expect_words("Looks at the newest 10,000 runs only", SHORT);
 }
 
 /// Runs the line without storing it in the history (a leading space is an ignored line), so that
@@ -132,7 +132,7 @@ fn a_chosen_command_goes_into_the_line_and_runs_only_after_enter() {
         term.write_bytes(b"\r")?;
         left_view(&mut term);
         // In the line, not run.
-        term.expect_plain("echo picked-$((1+1))", SHORT);
+        term.expect_words("echo picked-$((1+1))", SHORT);
         assert!(
             !term.try_expect("picked-2", Duration::from_millis(400)),
             "the command ran without Enter:\n{}",
@@ -175,7 +175,7 @@ fn ctrl_r_waits_for_a_history_file_that_is_still_opening() {
         term.write_bytes(b"listed")?;
         term.write_bytes(b"\r")?;
         left_view(&mut term);
-        term.expect_plain("echo listed-here", SHORT);
+        term.expect_words("echo listed-here", SHORT);
         term.cancel_line()?;
         term.quit()
     });
@@ -248,7 +248,7 @@ fn text_typed_before_ctrl_r_is_the_first_query_and_escape_keeps_it() {
         term.wait_for_history()?;
         term.write_bytes(b"dock")?;
         press_ctrl_r(&mut term)?;
-        term.expect_plain("1 of 3", SHORT);
+        term.expect_words("1 of 3", SHORT);
         first_drawing_done(&mut term);
         term.key(ESC)?;
         left_view(&mut term);
@@ -305,7 +305,7 @@ fn ctrl_r_inside_the_view_cycles_the_scope() {
 
         // All commands: three, and the newest is the best match.
         press_ctrl_r(&mut term)?;
-        term.expect_plain("3 of 3", SHORT);
+        term.expect_words("3 of 3", SHORT);
         first_drawing_done(&mut term);
         term.write_bytes(b"\r")?;
         left_view(&mut term);
@@ -362,11 +362,11 @@ fn a_command_that_ran_many_times_is_one_row_with_its_newest_run() {
         term.wait_for_history()?;
         press_ctrl_r(&mut term)?;
         // Two commands, not three rows.
-        term.expect_plain("2 of 2", SHORT);
+        term.expect_words("2 of 2", SHORT);
         // The best match is the repeated command; its detail line is its newest run.
-        term.expect_plain("in /new-place", SHORT);
-        term.expect_plain("status 3", SHORT);
-        term.expect_plain("2 runs", SHORT);
+        term.expect_words("in /new-place", SHORT);
+        term.expect_words("status 3", SHORT);
+        term.expect_words("2 runs", SHORT);
         first_drawing_done(&mut term);
         term.key(ESC)?;
         left_view(&mut term);

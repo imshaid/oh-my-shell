@@ -10,4 +10,4 @@ expression: "written(&UseEza::new().render(&caps, WIDTH), &caps)"
 ⟨34⟩|⟨0⟩ session.                                                                   ⟨34⟩|⟨0⟩
 ⟨34⟩|⟨0⟩                                                                            ⟨34⟩|⟨0⟩
 ⟨34⟩|⟨0⟩ [⟨4⟩U⟨0⟩se eza for ls]  ⟨7⟩ ⟨0⟩⟨4;7⟩N⟨0⟩⟨7⟩ot now ⟨0⟩                                                ⟨34⟩|⟨0⟩
-⟨34⟩+-⟨0⟩ ⟨36⟩arrows⟨0⟩ ⟨2;90⟩move, ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose, ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩not now⟨0⟩ ⟨34⟩-----------------------------------+⟨0⟩
+⟨34⟩+-⟨0⟩ ⟨36⟩arrows⟨0⟩ move⟨2⟩, ⟨0⟩⟨36⟩Enter⟨0⟩ choose⟨2⟩, ⟨0⟩⟨36⟩Esc⟨0⟩ not now ⟨34⟩-----------------------------------+⟨0⟩

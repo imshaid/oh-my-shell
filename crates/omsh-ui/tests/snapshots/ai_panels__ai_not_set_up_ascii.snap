@@ -8,4 +8,4 @@ expression: "written(&NotSetUp::new().render(&caps, WIDTH), &caps)"
 ⟨35⟩|⟨0⟩ request, then answers your question.
 ⟨35⟩|⟨0⟩ 
 ⟨35⟩|⟨0⟩ [⟨4⟩S⟨0⟩et up AI now]  ⟨7⟩ ⟨0⟩⟨4;7⟩N⟨0⟩⟨7⟩ot now ⟨0⟩
-⟨35⟩+-⟨0⟩ ⟨36⟩arrows⟨0⟩ ⟨2;90⟩move, ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose, ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩not now⟨0⟩ ⟨35⟩------------------------------------⟨0⟩
+⟨35⟩+-⟨0⟩ ⟨36⟩arrows⟨0⟩ move⟨2⟩, ⟨0⟩⟨36⟩Enter⟨0⟩ choose⟨2⟩, ⟨0⟩⟨36⟩Esc⟨0⟩ not now ⟨35⟩------------------------------------⟨0⟩

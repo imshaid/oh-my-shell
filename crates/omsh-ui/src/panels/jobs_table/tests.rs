@@ -301,8 +301,9 @@ fn the_table_has_the_state_words_and_the_time_before_the_command() {
     assert_eq!(lines[3], "│   %3   ✓ Done         1:12  make");
     assert_eq!(lines[4], "│   %4   ✘ Terminated   0:03  sleep 99");
     assert_eq!(lines[5], "│   %5   ✘ Exit 3       0:00  false");
-    // The chosen button is padded and the others bracketed; Stop does not fit a stopped job.
-    assert_eq!(lines[7], "│  Foreground   [Background]  [Stop]  [Kill]");
+    // The chosen button is padded and the others bracketed; Stop does not fit a stopped job, and
+    // an action that does not fit is in parentheses (not in a weaker color).
+    assert_eq!(lines[7], "│  Foreground   [Background]  (Stop)  [Kill]");
 }
 
 #[test]

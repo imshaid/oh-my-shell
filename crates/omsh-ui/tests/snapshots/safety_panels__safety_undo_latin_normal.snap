@@ -4,30 +4,30 @@ expression: "format!(\"the list:\\n{listing}\\n\\nafter Down:\\n{second}\\n\\naf
 ---
 the list:
 ⟨34⟩╭─⟨0⟩ Undo ⟨34⟩──────────────────────────────────────────────────────────────⟨0⟩
-⟨34⟩│⟨0⟩ ⟨2;90⟩filter ▏⟨0⟩
-⟨34⟩│⟨0⟩ ⟨36⟩❯ ⟨0⟩⟨7⟩rm -rf build/output.o notes final.txt  2 items · 5 min ago · #3⟨0⟩
-⟨34⟩│⟨0⟩   rm old.txt  ⟨2;90⟩1 item · 2 h ago · #2⟨0⟩
+⟨34⟩│⟨0⟩ filter ⟨2⟩▏⟨0⟩
+⟨34⟩│⟨0⟩ ⟨36⟩❯ ⟨0⟩⟨7⟩rm -rf build/output.o notes final.txt · 2 items · 5 min ago · #3⟨0⟩
+⟨34⟩│⟨0⟩   rm old.txt⟨2⟩ · ⟨0⟩1 item · 2 h ago · #2
 ⟨34⟩│⟨0⟩ 
-⟨34⟩│⟨0⟩ ⟨2;90⟩ran in ⟨0⟩⟨36⟩/home/me/work⟨0⟩⟨2;90⟩  2026-11-17 09:12⟨0⟩
-⟨34⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/build/output.o⟨0⟩
-⟨34⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/notes final.txt⟨0⟩
-⟨34⟩╰─⟨0⟩ ⟨36⟩↑↓⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩review · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨34⟩───────────────────────────────⟨0⟩
+⟨34⟩│⟨0⟩ ran in ⟨36⟩/home/me/work⟨0⟩  2026-11-17 09:12
+⟨34⟩│⟨0⟩ ⟨2⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/build/output.o⟨0⟩
+⟨34⟩│⟨0⟩ ⟨2⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/notes final.txt⟨0⟩
+⟨34⟩╰─⟨0⟩ ⟨36⟩↑↓⟨0⟩ move⟨2⟩ · ⟨0⟩⟨36⟩Enter⟨0⟩ review⟨2⟩ · ⟨0⟩⟨36⟩Esc⟨0⟩ cancel ⟨34⟩───────────────────────────────⟨0⟩
 
 after Down:
 ⟨34⟩╭─⟨0⟩ Undo ⟨34⟩──────────────────────────────────────────────────────────────⟨0⟩
-⟨34⟩│⟨0⟩ ⟨2;90⟩filter ▏⟨0⟩
-⟨34⟩│⟨0⟩   rm -rf build/output.o notes final.txt  ⟨2;90⟩2 items · 5 min ago · #3⟨0⟩
-⟨34⟩│⟨0⟩ ⟨36⟩❯ ⟨0⟩⟨7⟩rm old.txt  1 item · 2 h ago · #2⟨0⟩
+⟨34⟩│⟨0⟩ filter ⟨2⟩▏⟨0⟩
+⟨34⟩│⟨0⟩   rm -rf build/output.o notes final.txt⟨2⟩ · ⟨0⟩2 items · 5 min ago · #3
+⟨34⟩│⟨0⟩ ⟨36⟩❯ ⟨0⟩⟨7⟩rm old.txt · 1 item · 2 h ago · #2⟨0⟩
 ⟨34⟩│⟨0⟩ 
-⟨34⟩│⟨0⟩ ⟨2;90⟩ran in ⟨0⟩⟨36⟩/home/me/work⟨0⟩⟨2;90⟩  2026-11-17 09:12⟨0⟩
-⟨34⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/build/output.o⟨0⟩
-⟨34⟩╰─⟨0⟩ ⟨36⟩↑↓⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩review · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨34⟩───────────────────────────────⟨0⟩
+⟨34⟩│⟨0⟩ ran in ⟨36⟩/home/me/work⟨0⟩  2026-11-17 09:12
+⟨34⟩│⟨0⟩ ⟨2⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/build/output.o⟨0⟩
+⟨34⟩╰─⟨0⟩ ⟨36⟩↑↓⟨0⟩ move⟨2⟩ · ⟨0⟩⟨36⟩Enter⟨0⟩ review⟨2⟩ · ⟨0⟩⟨36⟩Esc⟨0⟩ cancel ⟨34⟩───────────────────────────────⟨0⟩
 
 after Enter (Cancel chosen):
 ⟨33⟩╭─⟨0⟩ Undo this? ⟨33⟩────────────────────────────────────────────────────────⟨0⟩
-⟨33⟩│⟨0⟩ ⟨2;90⟩ran in ⟨0⟩⟨36⟩/home/me/work⟨0⟩⟨2;90⟩  2026-11-17 09:12⟨0⟩
-⟨33⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/build/output.o⟨0⟩
-⟨33⟩│⟨0⟩ ⟨2;90⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/notes final.txt⟨0⟩
+⟨33⟩│⟨0⟩ ran in ⟨36⟩/home/me/work⟨0⟩  2026-11-17 09:12
+⟨33⟩│⟨0⟩ ⟨2⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/build/output.o⟨0⟩
+⟨33⟩│⟨0⟩ ⟨2⟩- ⟨0⟩bring back ⟨36⟩/home/me/work/notes final.txt⟨0⟩
 ⟨33⟩│⟨0⟩ 
 ⟨33⟩│⟨0⟩ [Restore]  ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
-⟨33⟩╰─⟨0⟩ ⟨36⟩←→⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩y⟨0⟩ ⟨2;90⟩restore · ⟨0⟩⟨36⟩n⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨33⟩─────────────────────⟨0⟩
+⟨33⟩╰─⟨0⟩ ⟨36⟩←→⟨0⟩ move⟨2⟩ · ⟨0⟩⟨36⟩Enter⟨0⟩ choose⟨2⟩ · ⟨0⟩⟨36⟩y⟨0⟩ restore⟨2⟩ · ⟨0⟩⟨36⟩n⟨0⟩ cancel ⟨33⟩─────────────────────⟨0⟩

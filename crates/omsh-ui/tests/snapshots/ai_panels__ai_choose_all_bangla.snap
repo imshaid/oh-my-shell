@@ -3,9 +3,9 @@ source: crates/omsh-ui/tests/ai_panels.rs
 expression: "written(&panel.render(&caps, WIDTH), &caps)"
 ---
 ⟨35⟩╭─⟨0⟩ Choose a model ⟨35⟩────────────────────────────────────────────────────────────⟨0⟩
-⟨35⟩│⟨0⟩ ⟨2;90⟩filter ▏⟨0⟩
+⟨35⟩│⟨0⟩ filter ⟨2⟩▏⟨0⟩
 ⟨35⟩│⟨0⟩ ⟨36⟩❯ ⟨0⟩⟨7⟩a⟨0⟩
 ⟨35⟩│⟨0⟩   মডেল-এক
 ⟨35⟩│⟨0⟩   tts-1
-⟨35⟩│⟨0⟩ ⟨2;90⟩all 3 models⟨0⟩
-⟨35⟩╰─⟨0⟩ ⟨36⟩↑↓⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel · ⟨0⟩⟨36⟩Tab⟨0⟩ ⟨2;90⟩chat models⟨0⟩ ⟨35⟩─────────────────────⟨0⟩
+⟨35⟩│⟨0⟩ all 3 models
+⟨35⟩╰─⟨0⟩ ⟨36⟩↑↓⟨0⟩ move⟨2⟩ · ⟨0⟩⟨36⟩Enter⟨0⟩ choose⟨2⟩ · ⟨0⟩⟨36⟩Esc⟨0⟩ cancel⟨2⟩ · ⟨0⟩⟨36⟩Tab⟨0⟩ chat models ⟨35⟩─────────────────────⟨0⟩

@@ -2,12 +2,12 @@
 source: crates/omsh-ui/tests/shell_look.rs
 expression: "written(&scene(&caps), &caps)"
 ---
-⟨2;90⟩------------------------⟨0⟩
+⟨2⟩------------------------⟨0⟩
 ⟨32⟩ok 4 ms⟨0⟩
 ⟨32⟩ok 3.2 s⟨0⟩
 ⟨31⟩x 127⟨0⟩
 ⟨31⟩x 2 - 3.2 s⟨0⟩
 ⟨35⟩ask AI⟨0⟩
-⟨36⟩?⟨0⟩⟨2;90⟩ ask AI - ⟨0⟩⟨36⟩Ctrl+P⟨0⟩⟨2;90⟩ palette - ⟨0⟩⟨36⟩Ctrl+R⟨0⟩⟨2;90⟩ history - ⟨0⟩⟨36⟩omsh tour⟨0⟩
-⟨36⟩?⟨0⟩⟨2;90⟩ ask AI - ⟨0⟩⟨36⟩Ctrl+P⟨0⟩⟨2;90⟩ palette - ⟨0⟩⟨36⟩Ctrl+R⟨0⟩⟨2;90⟩ history - ⟨0⟩⟨36⟩omsh tour⟨0⟩⟨2;90⟩ - ⟨0⟩⟨36⟩omsh ai setup⟨0⟩
-⟨36⟩Ctrl+P⟨0⟩⟨2;90⟩ palette - ⟨0⟩⟨36⟩Ctrl+R⟨0⟩⟨2;90⟩ history - ⟨0⟩⟨36⟩omsh tour⟨0⟩
+⟨36⟩?⟨0⟩ ask AI⟨2⟩ - ⟨0⟩⟨36⟩Ctrl+P⟨0⟩ palette⟨2⟩ - ⟨0⟩⟨36⟩Ctrl+R⟨0⟩ history⟨2⟩ - ⟨0⟩⟨36⟩omsh tour⟨0⟩
+⟨36⟩?⟨0⟩ ask AI⟨2⟩ - ⟨0⟩⟨36⟩Ctrl+P⟨0⟩ palette⟨2⟩ - ⟨0⟩⟨36⟩Ctrl+R⟨0⟩ history⟨2⟩ - ⟨0⟩⟨36⟩omsh tour⟨0⟩⟨2⟩ - ⟨0⟩⟨36⟩omsh ai setup⟨0⟩
+⟨36⟩Ctrl+P⟨0⟩ palette⟨2⟩ - ⟨0⟩⟨36⟩Ctrl+R⟨0⟩ history⟨2⟩ - ⟨0⟩⟨36⟩omsh tour⟨0⟩

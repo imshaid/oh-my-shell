@@ -153,7 +153,7 @@ impl ShellPrompt {
         // One segment as text; `None` when it has nothing to say.
         let text_of = |segment: Segment| -> Option<String> {
             let dim = |text: &str| match &tones {
-                Some(tones) => tones.write(Tone::Dim, text),
+                Some(tones) => tones.write(Tone::Muted, text),
                 None => styled(DIM, text),
             };
             Some(match segment {
@@ -308,7 +308,7 @@ impl ShellPrompt {
             let snapshot = self.git.as_ref()?.snapshot();
             let text = snapshot.text()?;
             Some(match &self.tones {
-                Some(tones) => tones.write(Tone::Dim, &text),
+                Some(tones) => tones.write(Tone::Muted, &text),
                 None => styled(DIM, &text),
             })
         };
@@ -864,15 +864,12 @@ mod tests {
     const DEFAULT_RIGHT: [Segment; 2] = [Segment::Status, Segment::Duration];
 
     #[test]
-    fn spaced_draws_the_directory_in_blue_and_the_branch_dim() {
+    fn spaced_draws_the_directory_in_blue_and_the_branch_at_full_weight() {
         let p = build(&spaced(&[Segment::Cwd], &[]), &state());
         // Tone `info` is blue (34); not bold.
         assert_eq!(p.render_prompt_left(), "\x1b[34m~/code\x1b[0m\n");
         let p = with_git_in(&spaced(&[Segment::Cwd, Segment::Git], &[]));
-        assert_eq!(
-            p.render_prompt_left(),
-            "\x1b[34m~/code\x1b[0m \x1b[2;90m(topic)\x1b[0m\n"
-        );
+        assert_eq!(p.render_prompt_left(), "\x1b[34m~/code\x1b[0m (topic)\n");
     }
 
     fn with_git_in(look: &Look) -> ShellPrompt {
@@ -955,12 +952,14 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_shows_the_explain_hint_dim_before_the_chip_when_the_shell_says_so() {
+    fn a_failure_shows_the_explain_hint_before_the_chip_when_the_shell_says_so() {
         let look = spaced(&[Segment::Cwd], &DEFAULT_RIGHT);
         let p = build(&look, &failed_with_hint(true, 127));
         assert_eq!(right(&p), "Alt+? explain ✘ 127");
         let raw = p.render_prompt_right();
-        assert!(raw.starts_with("\x1b[2"), "dim: {raw:?}");
+        // Words at full weight: faint text is hard to read on some terminal themes.
+        assert!(raw.starts_with("Alt+? explain "), "{raw:?}");
+        assert!(!raw.contains("\x1b[2"), "no faint text: {raw:?}");
         assert!(
             raw.ends_with("\x1b[31m✘ 127\x1b[0m"),
             "the result stays at the edge: {raw:?}"
@@ -1032,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn spaced_without_color_keeps_dim_and_drops_the_colors() {
+    fn spaced_without_color_drops_the_colors_and_the_branch_stays_plain() {
         let mut l = spaced(&[Segment::Cwd, Segment::Git], &DEFAULT_RIGHT);
         l.color = false;
         l.caps = terminal(true, true);
@@ -1044,7 +1043,8 @@ mod tests {
             .with_ai_flag(Arc::new(AtomicBool::new(true)));
         let all = format!("{}{}", p.render_prompt_left(), p.render_prompt_right());
         assert!(!has_color(&all), "{all:?}");
-        assert!(all.contains("\x1b[2m(topic)"), "dim stays: {all:?}");
+        assert!(all.contains(" (topic)"), "{all:?}");
+        assert!(!all.contains("\x1b[2m(topic)"), "no faint branch: {all:?}");
         assert!(
             right(&p).starts_with("ask AI ✘ 1"),
             "the words carry the meaning: {:?}",

@@ -74,16 +74,19 @@ fn a_tiny_use_still_fills_one_cell_and_nothing_filled_is_empty() {
 }
 
 #[test]
-fn an_unknown_window_says_so_and_the_bar_is_dim() {
+fn an_unknown_window_says_so_in_full_weight_text_and_the_empty_bar_is_faint() {
     let c = caps(Motion::Full, true);
     let l = line(Some(3400), None, &c, true);
     assert_eq!(text(&l), "ctx ≈ 3,400 / limit unknown  ░░░░░░░░░░");
-    assert!(
-        l.spans()
-            .iter()
-            .filter(|s| !s.text().trim().is_empty())
-            .all(|s| s.style.tone == Tone::Dim)
-    );
+    for span in l.spans().iter().filter(|s| !s.text().trim().is_empty()) {
+        // Words and numbers are muted (full weight); only the empty bar is faint.
+        let expected = if span.text().contains('░') {
+            Tone::Dim
+        } else {
+            Tone::Muted
+        };
+        assert_eq!(span.style.tone, expected, "{:?}", span.text());
+    }
     assert!(!text(&l).contains('%'), "no percent is made up");
 }
 

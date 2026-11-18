@@ -202,3 +202,42 @@ fn no_color_removes_every_color_but_keeps_the_attributes() {
         }
     }
 }
+
+#[test]
+fn faint_text_may_hold_no_letter_or_digit() {
+    // Decoration passes: a rule, a dot, the empty part of a bar.
+    common::assert_faint_is_decoration("\x1b[2m────\x1b[0m \x1b[2m · \x1b[0mword");
+    // A reset by an empty list also ends it.
+    common::assert_faint_is_decoration("\x1b[2m·\x1b[mword");
+}
+
+#[test]
+#[should_panic(expected = "faint text holds")]
+fn faint_letters_are_refused() {
+    common::assert_faint_is_decoration("\x1b[2mhint\x1b[0m");
+}
+
+#[test]
+#[should_panic(expected = "faint text holds")]
+fn faint_digits_are_refused_also_with_bright_black() {
+    common::assert_faint_is_decoration("\x1b[2;90m55 of 55\x1b[0m");
+}
+
+/// With the default theme no tone is faint and bright black at the same time, and only the
+/// `Dim` tone is faint at all.
+#[test]
+fn only_the_dim_tone_is_faint_and_never_with_bright_black() {
+    let theme = Theme::default();
+    for tone in Tone::ALL {
+        let written = render_line(&Line::new().tone(tone, "x"), &theme, &looks()[0]);
+        let parameters = common::sgr_parameters(&written).unwrap();
+        assert!(
+            !parameters.contains(&"90".to_owned()),
+            "{tone:?}: {written:?}"
+        );
+        let faint = parameters.contains(&"2".to_owned());
+        assert_eq!(faint, tone == Tone::Dim, "{tone:?}: {written:?}");
+    }
+    let muted = render_line(&Line::new().tone(Tone::Muted, "x"), &theme, &looks()[0]);
+    assert_eq!(muted, "x", "muted text has no escape at all");
+}

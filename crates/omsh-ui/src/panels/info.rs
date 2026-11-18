@@ -102,7 +102,14 @@ pub fn info_lines(
     let mut out = Vec::new();
     if !parts.is_empty() {
         let separator = Marks::of(caps).sep;
-        out.push(Line::new().then(&parts.join(separator), Style::of(Tone::Dim)));
+        let mut line = Line::new();
+        for (index, part) in parts.iter().enumerate() {
+            if index > 0 {
+                line.push(separator, Style::of(Tone::Dim));
+            }
+            line.push(part, Style::of(Tone::Muted));
+        }
+        out.push(line);
     }
     out.extend(warning(facts, options.thinking_warn, caps));
     out

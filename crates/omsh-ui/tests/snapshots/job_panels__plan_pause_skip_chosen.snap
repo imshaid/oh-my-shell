@@ -3,13 +3,13 @@ source: crates/omsh-ui/tests/job_panels.rs
 expression: "written(&panel.render(&caps, WIDTH), &caps)"
 ---
 ⟨33⟩╭─⟨0⟩ Paused: step 2 of 3 ⟨33⟩───────────────────────────────────────────────────────⟨0⟩
-⟨33⟩│⟨0⟩ ⟨34⟩███⟨0⟩⟨2;90⟩░░░░░░░⟨0⟩  ⟨34⟩1 of 3 done⟨0⟩⟨2;90⟩  1:14⟨0⟩
-⟨33⟩│⟨0⟩ ⟨32⟩✓ 1. ⟨0⟩⟨2;90⟩Go into the project folder⟨0⟩
+⟨33⟩│⟨0⟩ ⟨34⟩███⟨0⟩⟨2⟩░░░░░░░⟨0⟩  ⟨34⟩1 of 3 done⟨0⟩  1:14
+⟨33⟩│⟨0⟩ ⟨32⟩✓ 1. ⟨0⟩Go into the project folder
 ⟨33⟩│⟨0⟩ ⟨33⟩◼ 2. ⟨0⟩Compress build/output.o⟨33⟩  (paused)⟨0⟩
-⟨33⟩│⟨0⟩ ⟨2;90⟩○ 3. Copy the archive⟨0⟩
+⟨33⟩│⟨0⟩ ○ 3. Copy the archive
 ⟨33⟩│⟨0⟩ 
 ⟨33⟩│⟨0⟩ $ sleep 300
 ⟨33⟩│⟨0⟩ 
 ⟨33⟩│⟨0⟩ [⟨4⟩C⟨0⟩ontinue]  ⟨7⟩ ⟨0⟩⟨4;7⟩S⟨0⟩⟨7⟩kip ⟨0⟩  [Stop pla⟨4⟩n⟨0⟩]  [To ⟨4⟩b⟨0⟩ackground]
-⟨33⟩│⟨0⟩ ⟨2;90⟩end this step and go on with the next one⟨0⟩
-⟨33⟩╰─⟨0⟩ ⟨36⟩←→⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩choose · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩stop plan⟨0⟩ ⟨33⟩────────────────────────────────────⟨0⟩
+⟨33⟩│⟨0⟩ end this step and go on with the next one
+⟨33⟩╰─⟨0⟩ ⟨36⟩←→⟨0⟩ move⟨2⟩ · ⟨0⟩⟨36⟩Enter⟨0⟩ choose⟨2⟩ · ⟨0⟩⟨36⟩Esc⟨0⟩ stop plan ⟨33⟩────────────────────────────────────⟨0⟩

@@ -479,6 +479,39 @@ impl Session {
         }
     }
 
+    /// Like [`Session::expect_plain`], but blanks are ignored in the output and in `needle`.
+    /// A full-screen view is drawn by writing only the cells that differ from an empty screen,
+    /// and a blank in the terminal's default style is not written (the cursor jumps over it), so
+    /// `Up/Down move` arrives as `Up/Down` and `move`. A person sees the blank. Text at full
+    /// weight (names, counts, the keys line) is drawn that way. The cursor moves to just after
+    /// the match.
+    pub fn expect_words(&mut self, needle: &str, limit: Duration) {
+        let want: String = needle.chars().filter(|c| *c != ' ').collect();
+        let end = Instant::now() + limit;
+        loop {
+            let (plain, origin) = strip_escapes(&self.transcript[self.cursor..]);
+            let mut squashed = String::new();
+            let mut at_byte = Vec::new();
+            for (index, c) in plain.char_indices() {
+                if c != ' ' {
+                    squashed.push(c);
+                    at_byte.extend((0..c.len_utf8()).map(|k| index + k));
+                }
+            }
+            if let Some(at) = squashed.find(&want) {
+                let last = at_byte[at + want.len() - 1];
+                self.cursor += origin[last] + 1;
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "never saw {needle:?} (ignoring escape sequences and blanks); the terminal showed:\n{}",
+                self.transcript
+            );
+            self.pump(Duration::from_millis(50));
+        }
+    }
+
     /// Like [`Session::expect_plain`], for text in a **panel**: the panel wraps a long sentence
     /// over several rows and puts its rail in front of each, so the text the person reads is the
     /// rows joined: escape sequences, the rail at the start of a row and the line breaks are

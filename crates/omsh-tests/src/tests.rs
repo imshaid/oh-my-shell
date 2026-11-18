@@ -201,6 +201,27 @@ fn osc_strings_are_stripped_and_positions_kept() {
     assert_eq!(strip_escapes("x\x1b]133;A\x1b").0, "x");
 }
 
+/// A full-screen view skips the blanks it does not need to write (the cursor jumps over them), so
+/// `Up/Down move` arrives as `Up/Down`, a cursor move and `move`. `expect_words` finds what a
+/// person reads; `expect_plain` is exact and does not.
+#[test]
+fn expect_words_finds_text_whose_blanks_were_never_written() {
+    pty_test("/bin/sh", |ctx| {
+        let mut term = ctx.launch().start_raw()?;
+        term.write_bytes(b"printf 'Up/Down\\033[1;9Hmove\\n'\n")?;
+        term.expect_words("Up/Down move", SHORT);
+        // The same text, asked for exactly, is not there.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            term.expect_plain("Up/Down move", Duration::from_millis(300));
+        }));
+        assert!(
+            outcome.is_err(),
+            "expect_plain must not match across a skipped blank"
+        );
+        Ok(())
+    });
+}
+
 /// A program that prints `$ `, then for each line it reads waits 0.4 s, prints a result line and
 /// prints `$ ` again, as a shell does.
 const SLOW_PROMPTER: &str =

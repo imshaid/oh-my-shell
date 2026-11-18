@@ -6,7 +6,7 @@ use crate::panels::test_support::caps;
 fn rows() -> Vec<Row> {
     vec![
         Row::new("Version", "1.0.0", Tone::Plain),
-        Row::new("Build", "unknown (not a release build)", Tone::Dim),
+        Row::new("Build", "unknown (not a release build)", Tone::Muted),
         Row::new(
             "Config file",
             "~/.config/oh-my-shell/config.toml",

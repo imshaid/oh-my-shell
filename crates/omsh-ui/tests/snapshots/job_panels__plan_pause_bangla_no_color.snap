@@ -3,13 +3,13 @@ source: crates/omsh-ui/tests/job_panels.rs
 expression: "written(&lines, &caps)"
 ---
 ╭─ Paused: step 2 of 3 ───────────────────────────────────────────────────────
-│ ███⟨2⟩░░░░░░░⟨0⟩  1 of 3 done⟨2⟩  1:14⟨0⟩
-│ ✓ 1. ⟨2⟩Go into the project folder⟨0⟩
+│ ███⟨2⟩░░░░░░░⟨0⟩  1 of 3 done  1:14
+│ ✓ 1. Go into the project folder
 │ ◼ 2. Compress রিপোর্ট.txt  (paused)
-│ ⟨2⟩○ 3. Copy the archive⟨0⟩
+│ ○ 3. Copy the archive
 │ 
-│ ⟨2⟩$ ⟨0⟩tar czf রিপোর্ট.txt.gz রিপোর্ট.txt
+│ $ tar czf রিপোর্ট.txt.gz রিপোর্ট.txt
 │ 
 │ [⟨4⟩C⟨0⟩ontinue]  [⟨4⟩S⟨0⟩kip]  ⟨7⟩ Stop pla⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩ ⟨0⟩  [To ⟨4⟩b⟨0⟩ackground]
-│ ⟨2⟩leave it stopped (see jobs); the rest of the plan does not run⟨0⟩
-╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩stop plan⟨0⟩ ────────────────────────────────────
+│ leave it stopped (see jobs); the rest of the plan does not run
+╰─ ←→ move⟨2⟩ · ⟨0⟩Enter choose⟨2⟩ · ⟨0⟩Esc stop plan ────────────────────────────────────

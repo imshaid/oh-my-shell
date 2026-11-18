@@ -1,0 +1,14 @@
+---
+source: crates/omsh-ui/src/palette/render.rs
+expression: shown
+---
+[blue]Command palette[/]                                       4 of 4
+[rev+blue]> [/][rev]action  Settings · Open the settings view.                [/]
+[blue]  [/]action  History explorer[dim] · [/]Search every command.    [blue]Ctrl+R[/]
+[blue]  [/]alias   gs[dim] · [/]git status
+[blue]  [/]builtin cd[dim] · [/]Change the current folder.
+
+
+Open the settings view.
+[blue]> [/]
+[blue]Enter[/] use  [blue]Esc[/] cancel  [blue]↑↓[/] move

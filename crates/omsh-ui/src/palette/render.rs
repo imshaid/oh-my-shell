@@ -65,7 +65,7 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, styles: &Styles) {
     }
     if model.matches() == 0 {
         frame.render_widget(
-            Paragraph::new(Span::styled("Nothing matches.", styles.dim)),
+            Paragraph::new(Span::styled("Nothing matches.", styles.muted)),
             row(1, 1),
         );
     }
@@ -77,7 +77,7 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, styles: &Styles) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             fit_text(&detail, usize::from(width), styles),
-            styles.dim,
+            styles.muted,
         )),
         row(1 + list_rows, 1),
     );
@@ -141,16 +141,23 @@ fn entry_line(
 
     let mut spans = vec![
         Span::styled(mark, styles.accent),
-        Span::styled(tag, styles.secondary(selected)),
+        Span::styled(tag, styles.muted),
     ];
     spans.extend(name_spans);
     let mut used = name_width;
-    let detail_room = room.saturating_sub(used + 2);
+    // The name and what it does are both full-weight text, so a faint dot tells them apart.
+    let glue = format!(" {} ", styles.glyph("·", "-"));
+    let glue_width = glue.chars().count();
+    let detail_room = room.saturating_sub(used + glue_width);
     if detail_room > 3 && !entry.detail.is_empty() {
         let detail = fit_text(&entry.detail, detail_room, styles);
-        used += 2 + Span::raw(detail.clone()).width();
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(detail, styles.secondary(selected)));
+        used += glue_width + Span::raw(detail.clone()).width();
+        // No faint text on the chosen row: faint on reverse video is hard to read.
+        spans.push(Span::styled(
+            glue,
+            if selected { styles.plain } else { styles.dim },
+        ));
+        spans.push(Span::styled(detail, styles.muted));
     }
     if key_width > 0 {
         let pad = room.saturating_sub(used) + 2;
@@ -249,11 +256,11 @@ mod tests {
         assert_eq!(rows.len(), 12);
         assert!(rows[0].starts_with("Command palette"));
         assert!(rows[0].ends_with("4 of 4"), "{:?}", rows[0]);
-        assert_eq!(rows[1], "> action  Settings  Open the settings view.");
-        assert!(rows[2].starts_with("  action  History explorer  Search every command."));
+        assert_eq!(rows[1], "> action  Settings · Open the settings view.");
+        assert!(rows[2].starts_with("  action  History explorer · Search every command."));
         assert!(rows[2].ends_with("Ctrl+R"), "{:?}", rows[2]);
-        assert_eq!(rows[3], "  alias   gs  git status");
-        assert_eq!(rows[4], "  builtin cd  Change the current folder.");
+        assert_eq!(rows[3], "  alias   gs · git status");
+        assert_eq!(rows[4], "  builtin cd · Change the current folder.");
         // What choosing it does, the query and the keys.
         assert_eq!(rows[9], "Open the settings view.");
         assert_eq!(rows[10], ">");
@@ -304,13 +311,16 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert!(buffer[(0, 1)].modifier.contains(Modifier::REVERSED));
         assert_eq!(buffer[(0, 1)].fg, ratatui::style::Color::Reset);
-        // The tag of an unchosen row is dim.
-        assert!(buffer[(2, 3)].modifier.contains(Modifier::DIM));
+        // The dot between the name and the detail of an unchosen row is faint (decoration); the
+        // tag and the words are not.
+        assert_eq!(buffer[(13, 3)].symbol(), "·");
+        assert!(buffer[(13, 3)].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(2, 3)].modifier.contains(Modifier::DIM));
     }
 
     /// Dim text on the chosen row (reverse video) is hard to read, so the chosen row has none.
     #[test]
-    fn the_chosen_row_has_no_dim_text_and_the_others_keep_it() {
+    fn the_chosen_row_has_no_dim_cells_and_the_others_keep_their_dots() {
         for color in [true, false] {
             let mut model = sample();
             let terminal = screen(&mut model, &styles(color, true), 80, 12);
@@ -320,7 +330,33 @@ mod tests {
                 (0..80).all(|x| !buffer[(x, 1)].modifier.contains(Modifier::DIM)),
                 "the chosen row has dim cells (color {color})"
             );
-            assert!(buffer[(2, 3)].modifier.contains(Modifier::DIM));
+            assert!(buffer[(13, 3)].modifier.contains(Modifier::DIM));
+        }
+    }
+
+    /// The palette with the style of each run written out, so a change of look is a diff.
+    #[test]
+    fn the_palette_with_its_styles() {
+        let mut model = sample();
+        let terminal = screen(&mut model, &styles(true, true), 60, 10);
+        let shown = crate::view::testkit::styled_rows(terminal.backend().buffer()).join("\n");
+        insta::assert_snapshot!("palette_styles", shown);
+    }
+
+    /// Faint text is for decoration. Names, details, tags, counters and footer words are drawn
+    /// at full weight, because faint text is hard to read on some terminal themes.
+    #[test]
+    fn faint_cells_hold_no_letter_or_digit() {
+        for (color, unicode) in [(true, true), (false, true), (true, false)] {
+            for typed in ["", "hist", "zzzz"] {
+                let mut model = sample();
+                model.paste(typed);
+                let terminal = screen(&mut model, &styles(color, unicode), 80, 12);
+                crate::view::testkit::assert_faint_is_decoration(
+                    terminal.backend().buffer(),
+                    &format!("palette, typed {typed:?}, color {color}, unicode {unicode}"),
+                );
+            }
         }
     }
 

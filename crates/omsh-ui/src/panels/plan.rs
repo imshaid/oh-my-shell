@@ -310,7 +310,7 @@ impl Widget for PlanPanel {
                 .tone(Tone::Plain, &format!("{}. {}  ", index + 1, step.title))
                 .then(step.risk.word(), Style::of(step.risk.tone()));
             if !step.note.is_empty() {
-                head.push(&format!(", {}", step.note), Style::of(Tone::Dim));
+                head.push(&format!(", {}", step.note), Style::of(Tone::Muted));
             }
             panel = panel.line(head);
             for row in &step.body {

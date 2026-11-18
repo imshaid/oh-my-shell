@@ -3,20 +3,20 @@ source: crates/omsh-ui/tests/ai_panels.rs
 expression: "written(&panel.render(&caps, WIDTH), &caps)"
 ---
 ⟨35⟩+-⟨0⟩ AI call details ⟨35⟩----------------------------------------------------+⟨0⟩
-⟨35⟩|⟨0⟩ ⟨7;35⟩ Gemini ⟨0⟩ ⟨2;90⟩ Ollama (local) ⟨0⟩                                            ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ ⟨7;35⟩ Gemini ⟨0⟩  Ollama (local)                                             ⟨35⟩|⟨0⟩
 ⟨35⟩|⟨0⟩                                                                      ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Provider  ⟨0⟩Gemini                                                     ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Model     ⟨0⟩gemini-2.5-flash                                           ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Effort    -⟨0⟩                                                          ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Context   ⟨0⟩⟨32⟩ctx ~ 1,514 / 32,768  4%⟨0⟩  ⟨32⟩#⟨0⟩⟨2;90⟩---------⟨0⟩                       ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Input     ⟨0⟩1,204                                                      ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Thinking  ⟨0⟩200                                                        ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Output    ⟨0⟩110                                                        ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Cached    -⟨0⟩                                                          ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Total     ⟨0⟩1,514                                                      ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Time      ⟨0⟩3.2 s                                                      ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩Speed     -⟨0⟩                                                          ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Provider  Gemini                                                     ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Model     gemini-2.5-flash                                           ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Effort    -                                                          ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Context   ⟨32⟩ctx ~ 1,514 / 32,768  4%⟨0⟩  ⟨32⟩#⟨0⟩⟨2⟩---------⟨0⟩                       ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Input     1,204                                                      ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Thinking  200                                                        ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Output    110                                                        ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Cached    -                                                          ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Total     1,514                                                      ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Time      3.2 s                                                      ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ Speed     -                                                          ⟨35⟩|⟨0⟩
 ⟨35⟩|⟨0⟩                                                                      ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩context limit: inputTokenLimit from the Gemini models API⟨0⟩            ⟨35⟩|⟨0⟩
-⟨35⟩|⟨0⟩ ⟨2;90⟩ctx is approximate: it is the last call's total⟨0⟩                      ⟨35⟩|⟨0⟩
-⟨35⟩+-⟨0⟩ ⟨36⟩arrows⟨0⟩ ⟨2;90⟩provider, ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩close⟨0⟩ ⟨35⟩-----------------------------------------+⟨0⟩
+⟨35⟩|⟨0⟩ context limit: inputTokenLimit from the Gemini models API            ⟨35⟩|⟨0⟩
+⟨35⟩|⟨0⟩ ctx is approximate: it is the last call's total                      ⟨35⟩|⟨0⟩
+⟨35⟩+-⟨0⟩ ⟨36⟩arrows⟨0⟩ provider⟨2⟩, ⟨0⟩⟨36⟩Esc⟨0⟩ close ⟨35⟩-----------------------------------------+⟨0⟩

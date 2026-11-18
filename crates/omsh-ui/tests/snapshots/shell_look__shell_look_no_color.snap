@@ -8,6 +8,6 @@ expression: "written(&scene(&caps), &caps)"
 ✘ 127
 ✘ 2 · 3.2 s
 ask AI
-?⟨2⟩ ask AI · ⟨0⟩Ctrl+P⟨2⟩ palette · ⟨0⟩Ctrl+R⟨2⟩ history · ⟨0⟩omsh tour
-?⟨2⟩ ask AI · ⟨0⟩Ctrl+P⟨2⟩ palette · ⟨0⟩Ctrl+R⟨2⟩ history · ⟨0⟩omsh tour⟨2⟩ · ⟨0⟩omsh ai setup
-Ctrl+P⟨2⟩ palette · ⟨0⟩Ctrl+R⟨2⟩ history · ⟨0⟩omsh tour
+? ask AI⟨2⟩ · ⟨0⟩Ctrl+P palette⟨2⟩ · ⟨0⟩Ctrl+R history⟨2⟩ · ⟨0⟩omsh tour
+? ask AI⟨2⟩ · ⟨0⟩Ctrl+P palette⟨2⟩ · ⟨0⟩Ctrl+R history⟨2⟩ · ⟨0⟩omsh tour⟨2⟩ · ⟨0⟩omsh ai setup
+Ctrl+P palette⟨2⟩ · ⟨0⟩Ctrl+R history⟨2⟩ · ⟨0⟩omsh tour

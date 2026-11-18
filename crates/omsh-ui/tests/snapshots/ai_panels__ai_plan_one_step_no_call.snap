@@ -5,8 +5,8 @@ expression: "written(&one.render(&caps, WIDTH), &caps)"
 ⟨35⟩╭─⟨0⟩ Plan from Gemini (gemini-2.5-flash) ⟨35⟩───────────────────────────────────────⟨0⟩
 ⟨35⟩│⟨0⟩ 
 ⟨35⟩│⟨0⟩ 1. Look at the file  ⟨32⟩safe⟨0⟩
-⟨35⟩│⟨0⟩    ⟨2;90⟩$ ⟨0⟩ls -l build/output.o
+⟨35⟩│⟨0⟩    $ ls -l build/output.o
 ⟨35⟩│⟨0⟩    Lists it.
 ⟨35⟩│⟨0⟩ 
 ⟨35⟩│⟨0⟩ ⟨7⟩ Run all ⟨0⟩  [⟨4⟩E⟨0⟩dit]  [⟨4⟩C⟨0⟩hat]  [Ca⟨4⟩n⟨0⟩cel]
-⟨35⟩╰─⟨0⟩ ⟨36⟩Enter⟨0⟩ ⟨2;90⟩run · ⟨0⟩⟨36⟩←→⟨0⟩ ⟨2;90⟩move · ⟨0⟩⟨36⟩v⟨0⟩ ⟨2;90⟩context · ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩cancel⟨0⟩ ⟨35⟩──────────────────────────────⟨0⟩
+⟨35⟩╰─⟨0⟩ ⟨36⟩Enter⟨0⟩ run⟨2⟩ · ⟨0⟩⟨36⟩←→⟨0⟩ move⟨2⟩ · ⟨0⟩⟨36⟩v⟨0⟩ context⟨2⟩ · ⟨0⟩⟨36⟩Esc⟨0⟩ cancel ⟨35⟩──────────────────────────────⟨0⟩

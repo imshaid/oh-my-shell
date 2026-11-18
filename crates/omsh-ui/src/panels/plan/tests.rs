@@ -9,7 +9,11 @@ fn step(title: &str, risk: Risk, command: &str) -> StepView {
         title: title.to_owned(),
         risk,
         note: String::new(),
-        body: vec![Line::new().tone(Tone::Dim, "$ ").tone(Tone::Plain, command)],
+        body: vec![
+            Line::new()
+                .tone(Tone::Muted, "$ ")
+                .tone(Tone::Plain, command),
+        ],
     }
 }
 

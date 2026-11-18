@@ -15,6 +15,9 @@ pub const MIN_HEIGHT: u16 = 7;
 #[derive(Clone, Debug)]
 pub struct Styles {
     pub plain: Style,
+    /// Secondary text that carries information: the terminal's own text at full weight.
+    pub muted: Style,
+    /// Decoration only (faint). Never for a letter or a digit.
     pub dim: Style,
     pub accent: Style,
     pub danger: Style,
@@ -34,6 +37,7 @@ impl Styles {
         };
         Self {
             plain: Style::default(),
+            muted: style(theme.token(Token::Muted)),
             dim: style(theme.token(Token::Dim)),
             accent: style(theme.token(Token::Accent)),
             danger: style(theme.token(Token::Danger)),
@@ -41,14 +45,6 @@ impl Styles {
             selected: style(theme.get(Role::Selection)),
             unicode: look.unicode,
         }
-    }
-
-    /// The style for secondary text (a tag, a detail, an age, a source) on a row. Dim, except on
-    /// the chosen row: that row is drawn in reverse video, and dim text on it is hard to read, so
-    /// there it has the weight of the rest of the row.
-    #[must_use]
-    pub fn secondary(&self, chosen: bool) -> Style {
-        if chosen { self.plain } else { self.dim }
     }
 
     /// `unicode` with a terminal that takes it, `ascii` otherwise.
@@ -67,7 +63,7 @@ pub fn footer_line(styles: &Styles, keys: &[(&str, &str)]) -> Line<'static> {
             spans.push(Span::raw("  "));
         }
         spans.push(Span::styled((*key).to_owned(), styles.accent));
-        spans.push(Span::styled(format!(" {what}"), styles.dim));
+        spans.push(Span::styled(format!(" {what}"), styles.muted));
     }
     Line::from(spans)
 }
@@ -80,7 +76,7 @@ pub fn title_row(styles: &Styles, left: &str, right: &str, width: u16) -> Line<'
     Line::from(vec![
         Span::styled(left.to_owned(), styles.accent),
         Span::raw(" ".repeat(pad)),
-        Span::styled(right.to_owned(), styles.dim),
+        Span::styled(right.to_owned(), styles.muted),
     ])
 }
 
@@ -134,7 +130,7 @@ pub fn spans_with_matches(
     }
     flush(&mut spans, &mut run, run_matched);
     if cut {
-        spans.push(Span::styled(ellipsis, styles.dim));
+        spans.push(Span::styled(ellipsis, styles.muted));
     }
     spans
 }

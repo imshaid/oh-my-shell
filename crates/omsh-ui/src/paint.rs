@@ -150,9 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn the_dim_token_carries_dim_and_its_color() {
+    fn the_dim_token_is_faint_alone_with_no_bright_black() {
         let paint = nord(terminal(true, true));
-        assert_eq!(paint.token(Token::Dim, "x"), "\x1b[2;90mx\x1b[0m");
+        assert_eq!(paint.token(Token::Dim, "x"), "\x1b[2mx\x1b[0m");
     }
 
     #[test]

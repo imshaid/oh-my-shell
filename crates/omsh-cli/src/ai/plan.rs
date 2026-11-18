@@ -698,7 +698,7 @@ fn step_body(
             for line in radius::lines(found, cwd, blast) {
                 out.push_str("       ");
                 if line.starts_with("for example:") {
-                    out.push_str(&paint.token(Token::Dim, &line));
+                    out.push_str(&paint.token(Token::Muted, &line));
                 } else {
                     out.push_str(&line);
                 }
@@ -1753,7 +1753,7 @@ fn not_run_lines(env: &PlanEnv<'_>, steps: &[Reviewed], number: usize) -> String
     for (index, step) in steps.iter().enumerate().skip(number) {
         let line = format!("{skip} {}. {} (not run)", index + 1, shorten(&step.title));
         lines.push_str("  ");
-        lines.push_str(&env.paint.token(Token::Dim, &line));
+        lines.push_str(&env.paint.token(Token::Muted, &line));
         lines.push('\n');
     }
     lines
@@ -1771,7 +1771,7 @@ fn stopped_by_choice(
     for (at, step) in steps.iter().enumerate().skip(index) {
         let line = format!("{skip} {}. {} (not run)", at + 1, shorten(&step.title));
         lines.push_str("  ");
-        lines.push_str(&env.paint.token(Token::Dim, &line));
+        lines.push_str(&env.paint.token(Token::Muted, &line));
         lines.push('\n');
     }
     say(env, &lines);
@@ -1806,7 +1806,7 @@ fn stopped(
         for (index, step) in steps.iter().enumerate().skip(number) {
             let line = format!("{skip} {}. {} (not run)", index + 1, shorten(&step.title));
             lines.push_str("  ");
-            lines.push_str(&env.paint.token(Token::Dim, &line));
+            lines.push_str(&env.paint.token(Token::Muted, &line));
             lines.push('\n');
         }
         say(env, &lines);

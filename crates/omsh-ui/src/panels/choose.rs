@@ -128,7 +128,7 @@ impl Widget for Choose {
             (Some(_), true) => format!("all {rows} {}", self.noun),
             (None, _) => format!("{rows} {}", self.noun),
         };
-        panel = panel.line(Line::new().then(&which, Style::of(Tone::Dim)));
+        panel = panel.line(Line::new().then(&which, Style::of(Tone::Muted)));
         open(&panel, caps, width)
     }
 }

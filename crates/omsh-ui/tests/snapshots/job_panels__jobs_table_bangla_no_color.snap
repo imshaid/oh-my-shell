@@ -4,10 +4,10 @@ expression: "written(&lines, &caps)"
 ---
 ╭─ Jobs ──────────────────────────────────────────────────────────────────────
 │ ❯ ⟨7⟩%1+  ⟨0⟩⟨7⟩◼⟨0⟩⟨7⟩ ⟨0⟩⟨7⟩Stopped⟨0⟩⟨7⟩      0:42  vim রিপোর্ট.txt⟨0⟩
-│   %2-  ● Running     ⟨2⟩ 0:05⟨0⟩  sleep 300
-│   %3   ✓ Done        ⟨2⟩ 1:12⟨0⟩  tar czf রিপোর্ট.txt.gz রিপোর্ট.txt
-│   %4   ✘ Terminated  ⟨2⟩ 0:03⟨0⟩  sleep 99
-│   %5   ✘ Exit 3      ⟨2⟩ 0:00⟨0⟩  make
+│   %2-  ● Running      0:05  sleep 300
+│   %3   ✓ Done         1:12  tar czf রিপোর্ট.txt.gz রিপোর্ট.txt
+│   %4   ✘ Terminated   0:03  sleep 99
+│   %5   ✘ Exit 3       0:00  make
 │ 
-│ ⟨7⟩ ⟨0⟩⟨4;7⟩F⟨0⟩⟨7⟩oreground ⟨0⟩  [⟨4⟩B⟨0⟩ackground]  ⟨2⟩[Stop]⟨0⟩  [⟨4⟩K⟨0⟩ill]
-╰─ ↑↓ ⟨2⟩job · ⟨0⟩←→ ⟨2⟩button · ⟨0⟩Enter ⟨2⟩do it · ⟨0⟩Esc ⟨2⟩close⟨0⟩ ──────────────────────────────
+│ ⟨7⟩ ⟨0⟩⟨4;7⟩F⟨0⟩⟨7⟩oreground ⟨0⟩  [⟨4⟩B⟨0⟩ackground]  (Stop)  [⟨4⟩K⟨0⟩ill]
+╰─ ↑↓ job⟨2⟩ · ⟨0⟩←→ button⟨2⟩ · ⟨0⟩Enter do it⟨2⟩ · ⟨0⟩Esc close ──────────────────────────────

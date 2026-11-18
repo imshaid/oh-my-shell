@@ -105,7 +105,7 @@ fn run_it_panel(files: &[&str]) -> Panel {
     for file in files {
         panel = panel.line(
             Line::new()
-                .tone(Tone::Dim, "  - ")
+                .tone(Tone::Muted, "  - ")
                 .then(file, Style::of(Tone::Path)),
         );
     }

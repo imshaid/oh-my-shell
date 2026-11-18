@@ -3,23 +3,23 @@ source: crates/omsh-ui/tests/panels.rs
 expression: "format!(\"top:\\n{top}\\n\\nafter two Down:\\n{scrolled}\\n\\nfilter zz:\\n{none}\\n\\nin 20 columns:\\n{narrow}\")"
 ---
 top:
-⟨2⟩filter ▏⟨0⟩
-❯ ⟨7⟩রিপোর্ট.txt  /home/user/work/রিপোর্ট.txt  0 min ago⟨0⟩
-  নথি/ছবি.png  ⟨2⟩/home/user/work/নথি/ছবি.png  1 min ago⟨0⟩
-⟨2⟩↓ 1 more⟨0⟩
+filter ⟨2⟩▏⟨0⟩
+❯ ⟨7⟩রিপোর্ট.txt · /home/user/work/রিপোর্ট.txt  0 min ago⟨0⟩
+  নথি/ছবি.png⟨2⟩ · ⟨0⟩/home/user/work/নথি/ছবি.png  1 min ago
+↓ 1 more
 
 after two Down:
-⟨2⟩filter ▏⟨0⟩
-⟨2⟩↑ 1 more⟨0⟩
-  নথি/ছবি.png  ⟨2⟩/home/user/work/নথি/ছবি.png  1 min ago⟨0⟩
-❯ ⟨7⟩ক্ষত্রিয়-তালিকা.md  /home/user/work/ক্ষত্রিয়-তালিকা.md  2 min…⟨0⟩
+filter ⟨2⟩▏⟨0⟩
+↑ 1 more
+  নথি/ছবি.png⟨2⟩ · ⟨0⟩/home/user/work/নথি/ছবি.png  1 min ago
+❯ ⟨7⟩ক্ষত্রিয়-তালিকা.md · /home/user/work/ক্ষত্রিয়-তালিকা.md  2 mi…⟨0⟩
 
 filter zz:
-⟨2⟩filter ⟨0⟩zz⟨2⟩▏⟨0⟩
-⟨2⟩no match⟨0⟩
+filter zz⟨2⟩▏⟨0⟩
+no match
 
 in 20 columns:
-⟨2⟩filter ▏⟨0⟩
-⟨2⟩↑ 1 more⟨0⟩
-  নথি/ছবি.png  ⟨2⟩/hom…⟨0⟩
-❯ ⟨7⟩ক্ষত্রিয়-তালিকা.md  /…⟨0⟩
+filter ⟨2⟩▏⟨0⟩
+↑ 1 more
+  নথি/ছবি.png⟨2⟩ · ⟨0⟩/ho…
+❯ ⟨7⟩ক্ষত্রিয়-তালিকা.md · …⟨0⟩

@@ -202,7 +202,7 @@ fn hints_line(hints: &[Hint], caps: &Caps) -> Line {
         }
         line.push(&hint.key, Style::of(Tone::Key));
         line.push(" ", Style::PLAIN);
-        line.push(&hint.label, Style::of(Tone::Dim));
+        line.push(&hint.label, Style::of(Tone::Muted));
     }
     line
 }
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(first, Tone::Ai);
         let bottom_tones: Vec<Tone> = lines[3].spans().iter().map(|s| s.style.tone).collect();
         assert!(bottom_tones.contains(&Tone::Key));
-        assert!(bottom_tones.contains(&Tone::Dim));
+        assert!(bottom_tones.contains(&Tone::Muted));
     }
 
     #[test]

@@ -81,7 +81,7 @@ impl Details {
     /// `appeared` after its row did.
     fn rows(&self, facts: &CallFacts, caps: &Caps) -> Vec<(&'static str, Line)> {
         let marks = Marks::of(caps);
-        let dim = |text: &str| Line::new().then(text, Style::of(Tone::Dim));
+        let dim = |text: &str| Line::new().then(text, Style::of(Tone::Muted));
         let plain = |text: &str| Line::plain(text);
         let motion = caps.motion;
         let elapsed = self.elapsed();
@@ -181,7 +181,7 @@ impl Widget for Details {
                 let style = if index == self.selected {
                     Style::of(Tone::Ai).selected()
                 } else {
-                    Style::of(Tone::Dim)
+                    Style::of(Tone::Muted)
                 };
                 tabs.push(&format!(" {} ", tab.provider), style);
                 tabs.push(" ", Style::PLAIN);
@@ -197,7 +197,7 @@ impl Widget for Details {
                 panel = panel.line(Line::new());
                 continue;
             }
-            let mut row = Line::new().tone(Tone::Dim, &format!("{label:<LABELS$}"));
+            let mut row = Line::new().tone(Tone::Muted, &format!("{label:<LABELS$}"));
             row.append(&value);
             panel = panel.line(row);
         }
@@ -211,11 +211,11 @@ impl Widget for Details {
             }
         });
         if !note.is_empty() {
-            panel = panel.line(Line::new().then(&note, Style::of(Tone::Dim)));
+            panel = panel.line(Line::new().then(&note, Style::of(Tone::Muted)));
         }
         panel = panel.line(Line::new().then(
             "ctx is approximate: it is the last call's total",
-            Style::of(Tone::Dim),
+            Style::of(Tone::Muted),
         ));
         full(&panel, caps, width)
     }

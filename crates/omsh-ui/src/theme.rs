@@ -4,7 +4,9 @@
 //! hex color or a 256-color index cannot even be written. The terminal decides what "red" or
 //! "cyan" looks like, which is why a theme made of these names follows whatever theme the
 //! user's terminal has. There is no bold either: [`RoleStyle`] has no field for it. The dim
-//! attribute is used only for secondary things (a comment, an autosuggestion).
+//! attribute is used for decoration (a rule, a separator, the empty part of a bar) and for two
+//! editor roles (a comment, an autosuggestion). Text that carries information is never dim:
+//! faint text is hard to read on some terminal themes.
 //!
 //! A [`Theme`] maps every [`Role`] to a [`RoleStyle`]. Roles have stable names
 //! ([`Role::name`], [`Role::from_name`]) so that a later `ui.theme` file can swap the table.
@@ -226,9 +228,11 @@ pub enum Token {
     Warning,
     /// Errors, high risk.
     Danger,
-    /// Secondary text. Plain: it only says "not the main thing".
+    /// Secondary text that carries information (labels, timers, counts). Plain: the terminal's
+    /// own text color at full weight, so it stays readable on every terminal theme.
     Muted,
-    /// Hints and tertiary text. The only token that is dim.
+    /// Decoration only (rules, separators, the empty part of a bar). The only token that is
+    /// faint, and faint alone: no bright black, which some themes draw like the background.
     Dim,
 }
 
@@ -378,7 +382,7 @@ impl Default for Theme {
             Token::Dim,
             RoleStyle {
                 dim: true,
-                ..RoleStyle::color(AnsiColor::BrightBlack)
+                ..RoleStyle::PLAIN
             },
         );
         // A command that exists is green and one that does not is red; plain arguments keep the
@@ -607,7 +611,8 @@ mod tests {
         assert_eq!(color(Token::Warning), Some(AnsiColor::Yellow));
         assert_eq!(color(Token::Danger), Some(AnsiColor::Red));
         assert_eq!(color(Token::Muted), None);
-        assert_eq!(color(Token::Dim), Some(AnsiColor::BrightBlack));
+        // Faint alone: bright black can be drawn like the background on some themes.
+        assert_eq!(color(Token::Dim), None);
     }
 
     #[test]

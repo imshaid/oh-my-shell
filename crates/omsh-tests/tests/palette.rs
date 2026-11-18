@@ -32,7 +32,7 @@ const LEAVE: &str = "\x1b[?1049l";
 fn open_palette(term: &mut Session) -> std::io::Result<()> {
     term.key(CTRL_P)?;
     term.expect(ENTER, SHORT);
-    term.expect_plain("Up/Down move", SHORT);
+    term.expect_words("Up/Down move", SHORT);
     Ok(())
 }
 
@@ -142,7 +142,7 @@ fn the_history_explorer_entry_opens_the_explorer() {
         open_palette(&mut term)?;
         term.write_bytes(b"History explorer\r")?;
         // The palette gave the screen back and the explorer took it.
-        term.expect_plain("Looks at the newest 10,000 runs only", SHORT);
+        term.expect_words("Looks at the newest 10,000 runs only", SHORT);
         assert_eq!(counts(&term), (2, 1), "{}", term.transcript());
         term.key(ESC)?;
         left_view(&mut term);
@@ -161,7 +161,7 @@ fn the_settings_entry_opens_the_settings_view() {
         let mut term = ctx.start()?;
         open_palette(&mut term)?;
         term.write_bytes(b"Settings\r")?;
-        term.expect_plain("ui.theme", SHORT);
+        term.expect_words("ui.theme", SHORT);
         assert_eq!(counts(&term), (2, 1), "{}", term.transcript());
         term.key(ESC)?;
         left_view(&mut term);
@@ -182,7 +182,7 @@ fn the_explain_entry_does_what_alt_question_does() {
         open_palette(&mut term)?;
         term.write_bytes(b"Explain\r")?;
         left_view(&mut term);
-        term.expect_plain("set up", SHORT);
+        term.expect_words("set up", SHORT);
         // Not a line: nothing ran, `$?` is still the failure, and the text is still there.
         std::thread::sleep(Duration::from_millis(500));
         term.write_bytes(b"\r")?;
@@ -241,7 +241,7 @@ fn without_a_config_file_there_is_no_edit_entry() {
         let mut term = ctx.launch().arg("--no-config").start()?;
         open_palette(&mut term)?;
         term.write_bytes(b"Edit config")?;
-        term.expect_plain("Nothing matches.", SHORT);
+        term.expect_words("Nothing matches.", SHORT);
         term.key(ESC)?;
         left_view(&mut term);
         term.quit()
@@ -265,7 +265,7 @@ fn ctrl_p_works_in_both_vi_modes() {
         term.key(ESC)?;
         term.expect(": ", SHORT);
         term.key(CTRL_P)?;
-        term.expect_plain("Up/Down move", SHORT);
+        term.expect_words("Up/Down move", SHORT);
         term.write_bytes(b"zq\r")?;
         assert_eq!(counts(&term), (2, 1));
         left_view(&mut term);

@@ -28,7 +28,7 @@ fn entry(label: &str, detail: &str, item: &str) -> UndoEntry {
         detail: detail.to_owned(),
         preview: vec![
             Line::new()
-                .tone(Tone::Dim, "ran in ")
+                .tone(Tone::Muted, "ran in ")
                 .tone(Tone::Path, "/home/me/work"),
             Line::new()
                 .tone(Tone::Dim, "- ")

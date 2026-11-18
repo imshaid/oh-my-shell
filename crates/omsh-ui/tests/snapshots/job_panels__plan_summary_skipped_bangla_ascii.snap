@@ -3,8 +3,8 @@ source: crates/omsh-ui/tests/job_panels.rs
 expression: "written(&lines, &caps)"
 ---
 ⟨32⟩+-⟨0⟩ Plan ⟨32⟩----------------------------------------------------------------------⟨0⟩
-⟨32⟩|⟨0⟩ ⟨32⟩######⟨0⟩⟨2;90⟩----⟨0⟩  ⟨32⟩2 of 3 done, 1 skipped⟨0⟩⟨2;90⟩  1:14⟨0⟩
-⟨32⟩|⟨0⟩ ⟨32⟩+ 1. ⟨0⟩⟨2;90⟩Go into the project folder⟨0⟩
-⟨32⟩|⟨0⟩ ⟨2;90⟩- 2. Compress রিপোর্ট.txt  (skipped)⟨0⟩
-⟨32⟩|⟨0⟩ ⟨32⟩+ 3. ⟨0⟩⟨2;90⟩Copy the archive⟨0⟩
+⟨32⟩|⟨0⟩ ⟨32⟩######⟨0⟩⟨2⟩----⟨0⟩  ⟨32⟩2 of 3 done, 1 skipped⟨0⟩  1:14
+⟨32⟩|⟨0⟩ ⟨32⟩+ 1. ⟨0⟩Go into the project folder
+⟨32⟩|⟨0⟩ - 2. Compress রিপোর্ট.txt  (skipped)
+⟨32⟩|⟨0⟩ ⟨32⟩+ 3. ⟨0⟩Copy the archive
 ⟨32⟩+-----------------------------------------------------------------------------⟨0⟩

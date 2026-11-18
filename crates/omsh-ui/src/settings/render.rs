@@ -75,7 +75,7 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, styles: &Styles) {
     }
     if model.matches() == 0 {
         frame.render_widget(
-            Paragraph::new(Span::styled("No such setting.", styles.dim)),
+            Paragraph::new(Span::styled("No such setting.", styles.muted)),
             row(1, 1),
         );
     }
@@ -84,7 +84,7 @@ pub fn draw(frame: &mut Frame<'_>, model: &mut Model, styles: &Styles) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             fit_text(&detail, usize::from(width), styles),
-            styles.dim,
+            styles.muted,
         )),
         row(1 + list_rows, 1),
     );
@@ -135,7 +135,7 @@ fn status_line(model: &Model, styles: &Styles) -> (String, Style) {
                 STANDING
             }
             .to_owned(),
-            styles.dim,
+            styles.muted,
         ),
         Status::Saved { key, value } => (
             format!("Saved: {key} = {value}. It applies when a new shell starts."),
@@ -158,19 +158,27 @@ fn setting_line(
     let mark = if selected { "> " } else { "  " };
     let width = usize::from(width);
     let source = if row.in_file { "file" } else { "default" };
-    let sign = if row.pending() {
+    // What the right edge says beyond the source: a change waiting for the next start (caution),
+    // and that the view does not change this setting. Words, not a weaker color.
+    let pending = if row.pending() {
         format!("{} next start", styles.glyph("●", "*"))
     } else {
         String::new()
     };
-    // What the source and the sign take at the right edge; the name and the value share the rest.
-    let tail = 1
-        + 7
-        + if sign.is_empty() {
+    let view_only = if row.setting.editable {
+        ""
+    } else {
+        "view only"
+    };
+    let word_width = |text: &str| {
+        if text.is_empty() {
             0
         } else {
-            1 + sign.chars().count()
-        };
+            1 + text.chars().count()
+        }
+    };
+    // What the source and the signs take at the right edge; the name and the value share the rest.
+    let tail = 1 + 7 + word_width(&pending) + word_width(view_only);
     let key_width = KEY_WIDTH
         .min(width.saturating_sub(2 + tail + MIN_VALUE))
         .max(8);
@@ -180,25 +188,21 @@ fn setting_line(
         .saturating_sub(2 + key_width + tail)
         .clamp(MIN_VALUE, VALUE_WIDTH);
     let value = fit_text(&row.saved, value_room, styles);
-    let value_style = if row.setting.editable {
-        styles.plain
-    } else {
-        styles.secondary(selected)
-    };
 
     let mut spans = vec![Span::styled(mark, styles.accent)];
     spans.extend(name);
     spans.push(Span::raw(" ".repeat(key_width.saturating_sub(used))));
     let shown = Span::raw(value.clone()).width();
-    spans.push(Span::styled(value, value_style));
+    spans.push(Span::styled(value, styles.plain));
     spans.push(Span::raw(" ".repeat(value_room.saturating_sub(shown) + 1)));
-    spans.push(Span::styled(
-        format!("{source:<7}"),
-        styles.secondary(selected),
-    ));
-    if !sign.is_empty() {
+    spans.push(Span::styled(format!("{source:<7}"), styles.muted));
+    if !pending.is_empty() {
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(sign, styles.warning));
+        spans.push(Span::styled(pending, styles.warning));
+    }
+    if !view_only.is_empty() {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(view_only, styles.muted));
     }
     Line::from(spans)
 }
@@ -260,6 +264,23 @@ mod tests {
 
     fn press(model: &mut Model, code: KeyCode) {
         model.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// Faint text is for decoration. Values, sources, descriptions and footer words are drawn at
+    /// full weight, because faint text is hard to read on some terminal themes.
+    #[test]
+    fn faint_cells_hold_no_letter_or_digit() {
+        for (color, unicode) in [(true, true), (false, true), (true, false)] {
+            for typed in ["", "history", "zzzz"] {
+                let mut model = model("");
+                model.paste(typed);
+                let terminal = screen(&mut model, &styles(color, unicode), 100, 14);
+                crate::view::testkit::assert_faint_is_decoration(
+                    terminal.backend().buffer(),
+                    &format!("settings, typed {typed:?}, color {color}, unicode {unicode}"),
+                );
+            }
+        }
     }
 
     #[test]
@@ -349,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_the_view_does_not_change_is_dim_and_says_where_to_change_it() {
+    fn a_setting_the_view_does_not_change_says_view_only_and_where_to_change_it() {
         let mut model = model("");
         model.paste("blast_radius");
         let terminal = screen(&mut model, &styles(true, true), 80, 14);
@@ -361,11 +382,10 @@ mod tests {
             rows[10]
         );
         let buffer = terminal.backend().buffer();
-        // The value (after the 2 + 32 columns of marker and name) is dim on a row that is not
-        // chosen (the chosen row is in reverse video and has no dim text, see below).
+        // The words say it is not changed here; the value is not drawn weaker.
         assert!(rows[2].contains("blast_radius"), "{:?}", rows[2]);
-        assert!(buffer[(34, 2)].modifier.contains(Modifier::DIM));
-        assert!(!buffer[(34, 1)].modifier.contains(Modifier::DIM));
+        assert!(rows[2].ends_with("view only"), "{:?}", rows[2]);
+        assert!(!buffer[(34, 2)].modifier.contains(Modifier::DIM));
     }
 
     #[test]
@@ -455,10 +475,11 @@ mod tests {
         assert_eq!(buffer[(0, 1)].fg, ratatui::style::Color::Reset);
     }
 
-    /// Dim text on the chosen row (reverse video) is hard to read, so the chosen row has none,
-    /// also the source column and the value of a setting that cannot be changed here.
+    /// Faint text on the chosen row (reverse video) is hard to read, so the chosen row has none;
+    /// and no row has faint letters, also not the source column or a value that cannot be
+    /// changed here (see `faint_cells_hold_no_letter_or_digit`).
     #[test]
-    fn the_chosen_row_has_no_dim_text_and_the_others_keep_it() {
+    fn the_chosen_row_has_no_dim_cells() {
         for color in [true, false] {
             let mut model = model("");
             let terminal = screen(&mut model, &styles(color, true), 80, 14);
@@ -467,11 +488,6 @@ mod tests {
             assert!(
                 (0..80).all(|x| !buffer[(x, 1)].modifier.contains(Modifier::DIM)),
                 "the chosen row has dim cells (color {color})"
-            );
-            // Another row has its source column in dim.
-            assert!(
-                (0..80).any(|x| buffer[(x, 2)].modifier.contains(Modifier::DIM)),
-                "no dim cell on an unchosen row"
             );
         }
     }

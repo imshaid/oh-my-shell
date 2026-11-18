@@ -107,7 +107,9 @@ fn steps(file: &str) -> Vec<StepView> {
         risk,
         note: String::new(),
         body: vec![
-            Line::new().tone(Tone::Dim, "$ ").tone(Tone::Plain, command),
+            Line::new()
+                .tone(Tone::Muted, "$ ")
+                .tone(Tone::Plain, command),
             Line::plain(why),
         ],
     };
@@ -192,7 +194,7 @@ fn the_question_before_a_step() {
                 Risk::Danger,
                 vec![
                     Line::new()
-                        .tone(Tone::Dim, "$ ")
+                        .tone(Tone::Muted, "$ ")
                         .tone(Tone::Plain, &format!("rm -rf {file}")),
                     Line::plain("Deletes the file for good."),
                 ],

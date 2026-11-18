@@ -5,8 +5,8 @@ expression: "written(&lines, &caps)"
 ╭─ Run it? ───────────────────────────────────────────────────────────
 │ this command is critical:
 │ rm -rf /
-│ ⟨2⟩- ⟨0⟩Deletes the system, your home folder, or everything in one of
-│ ⟨2⟩  ⟨0⟩them. This cannot be undone.
-│ ⟨2⟩    on: ⟨0⟩/
+│ - Deletes the system, your home folder, or everything in one of
+│   them. This cannot be undone.
+│     on: /
 │     touches 3 files and 1 folder (14 KiB of file data)
 ╰─────────────────────────────────────────────────────────────────────

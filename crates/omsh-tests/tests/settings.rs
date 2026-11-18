@@ -41,11 +41,11 @@ fn open_settings(term: &mut Session) -> std::io::Result<()> {
 fn open_settings_ending(term: &mut Session, moves: &str) -> std::io::Result<()> {
     term.key(CTRL_P)?;
     term.expect(ENTER, SHORT);
-    term.expect_plain(moves, SHORT);
+    term.expect_words(moves, SHORT);
     term.write_bytes(b"Settings\r")?;
     // The palette gave the screen back, and the settings view took it.
-    term.expect_plain("ui.theme", SHORT);
-    term.expect_plain(moves, SHORT);
+    term.expect_words("ui.theme", SHORT);
+    term.expect_words(moves, SHORT);
     Ok(())
 }
 
@@ -151,7 +151,7 @@ fn a_setting_that_is_not_changed_here_leaves_the_file_alone() {
         open_settings(&mut term)?;
         term.write_bytes(b"safety.confirm\r")?;
         // The note is a dim span, so it is written whole.
-        term.expect_plain("Edit config.toml to change it.", SHORT);
+        term.expect_words("Edit config.toml to change it.", SHORT);
         term.key(ESC)?;
         left_view(&mut term);
         assert_eq!(fs::read_to_string(config_file(ctx))?, before);
@@ -167,7 +167,7 @@ fn a_broken_file_is_not_written_and_the_view_says_so() {
         let mut term = ctx.start()?;
         open_settings(&mut term)?;
         term.write_bytes(b"editor.hints\r")?;
-        term.expect_plain("Not saved: the file has a syntax error", SHORT);
+        term.expect_words("Not saved: the file has a syntax error", SHORT);
         term.key(ESC)?;
         left_view(&mut term);
         assert_eq!(
@@ -184,14 +184,16 @@ fn without_a_config_file_the_view_is_read_only() {
     pty_test(BIN, |ctx| {
         let mut term = ctx.launch().arg("--no-config").start()?;
         term.key(CTRL_P)?;
-        term.expect_plain("Up/Down move", SHORT);
+        term.expect_words("Up/Down move", SHORT);
         term.write_bytes(b"Settings\r")?;
-        term.expect_plain(
+        term.expect_words(
             "No configuration file in this shell (--no-config): view only.",
             SHORT,
         );
         term.write_bytes(b"editor.hints\r")?;
-        term.expect_plain("Not saved: This shell has no configuration file", SHORT);
+        // A later drawing writes only the cells that changed, and the new status overwrites a
+        // line of the same style, so only its new words are written whole.
+        term.expect_words("nothing", SHORT);
         term.key(ESC)?;
         left_view(&mut term);
         assert!(!config_file(ctx).exists());
@@ -230,7 +232,7 @@ fn a_change_that_waits_for_the_next_start_is_said_in_a_toast() {
         term.write_bytes(b"editor.hints\r")?;
         term.key(ESC)?;
         left_view(&mut term);
-        term.expect_plain("1 setting changes at the next start", SHORT);
+        term.expect_words("1 setting changes at the next start", SHORT);
         // The next line submitted ends the toast: the prompt drawn after it has none.
         term.sync("gone")?;
         let tail = term

@@ -267,14 +267,14 @@ impl JobsTable {
             }
             let fits = self.allowed_now(index);
             let chosen = fits && index == self.button;
+            // An action that does not fit this job is in parentheses, not in a weaker color.
+            let (open, close) = if fits { ("[", "]") } else { ("(", ")") };
             let base = if chosen {
                 Style::PLAIN.selected()
-            } else if fits {
-                Style::of(Tone::Plain)
             } else {
-                Style::of(Tone::Dim)
+                Style::of(Tone::Plain)
             };
-            line.push(if chosen { " " } else { "[" }, base);
+            line.push(if chosen { " " } else { open }, base);
             let mut underlined = false;
             for c in label.chars() {
                 let mut one = [0u8; 4];
@@ -286,7 +286,7 @@ impl JobsTable {
                     line.push(text, base);
                 }
             }
-            line.push(if chosen { " " } else { "]" }, base);
+            line.push(if chosen { " " } else { close }, base);
         }
         line
     }
@@ -315,7 +315,7 @@ impl JobsTable {
         let faint = if chosen {
             Style::PLAIN.selected()
         } else {
-            Style::of(Tone::Dim)
+            Style::of(Tone::Muted)
         };
         let id = format!("%{}{}", row.number, row.mark);
         line.push(&format!("{id:<5}"), body);
@@ -390,8 +390,9 @@ impl Widget for JobsTable {
                 panel =
                     panel.line(Line::new().tone(Tone::Plain, &format!("%{number}  {}", row.text)));
             }
-            panel = panel
-                .line(Line::new().tone(Tone::Dim, &format!("Sends SIGTERM, as `kill %{number}`.")));
+            panel = panel.line(
+                Line::new().tone(Tone::Muted, &format!("Sends SIGTERM, as `kill %{number}`.")),
+            );
             panel = panel.line(Line::new());
             panel = panel.lines(self.question.render(caps, inner));
             return open(&panel, caps, width);
@@ -403,7 +404,7 @@ impl Widget for JobsTable {
             .hint("Enter", "do it")
             .hint("Esc", "close");
         if self.rows.is_empty() {
-            panel = panel.line(Line::new().tone(Tone::Dim, "No jobs"));
+            panel = panel.line(Line::new().tone(Tone::Muted, "No jobs"));
             return open(&panel, caps, width);
         }
         let word_cols = self
@@ -415,7 +416,8 @@ impl Widget for JobsTable {
         let end = (self.top + ROWS).min(self.rows.len());
         if self.top > 0 {
             let arrow = if caps.unicode { "↑" } else { "^" };
-            panel = panel.line(Line::new().tone(Tone::Dim, &format!("{arrow} {} more", self.top)));
+            panel =
+                panel.line(Line::new().tone(Tone::Muted, &format!("{arrow} {} more", self.top)));
         }
         for index in self.top..end {
             panel =
@@ -424,7 +426,7 @@ impl Widget for JobsTable {
         if end < self.rows.len() {
             let arrow = if caps.unicode { "↓" } else { "v" };
             panel = panel.line(Line::new().tone(
-                Tone::Dim,
+                Tone::Muted,
                 &format!("{arrow} {} more", self.rows.len() - end),
             ));
         }

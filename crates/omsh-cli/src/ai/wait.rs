@@ -74,12 +74,12 @@ impl WaitLine {
             "\r\x1b[K{glyph}{}... {}{extra}",
             self.paint.token(Token::Ai, &self.label),
             self.paint
-                .token(Token::Dim, &format!("{:.1} s", elapsed.as_secs_f64())),
+                .token(Token::Muted, &format!("{:.1} s", elapsed.as_secs_f64())),
         ));
         self.last_draw.set(Some(elapsed));
     }
 
-    /// After the answer: one dim line with the real time it took and the tokens the server
+    /// After the answer: one line with the real time it took and the tokens the server
     /// counted, e.g. `  3.2 s, 1,204 tokens in, 310 out`. Nothing is printed when the server
     /// reported no tokens: a number that is not known is not made up (§15.2). Call it after
     /// [`clear`](Self::clear).
@@ -95,7 +95,7 @@ impl WaitLine {
         Some(format!(
             "{}\n",
             self.paint.token(
-                Token::Dim,
+                Token::Muted,
                 &format!("  {:.1} s, {tokens}", elapsed.as_secs_f64())
             )
         ))
@@ -179,7 +179,7 @@ mod tests {
         let wait = WaitLine::start("A", &paint(Motion::Full, true, true), &mut tty);
         assert_eq!(
             wait.report_line(ms(3_240), usage(1204, 310)).as_deref(),
-            Some("\x1b[2;90m  3.2 s, 1,204 tokens in, 310 out\x1b[0m\n")
+            Some("  3.2 s, 1,204 tokens in, 310 out\n")
         );
         let plain = WaitLine::start("A", &Paint::plain(), &mut tty);
         assert_eq!(
@@ -213,9 +213,9 @@ mod tests {
         wait.tick_at(ms(250), &mut tty, ", 12 characters");
         assert_eq!(
             tty.err,
-            "\r\x1b[K⠋ Asking X (m)... \x1b[2m0.0 s\x1b[0m\
-             \r\x1b[K⠙ Asking X (m)... \x1b[2m0.1 s\x1b[0m\
-             \r\x1b[K⠹ Asking X (m)... \x1b[2m0.2 s\x1b[0m, 12 characters"
+            "\r\x1b[K⠋ Asking X (m)... 0.0 s\
+             \r\x1b[K⠙ Asking X (m)... 0.1 s\
+             \r\x1b[K⠹ Asking X (m)... 0.2 s, 12 characters"
         );
     }
 
@@ -232,9 +232,9 @@ mod tests {
         }
         assert_eq!(
             tty.err,
-            "\r\x1b[K• Asking X (m)... \x1b[2m0.0 s\x1b[0m\
-             \r\x1b[K• Asking X (m)... \x1b[2m1.0 s\x1b[0m\
-             \r\x1b[K• Asking X (m)... \x1b[2m2.0 s\x1b[0m"
+            "\r\x1b[K• Asking X (m)... 0.0 s\
+             \r\x1b[K• Asking X (m)... 1.0 s\
+             \r\x1b[K• Asking X (m)... 2.0 s"
         );
     }
 
@@ -267,20 +267,17 @@ mod tests {
         let wait = WaitLine::start("A", &paint(Motion::Full, false, false), &mut tty);
         wait.tick_at(ms(0), &mut tty, "");
         wait.tick_at(ms(100), &mut tty, "");
-        assert_eq!(
-            tty.err,
-            "\r\x1b[K| A... \x1b[2m0.0 s\x1b[0m\r\x1b[K/ A... \x1b[2m0.1 s\x1b[0m"
-        );
+        assert_eq!(tty.err, "\r\x1b[K| A... 0.0 s\r\x1b[K/ A... 0.1 s");
     }
 
     #[test]
-    fn color_paints_the_glyph_and_label_in_the_ai_color_and_the_time_dim() {
+    fn color_paints_the_glyph_and_label_in_the_ai_color_and_the_time_is_plain() {
         let mut tty = Recorder::default();
         let wait = WaitLine::start("A", &paint(Motion::Full, true, true), &mut tty);
         wait.tick_at(ms(0), &mut tty, "");
         assert_eq!(
             tty.err,
-            "\r\x1b[K\x1b[35m⠋\x1b[0m \x1b[35mA\x1b[0m... \x1b[2;90m0.0 s\x1b[0m"
+            "\r\x1b[K\x1b[35m⠋\x1b[0m \x1b[35mA\x1b[0m... 0.0 s"
         );
     }
 
@@ -293,7 +290,7 @@ mod tests {
         wait.tick_at(ms(0), &mut tty, "");
         wait.clear(&mut tty);
         wait.clear(&mut tty);
-        assert!(tty.err.ends_with("0.0 s\x1b[0m\r\x1b[K"), "{:?}", tty.err);
+        assert!(tty.err.ends_with("0.0 s\r\x1b[K"), "{:?}", tty.err);
         assert_eq!(tty.err.matches("\r\x1b[K").count(), 2);
     }
 }

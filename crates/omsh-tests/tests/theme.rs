@@ -90,10 +90,7 @@ fn the_panel_has_a_red_rail_a_red_level_word_and_cyan_keys() {
         term.command("rm -rf proj/build")?;
         term.expect("this command is \x1b[31mdangerous\x1b[0m:", SHORT);
         term.expect("\x1b[31m│\x1b[0m rm -rf proj/build", SHORT);
-        term.expect(
-            "\x1b[31m│\x1b[0m \x1b[2;90m- \x1b[0mDeletes files without asking",
-            SHORT,
-        );
+        term.expect("\x1b[31m│\x1b[0m - Deletes files without asking", SHORT);
         wait_question(&mut term, Mode::Panel);
         // The chosen button is reversed, and the keys in the bottom rule are in the key color.
         assert!(

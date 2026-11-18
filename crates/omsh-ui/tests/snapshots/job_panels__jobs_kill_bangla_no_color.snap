@@ -4,7 +4,7 @@ expression: "written(&lines, &caps)"
 ---
 ╭─ Kill this job? ────────────────────────────────────────────────────────────
 │ %2  sleep 300
-│ ⟨2⟩Sends SIGTERM, as `kill %2`.⟨0⟩
+│ Sends SIGTERM, as `kill %2`.
 │ 
 │ [⟨4⟩K⟨0⟩ill]  ⟨7⟩ Ca⟨0⟩⟨4;7⟩n⟨0⟩⟨7⟩cel ⟨0⟩
-╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩k ⟨2⟩kill · ⟨0⟩n ⟨2⟩cancel⟨0⟩ ────────────────────────────────
+╰─ ←→ move⟨2⟩ · ⟨0⟩Enter choose⟨2⟩ · ⟨0⟩k kill⟨2⟩ · ⟨0⟩n cancel ────────────────────────────────

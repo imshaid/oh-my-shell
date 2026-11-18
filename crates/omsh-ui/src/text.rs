@@ -41,13 +41,18 @@ pub enum Tone {
     Info,
     /// A path (cyan).
     Path,
-    /// Hints and secondary text (dim).
+    /// Secondary text that still carries information: a label, a timer, a count, a description.
+    /// It is the terminal's own text color at full weight, because faint text is hard to read
+    /// on some terminal themes. Tell it from the main text by position or by a `·`, not by color.
+    Muted,
+    /// Decoration only: a rule, a separator, the empty part of a bar. Faint (SGR 2). Never put a
+    /// letter or a digit in it.
     Dim,
 }
 
 impl Tone {
     /// Every tone.
-    pub const ALL: [Tone; 9] = [
+    pub const ALL: [Tone; 10] = [
         Tone::Plain,
         Tone::Danger,
         Tone::Ok,
@@ -56,6 +61,7 @@ impl Tone {
         Tone::Key,
         Tone::Info,
         Tone::Path,
+        Tone::Muted,
         Tone::Dim,
     ];
 
@@ -71,6 +77,7 @@ impl Tone {
             Tone::Key => Some(Token::Key),
             Tone::Info => Some(Token::Accent),
             Tone::Path => Some(Token::Path),
+            Tone::Muted => Some(Token::Muted),
             Tone::Dim => Some(Token::Dim),
         }
     }

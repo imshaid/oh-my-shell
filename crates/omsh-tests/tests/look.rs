@@ -247,8 +247,10 @@ fn colors_follow_the_meaning_green_for_ok_and_red_for_failed() {
             failed.contains("\x1b[31m✘ 1\x1b[0m"),
             "red cross:\n{failed}"
         );
-        // The rule is dim, the directory blue.
-        assert!(failed.contains("\x1b[2;90m─"), "{failed}");
+        // The rule is faint (decoration), and faint alone: bright black can be drawn like the
+        // background on some terminal themes.
+        assert!(failed.contains("\x1b[2m─"), "{failed}");
+        assert!(!failed.contains("\x1b[2;90m"), "{failed}");
         term.quit()
     });
 }

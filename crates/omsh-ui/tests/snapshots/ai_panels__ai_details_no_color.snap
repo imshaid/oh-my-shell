@@ -3,20 +3,20 @@ source: crates/omsh-ui/tests/ai_panels.rs
 expression: "written(&panel.render(&caps, WIDTH), &caps)"
 ---
 ╭─ AI call details ────────────────────────────────────────────────────╮
-│ ⟨7⟩ Gemini ⟨0⟩ ⟨2⟩ Ollama (local) ⟨0⟩                                            │
+│ ⟨7⟩ Gemini ⟨0⟩  Ollama (local)                                             │
 │                                                                      │
-│ ⟨2⟩Provider  ⟨0⟩Gemini                                                     │
-│ ⟨2⟩Model     ⟨0⟩gemini-2.5-flash                                           │
-│ ⟨2⟩Effort    –⟨0⟩                                                          │
-│ ⟨2⟩Context   ⟨0⟩ctx ≈ 1,514 / 32,768  4%  █⟨2⟩░░░░░░░░░⟨0⟩                       │
-│ ⟨2⟩Input     ⟨0⟩1,204                                                      │
-│ ⟨2⟩Thinking  ⟨0⟩200                                                        │
-│ ⟨2⟩Output    ⟨0⟩110                                                        │
-│ ⟨2⟩Cached    –⟨0⟩                                                          │
-│ ⟨2⟩Total     ⟨0⟩1,514                                                      │
-│ ⟨2⟩Time      ⟨0⟩3.2 s                                                      │
-│ ⟨2⟩Speed     –⟨0⟩                                                          │
+│ Provider  Gemini                                                     │
+│ Model     gemini-2.5-flash                                           │
+│ Effort    –                                                          │
+│ Context   ctx ≈ 1,514 / 32,768  4%  █⟨2⟩░░░░░░░░░⟨0⟩                       │
+│ Input     1,204                                                      │
+│ Thinking  200                                                        │
+│ Output    110                                                        │
+│ Cached    –                                                          │
+│ Total     1,514                                                      │
+│ Time      3.2 s                                                      │
+│ Speed     –                                                          │
 │                                                                      │
-│ ⟨2⟩context limit: inputTokenLimit from the Gemini models API⟨0⟩            │
-│ ⟨2⟩ctx is approximate: it is the last call's total⟨0⟩                      │
-╰─ ←→ ⟨2⟩provider · ⟨0⟩Esc ⟨2⟩close⟨0⟩ ────────────────────────────────────────────╯
+│ context limit: inputTokenLimit from the Gemini models API            │
+│ ctx is approximate: it is the last call's total                      │
+╰─ ←→ provider⟨2⟩ · ⟨0⟩Esc close ────────────────────────────────────────────╯

@@ -3,23 +3,23 @@ source: crates/omsh-ui/tests/panels.rs
 expression: "format!(\"top:\\n{top}\\n\\nafter two Down:\\n{scrolled}\\n\\nfilter zz:\\n{none}\\n\\nin 20 columns:\\n{narrow}\")"
 ---
 top:
-⟨2⟩filter ▏⟨0⟩
-❯ ⟨7⟩build/output.o  /home/user/work/build/output.o  0 min…⟨0⟩
-  notes final.txt  ⟨2⟩/home/user/work/notes final.txt  1 m…⟨0⟩
-⟨2⟩↓ 1 more⟨0⟩
+filter ⟨2⟩▏⟨0⟩
+❯ ⟨7⟩build/output.o · /home/user/work/build/output.o  0 mi…⟨0⟩
+  notes final.txt⟨2⟩ · ⟨0⟩/home/user/work/notes final.txt  1 …
+↓ 1 more
 
 after two Down:
-⟨2⟩filter ▏⟨0⟩
-⟨2⟩↑ 1 more⟨0⟩
-  notes final.txt  ⟨2⟩/home/user/work/notes final.txt  1 m…⟨0⟩
-❯ ⟨7⟩report-2026.pdf  /home/user/work/report-2026.pdf  2 m…⟨0⟩
+filter ⟨2⟩▏⟨0⟩
+↑ 1 more
+  notes final.txt⟨2⟩ · ⟨0⟩/home/user/work/notes final.txt  1 …
+❯ ⟨7⟩report-2026.pdf · /home/user/work/report-2026.pdf  2 …⟨0⟩
 
 filter zz:
-⟨2⟩filter ⟨0⟩zz⟨2⟩▏⟨0⟩
-⟨2⟩no match⟨0⟩
+filter zz⟨2⟩▏⟨0⟩
+no match
 
 in 20 columns:
-⟨2⟩filter ▏⟨0⟩
-⟨2⟩↑ 1 more⟨0⟩
-  notes final.txt  ⟨2⟩…⟨0⟩
-❯ ⟨7⟩report-2026.pdf  …⟨0⟩
+filter ⟨2⟩▏⟨0⟩
+↑ 1 more
+  notes final.txt⟨2⟩ ·…⟨0⟩
+❯ ⟨7⟩report-2026.pdf ·…⟨0⟩

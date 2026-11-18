@@ -99,7 +99,7 @@ fn a_bangla_folder_beside_the_chip() {
         let caps = look(name);
         let header = Line::new()
             .tone(Tone::Info, "~/প্রকল্প/ক্ষত্রিয়")
-            .tone(Tone::Dim, " (main)");
+            .tone(Tone::Muted, " (main)");
         // A chip that is missing would be a line missing from the snapshot.
         let status = chip(1, Some(Duration::from_millis(40)), caps.unicode);
         let lines: Vec<Line> = std::iter::once(header).chain(status).collect();

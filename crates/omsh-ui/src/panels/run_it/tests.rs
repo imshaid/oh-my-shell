@@ -182,7 +182,7 @@ fn hostile_text_in_the_command_and_the_file_names_renders_inert() {
                 .tone(Tone::Danger, "dangerous  ")
                 .tone(Tone::Path, HOSTILE),
             Line::new()
-                .tone(Tone::Dim, "on: ")
+                .tone(Tone::Muted, "on: ")
                 .tone(Tone::Path, HOSTILE),
         ];
         let lines = RunIt::new(Tone::Danger, body.clone(), true).render(&caps, 70);

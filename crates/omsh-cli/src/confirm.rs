@@ -584,7 +584,7 @@ fn panel(
                 out.push_str("  ");
                 // Examples are the least important lines.
                 if line.starts_with("for example:") {
-                    out.push_str(&paint.token(Token::Dim, &line));
+                    out.push_str(&paint.token(Token::Muted, &line));
                 } else {
                     out.push_str(&line);
                 }
@@ -631,7 +631,7 @@ fn panel_body(
         for (index, row) in wrap(text, inside).iter().enumerate() {
             out.push(
                 Line::new()
-                    .tone(Tone::Dim, if index == 0 { first } else { indent })
+                    .tone(Tone::Muted, if index == 0 { first } else { indent })
                     .tone(tone, row),
             );
         }
@@ -660,7 +660,7 @@ fn panel_body(
                 .and_then(|files| files.cwd.as_deref());
             for line in radius::lines(found, cwd, blast) {
                 let tone = if line.starts_with("for example:") {
-                    Tone::Dim
+                    Tone::Muted
                 } else {
                     Tone::Plain
                 };

@@ -75,11 +75,11 @@ fn run_it_body(files: &[&str]) -> Vec<Line> {
             .tone(Tone::Danger, "dangerous")
             .tone(Tone::Plain, ":"),
         Line::new().tone(Tone::Plain, &format!("rm -rf {}", files.join(" "))),
-        Line::new().tone(Tone::Dim, "- ").tone(
+        Line::new().tone(Tone::Muted, "- ").tone(
             Tone::Plain,
             "Deletes files without asking, and folders with everything in",
         ),
-        Line::new().tone(Tone::Dim, "  ").tone(
+        Line::new().tone(Tone::Muted, "  ").tone(
             Tone::Plain,
             "them. This cannot be undone, unless you choose Move to trash.",
         ),
@@ -87,7 +87,7 @@ fn run_it_body(files: &[&str]) -> Vec<Line> {
     for file in files {
         body.push(
             Line::new()
-                .tone(Tone::Dim, "    on: ")
+                .tone(Tone::Muted, "    on: ")
                 .tone(Tone::Path, file),
         );
     }
@@ -132,12 +132,12 @@ fn a_critical_line_gets_the_panel_without_buttons() {
             .tone(Tone::Plain, "this command is ")
             .tone(Tone::Danger, "critical")
             .tone(Tone::Plain, ":");
-        body[2] = Line::new().tone(Tone::Dim, "- ").tone(
+        body[2] = Line::new().tone(Tone::Muted, "- ").tone(
             Tone::Plain,
             "Deletes the system, your home folder, or everything in one of",
         );
         body[3] = Line::new()
-            .tone(Tone::Dim, "  ")
+            .tone(Tone::Muted, "  ")
             .tone(Tone::Plain, "them. This cannot be undone.");
         let lines = static_panel(Tone::Danger, body, &caps, WIDTH);
         insta::assert_snapshot!(format!("safety_critical_{name}"), written(&lines, &caps));
@@ -151,9 +151,9 @@ fn entries(files: &[&str]) -> Vec<UndoEntry> {
         preview: {
             let mut preview = vec![
                 Line::new()
-                    .tone(Tone::Dim, "ran in ")
+                    .tone(Tone::Muted, "ran in ")
                     .tone(Tone::Path, "/home/me/work")
-                    .tone(Tone::Dim, "  2026-11-17 09:12"),
+                    .tone(Tone::Muted, "  2026-11-17 09:12"),
             ];
             for item in items {
                 preview.push(

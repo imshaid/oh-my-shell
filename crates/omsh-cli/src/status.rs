@@ -87,7 +87,7 @@ fn shown_path(file: &Path) -> String {
 /// The build row.
 fn build_row(facts: &Facts<'_>) -> Row {
     match facts.build_epoch {
-        None => Row::new("Build", "unknown (not a release build)", Tone::Dim),
+        None => Row::new("Build", "unknown (not a release build)", Tone::Muted),
         Some(epoch) => {
             let days = notice::age_days(epoch, facts.now);
             let old = days > OLD_AFTER_DAYS;
@@ -111,9 +111,9 @@ fn build_row(facts: &Facts<'_>) -> Row {
 /// The AI row, from the configuration alone.
 fn ai_row(env: &StatusEnv) -> Row {
     match AiState::new(&env.config.ai, env.no_ai) {
-        AiState::OffByFlag => Row::new("AI", "off for this session (--no-ai)", Tone::Dim),
-        AiState::OffByConfig => Row::new("AI", "off (ai.enabled = false)", Tone::Dim),
-        AiState::NotSetUp => Row::new("AI", "not set up (omsh ai setup)", Tone::Dim),
+        AiState::OffByFlag => Row::new("AI", "off for this session (--no-ai)", Tone::Muted),
+        AiState::OffByConfig => Row::new("AI", "off (ai.enabled = false)", Tone::Muted),
+        AiState::NotSetUp => Row::new("AI", "not set up (omsh ai setup)", Tone::Muted),
         AiState::Ready {
             provider, model, ..
         } => Row::new(
@@ -144,7 +144,7 @@ fn update_rows(env: &StatusEnv, facts: &Facts<'_>) -> Vec<Row> {
         }
     };
     let last = match env.state_dir.as_deref().and_then(daily::read) {
-        None => Row::new("Last look", "never", Tone::Dim),
+        None => Row::new("Last look", "never", Tone::Muted),
         Some(stamp) => {
             let found = stamp.latest.as_ref().map_or_else(
                 || "no release found".to_owned(),
@@ -267,16 +267,16 @@ pub fn rows(env: &StatusEnv, facts: &Facts<'_>) -> Vec<Row> {
     rows.push(motion_row(env, facts));
     rows.extend(terminal_rows(facts));
     rows.push(if env.no_config {
-        Row::new("Config file", "none (--no-config)", Tone::Dim)
+        Row::new("Config file", "none (--no-config)", Tone::Muted)
     } else {
         env.paths.config_file().map_or_else(
-            || Row::new("Config file", "unknown (no home folder)", Tone::Dim),
+            || Row::new("Config file", "unknown (no home folder)", Tone::Muted),
             |file| Row::new("Config file", shown_path(&file), Tone::Path),
         )
     });
     rows.push(match env.state_dir.as_deref() {
         Some(dir) => Row::new("State folder", shown_path(dir), Tone::Path),
-        None => Row::new("State folder", "none", Tone::Dim),
+        None => Row::new("State folder", "none", Tone::Muted),
     });
     rows
 }

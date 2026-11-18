@@ -3,8 +3,8 @@ source: crates/omsh-ui/tests/job_panels.rs
 expression: "written(&lines, &caps)"
 ---
 ╭─ Plan ──────────────────────────────────────────────────────────────────────
-│ ███⟨2⟩░░░░░░░⟨0⟩  1 of 3 done⟨2⟩  1:14⟨0⟩
-│ ✓ 1. ⟨2⟩Go into the project folder⟨0⟩
+│ ███⟨2⟩░░░░░░░⟨0⟩  1 of 3 done  1:14
+│ ✓ 1. Go into the project folder
 │ ✗ 2. Compress রিপোর্ট.txt  (failed)
-│ ⟨2⟩– 3. Copy the archive  (not run)⟨0⟩
+│ – 3. Copy the archive  (not run)
 ╰─────────────────────────────────────────────────────────────────────────────

@@ -8,18 +8,18 @@ expression: "written(&lines, &caps)"
 │ Back the file up, then remove it.
 │ 
 │ 1. Look at the file  safe
-│    ⟨2⟩$ ⟨0⟩ls -l রিপোর্ট.txt
+│    $ ls -l রিপোর্ট.txt
 │    Lists it.
 │ 
 │ 2. Copy it  caution
-│    ⟨2⟩$ ⟨0⟩cp রিপোর্ট.txt backup
+│    $ cp রিপোর্ট.txt backup
 │    Makes a copy.
 │ 
 │ 3. Remove it  danger
-│    ⟨2⟩$ ⟨0⟩rm -rf রিপোর্ট.txt
+│    $ rm -rf রিপোর্ট.txt
 │    Deletes the file for good.
 │ 
-│ ⟨2⟩3.2 s · in 1,204 · out 110 · ctx ≈ 1,514 / 32,768  4%⟨0⟩
+│ 3.2 s⟨2⟩ · ⟨0⟩in 1,204⟨2⟩ · ⟨0⟩out 110⟨2⟩ · ⟨0⟩ctx ≈ 1,514 / 32,768  4%
 │ 
 │ ⟨7⟩ Run all ⟨0⟩  [⟨4⟩S⟨0⟩tep by step]  [⟨4⟩E⟨0⟩dit]  [⟨4⟩C⟨0⟩hat]  [Ca⟨4⟩n⟨0⟩cel]
-╰─ Enter ⟨2⟩run · ⟨0⟩←→ ⟨2⟩move · ⟨0⟩v ⟨2⟩context · ⟨0⟩i ⟨2⟩details · ⟨0⟩Tab ⟨2⟩more · ⟨0⟩Esc ⟨2⟩cancel⟨0⟩ ───────
+╰─ Enter run⟨2⟩ · ⟨0⟩←→ move⟨2⟩ · ⟨0⟩v context⟨2⟩ · ⟨0⟩i details⟨2⟩ · ⟨0⟩Tab more⟨2⟩ · ⟨0⟩Esc cancel ───────

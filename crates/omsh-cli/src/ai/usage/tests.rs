@@ -156,14 +156,15 @@ fn the_info_text_is_indented_ends_in_a_newline_and_follows_the_configured_fields
     };
     let calls = Calls::new(&ai);
     let record = calls.record(Kind::Gemini, "flash", Some(usage()), ms(3240), None);
-    // `NO_COLOR` is set in this look: the line is still dim (an attribute, not a color).
+    // The words and numbers are at full weight (faint text is hard to read on some themes);
+    // only the separators are faint, and that stays under `NO_COLOR` (an attribute, no color).
     assert_eq!(
         calls.info_text(&ui(true), &record),
-        "  \x1b[2mflash · 3.2 s · in 1,204 · out 110\x1b[0m\n"
+        "  flash\x1b[2m · \x1b[0m3.2 s\x1b[2m · \x1b[0min 1,204\x1b[2m · \x1b[0mout 110\n"
     );
     assert_eq!(
         calls.info_text(&ui(false), &record),
-        "  \x1b[2mflash, 3.2 s, in 1,204, out 110\x1b[0m\n"
+        "  flash\x1b[2m, \x1b[0m3.2 s\x1b[2m, \x1b[0min 1,204\x1b[2m, \x1b[0mout 110\n"
     );
 }
 
@@ -173,11 +174,11 @@ fn a_call_with_no_numbers_still_shows_dashes_and_the_time() {
     let record = calls.record(Kind::Ollama, "m", None, ms(1200), None);
     assert_eq!(
         calls.info_text(&ui(true), &record),
-        "  \x1b[2m1.2 s · in – · out –\x1b[0m\n"
+        "  1.2 s\x1b[2m · \x1b[0min –\x1b[2m · \x1b[0mout –\n"
     );
     assert_eq!(
         calls.info_text(&ui(false), &record),
-        "  \x1b[2m1.2 s, in -, out -\x1b[0m\n"
+        "  1.2 s\x1b[2m, \x1b[0min -\x1b[2m, \x1b[0mout -\n"
     );
 }
 

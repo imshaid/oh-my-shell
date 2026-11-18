@@ -184,22 +184,24 @@ impl Widget for List {
             let caret = if caps.unicode { "▏" } else { "_" };
             out.push(
                 Line::new()
-                    .tone(Tone::Dim, "filter ")
+                    .tone(Tone::Muted, "filter ")
                     .tone(Tone::Plain, &self.typed)
                     .tone(Tone::Dim, caret)
                     .fit(room, caps.unicode),
             );
         }
         if self.shown.is_empty() {
-            out.push(Line::new().tone(Tone::Dim, "no match"));
+            out.push(Line::new().tone(Tone::Muted, "no match"));
             return out;
         }
         let end = (self.top + self.rows).min(self.shown.len());
         if self.top > 0 {
             let arrow = if caps.unicode { "↑" } else { "^" };
-            out.push(Line::new().tone(Tone::Dim, &format!("{arrow} {} more", self.top)));
+            out.push(Line::new().tone(Tone::Muted, &format!("{arrow} {} more", self.top)));
         }
         let marker = if caps.unicode { "❯ " } else { "> " };
+        // The label and its detail are both full-weight text, so a faint dot tells them apart.
+        let glue = if caps.unicode { " · " } else { " - " };
         for position in self.top..end {
             let item = &self.items[self.shown[position]];
             let chosen = position == self.cursor;
@@ -212,14 +214,14 @@ impl Widget for List {
                 // No dim text on the chosen row: dim on reverse video is hard to read (S28c).
                 line.push(&item.label, Style::PLAIN.selected());
                 if !item.detail.is_empty() {
-                    line.push("  ", Style::PLAIN.selected());
+                    line.push(glue, Style::PLAIN.selected());
                     line.push(&item.detail, Style::PLAIN.selected());
                 }
             } else {
                 line.push(&item.label, Style::PLAIN);
                 if !item.detail.is_empty() {
-                    line.push("  ", Style::PLAIN);
-                    line.push(&item.detail, Style::of(Tone::Dim));
+                    line.push(glue, Style::of(Tone::Dim));
+                    line.push(&item.detail, Style::of(Tone::Muted));
                 }
             }
             out.push(line.fit(room, caps.unicode));
@@ -227,7 +229,7 @@ impl Widget for List {
         if end < self.shown.len() {
             let arrow = if caps.unicode { "↓" } else { "v" };
             out.push(Line::new().tone(
-                Tone::Dim,
+                Tone::Muted,
                 &format!("{arrow} {} more", self.shown.len() - end),
             ));
         }
@@ -292,9 +294,9 @@ mod tests {
         assert_eq!(
             shown(&list, Icons::Auto, 40),
             [
-                "❯ item 0  /tmp/0",
-                "  item 1  /tmp/1",
-                "  item 2  /tmp/2",
+                "❯ item 0 · /tmp/0",
+                "  item 1 · /tmp/1",
+                "  item 2 · /tmp/2",
                 "↓ 3 more",
             ]
         );
@@ -305,21 +307,21 @@ mod tests {
             shown(&list, Icons::Auto, 40),
             [
                 "↑ 2 more",
-                "  item 2  /tmp/2",
-                "  item 3  /tmp/3",
-                "❯ item 4  /tmp/4",
+                "  item 2 · /tmp/2",
+                "  item 3 · /tmp/3",
+                "❯ item 4 · /tmp/4",
                 "↓ 1 more",
             ]
         );
         list.handle(Key::Down);
         assert_eq!(
             shown(&list, Icons::Auto, 40).last().map(String::as_str),
-            Some("❯ item 5  /tmp/5")
+            Some("❯ item 5 · /tmp/5")
         );
         for _ in 0..5 {
             list.handle(Key::Up);
         }
-        assert_eq!(shown(&list, Icons::Auto, 40)[0], "❯ item 0  /tmp/0");
+        assert_eq!(shown(&list, Icons::Auto, 40)[0], "❯ item 0 · /tmp/0");
     }
 
     #[test]
@@ -332,8 +334,8 @@ mod tests {
             lines,
             [
                 "^ 1 more",
-                "  item 1  /tmp/1",
-                "> item 2  /tmp/2",
+                "  item 1 - /tmp/1",
+                "> item 2 - /tmp/2",
                 "v 1 more"
             ]
         );
@@ -341,12 +343,29 @@ mod tests {
     }
 
     #[test]
-    fn the_chosen_row_has_no_dim_text_and_the_others_do() {
+    fn the_chosen_row_has_no_faint_or_muted_text_and_the_others_have_a_faint_dot() {
         let list = List::new(items(2), 5);
         let lines = list.render(&caps(Icons::Auto), 40);
-        assert!(lines[0].spans().iter().all(|s| s.style.tone != Tone::Dim));
+        let tones = |line: &crate::text::Line| -> Vec<Tone> {
+            line.spans().iter().map(|s| s.style.tone).collect()
+        };
+        assert!(!tones(&lines[0]).contains(&Tone::Dim));
+        assert!(!tones(&lines[0]).contains(&Tone::Muted));
         assert!(lines[0].spans().iter().any(|s| s.style.selected));
-        assert!(lines[1].spans().iter().any(|s| s.style.tone == Tone::Dim));
+        // The dot between the label and its detail is faint; the detail is at full weight.
+        for span in lines[1]
+            .spans()
+            .iter()
+            .filter(|s| s.style.tone == Tone::Dim)
+        {
+            assert!(
+                !span.text().chars().any(char::is_alphanumeric),
+                "{:?}",
+                span.text()
+            );
+        }
+        assert!(tones(&lines[1]).contains(&Tone::Dim));
+        assert!(tones(&lines[1]).contains(&Tone::Muted));
     }
 
     #[test]

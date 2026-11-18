@@ -128,7 +128,7 @@ pub fn line(used: Option<u32>, limit: Option<u32>, caps: &Caps, bar: bool) -> Li
             Some(limit) => format!(" / {}", group(limit)),
             None => " / limit unknown".to_owned(),
         };
-        out.push(&format!("{head}{tail}"), Style::of(Tone::Dim));
+        out.push(&format!("{head}{tail}"), Style::of(Tone::Muted));
         if bar {
             out.push("  ", Style::PLAIN);
             out.push(&empty.repeat(CELLS), Style::of(Tone::Dim));
@@ -150,7 +150,7 @@ pub fn line(used: Option<u32>, limit: Option<u32>, caps: &Caps, bar: bool) -> Li
         out.push(&empty.repeat(CELLS - cells), Style::of(Tone::Dim));
     }
     if pct >= COMPACT_AT {
-        out.push("  compact?", Style::of(Tone::Dim));
+        out.push("  compact?", Style::of(Tone::Muted));
     }
     out
 }

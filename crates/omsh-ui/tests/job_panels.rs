@@ -197,7 +197,7 @@ fn the_question_after_ctrl_z_stopped_a_step() {
                 3,
                 vec![
                     Line::new()
-                        .tone(Tone::Dim, "$ ")
+                        .tone(Tone::Muted, "$ ")
                         .tone(Tone::Plain, &format!("tar czf {file}.gz {file}")),
                 ],
                 progress(file, RowState::Paused, RowState::Pending),
