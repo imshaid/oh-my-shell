@@ -169,7 +169,8 @@ no new groups are made), so Ctrl+C stops the job and not the shell. A line that 
 with `&` runs in the background. `jobs` lists jobs, `fg %1` brings one back, `bg %1` lets a stopped one go on in
 the background, `wait` waits, `kill %1` signals, `disown %1` forgets one. Ctrl+Z stops the foreground job and
 keeps it. Leaving the shell with stopped jobs gives a warning first. Finished background jobs are reported
-once, before the next prompt.
+once, before the next prompt. At a terminal with the line editor, `jobs -i` (or "Jobs" in `Ctrl+P`) shows the jobs
+as a panel: choose a job, then Foreground, Background (a stopped job), Stop (a running one) or Kill (asks first).
 
 ## Typing: editor, prompt and views
 
@@ -223,7 +224,7 @@ copy the last output. They are not written for `-c`, scripts, pipes, `TERM=dumb`
 - `Ctrl+P`: the command palette: actions (settings, history explorer, explain the last failure, undo, jobs, AI
   status, AI setup, edit `config.toml`), aliases, abbreviations, functions and builtins with a one-line help.
   Picking an alias, abbreviation, function or builtin puts its name in the line; picking an action opens the history
-  explorer or the settings, or explains the last failure. Nothing is run by picking.
+  explorer, the settings or the jobs panel, or explains the last failure. Nothing is run by picking.
 - Settings (from the palette): every key with its value, where it comes from, and a mark when the value
   changes at the next start. Switches and fixed choices can be changed there and are written to `config.toml` (`update.check` and
   `safety.confirm` are shown, with instructions to edit the file, but not changed there).
@@ -368,6 +369,8 @@ higher of the analyzer's level and the model's applies; for a step you edited, t
 plan. Steps run exactly as written: your aliases are not applied. A deletion that the shell can recognize (a plain `rm`)
 goes to the trash and into the undo journal when the journal is available; a wrapped `rm`, `find -delete` and the like are
 not followed, and the panel says which steps are permanent.
+
+**Pausing a plan.** While a step runs it owns the terminal, so the shell cannot draw a progress display or read a key until the step ends or you stop it: there is no live spinner. What you can do is press Ctrl+Z. At a terminal with the line editor the stopped step then gets a question: **Continue**, **Skip** (ends that step and goes on with the next one), **Stop plan** (chosen when it opens: the step stays stopped, as `jobs` shows) or **To background** (the step goes on, and the rest of the plan does not run). The question shows the plan with a bar and the time so far. A plan of several steps ends with one panel that lists every step and its state. Where there are no panels, Ctrl+Z ends the plan as before.
 
 **What is sent.** The system name, the shell name, the working folder, whether it is a git repository and the
 branch, and the last 3 commands with their exit status (never their output), each switchable in

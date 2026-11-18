@@ -32,6 +32,7 @@ mod first_run;
 mod greeting;
 mod handoff;
 mod history;
+mod jobs_panel;
 mod notify;
 mod omsh;
 mod probe;

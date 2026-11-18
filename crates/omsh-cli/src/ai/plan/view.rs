@@ -12,6 +12,7 @@ use omsh_ui::inline::Ended;
 use omsh_ui::panels::details::Details;
 use omsh_ui::panels::menu::{current_caps, run_on_terminal};
 use omsh_ui::panels::plan::{PlanChoice, PlanPanel, Risk, StepView};
+use omsh_ui::panels::plan_run::{PauseChoice, PausePanel, Progress};
 use omsh_ui::panels::step::{StepChoice, StepPanel};
 use omsh_ui::panels::{MenuUi, inner_width};
 use omsh_ui::text::{Line, Style, Tone, wrap};
@@ -236,6 +237,7 @@ pub(super) fn step_question(
     index: usize,
     total: usize,
     step: &Reviewed,
+    progress: Progress,
 ) -> StepAnswer {
     let caps = current_caps(ui);
     let cols = PlanPanel::body_width(&caps);
@@ -252,7 +254,8 @@ pub(super) fn step_question(
         &step.title,
         risk_of(step.rating().level),
         body_lines(&text, cols),
-    );
+    )
+    .with_progress(progress);
     match run_on_terminal(&mut panel, ui, Box::new(hung_up)) {
         Ok(Ended::Chosen(StepChoice::Run)) => StepAnswer::Run,
         Ok(Ended::Chosen(StepChoice::Skip)) => StepAnswer::Skip,
@@ -260,6 +263,44 @@ pub(super) fn step_question(
             StepAnswer::Stop(FAILED)
         }
         Ok(Ended::Interrupted) => StepAnswer::Stop(INTERRUPTED),
+    }
+}
+
+/// What the person chose for a step that Ctrl+Z stopped (phase 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PauseAnswer {
+    Continue,
+    Skip,
+    Stop,
+    Background,
+}
+
+/// The question about the step `index` (counting from 0) that Ctrl+Z stopped. Anything but a
+/// clear answer leaves the step stopped and ends the plan, as it did before the panel existed;
+/// so does a panel that cannot be shown.
+pub(super) fn pause_question(
+    ui: &MenuUi,
+    index: usize,
+    total: usize,
+    step: &Reviewed,
+    progress: Progress,
+) -> PauseAnswer {
+    let caps = current_caps(ui);
+    let cols = PlanPanel::body_width(&caps);
+    let mut text = String::new();
+    super::block(&mut text, "$ ", "  ", &step.command);
+    let mut panel = PausePanel::new(index + 1, total, body_lines(&text, cols), progress);
+    match run_on_terminal(&mut panel, ui, Box::new(hung_up)) {
+        Ok(Ended::Chosen(PauseChoice::Continue)) => PauseAnswer::Continue,
+        Ok(Ended::Chosen(PauseChoice::Skip)) => PauseAnswer::Skip,
+        Ok(Ended::Chosen(PauseChoice::Background)) => PauseAnswer::Background,
+        Ok(
+            Ended::Chosen(PauseChoice::Stop)
+            | Ended::Cancelled
+            | Ended::Closed
+            | Ended::Interrupted,
+        )
+        | Err(_) => PauseAnswer::Stop,
     }
 }
 

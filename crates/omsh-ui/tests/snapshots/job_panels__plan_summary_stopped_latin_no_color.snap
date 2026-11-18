@@ -1,0 +1,10 @@
+---
+source: crates/omsh-ui/tests/job_panels.rs
+expression: "written(&lines, &caps)"
+---
+╭─ Plan ──────────────────────────────────────────────────────────────────────
+│ ███⟨2⟩░░░░░░░⟨0⟩  1 of 3 done⟨2⟩  1:14⟨0⟩
+│ ✓ 1. ⟨2⟩Go into the project folder⟨0⟩
+│ ◼ 2. Compress build/output.o  (paused)
+│ ⟨2⟩– 3. Copy the archive  (not run)⟨0⟩
+╰─────────────────────────────────────────────────────────────────────────────

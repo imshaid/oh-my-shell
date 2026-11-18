@@ -85,6 +85,9 @@ pub enum Read {
     /// `Alt+?`: the person asks why the last command failed. What was typed so far stays in
     /// the editor's buffer.
     ExplainLast,
+    /// The palette's "Jobs": the shell shows the jobs table (`jobs -i`). What was typed so far
+    /// stays in the editor's buffer.
+    OpenJobs,
     /// The terminal hung up.
     HungUp,
     /// The editor could not work with this terminal, or stopped unexpectedly. The shell goes on
@@ -497,6 +500,7 @@ impl Editor {
                         Explored::HungUp => return Read::HungUp,
                         // The buffer stays in the editor, as with `Alt+?`.
                         Explored::ExplainLast => return Read::ExplainLast,
+                        Explored::OpenJobs => return Read::OpenJobs,
                     }
                     continue;
                 }
@@ -570,6 +574,7 @@ impl Editor {
                 omsh_ui::palette::Effect::OpenHistory => self.explore_history(),
                 omsh_ui::palette::Effect::OpenSettings => self.open_settings(),
                 omsh_ui::palette::Effect::ExplainLast => Explored::ExplainLast,
+                omsh_ui::palette::Effect::OpenJobs => Explored::OpenJobs,
             },
             omsh_ui::palette::Outcome::HungUp => Explored::HungUp,
             omsh_ui::palette::Outcome::Cancelled | omsh_ui::palette::Outcome::Unavailable(_) => {
@@ -634,6 +639,8 @@ enum Explored {
     HungUp,
     /// The person asked for the explanation of the last failure (the palette's entry for `Alt+?`).
     ExplainLast,
+    /// The person asked for the jobs table (the palette's "Jobs").
+    OpenJobs,
 }
 
 /// The name of the menu that Tab opens.

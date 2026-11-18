@@ -118,6 +118,8 @@ enum Next {
     Interrupted,
     /// `Alt+?`: explain the last failure (S24). The typed text stays in the editor.
     ExplainLast,
+    /// The palette's "Jobs": show the jobs table (U6). The typed text stays in the editor.
+    OpenJobs,
     /// The terminal hung up.
     HungUp,
     /// The editor cannot work with this terminal.
@@ -215,6 +217,10 @@ fn run_on(
         });
     if let (Some(undo), Some(ui)) = (undo.as_deref(), &menu_ui) {
         undo.set_menu(ui.clone());
+    }
+    // `jobs -i` and the palette's "Jobs": the table with buttons, under the same rule.
+    if let Some(ui) = &menu_ui {
+        shell.set_jobs_panel(Arc::new(crate::jobs_panel::Panel::new(ui.clone())));
     }
     // The AI panels (the plan, its steps, the details of a call, "AI is not set up") are shown
     // under the same rule.
@@ -379,6 +385,13 @@ fn run_on(
                 // Not a line: nothing is stored in history, `$?` stays, and what was typed
                 // stays in the editor.
                 explain_last_key(ai.as_deref(), &mut shell, &mut files, &mut recent, &paint);
+                continue;
+            }
+            Next::OpenJobs => {
+                // Not a line either: nothing is stored in history and `$?` stays. It is `jobs -i`,
+                // so a job chosen for the foreground runs here, and without a panel the plain
+                // list is printed.
+                open_jobs(&mut shell, &mut files);
                 continue;
             }
             Next::HungUp => {
@@ -568,6 +581,15 @@ fn explain_last_key(
         paint,
     };
     let _ = ai::explain::last(|| ai.plan_setup(), false, env);
+}
+
+/// The palette's "Jobs": `jobs -i`, run for the person who chose it. The cursor is on the line
+/// being typed, so the output starts below it; the status of the last command is kept.
+fn open_jobs(shell: &mut Shell, files: &mut Io) {
+    say("");
+    let before = shell.last_status();
+    let _ = shell.run_source("jobs -i\n", true, files);
+    shell.set_last_status(before);
 }
 
 /// Handles a line that starts with `?` (or ends with `| ?`): a plan (`? request`), an
@@ -915,6 +937,7 @@ fn read_edited(
         }
         Typed::Interrupted => Next::Interrupted,
         Typed::ExplainLast => Next::ExplainLast,
+        Typed::OpenJobs => Next::OpenJobs,
         Typed::EndOfInput => Next::End,
         Typed::HungUp => Next::HungUp,
         Typed::Failed(error) => Next::EditorFailed(error),

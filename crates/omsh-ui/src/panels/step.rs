@@ -7,6 +7,7 @@ use crate::boxes::{Panel, open};
 use crate::caps::Caps;
 use crate::panels::MAX_WIDTH;
 use crate::panels::plan::Risk;
+use crate::panels::plan_run::Progress;
 use crate::text::{Line, Style, Tone};
 use crate::widgets::buttons::Buttons;
 use crate::widgets::{Key, Step, Widget};
@@ -28,6 +29,8 @@ pub struct StepPanel {
     risk: Risk,
     body: Vec<Line>,
     buttons: Buttons,
+    /// The steps of the plan and where each is, shown above the step (phase 6).
+    progress: Option<Progress>,
 }
 
 impl StepPanel {
@@ -40,7 +43,16 @@ impl StepPanel {
             risk,
             body,
             buttons: Buttons::new(&[("Run step", 'y'), ("Skip", 's'), ("Stop", 'n')], 0),
+            progress: None,
         }
+    }
+
+    /// The same question with the steps of the plan, a progress bar and the time so far above
+    /// it. Without this the panel is drawn as it was before phase 6.
+    #[must_use]
+    pub fn with_progress(mut self, progress: Progress) -> Self {
+        self.progress = Some(progress);
+        self
     }
 
     /// The button that is chosen now.
@@ -77,6 +89,10 @@ impl Widget for StepPanel {
             .hint(arrows, "move")
             .hint("Enter", "choose")
             .hint("Esc", "stop");
+        if let Some(progress) = &self.progress {
+            panel = panel.lines(progress.lines(caps));
+            panel = panel.line(Line::new());
+        }
         panel = panel.line(
             Line::new()
                 .tone(Tone::Plain, &format!("{}  ", self.title))

@@ -1939,3 +1939,254 @@ fn no_offer_after_ctrl_c_a_stop_a_cancel_or_success() {
     );
     assert!(!ran.err.contains("Alt+?"), "{}", ran.err);
 }
+
+// -- Ctrl+Z on a step (phase 6) --------------------------------------------------------------
+//
+// `pause` is the part of the flow that needs no terminal of its own: the question is a function
+// here, and the jobs are real (`set -m`), so a stopped step is a real stopped process.
+
+/// A shell with job control and the pieces `pause` needs, and the steps of a plan of two:
+/// the one that gets stopped, and one after it.
+fn paused_plan<R>(body: impl FnOnce(&mut PlanEnv<'_>, &[Reviewed], &mut Run) -> R) -> R {
+    let mut shell = Shell::new();
+    let mut files = Io::process();
+    shell.run_source("set -m", true, &mut files);
+    let mut tty = Script::default();
+    let mut recent = Recent::new(Filter::new(&[" *".to_owned()]));
+    let mut edit = |_: &str| Edited::Cancelled;
+    let mut env = PlanEnv {
+        shell: &mut shell,
+        files: &mut files,
+        tty: &mut tty,
+        history: None,
+        recent: &mut recent,
+        confirm: ConfirmLevel::Dangerous,
+        blast: TEST_LIMITS,
+        paint: &Paint::plain(),
+        undo: None,
+        edit: &mut edit,
+        menu: None,
+    };
+    let step = |title: &str| {
+        let analysis = review(env.shell, "true", &StartDir::Shell).unwrap();
+        Reviewed {
+            title: title.to_owned(),
+            explanation: String::new(),
+            needs_root: false,
+            model: ModelRisk::Low,
+            command: "true".to_owned(),
+            analysis,
+            radii: Vec::new(),
+            edited: false,
+        }
+    };
+    let steps = [step("Wait"), step("After")];
+    let mut run = Run {
+        began: Instant::now(),
+        states: vec![RowState::Pending; steps.len()],
+    };
+    // Nothing may outlive the test, also when it fails: a stopped child that is left behind
+    // holds the output of the test run open, and the run then never ends.
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        body(&mut env, &steps, &mut run)
+    }));
+    for row in env.shell.job_rows() {
+        internal(&mut env, &format!("command kill -KILL %{}", row.number));
+    }
+    match out {
+        Ok(out) => out,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+/// Runs `command` as the step: it stops itself at once, which is what Ctrl+Z does to it. Returns
+/// the job number the plan would see.
+fn stopped_step(env: &mut PlanEnv<'_>, command: &str) -> u32 {
+    let known: Vec<u32> = env.shell.job_rows().iter().map(|row| row.number).collect();
+    let prepared = env.shell.prepare_unaliased(command, true).unwrap();
+    let result = env.shell.run_prepared(prepared, env.files);
+    assert!(
+        matches!(&result, LineResult::Ran(outcome) if is_stop_status(outcome.status().0)),
+        "{result:?}"
+    );
+    new_stopped_job(env, &known).expect("the step is a new stopped job")
+}
+
+fn row_of(env: &PlanEnv<'_>, job: u32) -> Option<omsh_exec::JobRow> {
+    env.shell
+        .job_rows()
+        .into_iter()
+        .find(|row| row.number == job)
+}
+
+fn answers(list: Vec<view::PauseAnswer>) -> impl FnMut(Progress) -> view::PauseAnswer {
+    let mut list: VecDeque<view::PauseAnswer> = list.into();
+    move |_| {
+        list.pop_front()
+            .expect("the question was asked more often than expected")
+    }
+}
+
+#[test]
+fn only_the_statuses_of_a_stopped_program_start_the_question() {
+    for status in [147, 148, 149, 150] {
+        assert!(is_stop_status(status), "{status}");
+    }
+    for status in [0, 1, 2, 130, 137, 143, 146, 151, 255] {
+        assert!(!is_stop_status(status), "{status}");
+    }
+}
+
+#[test]
+fn a_new_stopped_job_is_the_step_and_an_old_one_is_not() {
+    paused_plan(|env, _, _| {
+        let old = stopped_step(env, "sh -c 'kill -STOP $$'");
+        let known: Vec<u32> = vec![old];
+        assert_eq!(new_stopped_job(env, &known), None);
+        let new = stopped_step(env, "sh -c 'kill -STOP $$'");
+        assert_ne!(new, old);
+        assert_eq!(new_stopped_job(env, &known), Some(new));
+        // A job that runs is not "stopped".
+        internal(env, "sleep 30 &");
+        assert_eq!(new_stopped_job(env, &[old, new]), None);
+    });
+}
+
+#[test]
+fn stop_plan_leaves_the_step_stopped_in_the_job_table() {
+    paused_plan(|env, steps, run| {
+        let job = stopped_step(env, "sh -c 'kill -STOP $$; exit 7'");
+        let mut ask = answers(vec![view::PauseAnswer::Stop]);
+        assert!(matches!(
+            pause(env, steps, run, 0, job, &mut ask),
+            Paused::Stay
+        ));
+        assert!(matches!(
+            row_of(env, job).unwrap().state,
+            JobState::Stopped(_)
+        ));
+        assert_eq!(run.states[0], RowState::Paused);
+    });
+}
+
+/// A stopped process holds SIGTERM until it is continued, so Skip must continue it too. The step
+/// stops before it can reach `exit 7`: if the signal were sent without a continue, the job would
+/// stay stopped for ever and Skip would give up after a second.
+#[test]
+fn skip_ends_a_stopped_step_even_though_a_stopped_process_holds_sigterm() {
+    paused_plan(|env, steps, run| {
+        let job = stopped_step(env, "sh -c 'kill -STOP $$; exit 7'");
+        let mut ask = answers(vec![view::PauseAnswer::Skip]);
+        let started = Instant::now();
+        assert!(matches!(
+            pause(env, steps, run, 0, job, &mut ask),
+            Paused::Skipped
+        ));
+        assert!(started.elapsed() < SKIP_WAIT, "it took the whole wait");
+        let row = row_of(env, job).unwrap();
+        assert_eq!(row.state, JobState::Signaled("Terminated".to_owned()));
+    });
+}
+
+#[test]
+fn skip_gives_up_after_a_second_on_a_step_that_ignores_sigterm() {
+    paused_plan(|env, steps, run| {
+        let job = stopped_step(env, "sh -c 'trap \"\" TERM; kill -STOP $$; sleep 30'");
+        let mut ask = answers(vec![view::PauseAnswer::Skip]);
+        let started = Instant::now();
+        assert!(matches!(
+            pause(env, steps, run, 0, job, &mut ask),
+            Paused::Stuck(n) if n == job
+        ));
+        assert!(started.elapsed() >= SKIP_WAIT);
+        assert!(!row_of(env, job).unwrap().state.is_finished());
+    });
+}
+
+#[test]
+fn continue_runs_the_step_on_and_gives_its_status() {
+    paused_plan(|env, steps, run| {
+        let job = stopped_step(env, "sh -c 'kill -STOP $$; exit 5'");
+        let mut ask = answers(vec![view::PauseAnswer::Continue]);
+        assert!(matches!(
+            pause(env, steps, run, 0, job, &mut ask),
+            Paused::Ended(5)
+        ));
+        let job = stopped_step(env, "sh -c 'kill -STOP $$; exit 0'");
+        let mut ask = answers(vec![view::PauseAnswer::Continue]);
+        assert!(matches!(
+            pause(env, steps, run, 0, job, &mut ask),
+            Paused::Ended(0)
+        ));
+    });
+}
+
+#[test]
+fn a_step_that_stops_again_after_continue_gets_the_question_again() {
+    paused_plan(|env, steps, run| {
+        let job = stopped_step(env, "sh -c 'kill -STOP $$; kill -STOP $$; exit 4'");
+        let mut asked = 0;
+        let mut ask = |_: Progress| {
+            asked += 1;
+            view::PauseAnswer::Continue
+        };
+        assert!(matches!(
+            pause(env, steps, run, 0, job, &mut ask),
+            Paused::Ended(4)
+        ));
+        assert_eq!(asked, 2);
+    });
+}
+
+#[test]
+fn to_background_lets_the_step_run_on_and_does_not_end_it() {
+    paused_plan(|env, steps, run| {
+        let job = stopped_step(env, "sh -c 'kill -STOP $$; sleep 30'");
+        let mut ask = answers(vec![view::PauseAnswer::Background]);
+        assert!(matches!(
+            pause(env, steps, run, 0, job, &mut ask),
+            Paused::Background(n) if n == job
+        ));
+        let end = Instant::now() + Duration::from_secs(5);
+        while row_of(env, job).unwrap().state != JobState::Running {
+            assert!(Instant::now() < end, "the job never ran again");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+}
+
+#[test]
+fn the_question_sees_the_plan_with_the_step_paused_and_the_time_so_far() {
+    paused_plan(|env, steps, run| {
+        let job = stopped_step(env, "sh -c 'kill -STOP $$'");
+        run.states[0] = RowState::Pending;
+        let mut seen = Vec::new();
+        let mut ask = |progress: Progress| {
+            seen.push(progress);
+            view::PauseAnswer::Stop
+        };
+        pause(env, steps, run, 0, job, &mut ask);
+        let lines: Vec<String> = seen[0]
+            .lines(&omsh_ui::caps::Caps::plain())
+            .iter()
+            .map(omsh_ui::text::Line::plain_text)
+            .collect();
+        assert!(
+            lines.iter().any(|line| line.contains("2. After")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("1. Wait  (paused)")),
+            "{lines:?}"
+        );
+    });
+}
+
+#[test]
+fn the_lines_after_a_stop_in_the_background_name_the_job_and_the_steps_that_did_not_run() {
+    paused_plan(|env, steps, _| {
+        let result = left_in_the_background(env, steps, 1, 3);
+        assert!(matches!(result, LineResult::Ran(_)));
+        assert_eq!(env.shell.last_status().0, 0);
+    });
+}

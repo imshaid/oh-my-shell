@@ -36,11 +36,14 @@ use omsh_ai::{
 };
 use omsh_config::{AiContext, ConfirmLevel};
 use omsh_editor::Head;
-use omsh_exec::{ExitStatus, Io, Key, LineResult, Outcome, ReadError, Shell, TRASH, Terminal};
+use omsh_exec::{
+    ExitStatus, Io, JobState, Key, LineResult, Outcome, ReadError, Shell, TRASH, Terminal,
+};
 use omsh_safety::blast::Radius;
 use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level};
 use omsh_ui::panels::MenuUi;
+use omsh_ui::panels::plan_run::{Progress, RowState, RunRow};
 use omsh_ui::{Paint, Token};
 
 use super::recent::Recent;
@@ -1311,6 +1314,69 @@ struct Mode<'a> {
 /// against the shell as it is then, so that a step that depended on a skipped one is judged for
 /// what it really does.
 fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineResult {
+    let mut run = Run {
+        began: Instant::now(),
+        states: vec![RowState::Pending; steps.len()],
+    };
+    let result = execute_steps(env, steps, mode, &mut run);
+    // With the panels, a plan of several steps ends with one overview of where each step is.
+    if let Some(ui) = mode.menu
+        && steps.len() > 1
+    {
+        show_summary(env, steps, &mut run, ui);
+    }
+    result
+}
+
+/// Where each step of a running plan is, and since when the plan runs: what the panels of
+/// phase 6 show.
+struct Run {
+    began: Instant,
+    states: Vec<RowState>,
+}
+
+impl Run {
+    fn progress(&self, steps: &[Reviewed]) -> Progress {
+        let rows = steps
+            .iter()
+            .zip(&self.states)
+            .map(|(step, state)| RunRow {
+                title: shorten(&step.title),
+                state: *state,
+            })
+            .collect();
+        Progress::new(rows, self.began.elapsed())
+    }
+}
+
+/// The panel with every step and its state, after the plan ended. A step that was never
+/// reached is "not run".
+fn show_summary(env: &mut PlanEnv<'_>, steps: &[Reviewed], run: &mut Run, ui: &MenuUi) {
+    for state in &mut run.states {
+        if *state == RowState::Pending || *state == RowState::Ask {
+            *state = RowState::NotRun;
+        }
+    }
+    let caps = omsh_ui::panels::menu::current_caps(ui);
+    let lines = omsh_ui::panels::plan_run::summary(
+        &run.progress(steps),
+        &caps,
+        caps.panel_width(omsh_ui::panels::MAX_WIDTH),
+    );
+    let mut text = String::from("\n");
+    for row in omsh_ui::text::render(&lines, &ui.theme, &caps) {
+        text.push_str(&row);
+        text.push('\n');
+    }
+    say(env, &text);
+}
+
+fn execute_steps(
+    env: &mut PlanEnv<'_>,
+    steps: &[Reviewed],
+    mode: Mode<'_>,
+    run: &mut Run,
+) -> LineResult {
     let total = steps.len();
     let mut skipped = 0_usize;
     let glyphs = env.paint.glyphs();
@@ -1320,9 +1386,13 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineRes
     for (index, step) in steps.iter().enumerate() {
         let number = index + 1;
         if let (true, Some(ui)) = (mode.stepwise, mode.menu) {
-            match view::step_question(ui, index, total, step) {
+            run.states[index] = RowState::Ask;
+            let answer = view::step_question(ui, index, total, step, run.progress(steps));
+            run.states[index] = RowState::Pending;
+            match answer {
                 view::StepAnswer::Run => {}
                 view::StepAnswer::Skip => {
+                    run.states[index] = RowState::Skipped;
                     skipped += 1;
                     let line = view::skipped_line(env.paint, number, &step.title);
                     say(env, &line);
@@ -1349,6 +1419,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineRes
                 let why = message_of(&result);
                 say(env, &format!("  {failed}: {why}\n"));
                 last = ExitStatus::USAGE.0;
+                run.states[index] = RowState::Failed;
                 return stopped(env, steps, number, last, false);
             }
         };
@@ -1399,6 +1470,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineRes
                                 env,
                                 &format!("  {failed}: could not prepare the move to the trash\n"),
                             );
+                            run.states[index] = RowState::Failed;
                             return stopped(env, steps, number, ExitStatus::USAGE.0, false);
                         }
                     }
@@ -1412,6 +1484,13 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineRes
             let token = history.begin(&step.command, &crate::repl::directory(env.shell))?;
             Some((history, token))
         });
+        // The jobs that exist before the step: a job that is new and stopped afterwards is this
+        // step, stopped with Ctrl+Z.
+        let known: Vec<u32> = if mode.menu.is_some() {
+            env.shell.job_rows().iter().map(|row| row.number).collect()
+        } else {
+            Vec::new()
+        };
         let started = Instant::now();
         let result = env.shell.run_prepared(prepared, env.files);
         if let Some((history, token)) = noted {
@@ -1440,6 +1519,7 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineRes
         }
         last = match result {
             LineResult::Ran(Outcome::Exit(status)) => {
+                run.states[index] = RowState::Done;
                 return LineResult::Ran(Outcome::Exit(status));
             }
             LineResult::Ran(Outcome::Continue(status)) => status.0,
@@ -1450,6 +1530,41 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineRes
             LineResult::Incomplete => ExitStatus::USAGE.0,
         };
         env.recent.record(&step.command, i32::from(last));
+        // Ctrl+Z: the step is stopped, not over. With the panels the person decides what
+        // happens to it; without them (or if the stopped job cannot be found) the plan ends
+        // here, as it always did.
+        if is_stop_status(last)
+            && let Some(ui) = mode.menu
+            && let Some(job) = new_stopped_job(env, &known)
+        {
+            let mut ask = |progress: Progress| {
+                view::pause_question(ui, index, total, &steps[index], progress)
+            };
+            match pause(env, steps, run, index, job, &mut ask) {
+                Paused::Ended(status) => last = status,
+                Paused::Stay => {}
+                Paused::Skipped => {
+                    run.states[index] = RowState::Skipped;
+                    skipped += 1;
+                    let line = view::skipped_line(env.paint, number, &step.title);
+                    say(env, &line);
+                    continue;
+                }
+                Paused::Background(job) => {
+                    run.states[index] = RowState::Background;
+                    return left_in_the_background(env, steps, number, job);
+                }
+                Paused::Stuck(job) => {
+                    run.states[index] = RowState::Failed;
+                    return stuck(env, steps, number, job);
+                }
+            }
+        }
+        run.states[index] = match last {
+            0 => RowState::Done,
+            status if is_stop_status(status) => RowState::Paused,
+            _ => RowState::Failed,
+        };
         if last == 0 {
             say(env, &format!("  {ok}\n"));
         } else {
@@ -1479,6 +1594,169 @@ fn execute(env: &mut PlanEnv<'_>, steps: &[Reviewed], mode: Mode<'_>) -> LineRes
         ),
     );
     finish(env.shell, last)
+}
+
+/// The job of the step that Ctrl+Z has just stopped: a stopped job that was not in the table
+/// before the step began.
+fn new_stopped_job(env: &PlanEnv<'_>, known: &[u32]) -> Option<u32> {
+    env.shell
+        .job_rows()
+        .into_iter()
+        .find(|row| !known.contains(&row.number) && matches!(row.state, JobState::Stopped(_)))
+        .map(|row| row.number)
+}
+
+/// True for the status of a program that was stopped (128 plus `SIGSTOP`, `SIGTSTP`, `SIGTTIN`
+/// or `SIGTTOU`), which is what Ctrl+Z gives (148).
+fn is_stop_status(status: u8) -> bool {
+    (STOPPED - 1..=STOPPED + 2).contains(&status)
+}
+
+/// What became of a step that Ctrl+Z stopped.
+enum Paused {
+    /// It ran on in the foreground and ended with this status (`fg`).
+    Ended(u8),
+    /// It stays stopped and the plan ends here (also: no answer).
+    Stay,
+    /// It was ended (`SIGTERM`) and the plan goes on with the next step.
+    Skipped,
+    /// It goes on as this background job, and the plan ends here.
+    Background(u32),
+    /// It was asked to end and did not within a second; it is this job.
+    Stuck(u32),
+}
+
+/// How long Skip waits for the stopped step to end after `SIGTERM`.
+const SKIP_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Runs a builtin of the shell for the person who pressed a button, and gives its status. It
+/// is not a step: no question, no history line, `command` so that a function of the same name
+/// cannot take its place.
+fn internal(env: &mut PlanEnv<'_>, text: &str) -> u8 {
+    match env.shell.prepare_unaliased(text, true) {
+        Ok(prepared) => match env.shell.run_prepared(prepared, env.files) {
+            LineResult::Ran(Outcome::Continue(status) | Outcome::Exit(status)) => status.0,
+            LineResult::Rejected(_) | LineResult::Incomplete => ExitStatus::USAGE.0,
+        },
+        Err(_) => ExitStatus::USAGE.0,
+    }
+}
+
+/// Waits for the job to be over or gone, for at most [`SKIP_WAIT`].
+fn job_is_over(env: &PlanEnv<'_>, job: u32) -> bool {
+    let end = Instant::now() + SKIP_WAIT;
+    loop {
+        let over = env
+            .shell
+            .job_rows()
+            .iter()
+            .find(|row| row.number == job)
+            .is_none_or(|row| row.state.is_finished());
+        if over {
+            return true;
+        }
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Step `index` was stopped with Ctrl+Z and is job `%job`. Asks what to do, and does it.
+/// **Continue** is `fg`, so the step may stop again (and the question comes back); **Skip** is
+/// `kill %job` (which also continues a stopped job, so that the signal can act) and the plan
+/// goes on; **To background** is `bg`; **Stop plan** (also Esc) leaves it stopped.
+fn pause(
+    env: &mut PlanEnv<'_>,
+    steps: &[Reviewed],
+    run: &mut Run,
+    index: usize,
+    job: u32,
+    ask: &mut dyn FnMut(Progress) -> view::PauseAnswer,
+) -> Paused {
+    loop {
+        run.states[index] = RowState::Paused;
+        let answer = ask(run.progress(steps));
+        match answer {
+            view::PauseAnswer::Stop => return Paused::Stay,
+            view::PauseAnswer::Continue => {
+                let status = internal(env, &format!("command fg %{job}"));
+                let again =
+                    is_stop_status(status)
+                        && env.shell.job_rows().iter().any(|row| {
+                            row.number == job && matches!(row.state, JobState::Stopped(_))
+                        });
+                if !again {
+                    return Paused::Ended(status);
+                }
+            }
+            view::PauseAnswer::Skip => {
+                internal(env, &format!("command kill %{job}"));
+                return if job_is_over(env, job) {
+                    Paused::Skipped
+                } else {
+                    Paused::Stuck(job)
+                };
+            }
+            view::PauseAnswer::Background => {
+                internal(env, &format!("command bg %{job}"));
+                return Paused::Background(job);
+            }
+        }
+    }
+}
+
+/// The plan ends at step `number`, which goes on as background job `%job`.
+fn left_in_the_background(
+    env: &mut PlanEnv<'_>,
+    steps: &[Reviewed],
+    number: usize,
+    job: u32,
+) -> LineResult {
+    let left = steps.len() - number;
+    say(env, &not_run_lines(env, steps, number));
+    let rest = if left == 0 {
+        String::new()
+    } else {
+        format!(
+            "; the remaining {left} step{} did not run",
+            if left == 1 { "" } else { "s" }
+        )
+    };
+    say(
+        env,
+        &format!("oh-my-shell: step {number} goes on in the background as %{job}{rest}\n"),
+    );
+    finish(env.shell, 0)
+}
+
+/// Skip did not end the step: it is still job `%job`, and the plan ends.
+fn stuck(env: &mut PlanEnv<'_>, steps: &[Reviewed], number: usize, job: u32) -> LineResult {
+    say(env, &not_run_lines(env, steps, number));
+    say(
+        env,
+        &format!(
+            "oh-my-shell: step {number} did not end after SIGTERM; it is job %{job}; \
+             the plan stops here\n"
+        ),
+    );
+    finish(env.shell, FAILED)
+}
+
+/// One dim line for every step after step `number` (counting from 1), if there are any.
+fn not_run_lines(env: &PlanEnv<'_>, steps: &[Reviewed], number: usize) -> String {
+    if steps.len() <= number {
+        return String::new();
+    }
+    let skip = env.paint.glyphs().skip;
+    let mut lines = String::from("\n");
+    for (index, step) in steps.iter().enumerate().skip(number) {
+        let line = format!("{skip} {}. {} (not run)", index + 1, shorten(&step.title));
+        lines.push_str("  ");
+        lines.push_str(&env.paint.token(Token::Dim, &line));
+        lines.push('\n');
+    }
+    lines
 }
 
 /// The person stopped a plan that runs step by step, before step `index` (counting from 0).

@@ -10,10 +10,12 @@ use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::Pid;
 
+use crate::builtins::{Terminal, terminal_handle};
 use crate::exec::{Flow, Unwind};
 use crate::io::Io;
+use crate::jobpanel::{JobAction, JobsPanel, Picked};
 use crate::jobs::Phase;
-use crate::jobtable::{View, parse_spec};
+use crate::jobtable::{Spec, View, parse_spec};
 use crate::shell::Shell;
 use crate::status::ExitStatus;
 
@@ -44,10 +46,12 @@ fn find_job_shown(shell: &Shell, name: &str, word: &[u8], shown: &str, io: &Io) 
 // ------------------------------------------------------------------------------------ jobs
 
 /// `jobs [-l|-p] [spec...]`: lists the background jobs. A job that has finished is shown once
-/// more here and then forgotten.
+/// more here and then forgotten. `jobs -i` shows them as a panel with buttons when a person
+/// is at a terminal, and as this list when not.
 pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     let (mut long, mut pids_only) = (false, false);
     let (mut only_running, mut only_stopped) = (false, false);
+    let mut interactive = false;
     let mut rest = args;
     while let Some(arg) = rest.first() {
         if arg == b"--" {
@@ -63,6 +67,7 @@ pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
                 b'p' => pids_only = true,
                 b'r' => only_running = true,
                 b's' => only_stopped = true,
+                b'i' => interactive = true,
                 other => {
                     io.say(format!(
                         "oh-my-shell: jobs: -{}: invalid option",
@@ -73,6 +78,22 @@ pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
             }
         }
         rest = &rest[1..];
+    }
+
+    if interactive {
+        if long || pids_only || only_running || only_stopped || !rest.is_empty() {
+            io.say("oh-my-shell: jobs: -i cannot be used with other options or with job names");
+            return Ok(ExitStatus::USAGE);
+        }
+        // A panel needs job control, a panel to show and a person at a terminal. Without
+        // them `-i` is the plain list.
+        if shell.options.monitor
+            && let Some(panel) = shell.jobs_panel.0.clone()
+            && at_a_terminal(shell, io)
+            && let Some(flow) = drive_panel(shell, io, &*panel)
+        {
+            return flow;
+        }
     }
 
     let mut status = ExitStatus::SUCCESS;
@@ -119,6 +140,84 @@ pub(super) fn jobs(shell: &mut Shell, args: &[Vec<u8>], io: &Io) -> Flow {
     } else {
         status
     })
+}
+
+/// How long the panel waits, after it sent a signal, for the job to show the change.
+const SETTLE: Duration = Duration::from_millis(300);
+
+/// Waits until job `number` is in a phase `wanted` says yes to, or [`SETTLE`] has passed. A job
+/// notes a stop or an end when its own thread sees it, a moment after the signal; the panel is
+/// shown again right away, and must not show the state from before the button was pressed. A
+/// program that ignores the signal just uses up the time.
+fn settle(shell: &Shell, number: u32, wanted: impl Fn(Phase) -> bool) {
+    let end = std::time::Instant::now() + SETTLE;
+    loop {
+        let reached = shell
+            .jobs
+            .find(&Spec::Number(number))
+            .is_ok_and(|view| wanted(view.phase));
+        if reached || std::time::Instant::now() >= end {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// True for a person at a real terminal: keys come from one, the panel can be drawn on one, and
+/// standard output is one too (`jobs -i | cat` is a list for the pipe).
+fn at_a_terminal(shell: &Shell, io: &Io) -> bool {
+    let terminal = terminal_handle(shell, io);
+    terminal.menu_keys() && terminal.output_is_terminal()
+}
+
+/// Shows the jobs panel until it is closed, doing what it asks. After every action except `fg`
+/// the panel is shown again, with the table as it is by then. When it is closed, the finished
+/// jobs are forgotten, as `jobs` forgets the ones it lists (the panel showed them, so no notice
+/// follows). `None`: the panel could not be shown at all, so the caller prints the list.
+pub(crate) fn drive_panel(shell: &mut Shell, io: &Io, panel: &dyn JobsPanel) -> Option<Flow> {
+    let watch = shell.job_watch();
+    let mut shown = false;
+    loop {
+        let picked = panel.pick(&watch, &mut terminal_handle(shell, io));
+        let (number, action) = match picked {
+            Picked::Unavailable if !shown => return None,
+            Picked::Closed | Picked::Unavailable => break,
+            Picked::Interrupted => return Some(Err(Unwind::Interrupted)),
+            Picked::Act(number, action) => (number, action),
+        };
+        shown = true;
+        // The job may have ended or been forgotten while the panel was open: show it again.
+        let Ok(view) = shell.jobs.find(&Spec::Number(number)) else {
+            continue;
+        };
+        let over = matches!(view.phase, Phase::Finished(_));
+        match action {
+            JobAction::Foreground if !over => return Some(shell.resume_in_foreground(&view, io)),
+            JobAction::Background if matches!(view.phase, Phase::Stopped(_)) => {
+                if view.job.signal(Signal::SIGCONT).is_ok() {
+                    shell.jobs.make_current(number);
+                    settle(shell, number, |phase| phase == Phase::Running);
+                }
+            }
+            JobAction::Stop if view.phase == Phase::Running => {
+                if view.job.signal(Signal::SIGSTOP).is_ok() {
+                    settle(shell, number, |phase| matches!(phase, Phase::Stopped(_)));
+                }
+            }
+            // `Job::signal` continues a stopped job after `SIGTERM`, as `kill %n` does: a
+            // stopped process holds the signal until it is continued.
+            JobAction::Kill if !over && view.job.signal(Signal::SIGTERM).is_ok() => {
+                settle(shell, number, |phase| matches!(phase, Phase::Finished(_)));
+            }
+            _ => {}
+        }
+    }
+    for row in watch.rows() {
+        if row.state.is_finished() {
+            shell.jobs.remove(row.number);
+        }
+    }
+    Some(Ok(ExitStatus::SUCCESS))
 }
 
 // ------------------------------------------------------------------------- fg, bg, disown

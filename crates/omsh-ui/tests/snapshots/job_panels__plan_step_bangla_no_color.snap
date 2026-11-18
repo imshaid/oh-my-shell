@@ -1,0 +1,15 @@
+---
+source: crates/omsh-ui/tests/job_panels.rs
+expression: "written(&lines, &caps)"
+---
+╭─ Step 2 of 3 ───────────────────────────────────────────────────────────────
+│ ███⟨2⟩░░░░░░░⟨0⟩  1 of 3 done⟨2⟩  1:14⟨0⟩
+│ ✓ 1. ⟨2⟩Go into the project folder⟨0⟩
+│ ? 2. Compress রিপোর্ট.txt  (asks first)
+│ ⟨2⟩○ 3. Copy the archive⟨0⟩
+│ 
+│ Compress রিপোর্ট.txt  safe
+│ $ tar czf রিপোর্ট.txt.gz রিপোর্ট.txt
+│ 
+│ ⟨7⟩ Run step ⟨0⟩  [⟨4⟩S⟨0⟩kip]  [Stop]
+╰─ ←→ ⟨2⟩move · ⟨0⟩Enter ⟨2⟩choose · ⟨0⟩Esc ⟨2⟩stop⟨0⟩ ─────────────────────────────────────────

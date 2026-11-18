@@ -13,6 +13,7 @@ use std::time::Duration;
 use nix::sys::signal::Signal;
 use nix::unistd::Pid;
 
+use crate::jobpanel::{JobRow, JobState};
 use crate::jobs::{Job, Phase};
 use crate::status::Termination;
 
@@ -272,6 +273,20 @@ impl Jobs {
         table.entries.iter().map(|e| table.view(e)).collect()
     }
 
+    /// Every job as a plain row, in order of number. Nothing is removed.
+    pub(crate) fn rows(&self) -> Vec<JobRow> {
+        self.list()
+            .into_iter()
+            .map(|view| JobRow {
+                number: view.number,
+                mark: view.mark,
+                state: state_of(view.phase, view.job.last_ending()),
+                text: view.text,
+                elapsed: view.job.elapsed(),
+            })
+            .collect()
+    }
+
     /// Looks a job up by spec.
     pub(crate) fn find(&self, spec: &Spec) -> Result<View, SpecError> {
         let table = self.table();
@@ -395,23 +410,28 @@ impl Jobs {
 
 /// The word for a state, as bash says it: `Running`, `Done`, `Exit 3`, `Terminated`, ...
 fn describe(phase: Phase, last: Option<Termination>) -> String {
+    state_of(phase, last).word()
+}
+
+/// The state of a job in the words of `jobs`.
+pub(crate) fn state_of(phase: Phase, last: Option<Termination>) -> JobState {
     match phase {
-        Phase::Running => "Running".to_owned(),
+        Phase::Running => JobState::Running,
         Phase::Stopped(signal) => match Signal::try_from(signal) {
-            Ok(Signal::SIGTTIN) => "Stopped (tty input)".to_owned(),
-            Ok(Signal::SIGTTOU) => "Stopped (tty output)".to_owned(),
-            _ => "Stopped".to_owned(),
+            Ok(Signal::SIGTTIN) => JobState::Stopped(Some("tty input")),
+            Ok(Signal::SIGTTOU) => JobState::Stopped(Some("tty output")),
+            _ => JobState::Stopped(None),
         },
         Phase::Finished(status) => {
             if let Some(Termination::Signaled { signal, .. }) = last
                 && crate::status::ExitStatus::from_signal(signal) == status
             {
-                return signal_text(signal);
+                return JobState::Signaled(signal_text(signal));
             }
             if status.code() == 0 {
-                "Done".to_owned()
+                JobState::Done
             } else {
-                format!("Exit {}", status.code())
+                JobState::Exit(status.code())
             }
         }
     }

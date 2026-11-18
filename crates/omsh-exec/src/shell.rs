@@ -133,6 +133,8 @@ pub struct Shell {
     pub(crate) omsh: crate::builtins::OmshHook,
     /// What `undo` and the trash do (see `builtins/journal.rs`). Shared by every copy.
     pub(crate) journal: crate::builtins::JournalHook,
+    /// What `jobs -i` shows (see `jobpanel.rs`). Shared by every copy.
+    pub(crate) jobs_panel: crate::jobpanel::JobsPanelHook,
     /// The working directory of a copy of the shell (a subshell, a pipeline stage, a
     /// `$(...)`), when it is not the process's. `cd` in a copy must not call `chdir`: the
     /// working directory belongs to the whole process, which other threads are using. A copy
@@ -238,6 +240,7 @@ impl Shell {
             suggest: crate::suggest::SuggestHook::default(),
             omsh: crate::builtins::OmshHook::default(),
             journal: crate::builtins::JournalHook::default(),
+            jobs_panel: crate::jobpanel::JobsPanelHook::default(),
             cwd_override: None,
             in_subshell: false,
             depth: 0,

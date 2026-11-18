@@ -52,7 +52,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill, killpg};
@@ -95,6 +95,8 @@ pub(crate) struct Job {
     cancelled: AtomicI32,
     /// Rung when the state changes: what `wait`, `fg` and paused shell code sleep on.
     bell: Arc<Bell>,
+    /// When the job was made. The jobs panel shows the time since then (`mm:ss`).
+    started: Instant,
     state: Mutex<State>,
 }
 
@@ -113,6 +115,8 @@ struct State {
     /// A member was killed by a signal: it may have left the terminal in a strange state.
     hurt: bool,
     phase: Phase,
+    /// When the job became `Finished`: the clock of the jobs panel stops there.
+    ended: Option<Instant>,
     /// How the last program that ended did so.
     last: Option<Termination>,
     /// The status of each task, once it is over.
@@ -175,6 +179,7 @@ impl Job {
             pipefail,
             cancelled: AtomicI32::new(0),
             bell,
+            started: Instant::now(),
             state: Mutex::new(State {
                 pgid: None,
                 leader: None,
@@ -183,6 +188,7 @@ impl Job {
                 stop_signal: 0,
                 hurt: false,
                 phase: Phase::Running,
+                ended: None,
                 last: None,
                 results: vec![None; tasks],
                 settled: vec![false; tasks],
@@ -203,6 +209,15 @@ impl Job {
     /// its programs get a process group of their own.
     pub(crate) fn background(grouped: bool, bell: Arc<Bell>) -> Arc<Self> {
         Self::new(false, grouped, bell, 1, false)
+    }
+
+    /// The time since the job was made, or until it ended. A job stopped with Ctrl+Z keeps
+    /// counting: it is the age of the job, not the time it ran.
+    pub(crate) fn elapsed(&self) -> Duration {
+        let ended = self.state().ended;
+        ended
+            .unwrap_or_else(Instant::now)
+            .duration_since(self.started)
     }
 
     /// The share of the job that thread number `index` has.
@@ -290,6 +305,7 @@ impl Job {
                 results.last().copied().unwrap_or(ExitStatus::SUCCESS)
             };
             state.phase = Phase::Finished(status);
+            state.ended = Some(Instant::now());
         }
         // This task may have been the only one that had not settled (it ended without ever
         // starting a program, e.g. `nosuch`), which can make the job stopped.

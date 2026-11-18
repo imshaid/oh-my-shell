@@ -127,8 +127,11 @@ Example: `j proj src`
 
 ### `jobs`
 List background and stopped jobs. `-l` adds process ids; `-p` prints only the process group leaders; `-r` lists
-only running jobs and `-s` only stopped ones. Job operands (`%1`) pick jobs.
-Usage: `jobs [-lprs] [%JOB...]`
+only running jobs and `-s` only stopped ones. Job operands (`%1`) pick jobs. `-i` shows the jobs as a panel with
+buttons (see "The jobs panel" under Keys); it cannot be combined with other options or job operands, and when
+nobody can press arrow keys (`TERM=dumb`, no line editor) or standard output is not a terminal it prints the same
+list as `jobs`.
+Usage: `jobs [-ilprs] [%JOB...]`
 Example: `sleep 100 & jobs`
 
 ### `kill`
@@ -389,6 +392,26 @@ A critical line is not answered with a key: type `yes` or the target.
 | `y` | Restore (at the question). |
 | `n`, Esc | Leave without undoing anything. |
 
+### The jobs panel (`jobs -i`, or "Jobs" in the palette)
+
+One row for each job: `%` and its number with the mark (`+` current, `-` previous), the state in the words of
+`jobs` (`Running`, `Stopped`, `Done`, `Exit 3`, `Terminated`), the time since the job was made (`m:ss`; it stops when
+the job ends) and the command. A button that does not fit the chosen job is dim and does nothing.
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` | Choose a job. |
+| `←` `→`, Tab | Choose a button that fits the job. |
+| `f` | Foreground: continue the job in front and wait for it (`fg`). Closes the panel. |
+| `b` | Background: let a stopped job run without the terminal (`bg`). |
+| `s` | Stop: stop a running job (`SIGSTOP`). |
+| `k` | Kill: asks first (Cancel is chosen). Sends `SIGTERM`, as `kill %1`; a stopped job is continued so that it can end. |
+| Enter | Takes the chosen button. |
+| Esc, Ctrl+C | Closes the panel. Finished jobs that it showed are forgotten, as `jobs` forgets the ones it lists. |
+
+The rows are read again once a second while the panel is open (not with `ui.motion = "off"`: then they are read at
+each key). Picking "Jobs" in the palette runs `jobs -i` and leaves what you were typing in the line.
+
 ### The history explorer (Ctrl+R)
 
 | Key | What it does |
@@ -406,7 +429,7 @@ A critical line is not answered with a key: type `yes` or the target.
 | Key | What it does |
 |---|---|
 | (typing) | Filters actions, aliases, abbreviations, functions and builtins. |
-| Enter, Tab | Picks the entry. Aliases, abbreviations, functions and builtins put text in the line (never run it); an action opens history, opens settings, or explains the last failure. |
+| Enter, Tab | Picks the entry. Aliases, abbreviations, functions and builtins put text in the line (never run it); an action opens history, opens settings, shows the jobs panel, or explains the last failure. |
 | Up, Ctrl+P, Ctrl+K / Down, Ctrl+N, Ctrl+J | Move the choice. |
 | PageUp, PageDown, Home, End | Move by a page, or to the first or last row. |
 | Esc, Ctrl+C, Ctrl+G | Closes it. |
@@ -430,7 +453,10 @@ A change applies at the next start of the shell.
 | Safety question for a critical line | Type `yes` or the target's name; anything else cancels. There is no trash choice. |
 | AI plan panel (a terminal with the line editor) | Enter or `y` runs all; `s` step by step; `e` edits a command (with several steps, a digit or `↑↓` and Enter picks which; Esc goes back); `c` chats; `v` shows the last request as it was sent (control characters removed; earlier plans and refused retries appear only as character counts); `i` shows the details of the call; Tab shows or hides more numbers; `←` `→` move between the buttons; `n`, `q` and Esc cancel; Ctrl+C cancels with `$?` 130. |
 | AI plan panel (`TERM=dumb`, the plain reader, a pipe) | The text panel: Enter or `y` runs; `e` edits; `c` chats; `v` shows the last request; Esc, `n` and `q` cancel. |
-| Question before one step of a plan run step by step | `y` or Enter runs the step; `s` skips it; `n` and Esc stop the plan; Ctrl+C stops it with `$?` 130. |
+| Question before one step of a plan run step by step | The steps of the plan with a bar, the count and the time so far are above it. `y` or Enter runs the step; `s` skips it; `n` and Esc stop the plan; Ctrl+C stops it with `$?` 130. |
+| Question after Ctrl+Z stopped a step of a plan (a terminal with the line editor) | **Continue** (`c`, `fg`: the step may stop again and the question comes back), **Skip** (`s`: ends the step with `SIGTERM`, continuing it so that it can end, and goes on with the next step), **Stop plan** (`n`, Enter and Esc: the step stays stopped, see `jobs`; the plan ends with `$?` 148) or **To background** (`b`: `bg`; the plan ends with `$?` 0 and the step goes on). Without the panels the plan ends as for **Stop plan**, with no question. |
+| End of a plan of several steps (a terminal with the line editor) | A panel with every step and its state (done, failed, paused, in the background, skipped, not run), the count and the time. |
+| Jobs panel (`jobs -i`) | See "The jobs panel" above. |
 | "AI is not set up" (`? question` before the setup) | `s` sets the AI up and then sends the question; `n`, Esc and Enter (Not now is chosen) send nothing. |
 | Lists of `omsh ai setup` | Type to filter; `↑` `↓` move; Enter chooses; Tab switches between a provider's chat models and all of its models (Gemini); Esc leaves the model list and lets you type a name. |
 | Details of a call (`omsh ai details`, `i`) | `←` `→` switch provider; Enter, `q` or Esc close. |

@@ -106,7 +106,9 @@ fn what_it_does(entry: &Entry, styles: &Styles) -> String {
             crate::view::draw::clean(text, styles),
             styles.glyph("”", "\"")
         ),
-        Effect::OpenSettings | Effect::OpenHistory | Effect::ExplainLast => entry.detail.clone(),
+        Effect::OpenSettings | Effect::OpenHistory | Effect::ExplainLast | Effect::OpenJobs => {
+            entry.detail.clone()
+        }
     }
 }
 

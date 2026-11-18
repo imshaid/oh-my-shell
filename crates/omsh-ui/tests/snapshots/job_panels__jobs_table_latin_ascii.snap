@@ -1,0 +1,13 @@
+---
+source: crates/omsh-ui/tests/job_panels.rs
+expression: "written(&lines, &caps)"
+---
+⟨34⟩+-⟨0⟩ Jobs ⟨34⟩----------------------------------------------------------------------⟨0⟩
+⟨34⟩|⟨0⟩ ⟨36⟩> ⟨0⟩⟨7⟩%1+  ⟨0⟩⟨7;33⟩#⟨0⟩⟨7⟩ ⟨0⟩⟨7;33⟩Stopped⟨0⟩⟨7⟩      0:42  vim build/output.o⟨0⟩
+⟨34⟩|⟨0⟩   %2-  ⟨34⟩*⟨0⟩ ⟨34⟩Running⟨0⟩     ⟨2;90⟩ 0:05⟨0⟩  sleep 300
+⟨34⟩|⟨0⟩   %3   ⟨32⟩+⟨0⟩ ⟨32⟩Done⟨0⟩        ⟨2;90⟩ 1:12⟨0⟩  tar czf build/output.o.gz build/output.o
+⟨34⟩|⟨0⟩   %4   ⟨31⟩x⟨0⟩ ⟨31⟩Terminated⟨0⟩  ⟨2;90⟩ 0:03⟨0⟩  sleep 99
+⟨34⟩|⟨0⟩   %5   ⟨31⟩x⟨0⟩ ⟨31⟩Exit 3⟨0⟩      ⟨2;90⟩ 0:00⟨0⟩  make
+⟨34⟩|⟨0⟩ 
+⟨34⟩|⟨0⟩ ⟨7⟩ ⟨0⟩⟨4;7⟩F⟨0⟩⟨7⟩oreground ⟨0⟩  [⟨4⟩B⟨0⟩ackground]  ⟨2;90⟩[Stop]⟨0⟩  [⟨4⟩K⟨0⟩ill]
+⟨34⟩+-⟨0⟩ ⟨36⟩Up/Down⟨0⟩ ⟨2;90⟩job, ⟨0⟩⟨36⟩Left/Right⟨0⟩ ⟨2;90⟩button, ⟨0⟩⟨36⟩Enter⟨0⟩ ⟨2;90⟩do it, ⟨0⟩⟨36⟩Esc⟨0⟩ ⟨2;90⟩close⟨0⟩ ⟨34⟩--------------------⟨0⟩

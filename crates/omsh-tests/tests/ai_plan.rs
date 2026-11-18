@@ -1131,3 +1131,221 @@ fn a_critical_plan_is_not_answered_with_a_button() {
         });
     }
 }
+
+// -- Ctrl+Z on a step, and the plan panels (UI upgrade, phase 6) --------------------------------
+
+const CTRL_Z: u8 = 0x1a;
+
+/// A shell with a plan of two steps, one that takes two seconds and one after it, with "Run all"
+/// pressed and the first step running (it has had time to start).
+fn running_step(ctx: &Ctx, mode: Mode) -> io::Result<omsh_tests::Session> {
+    let mut term = step_shell(
+        ctx,
+        mode,
+        &[
+            ("Wait", "sleep 2", "low"),
+            ("After", "echo after > after", "low"),
+        ],
+    )?;
+    plan_key(&mut term, mode, ENTER)?;
+    term.expect_plain("[1/2] Wait", SHORT);
+    term.pump(Duration::from_millis(400));
+    assert_eq!(term.in_session("sleep").len(), 1, "{}", term.transcript());
+    Ok(term)
+}
+
+#[test]
+fn ctrl_z_on_a_step_asks_and_skip_ends_the_stopped_step_and_goes_on() {
+    pty_test(BIN, move |ctx| {
+        let mut term = running_step(ctx, Mode::Panel)?;
+        term.key(CTRL_Z)?;
+        // The plan is on the panel, with the step paused and the next one waiting.
+        term.expect_plain("Paused: step 1 of 2", SHORT);
+        term.expect_plain("1. Wait  (paused)", SHORT);
+        term.expect_plain("2. After", SHORT);
+        term.expect_plain("To background", SHORT);
+        // The step is stopped, and a stopped process holds SIGTERM until it is continued:
+        // Skip must end it all the same.
+        let sleep = term.in_session("sleep")[0];
+        assert_eq!(omsh_tests::procfs::state(sleep), "T");
+        term.press(b"s")?;
+        term.expect_plain("1. Wait (skipped)", SHORT);
+        term.expect_plain("[2/2] After", SHORT);
+        term.expect_plain("plan done (2 steps, 1 skipped)", SHORT);
+        term.expect_plain("1 of 2 done, 1 skipped", SHORT);
+        term.expect_plain("Terminated", SHORT);
+        term.prompt();
+        assert!(ctx.home().join("after").exists());
+        term.expect_none("sleep");
+        term.quit()
+    });
+}
+
+#[test]
+fn ctrl_z_on_a_step_and_enter_stops_the_plan_and_leaves_the_step_stopped() {
+    pty_test(BIN, move |ctx| {
+        let mut term = running_step(ctx, Mode::Panel)?;
+        term.key(CTRL_Z)?;
+        term.expect_plain("Paused: step 1 of 2", SHORT);
+        // Stop plan is chosen when the panel opens.
+        term.press(b"\r")?;
+        term.expect_plain("step 1 did not succeed (status 148)", SHORT);
+        term.expect_plain("the remaining 1 step did not run", SHORT);
+        // The overview at the end of the plan.
+        term.expect_plain("1. Wait  (paused)", SHORT);
+        term.prompt();
+        assert!(!ctx.home().join("after").exists());
+        let sleep = term.in_session("sleep")[0];
+        assert_eq!(omsh_tests::procfs::state(sleep), "T");
+        term.command("jobs")?;
+        term.expect("Stopped", SHORT);
+        term.command("echo st-$?-end")?;
+        term.expect("st-0-end", SHORT);
+        term.line("kill %1")?;
+        term.repeat_until("echo gone-$((1+1))", "Terminated")?;
+        term.quit()
+    });
+}
+
+#[test]
+fn ctrl_z_on_a_step_and_esc_is_stop_plan_too() {
+    pty_test(BIN, move |ctx| {
+        let mut term = running_step(ctx, Mode::Panel)?;
+        term.key(CTRL_Z)?;
+        term.expect_plain("Paused: step 1 of 2", SHORT);
+        term.press(ESCAPE)?;
+        term.expect_plain("step 1 did not succeed (status 148)", SHORT);
+        term.prompt();
+        assert!(!ctx.home().join("after").exists());
+        term.line("kill %1")?;
+        term.repeat_until("echo gone-$((1+1))", "Terminated")?;
+        term.quit()
+    });
+}
+
+#[test]
+fn ctrl_z_on_a_step_and_continue_runs_it_on_and_the_plan_finishes() {
+    pty_test(BIN, move |ctx| {
+        let mut term = running_step(ctx, Mode::Panel)?;
+        term.key(CTRL_Z)?;
+        term.expect_plain("Paused: step 1 of 2", SHORT);
+        term.press(b"c")?;
+        term.expect_plain("[2/2] After", SHORT);
+        term.expect_plain("plan done (2 steps)", SHORT);
+        term.expect_plain("2 of 2 done", SHORT);
+        term.prompt();
+        assert!(ctx.home().join("after").exists());
+        term.quit()
+    });
+}
+
+#[test]
+fn ctrl_z_twice_on_the_same_step_asks_twice() {
+    pty_test(BIN, move |ctx| {
+        let mut term = running_step(ctx, Mode::Panel)?;
+        term.key(CTRL_Z)?;
+        term.expect_plain("Paused: step 1 of 2", SHORT);
+        term.press(b"c")?;
+        term.pump(Duration::from_millis(300));
+        term.key(CTRL_Z)?;
+        term.expect_plain("Paused: step 1 of 2", SHORT);
+        term.press(b"n")?;
+        term.expect_plain("step 1 did not succeed (status 148)", SHORT);
+        term.prompt();
+        term.line("kill %1")?;
+        term.repeat_until("echo gone-$((1+1))", "Terminated")?;
+        term.quit()
+    });
+}
+
+#[test]
+fn ctrl_z_on_a_step_and_to_background_lets_it_run_on_and_stops_the_plan() {
+    pty_test(BIN, move |ctx| {
+        let mut term = running_step(ctx, Mode::Panel)?;
+        term.key(CTRL_Z)?;
+        term.expect_plain("Paused: step 1 of 2", SHORT);
+        term.press(b"b")?;
+        term.expect_plain("2. After (not run)", SHORT);
+        term.expect_plain(
+            "step 1 goes on in the background as %1; the remaining 1 step did not run",
+            SHORT,
+        );
+        term.expect_plain("1. Wait  (in the background)", SHORT);
+        term.prompt();
+        assert!(!ctx.home().join("after").exists());
+        term.command("jobs")?;
+        term.expect("Running", SHORT);
+        term.command("echo st-$?-end")?;
+        term.expect("st-0-end", SHORT);
+        term.quit()
+    });
+}
+
+/// Where nobody can press arrow keys the shell keeps what it did before the panel: the stopped
+/// step is a failure with status 148 and the plan ends, with no question.
+#[test]
+fn ctrl_z_on_a_step_without_the_panels_ends_the_plan_as_it_always_did() {
+    pty_test(BIN, move |ctx| {
+        let mut term = running_step(ctx, Mode::Dumb)?;
+        term.key(CTRL_Z)?;
+        term.expect_plain("step 1 did not succeed (status 148)", SHORT);
+        term.expect_plain("the remaining 1 step did not run", SHORT);
+        term.prompt();
+        assert!(!term.transcript().contains("Paused"));
+        assert!(!ctx.home().join("after").exists());
+        term.command("jobs")?;
+        term.expect("Stopped", SHORT);
+        term.line("kill %1")?;
+        term.repeat_until("echo gone-$((1+1))", "Terminated")?;
+        term.quit()
+    });
+}
+
+#[test]
+fn a_plan_that_ran_ends_with_one_overview_of_its_steps() {
+    pty_test(BIN, move |ctx| {
+        let mut term = step_shell(
+            ctx,
+            Mode::Panel,
+            &[
+                ("First", "echo one > one", "low"),
+                ("Second", "false", "low"),
+                ("Third", "echo three > three", "low"),
+            ],
+        )?;
+        plan_key(&mut term, Mode::Panel, ENTER)?;
+        term.expect_plain("step 2 did not succeed (status 1)", SHORT);
+        term.expect_plain("1 of 3 done", SHORT);
+        term.expect_plain("1. First", SHORT);
+        term.expect_plain("2. Second  (failed)", SHORT);
+        term.expect_plain("3. Third  (not run)", SHORT);
+        term.prompt();
+        term.quit()
+    });
+}
+
+#[test]
+fn step_by_step_shows_the_plan_above_each_question() {
+    pty_test(BIN, move |ctx| {
+        let mut term = step_shell(
+            ctx,
+            Mode::Panel,
+            &[
+                ("First", "echo one > one", "low"),
+                ("Second", "echo two > two", "low"),
+            ],
+        )?;
+        plan_key(&mut term, Mode::Panel, b"s")?;
+        term.expect_plain("Step 1 of 2", SHORT);
+        term.expect_plain("0 of 2 done", SHORT);
+        term.expect_plain("1. First  (asks first)", SHORT);
+        plan_key(&mut term, Mode::Panel, b"y")?;
+        term.expect_plain("Step 2 of 2", SHORT);
+        term.expect_plain("1 of 2 done", SHORT);
+        term.expect_plain("1. First", SHORT);
+        plan_key(&mut term, Mode::Panel, b"n")?;
+        term.expect_plain("stopped before step 2", SHORT);
+        term.prompt();
+        term.quit()
+    });
+}

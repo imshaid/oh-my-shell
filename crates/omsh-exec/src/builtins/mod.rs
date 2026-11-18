@@ -28,6 +28,8 @@ use nix::errno::Errno;
 
 pub(crate) use history::HistoryHook;
 pub use history::{BuiltinOutput, HistoryCommand};
+#[cfg(test)]
+pub(crate) use jobs::drive_panel;
 pub(crate) use journal::JournalHook;
 pub use journal::{JournalCommand, TRASH};
 pub use jump::JumpCommand;

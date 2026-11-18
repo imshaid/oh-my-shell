@@ -94,7 +94,13 @@ fn actions(config_file: Option<&Path>) -> Vec<Entry> {
             "Put back files that were moved to the trash.",
             "undo",
         ),
-        command("Jobs", "List background and stopped jobs.", "jobs"),
+        Entry::new(
+            Kind::Action,
+            "Jobs",
+            "Show the jobs and act on them.",
+            None,
+            Effect::OpenJobs,
+        ),
         command(
             "AI status",
             "Show how the AI layer is set up.",
@@ -237,6 +243,8 @@ mod tests {
             find(&entries, "Explain the last failure").key.as_deref(),
             Some("Alt+?")
         );
+        // The jobs table is shown by the shell (`jobs -i`), not put in the line.
+        assert_eq!(find(&entries, "Jobs").effect, Effect::OpenJobs);
     }
 
     #[test]

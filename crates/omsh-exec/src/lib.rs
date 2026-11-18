@@ -22,6 +22,7 @@ mod color;
 mod exec;
 mod expand;
 mod io;
+mod jobpanel;
 mod jobs;
 mod jobtable;
 mod login;
@@ -45,6 +46,7 @@ pub use builtins::{
 pub use check::NotYet;
 pub use expand::glob;
 pub use io::{FdPlan, Io, Slot};
+pub use jobpanel::{JobAction, JobRow, JobState, JobWatch, JobsPanel, Picked};
 pub use omsh_syntax::{Span, SyntaxDiagnostic, Trigger, trigger};
 pub use path::{DEFAULT_PATH, Lookup, PathCache, find_program};
 pub use shell::{LineResult, Outcome, Prepared, Shell};

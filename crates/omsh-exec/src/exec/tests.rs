@@ -2740,6 +2740,291 @@ mod background {
         assert!(sh.interrupted());
         assert_eq!(job.cancelled_by(), Some(Signal::SIGTERM as i32));
     }
+
+    // ------------------------------------------------------------------- the jobs panel (U6)
+
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    use crate::Terminal;
+    use crate::jobpanel::{JobAction, JobRow, JobState, JobWatch, JobsPanel, Picked};
+
+    /// One answer of a scripted panel, given once the rows satisfy `until` (if there is one).
+    struct Turn {
+        until: Option<fn(&[JobRow]) -> bool>,
+        answer: Picked,
+    }
+
+    /// A panel that answers from a script and records the rows it saw at each call.
+    #[derive(Default)]
+    struct Scripted {
+        turns: Mutex<VecDeque<Turn>>,
+        seen: Mutex<Vec<Vec<JobRow>>>,
+    }
+
+    impl Scripted {
+        fn new(turns: Vec<Turn>) -> Arc<Self> {
+            Arc::new(Self {
+                turns: Mutex::new(turns.into()),
+                seen: Mutex::default(),
+            })
+        }
+
+        fn seen(&self) -> Vec<Vec<JobRow>> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    impl JobsPanel for Scripted {
+        fn pick(&self, watch: &JobWatch, _terminal: &mut dyn Terminal) -> Picked {
+            let Some(turn) = self.turns.lock().unwrap().pop_front() else {
+                return Picked::Closed;
+            };
+            let end = Instant::now() + Duration::from_secs(5);
+            let mut rows = watch.rows();
+            if let Some(until) = turn.until {
+                while !until(&rows) {
+                    assert!(Instant::now() < end, "the rows never got there: {rows:?}");
+                    thread::sleep(Duration::from_millis(10));
+                    rows = watch.rows();
+                }
+            }
+            self.seen.lock().unwrap().push(rows);
+            turn.answer
+        }
+    }
+
+    fn turn(answer: Picked) -> Turn {
+        Turn {
+            until: None,
+            answer,
+        }
+    }
+
+    fn after(until: fn(&[JobRow]) -> bool, answer: Picked) -> Turn {
+        Turn {
+            until: Some(until),
+            answer,
+        }
+    }
+
+    fn is_stopped(rows: &[JobRow]) -> bool {
+        rows.first()
+            .is_some_and(|row| matches!(row.state, JobState::Stopped(_)))
+    }
+
+    fn is_running(rows: &[JobRow]) -> bool {
+        rows.first()
+            .is_some_and(|row| row.state == JobState::Running)
+    }
+
+    fn is_over(rows: &[JobRow]) -> bool {
+        rows.first().is_some_and(|row| row.state.is_finished())
+    }
+
+    /// Runs the panel loop with `panel`, as `jobs -i` does at a terminal.
+    fn drive(sh: &mut Shell, panel: &Scripted) -> crate::exec::Flow {
+        let captured = Captured::new();
+        crate::builtins::drive_panel(sh, &captured.io, panel).expect("the panel was shown")
+    }
+
+    #[test]
+    fn jobs_i_is_the_plain_list_without_a_terminal_and_never_asks_the_panel() {
+        guarded(true, |sh| {
+            let panel = Scripted::new(vec![turn(Picked::Closed)]);
+            sh.set_jobs_panel(Arc::clone(&panel) as Arc<dyn JobsPanel>);
+            run(sh, "sleep 30 & sleep 31 &");
+            let plain = run(sh, "jobs");
+            let asked = run(sh, "jobs -i");
+            assert_eq!(asked.status, 0);
+            assert_eq!(asked.out, plain.out);
+            assert!(!asked.out.is_empty());
+            // The test shell has no key terminal, so the panel was never shown.
+            assert!(panel.seen().is_empty());
+        });
+    }
+
+    #[test]
+    fn jobs_i_does_not_mix_with_other_options_or_job_names() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 &");
+            for line in ["jobs -il", "jobs -i %1", "jobs -ip"] {
+                let done = run(sh, line);
+                assert_eq!(done.status, 2, "{line}");
+                assert_eq!(done.out, "", "{line}");
+                assert!(done.err.contains("-i cannot be used"), "{}", done.err);
+            }
+        });
+    }
+
+    #[test]
+    fn the_rows_say_what_jobs_says() {
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$'");
+            run(sh, "sleep 30 &");
+            let rows = sh.job_rows();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].number, 1);
+            assert_eq!(rows[0].state, JobState::Stopped(None));
+            assert_eq!(rows[0].text, "sh -c 'kill -STOP $$'");
+            assert_eq!(rows[1].state, JobState::Running);
+            assert_eq!(rows[1].mark, '+');
+            // The words of the listing are the words of the rows.
+            let listing = run(sh, "jobs").out;
+            for row in &rows {
+                assert!(listing.contains(&row.state.word()), "{listing}");
+            }
+            // Looking at the rows removes nothing.
+            assert_eq!(sh.job_rows().len(), 2);
+        });
+    }
+
+    #[test]
+    fn the_time_of_a_job_runs_until_it_ends_and_then_stays() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 &");
+            let first = sh.job_rows()[0].elapsed;
+            thread::sleep(Duration::from_millis(80));
+            assert!(sh.job_rows()[0].elapsed >= first + Duration::from_millis(60));
+
+            run(sh, "sh -c 'exit 0' &");
+            eventually("the short job to be over", || {
+                sh.job_rows()
+                    .get(1)
+                    .is_some_and(|row| row.state.is_finished())
+            });
+            let ended = sh.job_rows()[1].elapsed;
+            thread::sleep(Duration::from_millis(80));
+            assert_eq!(sh.job_rows()[1].elapsed, ended);
+        });
+    }
+
+    #[test]
+    fn kill_continues_a_stopped_job_so_that_the_signal_can_act() {
+        guarded(true, |sh| {
+            // Stopped before `exit 7`: a SIGTERM that is not followed by a continue would stay
+            // pending for ever, and the job would never end.
+            run(sh, "sh -c 'kill -STOP $$; exit 7'");
+            let panel = Scripted::new(vec![
+                after(is_stopped, Picked::Act(1, JobAction::Kill)),
+                after(is_over, Picked::Closed),
+            ]);
+            let flow = drive(sh, &panel);
+            assert_eq!(flow, Ok(ExitStatus::SUCCESS));
+            let seen = panel.seen();
+            assert_eq!(
+                seen[1][0].state,
+                JobState::Signaled("Terminated".to_owned())
+            );
+            // The panel showed it, so it is forgotten and no notice follows.
+            assert_eq!(run(sh, "jobs").out, "");
+        });
+    }
+
+    #[test]
+    fn the_kill_builtin_does_the_same_on_a_stopped_job() {
+        // What Skip in a plan does (`kill %N`): the same continue after the signal.
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$; exit 7'");
+            assert_eq!(run(sh, "kill %1").status, 0);
+            eventually("the stopped job to end", || is_over(&sh.job_rows()));
+            assert_eq!(
+                sh.job_rows()[0].state,
+                JobState::Signaled("Terminated".to_owned())
+            );
+        });
+    }
+
+    #[test]
+    fn background_continues_a_stopped_job() {
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$; sleep 30'");
+            let panel = Scripted::new(vec![
+                after(is_stopped, Picked::Act(1, JobAction::Background)),
+                after(is_running, Picked::Closed),
+            ]);
+            assert_eq!(drive(sh, &panel), Ok(ExitStatus::SUCCESS));
+            assert_eq!(panel.seen()[1][0].state, JobState::Running);
+            // A running job stays in the table when the panel closes.
+            assert_eq!(sh.job_rows().len(), 1);
+        });
+    }
+
+    #[test]
+    fn stop_stops_a_running_job_and_does_nothing_to_a_stopped_one() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 &");
+            let panel = Scripted::new(vec![
+                turn(Picked::Act(1, JobAction::Stop)),
+                after(is_stopped, Picked::Act(1, JobAction::Stop)),
+                turn(Picked::Closed),
+            ]);
+            assert_eq!(drive(sh, &panel), Ok(ExitStatus::SUCCESS));
+            assert!(matches!(panel.seen()[2][0].state, JobState::Stopped(None)));
+        });
+    }
+
+    #[test]
+    fn foreground_ends_the_panel_and_gives_the_status_of_the_job() {
+        guarded(true, |sh| {
+            run(sh, "sh -c 'kill -STOP $$; exit 3'");
+            let panel = Scripted::new(vec![after(
+                is_stopped,
+                Picked::Act(1, JobAction::Foreground),
+            )]);
+            assert_eq!(drive(sh, &panel), Ok(ExitStatus(3)));
+            assert_eq!(panel.seen().len(), 1);
+        });
+    }
+
+    #[test]
+    fn ctrl_c_in_the_panel_ends_the_line() {
+        guarded(true, |sh| {
+            let panel = Scripted::new(vec![turn(Picked::Interrupted)]);
+            assert_eq!(drive(sh, &panel), Err(crate::exec::Unwind::Interrupted));
+        });
+    }
+
+    #[test]
+    fn a_panel_that_cannot_be_shown_leaves_the_plain_list_to_the_caller() {
+        guarded(true, |sh| {
+            let panel = Scripted::new(vec![turn(Picked::Unavailable)]);
+            let captured = Captured::new();
+            assert!(crate::builtins::drive_panel(sh, &captured.io, &*panel).is_none());
+            // After something was shown, the same answer just closes it.
+            let panel = Scripted::new(vec![
+                turn(Picked::Act(9, JobAction::Kill)),
+                turn(Picked::Unavailable),
+            ]);
+            assert_eq!(drive(sh, &panel), Ok(ExitStatus::SUCCESS));
+        });
+    }
+
+    #[test]
+    fn an_action_on_a_job_that_is_gone_shows_the_panel_again() {
+        guarded(true, |sh| {
+            let panel = Scripted::new(vec![
+                turn(Picked::Act(9, JobAction::Kill)),
+                turn(Picked::Closed),
+            ]);
+            assert_eq!(drive(sh, &panel), Ok(ExitStatus::SUCCESS));
+            assert_eq!(panel.seen().len(), 2);
+        });
+    }
+
+    #[test]
+    fn an_action_that_does_not_fit_the_state_changes_nothing() {
+        guarded(true, |sh| {
+            run(sh, "sleep 30 &");
+            // Background on a running job, and Foreground on a finished one, are ignored.
+            let panel = Scripted::new(vec![
+                turn(Picked::Act(1, JobAction::Background)),
+                turn(Picked::Closed),
+            ]);
+            assert_eq!(drive(sh, &panel), Ok(ExitStatus::SUCCESS));
+            assert_eq!(panel.seen()[1][0].state, JobState::Running);
+        });
+    }
 }
 
 mod history {

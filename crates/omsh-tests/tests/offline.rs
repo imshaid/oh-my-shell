@@ -153,6 +153,21 @@ fn session_of_ordinary_work(term: &mut Session, ctx: &Ctx) -> io::Result<()> {
     ] {
         term.command(command)?;
     }
+    // UI upgrade, phase 6: the jobs panel reads the job table and sends signals; it opens no
+    // socket. A job is stopped, continued and ended from the panel.
+    term.command("sleep 30 &")?;
+    term.line("jobs -i")?;
+    term.expect_plain("Foreground", SHORT);
+    term.press(b"s")?;
+    term.expect_plain("Stopped", SHORT);
+    term.press(b"b")?;
+    term.expect_plain("Running", SHORT);
+    term.press(b"k")?;
+    term.expect_plain("Kill this job?", SHORT);
+    term.press(b"k")?;
+    term.expect_plain("Terminated", SHORT);
+    term.press(b"\x1b")?;
+    term.prompt();
     // S14b: a hint is looked for as soon as something is typed, and a paste waits in the line.
     term.prompt();
     term.write_bytes(b"echo hel")?;

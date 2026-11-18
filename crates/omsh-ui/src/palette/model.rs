@@ -42,6 +42,8 @@ pub enum Effect {
     OpenHistory,
     /// The same as `Alt+?`.
     ExplainLast,
+    /// The jobs table with buttons (`jobs -i`), run by the shell.
+    OpenJobs,
 }
 
 /// One line of the palette.
