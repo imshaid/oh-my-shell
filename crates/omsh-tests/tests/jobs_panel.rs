@@ -216,3 +216,79 @@ fn jobs_i_with_other_options_is_refused() {
         term.quit()
     });
 }
+
+/// A program that traps `SIGTERM` and exits 9, and says when it is ready. It is not `exec`ed
+/// away: `sleep` is its child, so Ctrl+Z stops both and a `SIGTERM` has to reach them.
+const TRAPS_TERM: &str = "sh -c 'trap \"exit 9\" TERM; echo ready-$((1+1)); sleep 300'";
+
+/// A program that is `sleep` itself (no trap), so that `SIGTERM` ends it.
+const PLAIN_SLEEP: &str = "sh -c 'echo ready-$((1+1)); exec sleep 300'";
+
+/// Types `command`, stops it with a real Ctrl+Z and waits for the prompt.
+fn start_and_stop(term: &mut Session, command: &str) -> std::io::Result<()> {
+    term.line(command)?;
+    term.expect("ready-2", SHORT);
+    term.key(CTRL_Z)?;
+    term.expect("Stopped", SHORT);
+    term.prompt();
+    Ok(())
+}
+
+/// Opens the panel on the stopped job, asks to kill it and answers yes. Returns what the panel
+/// showed from then on.
+fn kill_from_the_panel(term: &mut Session, word: &str) -> std::io::Result<String> {
+    term.line("jobs -i")?;
+    term.expect_plain("Stopped", SHORT);
+    term.press(b"k")?;
+    term.expect_plain("Kill this job?", SHORT);
+    let from = term.transcript().len();
+    term.press(b"k")?;
+    term.expect_plain(word, SHORT);
+    Ok(term.transcript()[from..].to_owned())
+}
+
+/// A stopped job holds `SIGTERM` until it is continued, so the panel's Kill continues it too.
+/// The table then says how the job really ended: a program that caught `SIGTERM` and exited 9
+/// is `Exit 9`, never a green `Done`.
+#[test]
+fn a_stopped_job_killed_from_the_panel_is_shown_as_it_really_ended() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        start_and_stop(&mut term, TRAPS_TERM)?;
+        let shown = kill_from_the_panel(&mut term, "Exit 9")?;
+        assert!(!shown.contains("Done"), "a Done for a killed job:\n{shown}");
+        term.press(ESC)?;
+        term.prompt();
+        term.quit()
+    });
+}
+
+/// The same for a program that does not catch the signal: `Terminated`.
+#[test]
+fn a_stopped_job_that_the_signal_ends_is_terminated_in_the_panel() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        start_and_stop(&mut term, PLAIN_SLEEP)?;
+        let shown = kill_from_the_panel(&mut term, "Terminated")?;
+        assert!(!shown.contains("Done"), "a Done for a killed job:\n{shown}");
+        term.press(ESC)?;
+        term.prompt();
+        term.quit()
+    });
+}
+
+/// `kill %1` on a stopped job gives the same words in its notice.
+#[test]
+fn kill_builtin_on_a_stopped_job_says_how_it_ended() {
+    pty_test(BIN, |ctx| {
+        let mut term = ctx.start()?;
+        start_and_stop(&mut term, TRAPS_TERM)?;
+        term.line("kill %1")?;
+        term.prompt();
+        term.line("jobs")?;
+        term.expect_plain("Exit 9", SHORT);
+        term.prompt();
+        assert!(!term.transcript().contains("Done"), "{}", term.transcript());
+        term.quit()
+    });
+}
