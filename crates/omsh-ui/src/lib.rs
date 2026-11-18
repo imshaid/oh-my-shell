@@ -6,8 +6,13 @@
 //! - [`paint`]: wraps text in the theme's colors, and the glyphs panels use.
 //! - [`motion`]: the activity spinner and its redraw rule, easing and the frame clock.
 //!
-//! The foundation of the UI upgrade (`docs/UI_UPGRADE.md`, phase 1). Nothing outside this crate
-//! calls it yet:
+//! The UI upgrade (`docs/UI_UPGRADE.md`): a foundation that every panel is built on, and the panels.
+//! A panel is data: `render(state, caps)` gives lines of styled text, and one writer turns them
+//! into escape sequences for the terminal at hand.
+//!
+//! Faint text (the `dim` token) is for decoration only (a rule, a separator, the empty part of a
+//! bar). Text that carries information is the `muted` token, the terminal's own text color,
+//! because faint text is hard to read on some terminal themes.
 //!
 //! - [`caps`]: what the terminal allows, decided by one pure function.
 //! - [`text`]: styled lines, widths, and the one writer of escape sequences.
@@ -17,8 +22,9 @@
 //! - [`shell_look`]: the rule between commands, the status chip, the hint bar and the OSC 133 marks
 //!   (UI upgrade, phase 2).
 //! - [`sync`]: does the terminal understand synchronized output (DEC mode 2026).
-//! - [`panels`]: the "Run it?" question and the `undo` picker (UI upgrade, phase 3), the first
-//!   panels that the shell really shows.
+//! - [`panels`]: what the shell asks and shows in a box: the "Run it?" question, the `undo`
+//!   picker, the AI plan, the details of a call, the setup lists, the first-run questions,
+//!   `omsh status`, the jobs table and the panels of a running plan.
 //!
 //! - [`explorer`], [`fuzzy`], [`screen`], [`style`]: the full-screen history explorer (S27a): its
 //!   state, the small fuzzy matcher, the alternate screen with its panic restore, and the mapping

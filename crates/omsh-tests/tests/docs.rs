@@ -15,10 +15,14 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// `README.md`, `CONTRIBUTING.md` and every `docs/*.md`.
+/// `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` and every `docs/*.md`.
 fn pages() -> Vec<PathBuf> {
     let root = root();
-    let mut pages = vec![root.join("README.md"), root.join("CONTRIBUTING.md")];
+    let mut pages = vec![
+        root.join("README.md"),
+        root.join("CONTRIBUTING.md"),
+        root.join("CHANGELOG.md"),
+    ];
     let mut docs: Vec<PathBuf> = fs::read_dir(root.join("docs"))
         .unwrap_or_else(|error| panic!("cannot read docs/: {error}"))
         .filter_map(Result::ok)

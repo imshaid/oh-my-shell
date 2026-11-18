@@ -4,7 +4,7 @@ An interactive Linux shell, written in Rust. It behaves like a familiar POSIX sh
 (colors, hints, completion), keeps a searchable history, checks dangerous commands before they run, and can
 optionally hand a task to an AI. Nothing the AI suggests runs without a preview and your confirmation.
 
-**Status: version 1.0.0.** It is young. Use it from a terminal profile for a while
+**Status: version 1.1.0.** It is young. Use it from a terminal profile for a while
 before you make it your login shell; the installers never run `chsh`.
 
 - **AI is off until you set it up** (`omsh ai setup`). The shell is fully usable without it, and `--no-ai` switches it off.
@@ -53,6 +53,9 @@ More in the [user guide](docs/user-guide.md#install): the options, updating with
   `-c`, scripts and piped input go to `/bin/sh`, so `ssh host cmd` and `scp` keep working.
 - **While you type.** Syntax colors, gray hints from your history, Tab completion, abbreviations, emacs or vi keys, a prompt with
   the git branch, `Ctrl+R` history explorer, `Ctrl+P` command palette, a settings view, `j` to jump to a folder you used.
+- **Panels.** On a terminal, the questions the shell asks (a dangerous command, `undo`, an AI plan, the jobs list,
+  a plan step you paused with Ctrl+Z) are small panels with buttons and keys, and the safe answer is chosen when
+  they open. Where nobody can press keys (a pipe, `TERM=dumb`, CI) they are the plain text questions they always were.
 - **History.** A local SQLite file with folder, status and duration. A line that matches one of the known secret patterns is not
 stored; a secret in a shape the patterns do not know can be (`history delete ID` removes it).
 - **Safety.** Every typed line is analyzed first. A dangerous one shows what it would touch and asks; `rm` can move files to a
@@ -66,6 +69,7 @@ when it is about to run); `?? command` explains one; `Alt+?` explains the last
 ## Documentation
 
 - [User guide](docs/user-guide.md): install, use, safety, AI, configuration, troubleshooting.
+- [Changelog](CHANGELOG.md): what changed in each version.
 - [Command reference](docs/commands.md): every builtin, `omsh` command, key and setting, with the main options.
 - [Design](docs/design.md): how it is built, with the measured numbers.
 - [Report material](docs/report.md): notes for a written report.

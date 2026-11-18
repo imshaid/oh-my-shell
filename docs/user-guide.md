@@ -207,7 +207,7 @@ to the AI (`?`, `??`, `| ?`) the tag `ask AI` shows in magenta at the right; it 
 switched off. Without Unicode the marks are `ok` and `x`, and the rule is made of `-`. `ui.style = "plain"` gives
 the two-line prompt of version 1.0, with no rule and a status only after a failure.
 
-**The hint bar** is one dim line above the first prompt of a session that names the keys worth knowing:
+**The hint bar** is one line above the first prompt of a session that names the keys worth knowing:
 `? ask AI · Ctrl+P palette · Ctrl+R history · omsh tour` (and `omsh ai setup` while the AI is not set up). With
 `ui.greeting = "auto"` (the default) it is shown for the first five sessions after the welcome and then never;
 the count is a small file, `greeting`, in the state folder (`~/.local/state/oh-my-shell`). `always` shows it at
@@ -237,7 +237,9 @@ and the shell says so once. `[notify]` changes or switches it off. The notificat
 
 **Themes.** `ui.theme` names a built-in theme (`nord`) or `themes/<name>.toml`. A theme file lists only the
 colors you change: nine tokens (`accent`, `key`, `path`, `ai`, `success`, `warning`, `danger`, `muted`, `dim`) and the
-command-line roles (`command`, `error`, `quote`, ...), each one of the 16 ANSI color names.
+command-line roles (`command`, `error`, `quote`, ...), each one of the 16 ANSI color names. `muted` is the secondary
+text that carries information (labels, counts, timers, descriptions) and is your terminal's own text color; `dim` is
+faint and only for decoration (rules and separators), because faint text is hard to read on some terminal themes.
 
 ## History and privacy
 
@@ -325,7 +327,7 @@ it opens a question for that action with **Restore** and **Cancel**, and Cancel 
 is the plain `Undo it? [y/N]`.
 
 **The explain hint.** After a command fails, and only when an AI provider is set up, the header of the next prompt
-shows a dim `Alt+? explain` before the result (`✘ 127`). `Alt+?` sends the failed command and its exit status, as
+shows `Alt+? explain` before the result (`✘ 127`). `Alt+?` sends the failed command and its exit status, as
 before: its error text is never captured or sent. The hint is not shown after a success, Ctrl+C or Ctrl+Z, with
 `--no-ai` or `ai.enabled = false`, in the `plain` style, or once you have used `Alt+?` at that prompt.
 
@@ -405,7 +407,7 @@ each other. For a notice when a release comes out, set
 `check = true` under `[update]` (the first-start question sets it too): the shell then asks GitHub for the latest
 version about once a day (if the stamp file cannot be written it can repeat at each start), a moment after the prompt,
 and keeps the answer in the stamp file. Nothing is downloaded. **The news is shown at the next start**, not in the
-session that asked: one dim line where the hint bar goes (`↑ omsh 1.1.0 available · run: omsh update`), at most once
+session that asked: one line where the hint bar goes (`↑ omsh 1.1.0 available · run: omsh update`), at most once
 in 24 hours. It is off by default because it needs the network. The environment variable `OMSH_NO_UPDATE_CHECK`
 (anything but empty or `0`) turns the check and its line off, and the check never runs in CI or when standard error
 is not a terminal.
@@ -460,6 +462,16 @@ Only the `trap` case in the last entry was run by hand; every other item here wa
   only after that program ends; and if the thread that waits for a stopped program cannot be created, a zombie process can
   remain.
 - `history.size` is applied when a shell starts.
+- `undo 3` and `cmd | ? question` still ask in plain text, not in a panel, and there is no `omsh changelog` command, so
+  the line that says a new version exists does not say what is new.
+- While a plan step runs, the step owns the terminal and the shell waits for it, so there is no live progress (no
+  spinner or running clock). The panels appear where the shell has the keyboard: the plan, the question after
+  Ctrl+Z, and the overview at the end.
+- **Not tested:** the plan panel and the pause panel with a real AI key (only the fake provider and the fake
+  server were used), and the panels inside tmux and over ssh. The one exception is the Run it? panel, which was
+  captured in tmux for the website.
+- A hint bar longer than the terminal is wrapped by the terminal, in the middle of a word if the line ends there
+  (seen at 48 columns).
 - The shell runs on Linux only.
 
 ## Troubleshooting and FAQ

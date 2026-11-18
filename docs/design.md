@@ -12,7 +12,7 @@ Contents: [Shape of the program](#shape-of-the-program) · [One typed line](#one
 
 ## Shape of the program
 
-A Cargo workspace of eleven crates under `crates/`. About 107,600 lines of Rust, of which about 14,000 are the end-to-end
+A Cargo workspace of eleven crates under `crates/`. About 131,200 lines of Rust, of which about 18,000 are the end-to-end
 test harness (`git ls-files '*.rs' | xargs cat | wc -l`).
 
 | Crate | Responsibility | Lines |
@@ -207,12 +207,38 @@ is read. Lines that match `history.ignore`, or that `omsh-secrets` finds a secre
 
 ## The screen
 
-[`omsh-ui`](../crates/omsh-ui/src/lib.rs) has the theme as tokens and roles made only of the 16 ANSI color names, so a
-terminal's own theme decides the look. One pure function decides color, Unicode and motion from the environment (`NO_COLOR`,
-`TERM`, the locale, ssh), so the rules are tested without a terminal. Motion is our own small module: the waiting-line spinner
-and the step markers, and nothing that moves without meaning. The history explorer, the palette and the settings view share one
-loop ([`view/run.rs`](../crates/omsh-ui/src/view/run.rs)) built on `ratatui`, with its own fuzzy matcher
-([`fuzzy.rs`](../crates/omsh-ui/src/fuzzy.rs)).
+[`omsh-ui`](../crates/omsh-ui/src/lib.rs) draws everything the shell shows, in layers that can each be tested without a
+terminal.
+
+- **Theme.** The colors are tokens and roles made only of the 16 ANSI color names, so a terminal's own theme decides the
+  look ([`theme.rs`](../crates/omsh-ui/src/theme.rs)). The token `muted` is the terminal's own text color, for secondary text
+  that carries information (labels, counts, timers). The token `dim` is faint (SGR 2) and only for decoration: a rule, a
+  separator, the empty part of a bar. A test fails if a faint span or cell holds a letter or a digit, because faint text
+  is hard to read on some terminal themes.
+- **What the terminal allows.** One pure function ([`caps.rs`](../crates/omsh-ui/src/caps.rs), [`look.rs`](../crates/omsh-ui/src/look.rs))
+  decides color, Unicode and motion from the environment (`NO_COLOR`, `TERM`, the locale, ssh, CI) and from which of
+  standard input, output and error are terminals. The rules are tested without a terminal.
+- **Panels are data.** A panel is `render(state, caps)`, which gives lines of styled segments (a text and a tone such as
+  `Danger`, `Ok`, `Ai`, `Key`, `Muted`). [`text.rs`](../crates/omsh-ui/src/text.rs) is the only code that writes an escape
+  sequence: it maps a tone to a theme token and the token to SGR, so a panel never names a color. Panels that show text we
+  fully control have a box on all sides; panels that show a file name or a command have an open right edge (a left rail
+  and rules), because the width of Bangla or combining text cannot be trusted ([`boxes.rs`](../crates/omsh-ui/src/boxes.rs)).
+- **Widgets and the menu driver.** Buttons, a filterable list and the numbered fallback for where nobody can press keys
+  ([`widgets/`](../crates/omsh-ui/src/widgets/buttons.rs)); the inline driver draws a menu below the prompt in raw mode, reads
+  keys on a thread of its own, redraws only the lines that changed and erases itself on exit, so the scrollback stays clean
+  ([`inline.rs`](../crates/omsh-ui/src/inline.rs)). It does not use the alternate screen.
+- **Synchronized output.** Before the first menu the shell asks the terminal about DEC mode 2026 (`CSI ? 2026 $ p`) with a
+  limit of 150 ms and remembers the answer, and wraps each redraw in the mode when it is supported
+  ([`sync.rs`](../crates/omsh-ui/src/sync.rs)).
+- **Motion** is our own small module: easing, a frame clock, the spinner and the step markers; nothing moves on a pipe,
+  in `-c` or in CI, and `ui.motion` or `OMSH_MOTION` choose how much ([`motion.rs`](../crates/omsh-ui/src/motion.rs)).
+- **The panels** ([`panels/`](../crates/omsh-ui/src/panels/mod.rs)): "Run it?", the `undo` picker, the AI plan and its step
+  questions, the info line and the details of a call, the setup lists, the first-run questions, `omsh status`, the jobs
+  table and the panels of a running plan. The look of the prompt (the rule, the status chip, the hint bar, the OSC 133
+  marks) is [`shell_look.rs`](../crates/omsh-ui/src/shell_look.rs).
+- **Full-screen views.** The history explorer, the palette and the settings view share one loop
+  ([`view/run.rs`](../crates/omsh-ui/src/view/run.rs)) built on `ratatui` on the alternate screen, with its own fuzzy matcher
+  ([`fuzzy.rs`](../crates/omsh-ui/src/fuzzy.rs)).
 
 ## Configuration
 
@@ -242,6 +268,8 @@ trusted because it comes from GitHub over https.
 |---|---|---|
 | Unit tests | in each crate | Lexer, parser, expansion, builtins, rules, matcher, config, and so on. |
 | Snapshot tests | `omsh-syntax/tests` (insta) | The tree for each construct. |
+| Panel snapshots | `omsh-ui/tests` (insta) | Each panel drawn in the looks a terminal can give (normal, `NO_COLOR`, ASCII, plain numbered text without a terminal, Bangla file names), with the escape codes shown as text. Every snapshot also fails if a faint (SGR 2) run holds a letter or a digit. |
+| No-RGB guard | [`omsh-ui/tests/palette_only.rs`](../crates/omsh-ui/tests/palette_only.rs) | No source file holds an RGB or 256-color escape, and every SGR parameter that the output layer writes, for every tone, attribute and look, is from the 16-color palette. |
 | Property tests | `omsh-syntax/tests`, `omsh-safety`, `omsh-secrets` (proptest) | No panics, spans in bounds, print and parse round trip. |
 | Conformance | [`omsh-cli/tests/conformance.rs`](../crates/omsh-cli/tests/conformance.rs) | The same input through this shell and through `/bin/sh` gives the same output and status. |
 | End-to-end | [`omsh-tests/tests/`](../crates/omsh-tests/tests/ai.rs) | The shell in a pseudo-terminal: Ctrl+C, Ctrl+Z, `fg`, `bg`, terminal restore, hints, completion, the views, update and uninstall in a sandbox. The pseudo-terminal harness gives every wait a deadline and has a watchdog for leftover processes; ordinary unit tests have no time limit. |
@@ -255,6 +283,10 @@ home or `XDG_*` folder that is the real home or inside it.
 CI run 43894149788 on `main` (commit 1df718f, the commit before the version bump to 1.0.0) was green in all six jobs, so every
 test passed there. A local `cargo test --workspace --locked` on the same source ran 2469 tests (2444 passed, 1 ignored); the 25 that
 failed all compare with `/bin/sh`, which on that machine is bash, not dash (CI has dash).
+
+For the 1.1.0 source (commit 620ae39, version changed) a local `cargo test --workspace` ran 3,022 tests: 2,995 passed, 2 were
+ignored and 25 failed, the same 25 as on the commit before (all compare with `/bin/sh`, which is bash here). CI has not run
+on this version yet.
 
 ## Measured numbers
 
@@ -281,3 +313,26 @@ fix (fat LTO, one code-generation unit, stripped); the v0.1.1 archives are 6.4 M
 5,983,796 bytes (aarch64).
 
 Not measured: a cold disk cache, the cost of `git status` in a very large work tree, and anything on aarch64 hardware.
+
+**Version 1.1.0 against 1.0.0, one machine, local (not CI).** Release builds of the tagged commit 8323395 and of the 1.1.0 source
+(commit 620ae39 with the version number changed), the median of three rounds in which the builds were measured in turn;
+`hyperfine` 2.0.0 (20 warm-up and 300 runs) for the first rows and `omsh-perf` for the others. The 1.1.0 rows are not CI
+numbers: the performance gate has not run on this version yet, and the benchmarks of the completion menu, the history
+lookups, the explorer, the palette and the settings view were not run here.
+
+| What | 1.0.0 | 1.1.0 | Budget |
+|---|---|---|---|
+| `oh-my-shell --version` (median) | 0.71 ms | 0.71 ms | 10 ms |
+| `oh-my-shell -c true` minus `/bin/sh -c true` | 0.69 ms | 0.67 ms | 5 ms |
+| Start to first prompt, no repository | 2.11 ms | 1.88 ms | 30 ms |
+| Start to first prompt, repository, real `git` | 3.36 ms | 3.22 ms | 30 ms |
+| Start to first prompt, repository, `git` that never answers | 22.28 ms | 22.22 ms | 30 ms |
+| Idle memory (RSS) at the prompt | 9.49 MB | 9.78 MB | 15 MB |
+| Idle memory with a 100,000-row history | 10.75 MB | 10.99 MB | 15 MB |
+| Idle memory, 100,000 rows, newest 20,000 all different | 11.40 MB | 11.50 MB | 15 MB |
+| Keystroke to end of redraw, worst p99 | 0.72 ms | 0.68 ms | 5 ms |
+| Slowest key of all | 1.24 ms | 1.09 ms | 25 ms |
+| Release binary | 13,438,568 bytes | 13,864,936 bytes (+3.2%) | |
+
+The rounds differ by up to about 10% from each other (for example the start with no repository was 2.20, 1.99 and 2.11 ms
+for 1.0.0), so differences of a few percent are noise.

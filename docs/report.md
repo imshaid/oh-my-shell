@@ -48,7 +48,7 @@ Non-goals: full bash compatibility; being a terminal emulator; Windows or macOS.
 
 ## 3. Implementation summary
 
-Eleven crates, about 107,600 lines of Rust (`git ls-files '*.rs' | xargs cat | wc -l`); see the table in
+Eleven crates, about 131,200 lines of Rust (`git ls-files '*.rs' | xargs cat | wc -l`); see the table in
 [design.md](design.md#shape-of-the-program). Main components: a lexer and parser with spans; an executor that forks, execs and
 manages process groups; a line editor built on reedline; a SQLite history; a rule-based safety analyzer with blast radius,
 trash and undo; an AI layer with several providers; full-screen views; and a release pipeline with its own installer and
@@ -95,6 +95,10 @@ Each row was read from the code: the system call or mechanism, then the file whe
 | AI requests only on demand | A `current_thread` async runtime built on the first request, driven from the calling thread | [runtime.rs](../crates/omsh-ai/src/runtime.rs) |
 | "No network on the normal path" is tested | Running the shell under `strace -f` and listing every `socket` and `connect` | [offline.rs](../crates/omsh-tests/tests/offline.rs) |
 | Testing a terminal program | A pseudo-terminal pair (`openpty`) with the shell on the slave side | [session.rs](../crates/omsh-tests/src/session.rs) |
+| A question panel under the prompt | The terminal is put in raw mode (`tcsetattr` through `crossterm`) and a guard that restores it runs when the panel ends, also on an error; keys are read on a helper thread, so a closed terminal ends the shell instead of looping | [inline.rs](../crates/omsh-ui/src/inline.rs) |
+| Does the terminal understand synchronized output | The shell writes the query `CSI ? 2026 $ p` and waits for the reply at most 150 ms; the answer is kept for the life of the shell, and a terminal that says nothing costs that wait once | [sync.rs](../crates/omsh-ui/src/sync.rs) |
+| Terminals that jump between prompts | The shell writes OSC 133 marks (`ESC ] 133 ; A`, `C`, `D;status`) before the prompt and around each command, and only on a terminal | [shell_look.rs](../crates/omsh-ui/src/shell_look.rs) |
+| Killing a stopped job | A stopped process holds `SIGTERM` and `SIGHUP` until it is continued, so after sending the signal to the job's group the shell sends `SIGCONT` too | [jobs.rs](../crates/omsh-exec/src/jobs.rs) |
 
 ## 4. Results
 
@@ -104,6 +108,10 @@ CI for commit 1df718f (the commit before the version bump to 1.0.0) ran six jobs
 network off, the performance gate and `cargo deny` (run 43894149788 on `main`). A local `cargo test --workspace --locked` on the same
 source ran 2469 tests (2444 passed, 1 ignored); the 25 that failed all compare with `/bin/sh`, which on that machine is bash, not
 dash (CI has dash). The test kinds are listed in [design.md](design.md#testing).
+
+For the 1.1.0 work, not yet run in CI: a local `cargo test --workspace` on the source of commit 620ae39 (version changed) ran 3,022
+tests: 2,995 passed, 2 were ignored and 25 failed, the same 25 as on the commit before, which all compare with `/bin/sh`
+(bash on that machine).
 
 ### 4.2 Performance against the budgets
 
@@ -119,6 +127,12 @@ From the "Performance gate" job of that run (commit 1df718f, before the version 
 | Keystroke to end of redraw, worst p99 | 0.44 ms | 5 ms |
 | Completion menu, worst p99 over 20,000 programs | 8.1 ms | 50 ms |
 | History lookups over 100,000 rows, worst p99 | 8.74 ms | 20 ms |
+
+Version 1.1.0 was measured on one machine, locally and not in CI, against 1.0.0 (release builds, median of three rounds); no
+measure was more than about 3% worse than 1.0.0 apart from the release binary, which is 3.2% larger (13,438,568 to 13,864,936
+bytes). Start to first prompt with no repository was 2.11 ms (1.0.0) and 1.88 ms (1.1.0); idle memory at the prompt 9.49 MB
+and 9.78 MB; the keystroke worst p99 0.72 ms and 0.68 ms. The rounds differ by up to about 10%, so such differences are noise.
+All rows are in [design.md](design.md#measured-numbers).
 
 The same job also measures `/bin/sh -c true` at 0.39 ms median on that runner, so `-c true` is about 2.4 times slower than
 `sh` in absolute terms (0.94 ms against 0.39 ms) while staying inside the budget.
@@ -187,3 +201,4 @@ Dates are those of the commits in the repository (74 commits on `main` at the ta
 | 2026-11-13 | Notifications and tour, idle-memory work, polish, release pipeline, `omsh update` and `omsh uninstall`, version 0.1.0 and 0.1.1 |
 | 2026-11-16 | Documentation accuracy fixes |
 | 2026-11-17 | Version 1.0.0 tagged and released; `omsh update` tested from 0.1.1 to 1.0.0 |
+| 2026-11-17 to 2026-11-18 | The UI upgrade on a branch (not released yet): panels for the questions the shell asks, the new prompt look, the installer display, first-run questions, `omsh status`, the jobs table and the plan panels |

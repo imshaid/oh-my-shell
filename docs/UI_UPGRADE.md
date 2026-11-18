@@ -9,6 +9,41 @@ Where this spec says "verify", the claim was not confirmed. Check it in code or 
 
 ---
 
+## Status: phases 1 to 7 are done on the branch `ui-upgrade` (version 1.1.0, not released)
+
+Phase 1 foundation, 2 shell look, 3 safety panels, 4 AI panels, 5 install and first run and update, 6 jobs and
+plan-running panels, 7 docs, site, changelog and version. Where the result differs from the text below:
+
+- **Colors.** A ninth theme token `key` (cyan) next to `accent` (blue). **Faint text is decoration only** (rules,
+  separators, the empty part of a bar). Text the spec calls "dim" but that carries information (hint bar words,
+  update line, `Alt+? explain`, the info line, timers, the "ctx" meter text) is drawn in the terminal's own text
+  color (token `muted`), because faint text was hard to read on some themes. A test fails on any faint letter or
+  digit. `ui.motion = "on"` means the same as `"full"`.
+- **Shell look.** `ui.style` has `plain` and `spaced`; **`blocks` was not built**. The rule is printed above the
+  header and the status chip is at the right of the header. Plain arguments have no color. The hint bar is not shown
+  in the session that showed the welcome, or under `--no-config`.
+- **Explain hint.** It names `Alt+?`, not `[e]` (`e` would take `echo`, `exit`, `env`). It sends the failed command
+  and its exit status, not stderr (the error text is never captured).
+- **Safety panels.** On the `undo` picker Enter opens a Restore / Cancel question and never restores at once. A
+  critical command keeps the typed `yes`; its panel has no buttons.
+- **AI panels.** Run all is chosen when the plan panel opens (the safe answer is still asked again for a riskier
+  step). The context limit comes from small lookups of our own (Gemini, Anthropic and Ollama) or from
+  `ai.context_limit`; with neither it is shown as unknown. `ai.inline.fields` and `ai.inline.thinking_warn` are
+  settings.
+- **Update.** The check keeps the GitHub `releases/latest` redirect and a helper thread; **`version.json` on Pages and
+  a detached process were not used**. The news is one line at the next start in the hint bar's place. "Stay up to
+  date?" has **No** chosen (the spec chose Yes), because the daily check stays off by default. **`omsh changelog`
+  does not exist**, so the line does not say what is new. `ui.ls` (use `eza` for `ls`) was added at the owner's
+  request.
+- **Jobs and plans.** `jobs -i` and the palette open the table; plain `jobs` is unchanged. The time comes before the
+  command in the table, so that a cut command never takes the time with it. **No live progress while a plan step
+  runs:** the step owns the terminal and the shell waits for it, so there is no spinner or running clock; Pause is
+  Ctrl+Z, and the panels appear where the shell has the keyboard. `undo 3` and `cmd | ? q` still ask in text.
+- **Not verified:** the plan and pause panels with a real AI key, and the panels in tmux and over ssh (except the
+  Run it? panel, captured in tmux for the website); `cargo deny` and an aarch64 build for this version.
+
+---
+
 ## 1. Hard constraints (apply to every phase)
 
 1. **Colors come from the terminal palette only.** ANSI 16 colors (SGR 30-37, 90-97 where needed) plus default fg/bg. NO RGB, NO 256-color indexes, NO background fills, NO fixed greys.

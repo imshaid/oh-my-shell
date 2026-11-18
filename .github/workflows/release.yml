@@ -52,7 +52,7 @@ jobs:
           # shellcheck disable=SC2086
           gh release create "${GITHUB_REF_NAME}" --draft --verify-tag $flags \
             --title "${GITHUB_REF_NAME}" \
-            --notes "Release ${GITHUB_REF_NAME}. Install: see the README, or run install.sh from the assets."
+            --notes "Release ${GITHUB_REF_NAME}. What changed: CHANGELOG.md. Install: see the README, or run install.sh from the assets."
 
   build:
     name: Build ${{ matrix.target }}

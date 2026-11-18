@@ -358,7 +358,7 @@ The editor is [reedline](https://crates.io/crates/reedline); the usual emacs key
 | Up, Down | Walk through the history. |
 | Ctrl+R | Opens the history explorer. |
 | Ctrl+P | Opens the command palette (in emacs, vi insert and vi normal mode). |
-| Alt+? | Explains why the last command failed (AI). The typed text stays. After a failure, and when the AI is set up, the prompt shows a dim `Alt+? explain` before the result. |
+| Alt+? | Explains why the last command failed (AI). The typed text stays. After a failure, and when the AI is set up, the prompt shows `Alt+? explain` before the result. |
 | Ctrl+C | Drops the half-typed line. |
 | Ctrl+D | On an empty line, leaves the shell. |
 | Ctrl+Z | While a program runs: stops it (the job is kept; `fg` or `bg` continues it). |
@@ -396,7 +396,7 @@ A critical line is not answered with a key: type `yes` or the target.
 
 One row for each job: `%` and its number with the mark (`+` current, `-` previous), the state in the words of
 `jobs` (`Running`, `Stopped`, `Done`, `Exit 3`, `Terminated`), the time since the job was made (`m:ss`; it stops when
-the job ends) and the command. A button that does not fit the chosen job is dim and does nothing.
+the job ends) and the command. An action that does not fit the chosen job is shown in parentheses (`(Stop)`) and does nothing.
 
 | Key | What it does |
 |---|---|
@@ -526,5 +526,5 @@ The keys, with the default in brackets:
 
 ### `[update]`
 
-- `update.check` (`false`): ask GitHub for the latest release about once a day, after the prompt (the time is kept in a stamp file; if that file cannot be written the check can repeat at every start). The news is shown at the next start, in one dim line, at most once in 24 hours. `OMSH_NO_UPDATE_CHECK` turns it off; it never runs in CI. The first-start question sets it. Example: `check = true`.
+- `update.check` (`false`): ask GitHub for the latest release about once a day, after the prompt (the time is kept in a stamp file; if that file cannot be written the check can repeat at every start). The news is shown at the next start, in one line, at most once in 24 hours. `OMSH_NO_UPDATE_CHECK` turns it off; it never runs in CI. The first-start question sets it. Example: `check = true`.
 - `update.channel` (`"stable"`): only `"stable"` is accepted; it is read and not used. Example: `channel = "stable"`.

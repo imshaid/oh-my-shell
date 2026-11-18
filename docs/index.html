@@ -21,12 +21,14 @@
   data-doc="FILE": the passage is copied word for word from that file of the repository.
   data-basis="FILE: sentence": the page's own short words, and the sentence of the docs they rest on.
   A test (crates/omsh-tests/tests/docs.rs) fails when page and docs differ.
-  The terminal block is the screen of the 1.0.0 release, read from a terminal; only its color
-  codes were turned into classes.
+  The terminal blocks are the screen of a 1.1.0 release build (the source of commit 620ae39 with the version
+  number changed), run in a Debian 12 container with the network off, in tmux, with the host's own libc;
+  `tmux capture-pane -e -p` was turned into rows by a script that only turns color codes into classes.
+  The Run it? panel is open when the screen was read, so the cursor is hidden and not drawn.
 -->
 <a class="skip" href="#main">Skip to content</a>
 <header>
-<p class="brand"><span class="mark" aria-hidden="true">❯</span> <strong>Oh My Shell</strong> <a id="version" href="https://github.com/imshaid/oh-my-shell/releases/tag/v1.0.0">1.0.0</a></p>
+<p class="brand"><span class="mark" aria-hidden="true">❯</span> <strong>Oh My Shell</strong> <a id="version" href="https://github.com/imshaid/oh-my-shell/releases/tag/v1.1.0">1.1.0</a></p>
 <nav aria-label="Links">
 <a href="https://github.com/imshaid/oh-my-shell/blob/main/docs/user-guide.md">Guide</a>
 <a href="https://github.com/imshaid/oh-my-shell/releases">Releases</a>
@@ -49,71 +51,63 @@
 <section class="show" aria-label="A real session">
 <figure>
 <pre id="scene-wide" class="term" tabindex="0" role="region" aria-label="Terminal session">
-<span class="l" data-l="1"><span class="b">~/demo</span> <span class="d">(main*)</span></span>
-<span class="l" data-l="2">❯ <span class="c1">gti</span> <span class="c6">status</span></span>
-<span class="l" data-l="3">oh-my-shell: gti: not found</span>
-<span class="l" data-l="4">oh-my-shell: did you mean git?</span>
-<span class="l" data-l="5"><span class="b">~/demo</span> <span class="d">(main*)</span>                                                         <span class="d">✘ 127</span></span>
-<span class="l" data-l="6"><span class="c1">❯ </span>rm <span class="c6">-rf</span> <span class="c6 u">build</span></span>
-<span class="l" data-l="7">oh-my-shell: this command is <span class="c1">dangerous</span>:</span>
-<span class="l" data-l="8"><span class="c1">│</span> rm -rf build</span>
-<span class="l" data-l="9"><span class="c1">│</span> - Deletes files without asking, and folders with everything in them. This</span>
-<span class="l" data-l="10">cannot be undone, unless you answer t to move it to the trash.</span>
-<span class="l" data-l="11"><span class="c1">│</span>   on: <span class="c6">build</span></span>
-<span class="l" data-l="12"><span class="c1">│</span>   touches 3 files and 1 folder (32 B of file data)</span>
-<span class="l" data-l="13"><span class="c1">│</span>   none outside the current folder; none owned by someone else</span>
-<span class="l" data-l="14"><span class="c1">│</span>   <span class="c8 d">for example: build, build/one.o, build/two.o, build/app</span></span>
-<span class="l" data-l="15">Run it? <span class="c4">[y/N]</span> (<span class="c4">t</span> = move to the trash instead) t</span>
-<span class="l" data-l="16">oh-my-shell: moved 1 item to the trash; "undo" brings it back (#1)</span>
-<span class="l" data-l="17"><span class="b">~/demo</span> <span class="d">(main)</span></span>
-<span class="l" data-l="18">❯ undo</span>
-<span class="l" data-l="19">oh-my-shell: undo #1 (2026-11-17 03:51): rm -rf build</span>
-<span class="l" data-l="20">  run in /home/user/demo</span>
-<span class="l" data-l="21">  - bring back /home/user/demo/build</span>
-<span class="l" data-l="22">Undo it? [y/N] y</span>
-<span class="l" data-l="23">restored /home/user/demo/build</span>
-<span class="l" data-l="24"><span class="b">~/demo</span> <span class="d">(main*)</span></span>
-<span class="l" data-l="25">❯ <span class="cur"> </span></span>
+<span class="l" data-l="1"><span class="c6">?</span> ask AI<span class="d"> · </span><span class="c6">Ctrl+P</span> palette<span class="d"> · </span><span class="c6">Ctrl+R</span> history<span class="d"> · </span><span class="c6">omsh tour</span><span class="d"> · </span><span class="c6">omsh ai setup</span></span>
+<span class="l" data-l="2"><span class="c4">~/demo</span> (main*)</span>
+<span class="l" data-l="3">❯ <span class="c1">gti</span> status</span>
+<span class="l" data-l="4">oh-my-shell: gti: not found</span>
+<span class="l" data-l="5">oh-my-shell: did you mean git?</span>
+<span class="l" data-l="6"></span>
+<span class="l" data-l="7"><span class="d">───────────────────────────────────────────────────────────────────────────</span></span>
+<span class="l" data-l="8"><span class="c4">~/demo</span> (main*)                                                         <span class="c1">✘ 127</span></span>
+<span class="l" data-l="9"><span class="c1">❯ </span><span class="c2">rm</span> <span class="c6">-rf</span> <span class="u">build</span></span>
+<span class="l" data-l="10"><span class="c1">╭─</span> Run it? <span class="c1">────────────────────────────────────────────────────────────────</span></span>
+<span class="l" data-l="11"><span class="c1">│</span> this command is <span class="c1">dangerous</span>:</span>
+<span class="l" data-l="12"><span class="c1">│</span> rm -rf build</span>
+<span class="l" data-l="13"><span class="c1">│</span> - Deletes files without asking, and folders with everything in them. This</span>
+<span class="l" data-l="14"><span class="c1">│</span>   cannot be undone, unless you choose Move to trash.</span>
+<span class="l" data-l="15"><span class="c1">│</span>     on: <span class="c6">build</span></span>
+<span class="l" data-l="16"><span class="c1">│</span>     touches 3 files and 1 folder (32 B of file data)</span>
+<span class="l" data-l="17"><span class="c1">│</span>     none outside the current folder; none owned by someone else</span>
+<span class="l" data-l="18"><span class="c1">│</span>     for example: build, build/one.o, build/two.o, build/app</span>
+<span class="l" data-l="19"><span class="c1">│</span></span>
+<span class="l" data-l="20"><span class="c1">│</span> [Move <span class="u">t</span>o trash]  [Run an<span class="u">y</span>way]  <span class="r"> Ca</span><span class="r u">n</span><span class="r">cel</span></span>
+<span class="l" data-l="21"><span class="c1">╰─</span> <span class="c6">←→↑↓</span> move<span class="d"> · </span><span class="c6">Enter</span> choose<span class="d"> · </span><span class="c6">Esc</span> cancel <span class="c1">──────────────────────────────────</span></span>
 </pre>
 <pre id="scene-narrow" class="term" tabindex="0" role="region" aria-label="Terminal session, narrow">
-<span class="l" data-l="1"><span class="b">~/demo</span> <span class="d">(main*)</span></span>
-<span class="l" data-l="2">❯ <span class="c1">gti</span> <span class="c6">status</span></span>
-<span class="l" data-l="3">oh-my-shell: gti: not found</span>
-<span class="l" data-l="4">oh-my-shell: did you mean git?</span>
-<span class="l" data-l="5"><span class="b">~/demo</span> <span class="d">(main*)</span>                             <span class="d">✘ 127</span></span>
-<span class="l" data-l="6"><span class="c1">❯ </span>rm <span class="c6">-rf</span> <span class="c6 u">build</span></span>
-<span class="l" data-l="7">oh-my-shell: this command is <span class="c1">dangerous</span>:</span>
-<span class="l" data-l="8"><span class="c1">│</span> rm -rf build</span>
-<span class="l" data-l="9"><span class="c1">│</span> - Deletes files without asking, and folders wi</span>
-<span class="l" data-l="10">th everything in them. This cannot be undone, un</span>
-<span class="l" data-l="11">less you answer t to move it to the trash.</span>
-<span class="l" data-l="12"><span class="c1">│</span>   on: <span class="c6">build</span></span>
-<span class="l" data-l="13"><span class="c1">│</span>   touches 3 files and 1 folder (32 B of file d</span>
-<span class="l" data-l="14">ata)</span>
-<span class="l" data-l="15"><span class="c1">│</span>   none outside the current folder; none owned</span>
-<span class="l" data-l="16">by someone else</span>
-<span class="l" data-l="17"><span class="c1">│</span>   <span class="c8 d">for example: build, build/one.o, build/two.o</span></span>
-<span class="l" data-l="18"><span class="c8 d">, build/app</span></span>
-<span class="l" data-l="19">Run it? <span class="c4">[y/N]</span> (<span class="c4">t</span> = move to the trash instead) t</span>
-<span class="l" data-l="20">oh-my-shell: moved 1 item to the trash; "undo" b</span>
-<span class="l" data-l="21">rings it back (#1)</span>
-<span class="l" data-l="22"><span class="b">~/demo</span> <span class="d">(main)</span></span>
-<span class="l" data-l="23">❯ undo</span>
-<span class="l" data-l="24">oh-my-shell: undo #1 (2026-11-17 03:51): rm -rf</span>
-<span class="l" data-l="25">build</span>
-<span class="l" data-l="26">  run in /home/user/demo</span>
-<span class="l" data-l="27">  - bring back /home/user/demo/build</span>
-<span class="l" data-l="28">Undo it? [y/N] y</span>
-<span class="l" data-l="29">restored /home/user/demo/build</span>
-<span class="l" data-l="30"><span class="b">~/demo</span> <span class="d">(main*)</span></span>
-<span class="l" data-l="31">❯ <span class="cur"> </span></span>
+<span class="l" data-l="1"><span class="c6">?</span> ask AI<span class="d"> · </span><span class="c6">Ctrl+P</span> palette<span class="d"> · </span><span class="c6">Ctrl+R</span> history<span class="d"> · </span><span class="c6">oms</span></span>
+<span class="l" data-l="2"><span class="c6">h tour</span><span class="d"> · </span><span class="c6">omsh ai setup</span></span>
+<span class="l" data-l="3"><span class="c4">~/demo</span> (main*)</span>
+<span class="l" data-l="4">❯ <span class="c1">gti</span> status</span>
+<span class="l" data-l="5">oh-my-shell: gti: not found</span>
+<span class="l" data-l="6">oh-my-shell: did you mean git?</span>
+<span class="l" data-l="7"></span>
+<span class="l" data-l="8"><span class="d">───────────────────────────────────────────────</span></span>
+<span class="l" data-l="9"><span class="c4">~/demo</span> (main*)                             <span class="c1">✘ 127</span></span>
+<span class="l" data-l="10"><span class="c1">❯ </span><span class="c2">rm</span> <span class="c6">-rf</span> <span class="u">build</span></span>
+<span class="l" data-l="11"><span class="c1">╭─</span> Run it? <span class="c1">────────────────────────────────────</span></span>
+<span class="l" data-l="12"><span class="c1">│</span> this command is <span class="c1">dangerous</span>:</span>
+<span class="l" data-l="13"><span class="c1">│</span> rm -rf build</span>
+<span class="l" data-l="14"><span class="c1">│</span> - Deletes files without asking, and folders</span>
+<span class="l" data-l="15"><span class="c1">│</span>   with everything in them. This cannot be</span>
+<span class="l" data-l="16"><span class="c1">│</span>   undone, unless you choose Move to trash.</span>
+<span class="l" data-l="17"><span class="c1">│</span>     on: <span class="c6">build</span></span>
+<span class="l" data-l="18"><span class="c1">│</span>     touches 3 files and 1 folder (32 B of</span>
+<span class="l" data-l="19"><span class="c1">│</span>     file data)</span>
+<span class="l" data-l="20"><span class="c1">│</span>     none outside the current folder; none</span>
+<span class="l" data-l="21"><span class="c1">│</span>     owned by someone else</span>
+<span class="l" data-l="22"><span class="c1">│</span>     for example: build, build/one.o,</span>
+<span class="l" data-l="23"><span class="c1">│</span>     build/two.o, build/app</span>
+<span class="l" data-l="24"><span class="c1">│</span></span>
+<span class="l" data-l="25"><span class="c1">│</span> [Move <span class="u">t</span>o trash]  [Run an<span class="u">y</span>way]  <span class="r"> Ca</span><span class="r u">n</span><span class="r">cel</span></span>
+<span class="l" data-l="26"><span class="c1">╰─</span> <span class="c6">←→↑↓</span> move<span class="d"> · </span><span class="c6">Enter</span> choose<span class="d"> · </span><span class="c6">Esc</span> cancel <span class="c1">──────</span></span>
 </pre>
-<figcaption>The 1.0.0 release in a Debian 12 container, network off. Only the colors are CSS.</figcaption>
+<figcaption>A 1.1.0 build in a Debian 12 container, network off, with the question open. Only the colors are CSS.</figcaption>
 </figure>
 <ul class="notes">
 <li class="n1" data-doc="docs/user-guide.md">Only the 16 ANSI colors are used, so your terminal theme decides how they look.</li>
 <li class="n2" data-doc="docs/user-guide.md">If a command is not found, a line suggests a similar name.</li>
 <li class="n3" data-doc="docs/user-guide.md">For file commands the panel counts what would be touched: files and folders, total size, how many are outside the current folder or not owned by you, and up to five example paths.</li>
+<li class="n4" data-doc="docs/user-guide.md"><strong>Cancel is chosen when the panel opens</strong>, so pressing Enter at once does nothing.</li>
 </ul>
 </section>
 
@@ -121,7 +115,7 @@
 <div><dt>Safe</dt><dd><span data-doc="README.md">Every typed line is analyzed first.</span> <span data-doc="docs/user-guide.md">It asks; it does not replace care.</span></dd></div>
 <div><dt>Offline first</dt><dd><span data-doc="README.md"><strong>No network access on the normal command path.</strong></span> <span data-doc="README.md"><strong>No telemetry</strong> of any kind.</span></dd></div>
 <div><dt>AI, optional</dt><dd><span data-doc="README.md"><strong>AI is off until you set it up</strong> (<code>omsh ai setup</code>).</span> <span data-doc="README.md">Nothing the AI suggests runs without a preview and your confirmation.</span></dd></div>
-<div id="limits-line"><dt>Limits</dt><dd><span data-doc="README.md"><strong>Status: version 1.0.0.</strong> It is young.</span> <span data-doc="README.md">A POSIX-compatible subset</span> · <span data-doc="docs/report.md">aarch64 was smoke-tested on a CI runner only, not run on our own hardware</span></dd></div>
+<div id="limits-line"><dt>Limits</dt><dd><span data-doc="README.md"><strong>Status: version 1.1.0.</strong> It is young.</span> <span data-doc="README.md">A POSIX-compatible subset</span> · <span data-doc="docs/report.md">aarch64 was smoke-tested on a CI runner only, not run on our own hardware</span></dd></div>
 </dl>
 
 <section class="panels" aria-label="Details">
@@ -186,7 +180,7 @@
 <div data-doc="docs/report.md"><dt>"No network on the normal path" is tested</dt><dd>Running the shell under <code>strace -f</code> and listing every <code>socket</code> and <code>connect</code></dd><dd class="src"><a href="https://github.com/imshaid/oh-my-shell/blob/main/crates/omsh-tests/tests/offline.rs">offline.rs</a></dd></div>
 <div data-doc="docs/report.md"><dt>Testing a terminal program</dt><dd>A pseudo-terminal pair (<code>openpty</code>) with the shell on the slave side</dd><dd class="src"><a href="https://github.com/imshaid/oh-my-shell/blob/main/crates/omsh-tests/src/session.rs">session.rs</a></dd></div>
 </dl>
-<p data-doc="docs/report.md">Eleven crates, about 107,600 lines of Rust</p>
+<p data-doc="docs/report.md">Eleven crates, about 131,200 lines of Rust</p>
 <p>Continuous integration: <span data-doc="docs/report.md">Format, Clippy with warnings as errors, tests (including the pseudo-terminal tests and an <code>ssh</code>/<code>scp</code> login-shell test), tests with the network off, a performance gate, and <code>cargo deny</code> for licenses.</span></p>
 <p data-doc="docs/user-guide.md">The test suite runs the same input through this shell and through <code>/bin/sh</code> (<code>dash</code> on Debian and Ubuntu) and compares the output and the exit status; in a few places it follows bash on purpose.</p>
 <p>The full table is in the <a href="https://github.com/imshaid/oh-my-shell/blob/main/docs/report.md#which-feature-uses-which-operating-system-concept">report</a>. The design page explains <a href="https://github.com/imshaid/oh-my-shell/blob/main/docs/design.md#processes-threads-and-the-fork-path">processes, threads and the fork path</a> and <a href="https://github.com/imshaid/oh-my-shell/blob/main/docs/design.md#the-terminal-and-signals">the terminal and signals</a>.</p>
