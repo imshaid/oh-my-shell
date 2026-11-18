@@ -455,11 +455,9 @@ fn a_prompt_reads_the_git_segment_when_it_is_drawn() {
     };
     let prompt = ShellPrompt::new(&look, &state, String::new).with_git(handle);
     // One prompt object, drawn twice: what the helper learned in between shows the second time.
-    assert_eq!(prompt.render_prompt_left(), "\x1b[2m(main)\x1b[0m\n");
+    assert_eq!(prompt.render_prompt_left(), "(main)\n");
     gate.open();
-    until("the marker", || {
-        prompt.render_prompt_left() == "\x1b[2m(main*)\x1b[0m\n"
-    });
+    until("the marker", || prompt.render_prompt_left() == "(main*)\n");
 }
 
 // --- The real runner, with a fake `git` script ---------------------------------------------

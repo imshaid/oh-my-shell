@@ -205,7 +205,8 @@ when it took over two seconds). The time is the real time of that command; befor
 chip. The `status` and `duration` segments of `prompt.right` are that chip. While the line you type is a request
 to the AI (`?`, `??`, `| ?`) the tag `ask AI` shows in magenta at the right; it is not shown when the AI is
 switched off. Without Unicode the marks are `ok` and `x`, and the rule is made of `-`. `ui.style = "plain"` gives
-the two-line prompt of version 1.0, with no rule and a status only after a failure.
+the two-line prompt of version 1.0, with no rule and a status only after a failure; since 1.1 its text after the
+bold folder is plain, not faint.
 
 **The hint bar** is one line above the first prompt of a session that names the keys worth knowing:
 `? ask AI · Ctrl+P palette · Ctrl+R history · omsh tour` (and `omsh ai setup` while the AI is not set up). With

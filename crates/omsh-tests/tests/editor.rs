@@ -459,7 +459,7 @@ fn sets_a_color(shown: &str) -> bool {
 }
 
 /// No color is forced. After a success the prompt sets no color at all, only bold (the
-/// directory) and dim (the rest of the header). After a failure the symbol is ANSI red
+/// directory); the rest of the header is plain text, not faint. After a failure the symbol is ANSI red
 /// (`ESC[31m`, the terminal's own red) and nothing else is colored.
 #[test]
 fn the_symbol_is_red_only_after_a_failure_and_nothing_else_is_colored() {
@@ -476,8 +476,14 @@ fn the_symbol_is_red_only_after_a_failure_and_nothing_else_is_colored() {
         );
         term.line("false")?;
         term.expect("\x1b[31m$ \x1b[0m", SHORT);
-        // The red is on the symbol alone: the dim status (`x 1`) next to it has none.
-        term.expect("\x1b[2mx 1\x1b[0m", SHORT);
+        // The red is on the symbol alone: the status (`x 1`) next to it is plain text, with no
+        // color and no faint (faint text is hard to read on some terminal themes).
+        term.expect_plain("x 1", SHORT);
+        assert!(
+            !term.transcript().contains("\x1b[2m"),
+            "faint text in the prompt: {:?}",
+            term.transcript()
+        );
         // (The typed word `false` is green now, as every command that exists: that is the
         // command line's color, not the prompt's.)
         let shown = term
@@ -492,16 +498,16 @@ fn the_symbol_is_red_only_after_a_failure_and_nothing_else_is_colored() {
     });
 }
 
-/// `NO_COLOR` removes the red and keeps bold and dim, which are not colors.
+/// `NO_COLOR` removes the red and keeps bold, which is not a color; the status stays words.
 #[test]
-fn no_color_keeps_bold_and_dim() {
+fn no_color_keeps_bold_and_the_words() {
     pty_test(BIN, |ctx| {
         // The prompt of version 1.0 (the spaced one is tested in `look.rs`). The harness sets
         // NO_COLOR=1 by default.
         write_config(ctx, "[ui]\nstyle = \"plain\"\n")?;
         let mut term = ctx.start()?;
         term.line("false")?;
-        term.expect("\x1b[2mx 1\x1b[0m", SHORT);
+        term.expect_plain("x 1", SHORT);
         term.sync("again")?;
         assert!(term.transcript().contains("\x1b[1m"), "bold stays");
         assert!(!sets_a_color(term.transcript()), "{:?}", term.transcript());

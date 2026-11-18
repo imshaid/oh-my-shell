@@ -135,7 +135,6 @@ impl Tones {
 const RESET: &str = "\x1b[0m";
 /// SGR codes: bold and dim (faint).
 const BOLD: &str = "1";
-const DIM: &str = "2";
 
 fn styled(code: &str, text: &str) -> String {
     format!("\x1b[{code}m{text}{RESET}")
@@ -152,9 +151,13 @@ impl ShellPrompt {
         });
         // One segment as text; `None` when it has nothing to say.
         let text_of = |segment: Segment| -> Option<String> {
+            // Secondary text that carries information (a virtual environment, how the last command
+            // ended, how long it took, the time) is at full weight in both styles: faint text is
+            // hard to read on some terminal themes. In the plain style the folder is bold and these
+            // follow it, so position and the bold folder tell them apart.
             let dim = |text: &str| match &tones {
                 Some(tones) => tones.write(Tone::Muted, text),
-                None => styled(DIM, text),
+                None => text.to_owned(),
             };
             Some(match segment {
                 Segment::Cwd => {
@@ -309,7 +312,7 @@ impl ShellPrompt {
             let text = snapshot.text()?;
             Some(match &self.tones {
                 Some(tones) => tones.write(Tone::Muted, &text),
-                None => styled(DIM, &text),
+                None => text,
             })
         };
         pieces
@@ -588,8 +591,73 @@ mod tests {
         )
     }
 
+    /// Faint text is for decoration. Whatever the style, the colors and the segments, the prompt
+    /// writes no faint run (SGR 2) around a letter or a digit: faint text is hard to read on some
+    /// terminal themes.
     #[test]
-    fn the_directory_is_bold_and_the_rest_of_the_header_is_dim() {
+    fn no_prompt_writes_faint_text() {
+        let all_left = [Segment::Cwd, Segment::Venv, Segment::Git];
+        let all_right = [Segment::Status, Segment::Duration, Segment::Time];
+        let mut s = ran(3, Duration::from_secs(9));
+        s.virtual_env = Some("/x/env".into());
+        s.explain_hint = true;
+        for spaced_style in [false, true] {
+            for color in [true, false] {
+                let mut l = if spaced_style {
+                    spaced(&all_left, &all_right)
+                } else {
+                    look(&all_left, &all_right)
+                };
+                l.color = color;
+                l.caps = terminal(color, true);
+                let p = build(&l, &s)
+                    .with_git(Handle::fixed(Snapshot {
+                        head: on("topic"),
+                        dirt: Dirtiness::Dirty,
+                    }))
+                    .with_ai_flag(Arc::new(AtomicBool::new(true)));
+                let text = everything(&p);
+                assert_eq!(
+                    faint_letters(&text),
+                    None,
+                    "spaced {spaced_style}, color {color}"
+                );
+                assert!(plain(&text).contains("topic"), "{text:?}");
+            }
+        }
+    }
+
+    /// The first letter or digit written while SGR 2 is on, if any.
+    fn faint_letters(text: &str) -> Option<String> {
+        let mut faint = false;
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                let mut params = String::new();
+                for next in chars.by_ref() {
+                    if next == 'm' {
+                        break;
+                    }
+                    if next != '[' {
+                        params.push(next);
+                    }
+                }
+                let list: Vec<&str> = params.split(';').collect();
+                if params.is_empty() || list.contains(&"0") {
+                    faint = false;
+                }
+                if list.contains(&"2") {
+                    faint = true;
+                }
+            } else if faint && c.is_alphanumeric() {
+                return Some(c.to_string());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_directory_is_bold_and_the_rest_of_the_header_is_at_full_weight() {
         let mut s = state();
         s.conda_env = Some("base".into());
         s.last_status = 2;
@@ -601,14 +669,8 @@ mod tests {
             ),
             &s,
         );
-        assert_eq!(
-            p.render_prompt_left(),
-            "\x1b[1m~/code\x1b[0m \x1b[2m[base]\x1b[0m\n"
-        );
-        assert_eq!(
-            p.render_prompt_right(),
-            "\x1b[2m✘ 2\x1b[0m \x1b[2m5s\x1b[0m \x1b[2m12:34\x1b[0m"
-        );
+        assert_eq!(p.render_prompt_left(), "\x1b[1m~/code\x1b[0m [base]\n");
+        assert_eq!(p.render_prompt_right(), "✘ 2 5s 12:34");
     }
 
     fn toast_handle() -> ToastHandle {
@@ -671,9 +733,9 @@ mod tests {
     }
 
     #[test]
-    fn the_git_branch_is_dim() {
+    fn the_git_branch_is_at_full_weight() {
         let p = with_git(on("topic"), Dirtiness::Clean, &[Segment::Git]);
-        assert_eq!(p.render_prompt_left(), "\x1b[2m(topic)\x1b[0m\n");
+        assert_eq!(p.render_prompt_left(), "(topic)\n");
     }
 
     #[test]
@@ -780,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn no_color_removes_the_red_and_keeps_bold_and_dim() {
+    fn no_color_removes_the_red_and_keeps_bold() {
         let mut l = look(&[Segment::Cwd], &[Segment::Duration]);
         l.color = false;
         let mut s = state();
@@ -789,7 +851,11 @@ mod tests {
         let p = build(&l, &s);
         assert_eq!(indicator(&p), "❯ ");
         assert!(p.render_prompt_left().contains("\x1b[1m"), "bold stays");
-        assert!(p.render_prompt_right().contains("\x1b[2m"), "dim stays");
+        assert_eq!(
+            p.render_prompt_right(),
+            "9s",
+            "words, no escape code at all"
+        );
         assert!(!has_color(&everything(&p)));
     }
 
