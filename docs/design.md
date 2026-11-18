@@ -236,6 +236,11 @@ terminal.
   questions, the info line and the details of a call, the setup lists, the first-run questions, `omsh status`, the jobs
   table and the panels of a running plan. The look of the prompt (the rule, the status chip, the hint bar, the OSC 133
   marks) is [`shell_look.rs`](../crates/omsh-ui/src/shell_look.rs).
+- **The scene on the website.** [`docs/index.html`](index.html) shows two captures of the 1.1.0 release build of commit f5ed352
+  (`cargo build --release`), run in tmux in a Debian 12 container with the network off, through the host's own C library and
+  loader (the container's was older than the one the file was built against). They are `tmux capture-pane -e -p` at two window
+  widths, turned into rows by a script that only turns color codes into classes and adds no character. The Run it? panel was open
+  when the screen was read, so no cursor is drawn.
 - **Full-screen views.** The history explorer, the palette and the settings view share one loop
   ([`view/run.rs`](../crates/omsh-ui/src/view/run.rs)) built on `ratatui` on the alternate screen, with its own fuzzy matcher
   ([`fuzzy.rs`](../crates/omsh-ui/src/fuzzy.rs)).

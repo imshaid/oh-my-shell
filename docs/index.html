@@ -21,10 +21,12 @@
   data-doc="FILE": the passage is copied word for word from that file of the repository.
   data-basis="FILE: sentence": the page's own short words, and the sentence of the docs they rest on.
   A test (crates/omsh-tests/tests/docs.rs) fails when page and docs differ.
-  The terminal blocks are the screen of a 1.1.0 release build (the source of commit 620ae39 with the version
-  number changed), run in a Debian 12 container with the network off, in tmux, with the host's own libc;
-  `tmux capture-pane -e -p` was turned into rows by a script that only turns color codes into classes.
-  The Run it? panel is open when the screen was read, so the cursor is hidden and not drawn.
+  The terminal blocks are the screen of the 1.1.0 release build of commit f5ed352 (built with the cargo release profile),
+  run in tmux in a Debian 12 container with the network off, through the host's own C library and loader (the
+  container's was older than the one the file was built against). The two blocks are `tmux capture-pane -e -p`
+  at two window widths, turned into rows by a script that only turns color codes into classes and adds
+  no character. The Run it? panel is open when the screen was read, so the cursor is hidden and not drawn.
+  The same text is in docs/design.md, section "The screen".
 -->
 <a class="skip" href="#main">Skip to content</a>
 <header>
@@ -101,7 +103,7 @@
 <span class="l" data-l="25"><span class="c1">│</span> [Move <span class="u">t</span>o trash]  [Run an<span class="u">y</span>way]  <span class="r"> Ca</span><span class="r u">n</span><span class="r">cel</span></span>
 <span class="l" data-l="26"><span class="c1">╰─</span> <span class="c6">←→↑↓</span> move<span class="d"> · </span><span class="c6">Enter</span> choose<span class="d"> · </span><span class="c6">Esc</span> cancel <span class="c1">──────</span></span>
 </pre>
-<figcaption>A 1.1.0 build in a Debian 12 container, network off, with the question open. Only the colors are CSS.</figcaption>
+<figcaption>The 1.1.0 build of commit f5ed352, in tmux in a Debian 12 container with the network off, with the question open. Only the colors are CSS.</figcaption>
 </figure>
 <ul class="notes">
 <li class="n1" data-doc="docs/user-guide.md">Only the 16 ANSI colors are used, so your terminal theme decides how they look.</li>
