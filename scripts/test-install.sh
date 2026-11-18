@@ -10,6 +10,10 @@ binary=${1:-$root/target/release/oh-my-shell}
 [ -x "$binary" ] || { echo "test-install.sh: no binary at $binary (cargo build --release -p omsh-cli)" >&2; exit 2; }
 installer=$root/scripts/install.sh
 
+# The installer draws no motion when CI is set (the shell's rule), and GitHub runners set it.
+# The tests of the spinner and the hidden cursor need it unset; one check below sets it on purpose.
+unset CI
+
 case "$(uname -m)" in
     x86_64 | amd64) target=x86_64-unknown-linux-gnu ;;
     aarch64 | arm64) target=aarch64-unknown-linux-gnu ;;
@@ -252,6 +256,8 @@ if command -v script >/dev/null 2>&1; then
 
     on_tty still "LANG=C.UTF-8 OMSH_MOTION=off"
     check "OMSH_MOTION=off: no spinner and the cursor is never hidden" sh -c "! grep -q '${esc}\\[?25l' '$t/tty-still' && grep -q '✓' '$t/tty-still'"
+    on_tty still-ci "LANG=C.UTF-8 CI=true"
+    check "CI=true: no spinner and the cursor is never hidden" sh -c "! grep -q '${esc}\\[?25l' '$t/tty-still-ci' && grep -q '✓' '$t/tty-still-ci'"
     on_tty dumb "LANG=C.UTF-8 TERM=dumb"
     check "TERM=dumb: plain lines, no escape" sh -c "! grep -q '${esc}' '$t/tty-dumb' && grep -q 'Checksum ok' '$t/tty-dumb'"
 
