@@ -51,7 +51,7 @@ More in the [user guide](docs/user-guide.md#install): the options, updating with
   `case`, functions, aliases, the usual expansions, job control (`&`, `jobs`, `fg`, `bg`, Ctrl+Z). A POSIX-compatible subset,
   compared with `/bin/sh` by the tests; syntax it does not support (arrays, `[[ ]]`, ...) is reported with the place marked.
   `-c`, scripts and piped input go to `/bin/sh`, so `ssh host cmd` and `scp` keep working.
-- **While you type.** Syntax colors, gray hints from your history, Tab completion, abbreviations, emacs or vi keys, a prompt with
+- **While you type.** Syntax colors, faint hints from your history, Tab completion, abbreviations, emacs or vi keys, a prompt with
   the git branch, `Ctrl+R` history explorer, `Ctrl+P` command palette, a settings view, `j` to jump to a folder you used.
 - **Panels.** On a terminal, the questions the shell asks (a dangerous command, `undo`, an AI plan, the jobs list,
   a plan step you paused with Ctrl+Z) are small panels with buttons and keys, and the safe answer is chosen when

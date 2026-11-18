@@ -181,7 +181,7 @@ that holds an expansion (`ls$x`) cannot be checked before it runs, so it is neit
 ANSI colors are used, so your terminal theme decides how they look. `NO_COLOR` is respected. Any of these can be
 changed in a theme file (see "Themes").
 
-**Hints.** Gray text after the cursor suggests the rest of a command from your history, with commands from the
+**Hints.** Faint text after the cursor suggests the rest of a command from your history, with commands from the
 current folder first. Right or End takes all of it, Alt+F one word.
 
 **Completion.** Tab completes commands (programs, builtins, functions, aliases), paths, variables and git

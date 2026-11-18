@@ -67,6 +67,37 @@ fn a_hint_from_history_is_shown_and_right_accepts_it() {
     });
 }
 
+/// The suggestion after the cursor is faint and nothing else: no bright black, which some terminal
+/// themes draw like the background.
+#[test]
+fn a_hint_is_faint_alone_with_no_bright_black() {
+    pty_test(BIN, |ctx| {
+        // The harness turns colors off unless asked: an empty `NO_COLOR` is "not set".
+        let mut term = ctx.launch().env("NO_COLOR", "").start()?;
+        term.command("echo hint-$((1+1))")?;
+        term.expect("hint-2", SHORT);
+        wait_until_stored(&mut term, "echo hint-$((1+1))", "hint-")?;
+        let from = term.transcript().len();
+        term.write_bytes(b"echo hi")?;
+        term.expect_plain("echo hint-$((1+1))", SHORT);
+        let drawn = term.transcript()[from..].to_owned();
+        let at = drawn
+            .find("nt-$((1+1))")
+            .unwrap_or_else(|| panic!("the suggestion was not drawn:\n{drawn:?}"));
+        let before = &drawn[..at];
+        assert!(
+            before.ends_with("\x1b[2m"),
+            "the suggestion is not drawn faint:\n{drawn:?}"
+        );
+        assert!(
+            !drawn.contains("\x1b[90m") && !drawn.contains("\x1b[2;90m") && !drawn.contains(";90m"),
+            "bright black in the suggestion:\n{drawn:?}"
+        );
+        term.write_bytes(b"\x03")?;
+        term.quit()
+    });
+}
+
 /// A command run in this directory comes before a newer one run in another directory.
 #[test]
 fn a_command_from_this_directory_is_hinted_first() {

@@ -353,7 +353,7 @@ The editor is [reedline](https://crates.io/crates/reedline); the usual emacs key
 | Enter | Runs the line, or waits for more when the command is unfinished (an open quote, `if` without `fi`). |
 | Tab | Opens the completion menu; Tab again moves to the next choice (emacs and vi insert mode, not vi normal mode). |
 | Shift+Tab | Moves to the previous choice (same modes). |
-| Right, End | Takes the whole gray hint. |
+| Right, End | Takes the whole faint hint. |
 | Alt+F | Takes one word of the hint. |
 | Up, Down | Walk through the history. |
 | Ctrl+R | Opens the history explorer. |
@@ -481,7 +481,7 @@ The keys, with the default in brackets:
 ### `[editor]`
 
 - `editor.mode` (`"emacs"`): `"emacs"` or `"vi"`. Example: `mode = "vi"`.
-- `editor.hints` (`true`): gray suggestions from the history. Example: `hints = false`.
+- `editor.hints` (`true`): faint suggestions from the history. Example: `hints = false`.
 - `editor.abbreviations` (none): a table of short word to long text. Example: `[editor.abbreviations]` then `gst = "git status"`.
 
 ### `[prompt]`

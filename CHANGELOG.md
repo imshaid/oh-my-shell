@@ -75,8 +75,8 @@ no network use on the normal command path.
   words, timers, the line under an AI answer, labels in panels) is now drawn in your terminal's own text color at
   full weight. Faint is left for decoration only: rules, separators and the empty part of a bar. Where dimness
   alone used to tell two groups apart, a position or a `·` does it now, and an action that does not fit a job is
-  written in parentheses. The comment colors and the gray suggestion after the cursor are unchanged, and so is
-  `ui.style = "plain"`.
+  written in parentheses. The suggestion after the cursor is faint and nothing else (it was faint bright black
+  before). The comment colors are unchanged, and so is `ui.style = "plain"`.
 - A report said a stopped job that ends through the jobs panel's Kill, or when the shell exits, is shown as
   `Done`. It could not be reproduced: the table says `Exit 9` or `Terminated`, as it should. Three tests now pin
   that. If you see it, the exact steps would help.

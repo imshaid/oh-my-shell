@@ -412,11 +412,13 @@ impl Default for Theme {
         );
         theme.set(Role::Escape, RoleStyle::color(AnsiColor::Cyan));
         theme.set(Role::Expansion, RoleStyle::color(AnsiColor::Cyan));
+        // The gray suggestion after the cursor must look unlike typed text, so it is faint. Faint
+        // alone: bright black can be drawn like the background on some terminal themes.
         theme.set(
             Role::Autosuggestion,
             RoleStyle {
                 dim: true,
-                ..RoleStyle::color(AnsiColor::BrightBlack)
+                ..RoleStyle::PLAIN
             },
         );
         theme.set(
@@ -525,7 +527,12 @@ mod tests {
         assert_eq!(color(Role::Redirection), Some(AnsiColor::Magenta));
         assert_eq!(color(Role::End), Some(AnsiColor::Magenta));
         assert_eq!(color(Role::Comment), Some(AnsiColor::Red));
-        assert_eq!(color(Role::Autosuggestion), Some(AnsiColor::BrightBlack));
+        assert_eq!(
+            color(Role::Autosuggestion),
+            None,
+            "faint alone, no bright black"
+        );
+        assert!(theme.get(Role::Autosuggestion).dim);
         let path = theme.get(Role::ValidPath);
         assert!(path.underline && path.color.is_none(), "keeps its color");
     }
@@ -542,14 +549,12 @@ mod tests {
 
     #[test]
     fn the_default_theme_prefers_normal_colors() {
-        // The one bright color is the autosuggestion (bright black), as the owner asked.
+        // No role uses a bright color: bright black in particular can be drawn like the
+        // background on some terminal themes.
         let theme = Theme::default();
         for role in Role::ALL {
             if let Some(color) = theme.get(role).color {
-                assert!(
-                    color.sgr_foreground() < 90 || role == Role::Autosuggestion,
-                    "{role:?} uses {color:?}"
-                );
+                assert!(color.sgr_foreground() < 90, "{role:?} uses {color:?}");
             }
         }
     }
