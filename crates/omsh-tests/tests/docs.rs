@@ -4,8 +4,9 @@
 //! The pages link to source files by relative path (`docs/report.md` has a table of them), so
 //! this test also keeps those links from going stale when a file is moved or renamed.
 //!
-//! The second half checks the website (`docs/index.html`, `docs/style.css`): it loads nothing
-//! but its own style sheet, links only into this repository, and says what the docs say.
+//! The second half checks the website (`docs/index.html` and `docs/fonts/`): it loads nothing from
+//! another host, has one small script and says so, links only into this repository, and says
+//! what the docs say.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -171,23 +172,16 @@ fn public_pages_do_not_mention_private_files() {
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
-// -- The website: docs/index.html and docs/style.css ------------------------------------------
+// -- The website: docs/index.html and docs/fonts/ ---------------------------------------------
 //
-// The page is served by GitHub Pages from `docs/`. These tests keep it static (nothing loaded
-// but its own style sheet), keep its links and its install command true, and keep its claims
-// equal to the documentation: a passage marked `data-doc="FILE"` must be in FILE word for word.
+// The page is served by GitHub Pages from `docs/`. It is one HTML file with its style inline,
+// six self-hosted font files and one small inline script. These tests keep it that way: nothing
+// is loaded from another host, the script does nothing but copy the command and move a light,
+// the links and the install command are true, and what the page claims is in the documentation.
 
-/// The address of the repository; the only site the page may link to.
+/// The address of the repository; the only site the page may name.
 const REPO: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// The files a `data-doc` attribute may name.
-const SOURCES: [&str; 4] = [
-    "README.md",
-    "docs/user-guide.md",
-    "docs/design.md",
-    "docs/report.md",
-];
 
 fn site(name: &str) -> String {
     read(&root().join("docs").join(name))
@@ -197,12 +191,17 @@ fn site(name: &str) -> String {
 #[derive(Debug)]
 enum Node {
     Open(String, Vec<(String, String)>),
-    Close(String),
+    Close,
     Text(String),
+    /// The content of a `<script>` or `<style>`: code, kept as it is written.
+    Raw(String),
 }
 
-/// Elements that have no closing tag.
-const VOID: [&str; 2] = ["meta", "link"];
+/// Elements that have no closing tag (the shapes of an SVG are written `<path .../>`).
+const VOID: [&str; 4] = ["meta", "link", "rect", "path"];
+
+/// Elements whose content is code, not markup.
+const RAW: [&str; 2] = ["script", "style"];
 
 /// `&amp;` and its four friends turned back into characters. Any other `&` is a panic.
 fn decode(text: &str) -> String {
@@ -232,7 +231,8 @@ fn decode(text: &str) -> String {
 }
 
 /// The page as a list of tags and text. A strict reader on purpose: attribute values must be in
-/// double quotes, and anything it does not understand is a panic, so markup cannot slip past it.
+/// double quotes (a bare word such as `hidden` is fine), and anything it does not understand is a
+/// panic, so markup cannot slip past it. Attribute names are read in lower case.
 fn parse(html: &str) -> Vec<Node> {
     let mut nodes = Vec::new();
     let mut rest = html;
@@ -256,10 +256,11 @@ fn parse(html: &str) -> Vec<Node> {
         if tag.eq_ignore_ascii_case("!doctype html") {
             continue;
         }
-        if let Some(name) = tag.strip_prefix('/') {
-            nodes.push(Node::Close(name.to_owned()));
+        if tag.starts_with('/') {
+            nodes.push(Node::Close);
             continue;
         }
+        let tag = tag.strip_suffix('/').unwrap_or(tag).trim_end();
         let (name, mut attributes) = tag.split_once(char::is_whitespace).unwrap_or((tag, ""));
         assert!(
             !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()),
@@ -271,20 +272,39 @@ fn parse(html: &str) -> Vec<Node> {
             if attributes.is_empty() {
                 break;
             }
-            let (key, after) = attributes
-                .split_once("=\"")
-                .unwrap_or_else(|| panic!("an attribute without a quoted value in <{tag}>"));
+            let key_end = attributes
+                .find(|c: char| c == '=' || c.is_whitespace())
+                .unwrap_or(attributes.len());
+            let (key, after) = attributes.split_at(key_end);
             assert!(
-                !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                !key.is_empty() && key.chars().all(|c| c.is_ascii_alphabetic() || c == '-'),
                 "an attribute the reader does not understand in <{tag}>"
             );
-            let (value, after) = after
-                .split_once('"')
-                .unwrap_or_else(|| panic!("an open quote in <{tag}>"));
-            attrs.push((key.to_owned(), decode(value)));
-            attributes = after;
+            let key = key.to_ascii_lowercase();
+            if let Some(after) = after.strip_prefix("=\"") {
+                let (value, after) = after
+                    .split_once('"')
+                    .unwrap_or_else(|| panic!("an open quote in <{tag}>"));
+                attrs.push((key, decode(value)));
+                attributes = after;
+            } else {
+                assert!(
+                    !after.starts_with('='),
+                    "an attribute value without double quotes in <{tag}>"
+                );
+                attrs.push((key, String::new()));
+                attributes = after;
+            }
         }
         nodes.push(Node::Open(name.to_owned(), attrs));
+        if RAW.contains(&name) {
+            let close = format!("</{name}>");
+            let end = rest
+                .find(&close)
+                .unwrap_or_else(|| panic!("<{name}> is never closed"));
+            nodes.push(Node::Raw(rest[..end].to_owned()));
+            rest = &rest[end..];
+        }
     }
     assert!(rest.trim().is_empty(), "text after the last tag");
     nodes
@@ -310,7 +330,7 @@ fn end_of(nodes: &[Node], open: usize) -> usize {
     for (index, node) in nodes.iter().enumerate().skip(open) {
         match node {
             Node::Open(name, _) if !VOID.contains(&name.as_str()) => depth += 1,
-            Node::Close(_) => depth -= 1,
+            Node::Close => depth -= 1,
             _ => {}
         }
         if depth == 0 {
@@ -320,73 +340,63 @@ fn end_of(nodes: &[Node], open: usize) -> usize {
     panic!("an element that is never closed");
 }
 
-/// The text of `nodes`. With `markdown`, `<code>` reads as a backtick and `<strong>` as `**`,
-/// which is how the same words are written in the Markdown files.
-fn text_of(nodes: &[Node], markdown: bool) -> String {
-    let mut out = String::new();
-    for node in nodes {
-        match node {
-            Node::Text(text) => out.push_str(text),
-            Node::Open(name, _) | Node::Close(name) if markdown => match name.as_str() {
-                "code" => out.push('`'),
-                "strong" => out.push_str("**"),
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-    out
+/// The element with this `id`, from its opening tag to its closing tag.
+fn element<'a>(nodes: &'a [Node], id: &str) -> &'a [Node] {
+    let open = nodes
+        .iter()
+        .position(|node| attr(node, "id") == Some(id))
+        .unwrap_or_else(|| panic!("no element with id {id} on the page"));
+    &nodes[open..end_of(nodes, open)]
 }
 
-/// White space folded to single blanks, and the `\|` of a Markdown table cell read as `|`.
-fn fold(text: &str) -> String {
-    text.replace("\\|", "|")
+/// The first element called `name`.
+fn first<'a>(nodes: &'a [Node], name: &str) -> &'a [Node] {
+    let open = nodes
+        .iter()
+        .position(|node| is_open(node, name))
+        .unwrap_or_else(|| panic!("no <{name}> on the page"));
+    &nodes[open..end_of(nodes, open)]
+}
+
+/// The words a visitor can read: the text of `nodes`, never the code of a script or a style.
+fn text_of(nodes: &[Node]) -> String {
+    nodes
+        .iter()
+        .filter_map(|node| match node {
+            Node::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The code inside every `<script>` or `<style>` (`name`).
+fn code_of(nodes: &[Node], name: &str) -> Vec<String> {
+    nodes
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [open, Node::Raw(code)] if is_open(open, name) => Some(code.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The page's style with every blank removed, so a rule can be looked for as one word.
+fn compact_css(nodes: &[Node]) -> String {
+    code_of(nodes, "style")
+        .concat()
         .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
 }
 
-/// What a `data-doc` element quotes: its text, or for a row its cells joined the way a Markdown
-/// table row has them. Cells with class `src` hold links, not quoted words.
-fn quoted(element: &[Node]) -> String {
-    let mut cells = Vec::new();
-    let mut index = 0;
-    while index < element.len() {
-        let node = &element[index];
-        if is_open(node, "td") || is_open(node, "dt") || is_open(node, "dd") {
-            let end = end_of(element, index);
-            if attr(node, "class") != Some("src") {
-                cells.push(fold(&text_of(&element[index..end], true)));
-            }
-            index = end;
-        } else {
-            index += 1;
-        }
-    }
-    if cells.is_empty() {
-        fold(&text_of(element, true))
-    } else {
-        cells.join(" | ")
-    }
+/// White space folded to single blanks.
+fn fold(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The page's own words: its text outside the quoted passages and outside `<pre>`.
-fn own_text(nodes: &[Node]) -> String {
-    let mut out = String::new();
-    let mut index = 0;
-    while index < nodes.len() {
-        let node = &nodes[index];
-        if attr(node, "data-doc").is_some() || is_open(node, "pre") {
-            index = end_of(nodes, index);
-            out.push(' ');
-            continue;
-        }
-        if let Node::Text(text) = node {
-            out.push_str(text);
-        }
-        index += 1;
-    }
-    out
+/// `text` in lower case with the Markdown marks (`*` and a backtick) taken out and white space
+/// folded, so that a sentence of the page can be looked for in a Markdown file.
+fn plain(text: &str) -> String {
+    fold(&text.replace(['*', '`'], "")).to_lowercase()
 }
 
 /// The first fenced block of `text` that holds `needle`, without its fences.
@@ -400,15 +410,53 @@ fn fenced_block_with(text: &str, needle: &str) -> String {
         .unwrap_or_else(|| panic!("no fenced block with {needle}"))
 }
 
+/// Everything inside `url(...)` in `css`.
+fn urls(css: &str) -> Vec<String> {
+    css.split("url(")
+        .skip(1)
+        .map(|rest| {
+            rest.split_once(')')
+                .unwrap_or_else(|| panic!("a url( without its )"))
+                .0
+                .trim_matches(['"', '\''])
+                .to_owned()
+        })
+        .collect()
+}
+
+/// What is inside the braces that open `css` right after `start` (nested braces are counted).
+fn block_after<'a>(css: &'a str, start: &str) -> &'a str {
+    let from = css
+        .find(start)
+        .unwrap_or_else(|| panic!("the style has no {start}"))
+        + start.len();
+    let mut depth = 1;
+    for (offset, char) in css[from..].char_indices() {
+        match char {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            return &css[from..from + offset];
+        }
+    }
+    panic!("the block after {start} is never closed");
+}
+
 #[test]
-fn the_site_is_static_files() {
+fn the_site_is_one_page_with_its_own_fonts() {
     let docs = root().join("docs");
-    for name in ["index.html", "style.css", ".nojekyll"] {
+    for name in ["index.html", ".nojekyll", "fonts/LICENSE.txt"] {
         assert!(docs.join(name).is_file(), "docs/{name} is missing");
     }
     assert!(
         read(&docs.join(".nojekyll")).is_empty(),
         "docs/.nojekyll must be empty"
+    );
+    assert!(
+        !docs.join("style.css").exists(),
+        "docs/style.css is not used: the page has its style inline"
     );
     let html = site("index.html");
     assert!(html.starts_with("<!doctype html>\n<html lang=\"en\">"));
@@ -416,92 +464,46 @@ fn the_site_is_static_files() {
     let count = |name: &str| nodes.iter().filter(|node| is_open(node, name)).count();
     assert_eq!(count("title"), 1);
     assert_eq!(count("h1"), 1);
+    assert_eq!(count("style"), 1);
     let description = nodes
         .iter()
         .find(|node| attr(node, "name") == Some("description"))
         .and_then(|node| attr(node, "content"))
         .unwrap_or_else(|| panic!("no meta description"));
-    assert!(
-        fold(&read(&root().join("README.md"))).contains(&fold(description)),
-        "the meta description is not the README's first paragraph"
-    );
-    // What a link preview shows is the same README text, not a second wording.
-    let preview = nodes
-        .iter()
-        .find(|node| attr(node, "property") == Some("og:description"))
-        .and_then(|node| attr(node, "content"))
-        .unwrap_or_else(|| panic!("no og:description"));
-    assert_eq!(preview, description);
+    assert!(!description.trim().is_empty());
 
-    // The panels are `<details>` that share one name (the browser then opens one at a time),
-    // each with its `<summary>` first: nothing here needs a script.
-    let mut panels = 0;
-    for (index, node) in nodes.iter().enumerate() {
-        if !is_open(node, "details") {
-            continue;
-        }
-        panels += 1;
-        assert_eq!(
-            attr(node, "name"),
-            Some("panel"),
-            "a <details> without name=\"panel\""
-        );
-        let first = nodes[index + 1..]
-            .iter()
-            .find(|node| !matches!(node, Node::Text(text) if text.trim().is_empty()));
-        assert!(
-            first.is_some_and(|node| is_open(node, "summary")),
-            "a <details> that does not begin with its <summary>"
-        );
-    }
-    assert!(panels >= 4, "only {panels} panels");
-    let css = site("style.css");
-    for scheme in ["prefers-color-scheme: light", "prefers-reduced-motion"] {
-        assert!(css.contains(scheme), "style.css has no rule for {scheme}");
-    }
+    // Every font file the style names is on disk, and every font file on disk is named.
+    let named: BTreeSet<String> = urls(&code_of(&nodes, "style").concat())
+        .iter()
+        .map(|url| {
+            url.strip_prefix("fonts/")
+                .unwrap_or_else(|| panic!("a url that is not in docs/fonts/: {url}"))
+                .to_owned()
+        })
+        .collect();
+    let on_disk: BTreeSet<String> = fs::read_dir(docs.join("fonts"))
+        .unwrap_or_else(|error| panic!("docs/fonts cannot be read: {error}"))
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".woff2"))
+        .collect();
+    assert!(!named.is_empty(), "the page names no font file");
+    assert_eq!(
+        named, on_disk,
+        "the fonts the style names and the files differ"
+    );
+    assert!(
+        read(&docs.join("fonts/LICENSE.txt")).contains("SIL OPEN FONT LICENSE"),
+        "docs/fonts/LICENSE.txt does not hold the font license"
+    );
 }
 
 #[test]
-fn the_site_loads_nothing_but_its_style_sheet() {
-    const ELEMENTS: [&str; 36] = [
-        "html",
-        "head",
-        "meta",
-        "title",
-        "link",
-        "body",
-        "a",
-        "header",
-        "nav",
-        "main",
-        "footer",
-        "section",
-        "h1",
-        "h2",
-        "h3",
-        "p",
-        "ul",
-        "li",
-        "pre",
-        "code",
-        "span",
-        "strong",
-        "figure",
-        "figcaption",
-        "table",
-        "thead",
-        "tbody",
-        "tr",
-        "th",
-        "td",
-        "dl",
-        "dt",
-        "dd",
-        "div",
-        "details",
-        "summary",
+fn the_site_loads_nothing_from_another_host() {
+    const ELEMENTS: [&str; 23] = [
+        "html", "head", "meta", "title", "link", "style", "script", "body", "div", "header", "nav",
+        "a", "main", "h1", "h2", "p", "span", "button", "svg", "rect", "path", "footer", "code",
     ];
-    const ATTRIBUTES: [&str; 14] = [
+    const ATTRIBUTES: [&str; 23] = [
         "lang",
         "charset",
         "name",
@@ -510,26 +512,26 @@ fn the_site_loads_nothing_but_its_style_sheet() {
         "href",
         "id",
         "class",
-        "tabindex",
-        "role",
+        "style",
+        "type",
+        "hidden",
         "aria-label",
-        "scope",
         "aria-hidden",
-        "data-basis",
+        "width",
+        "height",
+        "viewbox",
+        "fill",
+        "stroke",
+        "stroke-width",
+        "d",
+        "x",
+        "y",
+        "rx",
     ];
-    let nodes = parse(&site("index.html"));
-    // The rows of the terminal blocks carry their number; nothing else may.
-    let scenes: Vec<(usize, usize)> = nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| {
-            is_open(node, "pre") && attr(node, "id").is_some_and(|id| id.starts_with("scene"))
-        })
-        .map(|(index, _)| (index, end_of(&nodes, index)))
-        .collect();
-    assert!(!scenes.is_empty(), "no terminal block on the page");
+    let html = site("index.html");
+    let nodes = parse(&html);
     let mut links = Vec::new();
-    for (index, node) in nodes.iter().enumerate() {
+    for node in &nodes {
         let Node::Open(name, attrs) = node else {
             continue;
         };
@@ -537,18 +539,15 @@ fn the_site_loads_nothing_but_its_style_sheet() {
             ELEMENTS.contains(&name.as_str()),
             "<{name}> is not allowed on the page"
         );
-        for (key, _) in attrs {
-            let allowed = match key.as_str() {
-                "data-doc" => true,
-                "property" | "media" => name == "meta",
-                "data-l" => scenes
-                    .iter()
-                    .any(|(start, end)| (*start..*end).contains(&index)),
-                key => ATTRIBUTES.contains(&key),
-            };
+        for (key, value) in attrs {
             assert!(
-                allowed,
-                "the attribute {key} (on <{name}>) is not allowed there"
+                ATTRIBUTES.contains(&key.as_str()),
+                "the attribute {key} (on <{name}>) is not allowed (no src, srcset, action ...)"
+            );
+            // A style attribute may not fetch anything.
+            assert!(
+                key != "style" || (!value.contains("url(") && !value.contains("@import")),
+                "a style attribute fetches something: {value}"
             );
         }
         // A tag in the head may describe the page in words; it may not name an address.
@@ -556,7 +555,7 @@ fn the_site_loads_nothing_but_its_style_sheet() {
             && let Some(content) = attr(node, "content")
         {
             assert!(
-                !content.contains("://") && !content.starts_with("//"),
+                !content.contains("://"),
                 "a <meta> names an address: {content}"
             );
         }
@@ -572,30 +571,94 @@ fn the_site_loads_nothing_but_its_style_sheet() {
     }
     assert_eq!(
         links,
-        [
-            (Some("icon"), Some("data:,")),
-            (Some("stylesheet"), Some("style.css"))
-        ],
-        "the page may load its own style sheet and nothing else"
+        [(Some("icon"), Some("data:,"))],
+        "the only <link> is the empty icon (the fonts come from the style, from this site)"
     );
-    let css = site("style.css");
-    for bad in ["url(", "@import", "@font-face", "//", "http"] {
-        assert!(!css.contains(bad), "style.css contains {bad}");
+
+    // Every address anywhere in the file (links, the script's string, a comment) is this
+    // repository's, and there is no protocol-relative address.
+    let mut rest = html.as_str();
+    while let Some(at) = rest.find("://") {
+        let start = rest[..at]
+            .rfind(|c: char| !c.is_ascii_alphabetic())
+            .map_or(0, |index| index + 1);
+        let url = &rest[start..];
+        let after = url.strip_prefix(REPO).unwrap_or_else(|| {
+            panic!(
+                "an address outside this repository: {:?}",
+                &url[..url.len().min(60)]
+            )
+        });
+        assert!(
+            after.is_empty() || after.starts_with(['/', '"', '\'', ' ', '#', '<']),
+            "an address that only starts like the repository's: {:?}",
+            &url[..url.len().min(60)]
+        );
+        rest = &rest[at + 3..];
     }
-    // Flat colors, borders and spacing only; and the page is never locked to the window.
+    assert!(
+        !html.replace("://", "").contains("//"),
+        "a protocol-relative address, or a comment in the code"
+    );
+
+    // The style fetches only the fonts of this site.
+    let css = code_of(&nodes, "style").concat();
+    assert!(!css.contains("@import"), "the style has an @import");
+    for url in urls(&css) {
+        assert!(
+            url.starts_with("fonts/") && url.ends_with(".woff2") && !url.contains(".."),
+            "the style fetches {url}"
+        );
+    }
+}
+
+#[test]
+fn the_site_has_one_small_script_and_says_so() {
+    let nodes = parse(&site("index.html"));
+    let scripts = code_of(&nodes, "script");
+    assert_eq!(scripts.len(), 1, "the footer says one script");
+    let code = &scripts[0];
+    assert!(
+        code.lines().count() <= 40,
+        "the script is no longer small ({} lines)",
+        code.lines().count()
+    );
+    // It copies a string and follows the pointer; it has no way to send or keep anything.
     for bad in [
-        "gradient(",
-        "backdrop-filter",
-        "filter",
-        "blur(",
-        "box-shadow",
-        "text-shadow",
-        "overflow: hidden",
-        "overflow:hidden",
-        "position: fixed",
-        "position:fixed",
+        "fetch(",
+        "XMLHttpRequest",
+        "WebSocket",
+        "sendBeacon",
+        "import(",
+        "importScripts",
+        "eval(",
+        "Function(",
+        "document.cookie",
+        "localStorage",
+        "sessionStorage",
+        "indexedDB",
+        "location",
+        "createElement",
     ] {
-        assert!(!css.contains(bad), "style.css contains {bad}");
+        assert!(!code.contains(bad), "the script uses {bad}");
+    }
+    // The button that needs the script is hidden until the script has run.
+    let button = element(&nodes, "copy");
+    assert_eq!(
+        attr(&button[0], "hidden"),
+        Some(""),
+        "the Copy button must be `hidden` in the markup"
+    );
+    assert!(code.contains("btn.hidden = false"));
+    // The footer tells the visitor.
+    let said = plain(&text_of(first(&nodes, "footer")));
+    for needed in [
+        "one small inline script",
+        "works without it",
+        "no cookies",
+        "nothing loaded from another host",
+    ] {
+        assert!(said.contains(needed), "the footer does not say: {needed}");
     }
 }
 
@@ -612,6 +675,13 @@ fn the_site_links_go_somewhere() {
         if let Some(id) = href.strip_prefix('#') {
             if !ids.contains(id) {
                 broken.push(format!("{href} (no such id on the page)"));
+            }
+            continue;
+        }
+        // A file of the site itself, next to the page.
+        if !href.contains("://") {
+            if !root().join("docs").join(href).is_file() {
+                broken.push(format!("{href} (no such file in docs/)"));
             }
             continue;
         }
@@ -640,7 +710,7 @@ fn the_site_links_go_somewhere() {
         }
     }
     assert!(
-        checked > 40,
+        checked >= 8,
         "only {checked} links found; is the reader broken?"
     );
     assert!(broken.is_empty(), "broken links:\n{}", broken.join("\n"));
@@ -649,11 +719,7 @@ fn the_site_links_go_somewhere() {
 #[test]
 fn the_site_install_command_is_the_readmes() {
     let nodes = parse(&site("index.html"));
-    let open = nodes
-        .iter()
-        .position(|node| attr(node, "id") == Some("install-command"))
-        .unwrap_or_else(|| panic!("no install command on the page"));
-    let shown = text_of(&nodes[open..end_of(&nodes, open)], false);
+    let shown = text_of(element(&nodes, "cmd"));
     let needle = "releases/latest/download/install.sh | sh";
     for page in ["README.md", "docs/user-guide.md"] {
         assert_eq!(
@@ -662,125 +728,201 @@ fn the_site_install_command_is_the_readmes() {
             "the install command differs from the one in {page}"
         );
     }
+    // The Copy button puts the same text on the clipboard.
+    let code = &code_of(&nodes, "script")[0];
+    let copied = code
+        .split_once("var CMD = '")
+        .and_then(|(_, rest)| rest.split_once("';"))
+        .map(|(command, _)| command);
+    assert_eq!(
+        copied,
+        Some(shown.as_str()),
+        "the Copy button copies other text than the page shows"
+    );
 }
+
+#[test]
+fn the_site_shows_the_version_it_ships() {
+    let nodes = parse(&site("index.html"));
+    let version = element(&nodes, "version");
+    assert_eq!(text_of(version), VERSION, "the page says another version");
+    assert_eq!(
+        attr(&version[0], "href"),
+        Some(format!("{REPO}/releases/tag/v{VERSION}").as_str()),
+        "the version links to another release"
+    );
+}
+
+/// What the page says in its own words, each with the sentence of the documentation it rests
+/// on: (the words on the page, the file, the words in that file). The comparison ignores case,
+/// white space and Markdown marks.
+const CLAIMS: [(&str, &str, &str); 14] = [
+    (
+        "Asks before the dangerous ones.",
+        "README.md",
+        "A dangerous one shows what it would touch and asks",
+    ),
+    (
+        "A Linux shell written in Rust.",
+        "README.md",
+        "written in Rust",
+    ),
+    (
+        "It reads each line before it runs.",
+        "README.md",
+        "Every typed line is analyzed first",
+    ),
+    (
+        "it shows what would be touched and waits for you",
+        "README.md",
+        "A dangerous one shows what it would touch and asks",
+    ),
+    (
+        "Linux, x86_64 or aarch64, glibc 2.35 or newer",
+        "README.md",
+        "Linux, x86_64 or aarch64, glibc 2.35 or newer",
+    ),
+    (
+        "Every line is read before it runs.",
+        "README.md",
+        "Every typed line is analyzed first",
+    ),
+    (
+        "No network on the normal command path",
+        "README.md",
+        "No network access on the normal command path",
+    ),
+    ("and no telemetry", "README.md", "No telemetry"),
+    (
+        "Off until you run omsh ai setup.",
+        "README.md",
+        "AI is off until you set it up",
+    ),
+    ("omsh ai setup", "README.md", "(`omsh ai setup`)"),
+    (
+        "Nothing it suggests runs without a preview and your confirmation.",
+        "README.md",
+        "Nothing the AI suggests runs without a preview and your confirmation",
+    ),
+    ("Young:", "README.md", "It is young"),
+    (
+        "a POSIX-compatible subset",
+        "README.md",
+        "A POSIX-compatible subset",
+    ),
+    (
+        "aarch64 was smoke-tested on a CI runner only",
+        "docs/report.md",
+        "aarch64 was smoke-tested on a CI runner only",
+    ),
+];
 
 #[test]
 fn the_site_says_what_the_docs_say() {
     let nodes = parse(&site("index.html"));
-    let report = read(&root().join("docs/report.md"));
+    let page = plain(&text_of(&nodes));
     let mut wrong = Vec::new();
-    let mut quotes = 0;
-    for (open, node) in nodes.iter().enumerate() {
-        let Some(source) = attr(node, "data-doc") else {
-            continue;
-        };
-        assert!(SOURCES.contains(&source), "data-doc names {source}");
-        quotes += 1;
-        let element = &nodes[open..end_of(&nodes, open)];
-        let quote = quoted(element);
-        if !fold(&read(&root().join(source))).contains(&quote) {
-            wrong.push(format!("not in {source}: {quote}"));
-            continue;
+    for (said, file, basis) in CLAIMS {
+        if !page.contains(&plain(said)) {
+            wrong.push(format!("the page no longer says: {said}"));
         }
-        // A row with source links: each file must be named on that same row of the report.
-        let sources = element
-            .iter()
-            .skip_while(|node| attr(node, "class") != Some("src"))
-            .filter_map(|node| attr(node, "href"));
-        for href in sources {
-            let path = href
-                .rsplit_once("/blob/main/")
-                .map_or(href, |(_, path)| path);
-            let row = report.lines().find(|line| fold(line).contains(&quote));
-            if !row.is_some_and(|row| row.contains(&format!("(../{path})"))) {
-                wrong.push(format!("{path} is not on the report's row: {quote}"));
-            }
+        if !plain(&read(&root().join(file))).contains(&plain(basis)) {
+            wrong.push(format!("{file} no longer says: {basis}"));
         }
     }
-    assert!(
-        quotes > 50,
-        "only {quotes} quoted passages; is the reader broken?"
-    );
-
-    // The page's own short words (a headline): each names the sentence of the docs it rests on,
-    // and there are few of them and they are short.
-    let mut own_lines = 0;
-    for (open, node) in nodes.iter().enumerate() {
-        let Some(basis) = attr(node, "data-basis") else {
-            continue;
-        };
-        own_lines += 1;
-        let text = fold(&text_of(&nodes[open..end_of(&nodes, open)], false));
-        if text.chars().count() > 60 {
-            wrong.push(format!("own words longer than 60 characters: {text}"));
-        }
-        match basis.split_once(": ") {
-            Some((source, sentence)) if SOURCES.contains(&source) => {
-                if !fold(&read(&root().join(source))).contains(&fold(sentence)) {
-                    wrong.push(format!("the basis is not in {source}: {sentence}"));
-                }
-            }
-            _ => wrong.push(format!(
-                "a data-basis that is not `FILE: sentence`: {basis}"
-            )),
-        }
+    // The headline is the first heading and nothing else.
+    let headline = fold(&text_of(first(&nodes, "h1")));
+    if headline != "Asks before the dangerous ones." {
+        wrong.push(format!("the headline changed: {headline}"));
     }
-    if own_lines > 3 {
-        wrong.push(format!(
-            "{own_lines} passages of own words; at most 3 are allowed"
-        ));
-    }
-
-    // The limits are on the main screen, not only inside a panel.
-    let limits = nodes
-        .iter()
-        .position(|node| attr(node, "id") == Some("limits-line"))
-        .unwrap_or_else(|| panic!("no limits line on the page"));
-    let inside_a_panel = nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| is_open(node, "details"))
-        .any(|(open, _)| (open..end_of(&nodes, open)).contains(&limits));
-    if inside_a_panel {
-        wrong.push("the limits line is inside a panel".to_owned());
-    }
-    let limits = &nodes[limits..end_of(&nodes, limits)];
-    let said: Vec<String> = limits
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| attr(node, "data-doc").is_some())
-        .map(|(open, _)| quoted(&limits[open..end_of(limits, open)]))
-        .collect();
-    for needed in ["It is young", "POSIX-compatible subset", "aarch64"] {
-        if !said.iter().any(|quote| quote.contains(needed)) {
-            wrong.push(format!("the limits line does not quote: {needed}"));
-        }
-    }
-
-    // The page's own words: no number the docs do not have, and never the short name.
+    // No number that the documentation does not have.
     let docs: String = pages().iter().map(|page| read(page)).collect();
-    let own = own_text(&nodes);
-    for word in own.split_whitespace() {
-        let word = word.trim_matches(|c: char| !c.is_alphanumeric());
-        if word.chars().any(|c| c.is_ascii_digit()) && !docs.contains(word) {
-            wrong.push(format!("a number that is in no page of the docs: {word}"));
+    // (Each piece of text is read alone, so that `Shell` and `1.1.0` in two elements are two words.)
+    for node in &nodes {
+        let Node::Text(text) = node else {
+            continue;
+        };
+        for word in text.split_whitespace() {
+            let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+            if word.chars().any(|c| c.is_ascii_digit()) && !docs.contains(word) {
+                wrong.push(format!("a number that is in no page of the docs: {word}"));
+            }
         }
-        if word.contains("omsh") {
-            wrong.push(format!("`omsh` in the page's own words: {word}"));
-        }
-    }
-
-    let version = nodes
-        .iter()
-        .position(|node| attr(node, "id") == Some("version"))
-        .unwrap_or_else(|| panic!("no version on the page"));
-    let shown = text_of(&nodes[version..end_of(&nodes, version)], false);
-    if shown != VERSION {
-        wrong.push(format!(
-            "the page says version {shown}, Cargo.toml says {VERSION}"
-        ));
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Regression tests for three faults of the first redesign: the three labels of the Copy button
+/// were visible together, the selection was the browser's blue, and the command wrapped on a
+/// phone. These look at the rules that fixed them.
+#[test]
+fn the_copy_button_shows_one_label_and_keeps_its_width() {
+    let nodes = parse(&site("index.html"));
+    // An inline `display` on a label beats every rule that hides it. That was the fault.
+    for node in element(&nodes, "copy") {
+        if let Some(class) = attr(node, "class")
+            && ["s-idle", "s-ok", "s-fail"].contains(&class)
+        {
+            assert_eq!(attr(node, "style"), None, "the label {class} has a style");
+        }
+    }
+    let css = compact_css(&nodes);
+    for rule in [
+        ".cbtn.ok.s-idle,.cbtn.fail.s-idle{display:none}",
+        ".cbtn.s-ok,.cbtn.s-fail{display:none}",
+        ".cbtn.ok.s-ok,.cbtn.fail.s-fail{display:inline-flex}",
+    ] {
+        // `.cbtn .s-ok` is written with a blank in the page; compact_css has removed it.
+        assert!(css.contains(rule), "the style has no rule {rule}");
+    }
+    let button_rule = block_after(&css, ".cbtn{");
+    assert!(
+        button_rule.contains("width:112px"),
+        "the button has no fixed width"
+    );
+    assert!(
+        !button_rule.contains("min-width"),
+        "the button width must not depend on its label"
+    );
+}
+
+#[test]
+fn the_selection_uses_the_accent_color() {
+    let css = compact_css(&parse(&site("index.html")));
+    assert!(
+        css.contains("::selection{background:var(--accent);color:var(--bg)}"),
+        "::selection is not the accent on the dark background"
+    );
+}
+
+#[test]
+fn on_a_narrow_screen_the_command_scrolls_and_the_button_goes_below() {
+    let css = compact_css(&parse(&site("index.html")));
+    // On every screen the command is one line that scrolls; nothing breaks or wraps it.
+    assert!(css.contains(".cmd{flex:none;white-space:nowrap"));
+    assert!(block_after(&css, ".line{").contains("overflow-x:auto"));
+    for bad in [
+        "word-break",
+        "white-space:normal",
+        "overflow-wrap",
+        "break-all",
+    ] {
+        assert!(
+            !css.contains(bad),
+            "the style has {bad}: the command may wrap"
+        );
+    }
+    // Below 1040 px the bar is a column: the command, then a full-width button, with a fade at
+    // the right edge of the command and room after its last character.
+    let narrow = block_after(&css, "@media(max-width:1040px){");
+    for needed in [
+        ".bar{flex-direction:column}",
+        "mask-image:linear-gradient(toright,",
+        ".line::after{content:\"\";flex:none;width:36px}",
+        ".cbtn{width:100%;",
+    ] {
+        assert!(narrow.contains(needed), "the narrow layout has no {needed}");
+    }
 }
 
 /// `text` holds something shaped like an e-mail address: a letter or digit on both sides of `@`.
@@ -806,23 +948,17 @@ fn has_id_shape(text: &str) -> bool {
 #[test]
 fn the_site_has_no_private_or_personal_text() {
     let mut found = Vec::new();
-    for name in ["index.html", "style.css"] {
-        let text = site(name);
-        for word in [".private", "CLAUDE.local", "BLUEPRINT", "PROGRESS"] {
-            if text.contains(word) {
-                found.push(format!("docs/{name} mentions {word}"));
-            }
+    let text = site("index.html");
+    for word in [".private", "CLAUDE.local", "BLUEPRINT", "PROGRESS"] {
+        if text.contains(word) {
+            found.push(format!("docs/index.html mentions {word}"));
         }
-        if has_email_shape(&text) {
-            found.push(format!(
-                "docs/{name} holds something shaped like an e-mail address"
-            ));
-        }
-        if has_id_shape(&text) {
-            found.push(format!(
-                "docs/{name} holds something shaped like an identity number"
-            ));
-        }
+    }
+    if has_email_shape(&text) {
+        found.push("docs/index.html holds something shaped like an e-mail address".to_owned());
+    }
+    if has_id_shape(&text) {
+        found.push("docs/index.html holds something shaped like an identity number".to_owned());
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
     // The two shapes are put together here, so that this file holds neither of them.

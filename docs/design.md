@@ -236,11 +236,13 @@ terminal.
   questions, the info line and the details of a call, the setup lists, the first-run questions, `omsh status`, the jobs
   table and the panels of a running plan. The look of the prompt (the rule, the status chip, the hint bar, the OSC 133
   marks) is [`shell_look.rs`](../crates/omsh-ui/src/shell_look.rs).
-- **The scene on the website.** [`docs/index.html`](index.html) shows two captures of the 1.1.0 release build of commit f5ed352
-  (`cargo build --release`), run in tmux in a Debian 12 container with the network off, through the host's own C library and
-  loader (the container's was older than the one the file was built against). They are `tmux capture-pane -e -p` at two window
-  widths, turned into rows by a script that only turns color codes into classes and adds no character. The Run it? panel was open
-  when the screen was read, so no cursor is drawn.
+- **The website.** [`docs/index.html`](index.html) is one page with its style inline. It has no terminal capture and no
+  second file of code: the IBM Plex fonts are six files in `docs/fonts/` served from the same site (SIL Open Font License,
+  text in [`fonts/LICENSE.txt`](fonts/LICENSE.txt)), and nothing is loaded from another host. It has one small inline script,
+  which only powers the Copy button for the install command and the light that follows the pointer over it; the page works
+  without it, and the Copy button is hidden until the script has run. The footer of the page says all this, and
+  `crates/omsh-tests/tests/docs.rs` checks it: the addresses, the script, the fonts, the links, the install command (it must
+  equal the one in the README) and the sentences the page takes from the docs.
 - **Full-screen views.** The history explorer, the palette and the settings view share one loop
   ([`view/run.rs`](../crates/omsh-ui/src/view/run.rs)) built on `ratatui` on the alternate screen, with its own fuzzy matcher
   ([`fuzzy.rs`](../crates/omsh-ui/src/fuzzy.rs)).
