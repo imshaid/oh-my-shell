@@ -1486,11 +1486,7 @@ fn execute_steps(
         });
         // The jobs that exist before the step: a job that is new and stopped afterwards is this
         // step, stopped with Ctrl+Z.
-        let known: Vec<u32> = if mode.menu.is_some() {
-            env.shell.job_rows().iter().map(|row| row.number).collect()
-        } else {
-            Vec::new()
-        };
+        let known: Vec<u32> = env.shell.job_rows().iter().map(|row| row.number).collect();
         let started = Instant::now();
         let result = env.shell.run_prepared(prepared, env.files);
         if let Some((history, token)) = noted {
@@ -1560,6 +1556,15 @@ fn execute_steps(
                 }
             }
         }
+        // A step that only started a background job (`cmd &`) returns 0 at once. If that job
+        // ends with a failure right away, the step did not succeed.
+        if last == 0
+            && let Some((job, word, status)) = failed_background_job(env, &known)
+        {
+            run.states[index] = RowState::Failed;
+            say(env, &format!("  {failed} background job [{job}]: {word}\n"));
+            return stopped(env, steps, number, status, true);
+        }
         run.states[index] = match last {
             0 => RowState::Done,
             status if is_stop_status(status) => RowState::Paused,
@@ -1594,6 +1599,43 @@ fn execute_steps(
         ),
     );
     finish(env.shell, last)
+}
+
+/// How long a step that started a background job waits to see whether the job fails at once.
+const BACKGROUND_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// A background job that the step just ended started and that is over with a failure (a nonzero
+/// status or a signal): its number, the word `jobs` uses for it and its status. Waits up to
+/// [`BACKGROUND_GRACE`] for new jobs to end; a step that started none returns at once, and a job
+/// that is still running after the wait is left alone (it may be a server).
+fn failed_background_job(env: &PlanEnv<'_>, known: &[u32]) -> Option<(u32, String, u8)> {
+    let started = Instant::now();
+    loop {
+        let fresh: Vec<_> = env
+            .shell
+            .job_rows()
+            .into_iter()
+            .filter(|row| {
+                !known.contains(&row.number) && !matches!(row.state, JobState::Stopped(_))
+            })
+            .collect();
+        if fresh.is_empty() {
+            return None;
+        }
+        let failed = fresh
+            .iter()
+            .find(|row| matches!(row.state, JobState::Exit(_) | JobState::Signaled(_)));
+        if let Some(row) = failed
+            && let Some(status) = env.shell.job_status(row.number)
+        {
+            return Some((row.number, row.state.word(), status));
+        }
+        if fresh.iter().all(|row| row.state.is_finished()) || started.elapsed() >= BACKGROUND_GRACE
+        {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// The job of the step that Ctrl+Z has just stopped: a stopped job that was not in the table

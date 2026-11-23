@@ -149,4 +149,18 @@ impl Shell {
     pub fn job_rows(&self) -> Vec<JobRow> {
         self.jobs.rows()
     }
+
+    /// The exit status of a job that is over (`128 + n` when a signal ended it), or `None`
+    /// while it runs or is stopped, or when no such job is in the table. Nothing is removed.
+    #[must_use]
+    pub fn job_status(&self, number: u32) -> Option<u8> {
+        self.jobs
+            .list()
+            .into_iter()
+            .find(|view| view.number == number)
+            .and_then(|view| match view.phase {
+                crate::jobs::Phase::Finished(status) => Some(status.code()),
+                _ => None,
+            })
+    }
 }

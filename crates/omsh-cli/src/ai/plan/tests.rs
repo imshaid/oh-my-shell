@@ -521,6 +521,56 @@ fn steps_share_the_session_and_report_each_status() {
 }
 
 #[test]
+fn a_background_job_that_fails_at_once_fails_its_step() {
+    let dir = Dir::new();
+    let answer = json(&[
+        // Other tests leave the process in a folder that is gone by now; programs cannot start
+        // from there, and the job would fail for that reason instead of the one under test.
+        ("Go", "cd /", "low"),
+        ("Start", "omsh-no-such-command-xyz &>/dev/null &", "low"),
+        ("Next", &format!("echo x > {}", dir.file("next")), "low"),
+    ]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 127, "{}", ran.err);
+    assert!(
+        ran.err.contains("background job [1]: Exit 127"),
+        "{}",
+        ran.err
+    );
+    assert!(
+        ran.err.contains("step 2 did not succeed (status 127)"),
+        "{}",
+        ran.err
+    );
+    assert!(!ran.err.contains("plan done"), "{}", ran.err);
+    assert!(!dir.has("next"));
+}
+
+#[test]
+fn a_background_job_that_is_still_running_keeps_its_step_done() {
+    // An absolute path (the shell of these tests has no PATH), from a folder that exists.
+    let answer = json(&[("Go", "cd /", "low"), ("Wait", "/bin/sleep 1 &", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![enter()],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(ran.status(), 0, "{}", ran.err);
+    assert!(ran.err.contains("plan done (2 steps)"), "{}", ran.err);
+    assert!(!ran.err.contains("background job"), "{}", ran.err);
+}
+
+#[test]
 fn exit_in_a_step_ends_the_shell_with_its_status() {
     let answer = json(&[("Bye", "exit 3", "low")]);
     let ran = go(
