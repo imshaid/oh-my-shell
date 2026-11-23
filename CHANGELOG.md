@@ -33,6 +33,12 @@ command path.
   `flatpak`, `env` or a shell are not used. With no entry folders (a server, a container, WSL) nothing happens.
   The same fix is applied when you edit a step.
 
+### The shell
+
+- **The hint bar and the update notices on a narrow window.** They are broken between their parts (at the ` · `)
+  to fit the window, no longer in the middle of a word by the terminal (it was seen at 48 columns). A part that is
+  wider than the window by itself is still wrapped by the terminal.
+
 ### Known limits
 
 - A background job started inside a subshell, `( cmd & )`, is not checked: the job belongs to the subshell, not

@@ -495,8 +495,6 @@ Only the `trap` case in the last entry was run by hand; every other item here wa
 - **Not tested:** the plan panel and the pause panel with a real AI key (only the fake provider and the fake
   server were used), and the panels inside tmux and over ssh. The one exception is the Run it? panel, which was run
   once in tmux while the 1.1.0 release was prepared.
-- A hint bar longer than the terminal is wrapped by the terminal, in the middle of a word if the line ends there
-  (seen at 48 columns).
 - The shell runs on Linux only.
 
 ## Troubleshooting and FAQ

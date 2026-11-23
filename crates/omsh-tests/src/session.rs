@@ -69,6 +69,8 @@ pub struct Launch {
     cwd: Option<PathBuf>,
     registry: Option<Registry>,
     answer_cursor_queries: bool,
+    /// The width of the test terminal's window, in columns.
+    columns: u16,
 }
 
 /// The terminal asks where its cursor is with this; the answer is `ESC [ row ; column R`.
@@ -118,7 +120,15 @@ impl Launch {
             cwd: None,
             registry: None,
             answer_cursor_queries: true,
+            columns: WINDOW.ws_col,
         }
+    }
+
+    /// The window of the test terminal is `columns` wide (80 by default). The test terminal does
+    /// not wrap: a program that writes more than that on one row is seen as one row.
+    pub fn columns(mut self, columns: u16) -> Self {
+        self.columns = columns;
+        self
     }
 
     /// The first start shows its panels (welcome, "Stay up to date?", "Use eza for ls?") instead
@@ -252,7 +262,11 @@ impl Launch {
     /// Starts the program and does not wait for anything: for programs that are not the shell.
     pub fn start_raw(self) -> io::Result<Session> {
         let _starting = START.lock().unwrap_or_else(PoisonError::into_inner);
-        let pty = openpty(Some(&WINDOW), None).map_err(io::Error::from)?;
+        let window = Winsize {
+            ws_col: self.columns,
+            ..WINDOW
+        };
+        let pty = openpty(Some(&window), None).map_err(io::Error::from)?;
         // The program must not inherit the master side, or the terminal would never hang up.
         // Nor may it inherit a second copy of the slave side: it gets the slave as 0, 1 and 2
         // (the copies made below are close-on-exec, and `dup2` in the child clears that flag).

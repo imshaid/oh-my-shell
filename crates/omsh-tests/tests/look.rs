@@ -467,6 +467,51 @@ fn the_hint_bar_is_shown_for_five_sessions_after_the_welcome_and_then_never() {
     });
 }
 
+/// The parts of the longest hint bar (the AI is not set up).
+const BAR_PARTS: [&str; 5] = [
+    "? ask AI",
+    "Ctrl+P palette",
+    "Ctrl+R history",
+    "omsh tour",
+    "omsh ai setup",
+];
+
+#[test]
+fn the_hint_bar_breaks_between_its_parts_on_a_narrow_window() {
+    pty_test(BIN, |ctx| {
+        config(ctx, "[ui]\ngreeting = \"always\"\n")?;
+        let term = ctx.launch().columns(48).start()?;
+        // The test terminal does not wrap, so the rows are what the shell wrote: a row wider than
+        // the window (less the last column) is one that a real terminal would cut, in the middle
+        // of a word if that is where the 48th column falls.
+        let rows = lines_of(term.transcript());
+        let bar: Vec<&String> = rows
+            .iter()
+            .filter(|row| BAR_PARTS.iter().any(|part| row.contains(part)))
+            .collect();
+        assert!(!bar.is_empty(), "no hint bar:\n{rows:#?}");
+        for row in &bar {
+            assert!(
+                row.chars().count() <= 47,
+                "a row of {} columns in a window of 48:\n{row}",
+                row.chars().count()
+            );
+            let row = row.trim();
+            assert!(
+                !(row.starts_with(['-', '·']) || row.ends_with(['-', '·'])),
+                "a row starts or ends with a separator: {row:?}"
+            );
+        }
+        for part in BAR_PARTS {
+            assert!(
+                bar.iter().any(|row| row.contains(part)),
+                "{part:?} is not whole on one row:\n{bar:#?}"
+            );
+        }
+        Ok(())
+    });
+}
+
 #[test]
 fn the_bar_is_above_the_first_prompt_and_names_ai_setup_until_the_ai_is_set_up() {
     pty_test(BIN, |ctx| {

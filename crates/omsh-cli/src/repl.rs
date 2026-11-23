@@ -291,7 +291,12 @@ fn run_on(
             ),
         };
         if let Some(line) = line {
-            say(&render_line(&line, &theme, &caps));
+            // Broken between its parts for a narrow window (the last column stays free), so that
+            // the terminal never has to cut a word in two.
+            let room = usize::from(caps.width).saturating_sub(1).max(1);
+            for row in line.wrap_at_separators(room) {
+                say(&render_line(&row, &theme, &caps));
+            }
         }
     }
     // The desktop notification after a long command. Its "could not be shown" message goes to

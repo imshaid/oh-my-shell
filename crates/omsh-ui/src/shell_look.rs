@@ -288,6 +288,67 @@ mod tests {
     }
 
     #[test]
+    fn on_a_window_of_48_columns_the_hint_bar_breaks_between_its_parts() {
+        // The window is 48 wide and the last column stays free: 47.
+        let rows = hint_bar(AiHint::NotSetUp, true).wrap_at_separators(47);
+        let rows: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(
+            rows,
+            [
+                "? ask AI · Ctrl+P palette · Ctrl+R history",
+                "omsh tour · omsh ai setup"
+            ]
+        );
+        let ascii = hint_bar(AiHint::NotSetUp, false).wrap_at_separators(47);
+        assert_eq!(ascii.len(), 2);
+        assert_eq!(text(&ascii[1]), "omsh tour - omsh ai setup");
+    }
+
+    #[test]
+    fn the_hint_bar_is_one_row_where_it_fits_and_never_cuts_a_part() {
+        let bar = hint_bar(AiHint::NotSetUp, true);
+        assert_eq!(bar.wrap_at_separators(79).len(), 1);
+        assert_eq!(bar.wrap_at_separators(bar.width()).len(), 1);
+        assert_eq!(bar.wrap_at_separators(bar.width() - 1).len(), 2);
+        // Down to a window narrower than the longest part, every row is made of whole parts.
+        let parts = [
+            "? ask AI",
+            "Ctrl+P palette",
+            "Ctrl+R history",
+            "omsh tour",
+            "omsh ai setup",
+        ];
+        for cols in 14..80 {
+            let rows: Vec<String> = bar.wrap_at_separators(cols).iter().map(text).collect();
+            assert!(
+                rows.iter().all(|row| row.chars().count() <= cols),
+                "{cols}: {rows:?}"
+            );
+            for part in parts {
+                assert!(
+                    rows.iter().any(|row| row.contains(part)),
+                    "{cols}: {part} in {rows:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_notices_break_between_their_parts_too() {
+        let old = old_build_notice(61, true).wrap_at_separators(47);
+        let rows: Vec<String> = old.iter().map(text).collect();
+        assert_eq!(
+            rows,
+            [
+                "this build is 61 days old",
+                "check for a new one: omsh update --check"
+            ]
+        );
+        assert_eq!(update_notice("1.2.0", true).wrap_at_separators(47).len(), 1);
+        assert_eq!(update_notice("1.2.0", true).wrap_at_separators(30).len(), 2);
+    }
+
+    #[test]
     fn the_hint_bar_marks_keys_and_dims_only_the_glue() {
         let line = hint_bar(AiHint::Ready, true);
         let tone_of = |what: &str| {

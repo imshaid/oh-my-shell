@@ -258,6 +258,44 @@ impl Line {
         self.cut(cols - ellipsis_width, Some(ellipsis))
     }
 
+    /// This line as rows of at most `cols` columns, broken **only at its faint separators**
+    /// (spans in [`Tone::Dim`], such as the ` · ` between the parts of the hint bar; faint is for
+    /// decoration, so a blank inside a part is never a break). Parts are packed into rows from the
+    /// left, and the separator at a break is dropped. A line that fits, or has no separator, is one
+    /// row, unchanged; a part wider than `cols` stays whole on a row of its own (the terminal
+    /// wraps it). Styles are kept.
+    #[must_use]
+    pub fn wrap_at_separators(&self, cols: usize) -> Vec<Line> {
+        if self.width() <= cols {
+            return vec![self.clone()];
+        }
+        // The parts, each with the separator that came before it.
+        let mut parts: Vec<(Option<&Span>, Line)> = vec![(None, Line::new())];
+        for span in &self.spans {
+            if span.style.tone == Tone::Dim {
+                parts.push((Some(span), Line::new()));
+            } else if let Some((_, part)) = parts.last_mut() {
+                part.spans.push(span.clone());
+            }
+        }
+        let mut rows = Vec::new();
+        let mut row = Line::new();
+        for (separator, part) in parts {
+            let glue = separator.map_or(0, |span| width(&span.text));
+            if !row.is_empty() && row.width() + glue + part.width() > cols {
+                rows.push(std::mem::replace(&mut row, Line::new()));
+            }
+            if let Some(span) = separator.filter(|_| !row.is_empty()) {
+                row.spans.push(span.clone());
+            }
+            row.append(&part);
+        }
+        if !row.is_empty() {
+            rows.push(row);
+        }
+        rows
+    }
+
     fn cut(&self, room: usize, mark: Option<&str>) -> Line {
         let mut out = Line::new();
         let mut left = room;
@@ -735,5 +773,113 @@ mod tests {
             let original: String = text.chars().filter(|c| *c != ' ').collect();
             assert_eq!(joined, original, "{cols}");
         }
+    }
+
+    // -- Line::wrap_at_separators ------------------------------------------------------------
+
+    /// `a · bbb · cc`, the separators faint and the parts of three different tones.
+    fn parts(items: &[&str], separator: &str) -> Line {
+        let mut line = Line::new();
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                line.push(separator, Style::of(Tone::Dim));
+            }
+            let tone = [Tone::Key, Tone::Muted, Tone::Plain][index % 3];
+            line.push(item, Style::of(tone));
+        }
+        line
+    }
+
+    fn plain_rows(rows: &[Line]) -> Vec<String> {
+        rows.iter().map(Line::plain_text).collect()
+    }
+
+    #[test]
+    fn a_line_that_fits_is_one_row_and_unchanged() {
+        let line = parts(&["aa", "bb", "cc"], " · ");
+        let rows = line.wrap_at_separators(line.width());
+        assert_eq!(rows, vec![line.clone()]);
+        assert_eq!(line.wrap_at_separators(500), vec![line]);
+    }
+
+    #[test]
+    fn a_line_is_broken_at_its_separators_and_the_separator_at_a_break_is_dropped() {
+        let line = parts(&["aaaa", "bbbb", "cccc", "dd"], " · ");
+        // `aaaa · bbbb` is 11 columns, `cccc · dd` is 9.
+        assert_eq!(
+            plain_rows(&line.wrap_at_separators(11)),
+            ["aaaa · bbbb", "cccc · dd"]
+        );
+        assert_eq!(
+            plain_rows(&line.wrap_at_separators(10)),
+            ["aaaa", "bbbb", "cccc · dd"]
+        );
+        assert_eq!(
+            plain_rows(&line.wrap_at_separators(4)),
+            ["aaaa", "bbbb", "cccc", "dd"]
+        );
+        // One column too few for a part: the part stays whole on a row of its own.
+        assert_eq!(
+            plain_rows(&line.wrap_at_separators(3)),
+            ["aaaa", "bbbb", "cccc", "dd"]
+        );
+    }
+
+    #[test]
+    fn a_row_is_never_wider_than_asked_unless_one_part_is() {
+        let line = parts(&["one", "two", "three", "four", "five", "six"], " - ");
+        for cols in 5..40 {
+            for row in line.wrap_at_separators(cols) {
+                assert!(row.width() <= cols, "{cols}: {:?}", row.plain_text());
+            }
+        }
+    }
+
+    #[test]
+    fn the_text_and_the_styles_are_kept() {
+        let line = parts(&["Ctrl+P", "palette", "history", "tour"], " · ");
+        for cols in 1..50 {
+            let rows = line.wrap_at_separators(cols);
+            // Every part, in order, is on some row, with its own tone.
+            let spans: Vec<&Span> = rows.iter().flat_map(|row| row.spans()).collect();
+            let kept: Vec<(&str, Tone)> = spans
+                .iter()
+                .filter(|span| span.style.tone != Tone::Dim)
+                .map(|span| (span.text(), span.style.tone))
+                .collect();
+            assert_eq!(
+                kept,
+                [
+                    ("Ctrl+P", Tone::Key),
+                    ("palette", Tone::Muted),
+                    ("history", Tone::Plain),
+                    ("tour", Tone::Key)
+                ],
+                "{cols}"
+            );
+            // A faint separator is only ever between two parts of a row.
+            for row in &rows {
+                let first = row.spans().first().map(|span| span.style.tone);
+                let last = row.spans().last().map(|span| span.style.tone);
+                assert_ne!(first, Some(Tone::Dim), "{cols}");
+                assert_ne!(last, Some(Tone::Dim), "{cols}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_blank_inside_a_part_is_not_a_place_to_break() {
+        let line = parts(&["ask the AI", "second thing"], " · ");
+        assert_eq!(
+            plain_rows(&line.wrap_at_separators(15)),
+            ["ask the AI", "second thing"]
+        );
+    }
+
+    #[test]
+    fn a_line_with_no_separator_is_one_row_however_narrow() {
+        let line = Line::plain("a long line of plain text");
+        assert_eq!(line.wrap_at_separators(5), vec![line.clone()]);
+        assert_eq!(Line::new().wrap_at_separators(0), vec![Line::new()]);
     }
 }
