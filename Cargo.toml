@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.1.1"
+version = "1.1.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/imshaid/oh-my-shell"
@@ -21,15 +21,15 @@ repository = "https://github.com/imshaid/oh-my-shell"
 #   ui     -> config
 # The version is repeated next to each path (keep it equal to `workspace.package.version`):
 # `cargo deny` reads a path-only dependency of a publishable crate as a wildcard.
-omsh-ai = { path = "crates/omsh-ai", version = "1.1.1" }
-omsh-config = { path = "crates/omsh-config", version = "1.1.1" }
-omsh-editor = { path = "crates/omsh-editor", version = "1.1.1" }
-omsh-exec = { path = "crates/omsh-exec", version = "1.1.1" }
-omsh-history = { path = "crates/omsh-history", version = "1.1.1" }
-omsh-safety = { path = "crates/omsh-safety", version = "1.1.1" }
-omsh-secrets = { path = "crates/omsh-secrets", version = "1.1.1" }
-omsh-syntax = { path = "crates/omsh-syntax", version = "1.1.1" }
-omsh-ui = { path = "crates/omsh-ui", version = "1.1.1" }
+omsh-ai = { path = "crates/omsh-ai", version = "1.1.2" }
+omsh-config = { path = "crates/omsh-config", version = "1.1.2" }
+omsh-editor = { path = "crates/omsh-editor", version = "1.1.2" }
+omsh-exec = { path = "crates/omsh-exec", version = "1.1.2" }
+omsh-history = { path = "crates/omsh-history", version = "1.1.2" }
+omsh-safety = { path = "crates/omsh-safety", version = "1.1.2" }
+omsh-secrets = { path = "crates/omsh-secrets", version = "1.1.2" }
+omsh-syntax = { path = "crates/omsh-syntax", version = "1.1.2" }
+omsh-ui = { path = "crates/omsh-ui", version = "1.1.2" }
 
 # External crates.
 # clap's `color` feature is left out on purpose: plain help text does not need the

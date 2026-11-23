@@ -3,7 +3,7 @@
 All notable changes to Oh My Shell. The newest version is first. Settings and commands are described in
 [docs/commands.md](docs/commands.md); how to use them in [docs/user-guide.md](docs/user-guide.md).
 
-## Unreleased (for 1.1.2)
+## 1.1.2 (2026-11-23)
 
 ### The AI plan
 

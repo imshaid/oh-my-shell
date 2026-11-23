@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-ai"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "futures",
  "genai",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-cli"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "clap",
@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-config"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "toml",
  "toml_edit",
@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-editor"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "crossterm",
@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-exec"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "nix",
  "omsh-syntax",
@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-history"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "omsh-secrets",
  "rusqlite",
@@ -1899,7 +1899,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-safety"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "nix",
  "omsh-syntax",
@@ -1909,14 +1909,14 @@ dependencies = [
 
 [[package]]
 name = "omsh-secrets"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "omsh-syntax"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "insta",
  "miette",
@@ -1925,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-tests"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "nix",
  "omsh-cli",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "omsh-ui"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "crossterm",
  "insta",
