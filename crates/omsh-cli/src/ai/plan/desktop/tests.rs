@@ -656,6 +656,27 @@ Exec=Telegram -quit
 }
 
 #[test]
+fn only_the_desktop_and_stable_endings_are_ignored_so_beta_and_bin_names_do_not_match() {
+    let machine = Machine::new();
+    machine.tree.program("bin/google-chrome-beta");
+    machine.tree.program("bin/google-chrome-bin");
+    let entries = vec![
+        entry(
+            "a.desktop",
+            &app("Google Chrome Beta", "google-chrome-beta"),
+        ),
+        entry("b.desktop", &app("Google Chrome Bin", "google-chrome-bin")),
+    ];
+    assert_eq!(find_fix(&machine.shell, &entries, "google-chrome"), None);
+    // The two endings that are ignored do match.
+    let entries = vec![entry(
+        "c.desktop",
+        &app("Google Chrome", "google-chrome-stable"),
+    )];
+    assert!(find_fix(&machine.shell, &entries, "google-chrome-desktop").is_some());
+}
+
+#[test]
 fn two_different_programs_are_not_a_fix() {
     let machine = Machine::new();
     machine.tree.program("bin/google-chrome-beta");

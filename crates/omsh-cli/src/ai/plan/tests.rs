@@ -609,6 +609,13 @@ fn a_background_job_that_fails_at_once_fails_its_step() {
     );
     assert!(!ran.err.contains("plan done"), "{}", ran.err);
     assert!(!dir.has("next"));
+    // The plan only looks: the job stays in the table, so its own notice still comes before the
+    // next prompt.
+    assert!(
+        ran.shell.job_rows().iter().any(|row| row.number == 1),
+        "{}",
+        ran.err
+    );
 }
 
 #[test]
@@ -1308,6 +1315,15 @@ fn a_missing_command_is_found_inside_every_shape_of_line() {
         "'omsh-no-such-program' --x",
     ] {
         assert_eq!(missing_in(line), [none], "{line}");
+    }
+    // Only the first word of a command is a command: what follows `env`, `nohup` or `sudo` is
+    // not looked at.
+    for wrapper in ["env", "nohup", "sudo", "command", "exec"] {
+        let line = format!("{wrapper} omsh-no-such-program");
+        assert!(
+            !missing_in(&line).contains(&"omsh-no-such-program".to_owned()),
+            "{line}"
+        );
     }
     // A function defined in the line hides only its own name.
     assert_eq!(missing_in("f() { :; }; f; omsh-no-such-program"), [none]);
