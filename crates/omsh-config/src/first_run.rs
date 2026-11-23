@@ -42,7 +42,7 @@ pub const TEMPLATE: &str = r##"# Oh My Shell configuration
 # "spaced" puts a blank line and a thin rule between commands and shows how the last one
 # ended at the right; "plain" is the two-line prompt without them.
 #style = "spaced"
-# The one-line reminder of keys under the first prompt: "auto" shows it for the first five
+# The one-line reminder of keys above the first prompt: "auto" shows it for the first five
 # sessions after the welcome, "always" every time, "never" not at all.
 #greeting = "auto"
 # What the word `ls` runs: "ls" or "eza". Oh My Shell does not read the aliases of fish or bash,

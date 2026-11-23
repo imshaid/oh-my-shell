@@ -101,7 +101,7 @@ pub const SETTINGS: &[Setting] = &[
         "ui.greeting",
         Kind::Choice(GREETING),
         true,
-        "The key reminder under the first prompt. Auto: the first five sessions.",
+        "The key reminder above the first prompt. Auto: the first five sessions.",
     ),
     setting(
         "ui.ls",

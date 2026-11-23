@@ -5,10 +5,11 @@
 //! that say so: `spawn` (fork and exec) and `signals`. Every `unsafe` block needs a
 //! `// SAFETY:` comment, which Clippy enforces.
 //!
-//! Today it can run a whole line of the shell language with every kind of word expansion:
-//! pipelines, redirections, `&&` and `||`, compound commands, functions and the core builtins.
-//! [`Shell::run_source`] parses a line and runs it. A line that needs something not implemented
-//! yet is refused whole by [`Shell::run`] before anything runs (today nothing is refused).
+//! It runs a whole line of the shell language with every kind of word expansion: pipelines,
+//! redirections, `&&` and `||`, compound commands, functions and the builtins.
+//! [`Shell::run_source`] parses a line and runs it. [`Shell::run`] first checks the whole list
+//! (`check.rs`) and would refuse a line that needs something not implemented, before anything
+//! runs; the executor runs everything the parser accepts, so nothing is refused today.
 //!
 //! In an interactive shell each command is a *job*: a process group of its own that owns the
 //! terminal while it runs, so Ctrl+C stops the job and not the shell (see `jobs.rs` and
