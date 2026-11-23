@@ -12,7 +12,8 @@
 //!   anything: one stray byte from a profile breaks the protocol. Here `-S` replaces the `ssh`
 //!   program by a small script that runs the command through the shell under test.
 //!
-//! The manual check with a real `sshd` is in `.private/PROGRESS.md` (S11).
+//! A real `sshd` is not used here; that check was made by hand once (S11) and is not repeated by
+//! this test.
 
 use std::ffi::OsStr;
 use std::fs;
