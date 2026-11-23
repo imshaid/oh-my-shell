@@ -5,7 +5,7 @@ helps while you type, remembers your commands, checks dangerous commands before 
 optionally ask an AI for help. This guide explains how to install it and use it. The
 [command reference](commands.md) lists every builtin, option, key and setting.
 
-**Status:** version 1.0.0.
+**Status:** version 1.1.2.
 
 Contents: [Install](#install) · [First start](#first-start) · [How the shell is started](#how-the-shell-is-started) ·
 [The language](#the-language) · [Job control](#job-control) · [Typing](#typing-editor-prompt-and-views) ·
@@ -227,8 +227,8 @@ copy the last output. They are not written for `-c`, scripts, pipes, `TERM=dumb`
   Picking an alias, abbreviation, function or builtin puts its name in the line; picking an action opens the history
   explorer, the settings or the jobs panel, or explains the last failure. Nothing is run by picking.
 - Settings (from the palette): every key with its value, where it comes from, and a mark when the value
-  changes at the next start. Switches and fixed choices can be changed there and are written to `config.toml` (`update.check` and
-  `safety.confirm` are shown, with instructions to edit the file, but not changed there).
+  changes at the next start. Switches and fixed choices can be changed there and are written to `config.toml` (`safety.confirm`
+  is shown, with instructions to edit the file, but not changed there).
 
 **Notifications.** A command that ran 10 seconds or more ends with a desktop notification through
 `notify-send` (package `libnotify-bin`), unless it was ended with Ctrl+C or stopped, was a `?` request, or is in

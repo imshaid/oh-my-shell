@@ -34,7 +34,7 @@ Which crate may use which (from the `[dependencies]` of each crate's `Cargo.toml
 ```
 cli    -> editor, exec, ui, ai, safety, history, config, secrets, syntax
 editor -> syntax, history, ui, config
-exec   -> syntax, config
+exec   -> syntax
 safety -> syntax
 ai     -> config, secrets
 history-> secrets
@@ -198,7 +198,12 @@ is read. Lines that match `history.ignore`, or that `omsh-secrets` finds a secre
   mode 0600, held in wiping types where we hold them (`zeroize`; copies inside the genai library and some plain strings are not wiped), and sent only to `https://` addresses and to this computer.
 - **Plans** are JSON with a summary and 1 to 8 steps (title, command, explanation, risk, `needs_root`). Each command must
   parse with our parser, may not hold placeholders like `/path/to/...`, and is checked again just before it runs. A bad plan gets
-  one retry with the error; then a clean message.
+  one retry with the error; then a clean message. The panel adds notes under a step, read from the local machine and never
+  sent anywhere: `not found:` for a command that is not installed, `fixed:` when exactly one desktop entry fits its name
+  ([`desktop.rs`](../crates/omsh-cli/src/ai/plan/desktop.rs)), and `no such path:` for a path that `cd`, `ls`, `code` and a few
+  other commands would open ([`paths.rs`](../crates/omsh-cli/src/ai/plan/paths.rs)). They change no level. After a step that
+  returned 0, the plan also watches the background jobs the step started for up to 300 ms, and a job that failed in that time fails the
+  step ([`plan.rs`](../crates/omsh-cli/src/ai/plan.rs)).
 - **Privacy.** The request text and the recent commands are masked with `omsh-secrets`; `[v]` in the panel shows the last request as it was sent (earlier plans and refused retries only as character counts); each context item can be switched off.
 - **Gate C.** A test runs the shell under `strace -f` and fails on any socket that is not a local Unix socket during a
   normal session ([`offline.rs`](../crates/omsh-tests/tests/offline.rs)). CI also runs the whole test suite with the network

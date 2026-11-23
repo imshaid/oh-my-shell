@@ -1,9 +1,8 @@
 # Oh My Shell (omsh) — UI/UX Upgrade Spec
 
-Status: optional upgrade on top of v1.0.0 (commit 8323395). Target release: v1.1.0.
-Work on branch `ui-upgrade`. Keep `v1.0.0` untouched. Every phase must be shippable on its own; the project may stop after any phase.
+Status: the spec of the UI upgrade on top of v1.0.0 (commit 8323395). All seven phases were done on the branch `ui-upgrade` and released in v1.1.0 (see the status section below). The rest of this file is the original spec, kept as it was written: it is not a to-do list now, and where the result differs the status section says so.
 
-How to use this file: the task prompt names ONE phase. Read the whole spec once, implement only that phase, run the gates in section 12, then stop and report. Do not start the next phase.
+The original instructions, for one working session at a time: the task prompt named ONE phase; read the whole spec once, implement only that phase, run the gates in section 12, then stop and report. Every phase had to be shippable on its own.
 
 Where this spec says "verify", the claim was not confirmed. Check it in code or by test before relying on it, and say so in the report if it turns out wrong.
 

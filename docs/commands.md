@@ -140,7 +140,7 @@ Usage: `kill [-s SIGNAL | -n NUMBER | -SIGNAL] PID | %JOB ...` and `kill -l [SIG
 Example: `kill -TERM %1`
 
 ### `omsh`
-The shell's own commands (`omsh ai ...`, `omsh tour`, `omsh help`). Details [below](#omsh-commands).
+The shell's own commands (`omsh ai ...`, `omsh tour`, `omsh help`, `omsh status`, `omsh update`, `omsh uninstall`). Details [below](#omsh-commands).
 Usage: `omsh COMMAND`
 Example: `omsh ai status`
 
@@ -307,6 +307,9 @@ Example: `omsh uninstall`
 | `OMSH_NO_UPDATE_CHECK` | Anything but empty or `0` turns the daily update check, and the line that announces its news, off. |
 | `OMSH_FIRST_RUN` | `plain` makes the first start show three lines of text instead of the welcome and its questions, on a terminal too. |
 | `NO_COLOR` | Anything but empty removes the colors; bold, dim, reverse and underline stay. |
+
+Variables the interactive shell sets and exports for the programs it starts: `OMSH_VERSION` (the version of the shell) and `SHLVL`
+(one more than the value it was started with; a missing or bad value counts as 0).
 
 ## Program options (`oh-my-shell`)
 
@@ -484,7 +487,7 @@ The keys, with the default in brackets:
 - `ui.motion` (unset): `"full"` (or `"on"`, the same thing), `"reduced"` or `"off"`; unset means reduced over ssh and full otherwise. Example: `motion = "off"`.
 - `ui.icons` (`"auto"`): `"unicode"`, `"ascii"` or `"auto"`. Example: `icons = "ascii"`.
 - `ui.style` (`"spaced"`): `"spaced"` or `"plain"`. Spaced prints a blank line and a thin rule before the prompt of every command after the first, and shows how the last command ended at the right of the header (`✓ 4 ms` or `✘ 127`). Plain is the two-line prompt of version 1.0. Example: `style = "plain"`.
-- `ui.greeting` (`"auto"`): `"auto"`, `"always"` or `"never"`. The one-line reminder of keys under the first prompt of a session: `auto` shows it for the first five sessions after the welcome, `always` at every start, `never` not at all. Example: `greeting = "never"`.
+- `ui.greeting` (`"auto"`): `"auto"`, `"always"` or `"never"`. The one-line reminder of keys above the first prompt of a session: `auto` shows it for the first five sessions after the welcome, `always` at every start, `never` not at all. Example: `greeting = "never"`.
 - `ui.ls` (`"ls"`): `"ls"` or `"eza"`. What the word `ls` runs. Oh My Shell does not read the aliases of fish or bash, so a person who uses `alias ls=eza` there says so here. `"eza"` takes effect only while `eza` is on `PATH`: at the start of a shell, `ls` becomes an alias for `eza` (before `init.omsh`, so the file can replace it, and `unalias ls` removes it for one session). If `eza` is not found, `ls` stays the system `ls`. AI plan steps never use aliases. The first-run questions offer it when `eza` is on `PATH`; set it back to `"ls"` to undo. Example: `ls = "eza"`.
 
 ### `[editor]`
