@@ -11,7 +11,7 @@ use omsh_syntax::ReservedWord;
 use super::{Class, classify, quote};
 use crate::exec::Flow;
 use crate::io::Io;
-use crate::path::{DEFAULT_PATH, Lookup};
+use crate::path::{DEFAULT_PATH, Lookup, find_program};
 use crate::shell::Shell;
 use crate::status::ExitStatus;
 
@@ -56,6 +56,28 @@ fn find(shell: &mut Shell, name: &[u8], default_path: bool) -> Found {
     {
         Lookup::Found(path) => Found::File(path),
         Lookup::Denied(_) | Lookup::NotFound => Found::Missing,
+    }
+}
+
+impl Shell {
+    /// True if a command named `name` would start something when it is run as a plan step: a
+    /// keyword, a builtin, a function of this shell, or a program in `PATH` that may be run (the
+    /// order of `command -v`). **Aliases do not count**: a plan step is run without them, so a
+    /// step named after an alias would not be found. A name with a `/` is looked at as a path,
+    /// from the shell's directory. Nothing is remembered and nothing runs.
+    #[must_use]
+    pub fn finds_command(&self, name: &str) -> bool {
+        if ReservedWord::from_text(name).is_some()
+            || classify(name.as_bytes()).is_some()
+            || self.functions.contains_key(name)
+        {
+            return true;
+        }
+        let search = self
+            .path_override
+            .clone()
+            .unwrap_or_else(|| self.vars.search_path(&[]));
+        find_program(name.as_bytes(), &search, self.cwd_override.as_deref())
     }
 }
 

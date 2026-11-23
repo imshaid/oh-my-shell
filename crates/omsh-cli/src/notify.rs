@@ -192,7 +192,7 @@ fn command_names(line: &str, aliases: &[(String, String)], depth: usize) -> Vec<
 
 /// The file name of the program a word names, if the word is plain text: quotes are taken off,
 /// a directory part is dropped. A word with an expansion in it names nothing known.
-fn plain_name(word: &str) -> Option<String> {
+pub(crate) fn plain_name(word: &str) -> Option<String> {
     if word.contains(['$', '`', '*', '?', '[', '{', '~']) {
         return None;
     }

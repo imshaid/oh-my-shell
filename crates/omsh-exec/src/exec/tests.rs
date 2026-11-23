@@ -3748,3 +3748,47 @@ mod suggest {
         assert!(fake.asked.lock().unwrap().is_empty());
     }
 }
+
+mod finds_command {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn builtins_keywords_and_programs_are_found() {
+        let sh = shell();
+        for name in ["cd", "echo", "true", "if", "ls"] {
+            assert!(sh.finds_command(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_nothing_is_not_found() {
+        let sh = shell();
+        assert!(!sh.finds_command("omsh-no-such-program"));
+        assert!(!sh.finds_command(""));
+    }
+
+    #[test]
+    fn a_function_is_found_and_an_alias_alone_is_not() {
+        let mut sh = shell();
+        run(&mut sh, "greet() { :; }; alias zz=ls");
+        assert!(sh.finds_command("greet"));
+        // A plan step runs without aliases, so `zz` would not start anything.
+        assert!(!sh.finds_command("zz"));
+    }
+
+    #[test]
+    fn a_program_in_path_needs_the_execute_bit() {
+        let dir = Dir::new();
+        fs::write(dir.0.join("tool-omsh"), "#!/bin/sh\n").unwrap();
+        let mut sh = dir.shell();
+        sh.vars
+            .set("PATH", dir.0.as_os_str().as_encoded_bytes().to_vec())
+            .unwrap();
+        // A file that may not be run is "permission denied" to the shell, so not found here.
+        assert!(!sh.finds_command("tool-omsh"));
+        fs::set_permissions(dir.0.join("tool-omsh"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(sh.finds_command("tool-omsh"));
+    }
+}

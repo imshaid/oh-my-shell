@@ -38,10 +38,12 @@ use omsh_config::{AiContext, ConfirmLevel};
 use omsh_editor::Head;
 use omsh_exec::{
     ExitStatus, Io, JobState, Key, LineResult, Outcome, ReadError, Shell, TRASH, Terminal,
+    name_list,
 };
 use omsh_safety::blast::Radius;
 use omsh_safety::journal::Origin;
 use omsh_safety::{Analysis, Finding, Level};
+use omsh_syntax::{HighlightKind, lex_for_highlight};
 use omsh_ui::panels::MenuUi;
 use omsh_ui::panels::plan_run::{Progress, RowState, RunRow};
 use omsh_ui::{Paint, Token};
@@ -217,6 +219,9 @@ struct Reviewed {
     /// The command as the plan (or the person, after an edit) has it.
     command: String,
     analysis: Analysis,
+    /// Commands of the step that would not start anything in this shell, each with the names its
+    /// "did you mean" offers. Only a note in the panel: the step still runs if it is chosen.
+    missing: Vec<(String, Vec<String>)>,
     /// What the findings of the analysis would touch: one entry per finding, counted when the
     /// plan is shown. Empty until then.
     radii: Vec<Option<Radius>>,
@@ -264,6 +269,42 @@ fn review(shell: &Shell, command: &str, start: &StartDir) -> Result<Analysis, St
     }
 }
 
+/// The commands of `command` that would not start anything in `shell` (see
+/// [`Shell::finds_command`]), each with the names the shell would offer for it, once each in the
+/// order they appear. Only plain command names are looked at: a word with a `/`, an expansion
+/// (`$cmd`, `$(...)`) or a pattern may depend on where the step starts or on what an earlier step
+/// does, so it is left alone. Commands inside `$(...)` and compound commands are found as well.
+fn missing_commands(shell: &Shell, command: &str) -> Vec<(String, Vec<String>)> {
+    let words = lex_for_highlight(command).words;
+    let commands = || {
+        words
+            .iter()
+            .filter(|word| word.kind == HighlightKind::Command)
+            .filter(|word| !word.span.text(command).contains('/'))
+            .filter_map(|word| {
+                let name = crate::notify::plain_name(word.span.text(command))?;
+                Some((name, word.span.end))
+            })
+    };
+    // `f() { ...; }; f`: a name followed by `(` is a definition, and the line may use it.
+    let defined: Vec<String> = commands()
+        .filter(|(_, end)| command[*end..].trim_start().starts_with('('))
+        .map(|(name, _)| name)
+        .collect();
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for (name, _) in commands() {
+        if defined.contains(&name)
+            || out.iter().any(|(seen, _)| *seen == name)
+            || shell.finds_command(&name)
+        {
+            continue;
+        }
+        let near = shell.suggestions(&name);
+        out.push((name, near));
+    }
+    out
+}
+
 /// Where step `index` starts: the shell's directory for the first, else where the one before
 /// it ended (as far as the analysis could follow its `cd`s).
 fn start_of(steps: &[Reviewed], index: usize) -> StartDir {
@@ -304,6 +345,7 @@ fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
             model: step.risk,
             command: step.command.clone(),
             analysis,
+            missing: missing_commands(shell, &step.command),
             radii: Vec::new(),
             edited: false,
         });
@@ -668,6 +710,13 @@ fn step_body(
             "     needs root: the plan does not add sudo; it may fail until you decide how \
                  to run it\n",
         );
+    }
+    for (name, near) in &step.missing {
+        out.push_str(&format!("     not found: {}", shorten(&displayable(name))));
+        if !near.is_empty() {
+            out.push_str(&format!("; did you mean {}?", name_list(near)));
+        }
+        out.push('\n');
     }
     let mut counted = false;
     // Whether the plan's `rm`s go through the trash decides what a delete's reason says.
@@ -1276,6 +1325,7 @@ fn edit_step(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], index: usize) {
             let step = &mut steps[index];
             step.command = new.to_owned();
             step.analysis = analysis;
+            step.missing = missing_commands(env.shell, new);
             step.edited = true;
             count_step(step, env.confirm, env.blast);
             // The edit may have changed where the steps after it start.

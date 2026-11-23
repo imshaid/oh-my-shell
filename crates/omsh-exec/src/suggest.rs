@@ -39,7 +39,8 @@ impl fmt::Debug for SuggestHook {
 }
 
 /// `git`, `git or gist`, `git, gist or gitk`.
-fn list(names: &[String]) -> String {
+#[must_use]
+pub fn name_list(names: &[String]) -> String {
     match names {
         [] => String::new(),
         [only] => only.clone(),
@@ -59,22 +60,40 @@ impl Shell {
         self.suggest = SuggestHook(Some(suggester));
     }
 
-    /// Prints the suggestion line after a `not found` line, if there is one to print.
-    pub(crate) fn suggest_for(&self, name: &str, path: &[u8], io: &Io) {
-        let Some(suggester) = self.suggest.0.as_ref().filter(|_| self.interactive) else {
-            return;
+    /// Names close to `name`, best first, at most three, from the shell's hook (none without
+    /// one, so `-c` and scripts get nothing). A plan uses this to warn before a step runs.
+    #[must_use]
+    pub fn suggestions(&self, name: &str) -> Vec<String> {
+        let search_path = self
+            .path_override
+            .clone()
+            .unwrap_or_else(|| self.vars.search_path(&[]));
+        self.suggestions_in(name, &search_path)
+    }
+
+    fn suggestions_in(&self, name: &str, path: &[u8]) -> Vec<String> {
+        let Some(suggester) = self.suggest.0.as_ref() else {
+            return Vec::new();
         };
         let mut shell_names: Vec<String> = builtin_names().into_iter().map(str::to_owned).collect();
         shell_names.extend(self.function_names());
         shell_names.extend(self.alias_names());
-        let found: Vec<String> = suggester
+        suggester
             .suggest(name, path, &shell_names)
             .into_iter()
             .filter(|candidate| printable(candidate) && candidate != name)
             .take(3)
-            .collect();
+            .collect()
+    }
+
+    /// Prints the suggestion line after a `not found` line, if there is one to print.
+    pub(crate) fn suggest_for(&self, name: &str, path: &[u8], io: &Io) {
+        if !self.interactive {
+            return;
+        }
+        let found = self.suggestions_in(name, path);
         if !found.is_empty() {
-            io.say(format!("oh-my-shell: did you mean {}?", list(&found)));
+            io.say(format!("oh-my-shell: did you mean {}?", name_list(&found)));
         }
     }
 }
@@ -89,10 +108,13 @@ mod tests {
 
     #[test]
     fn names_are_joined_in_words() {
-        assert_eq!(list(&names(&[])), "");
-        assert_eq!(list(&names(&["git"])), "git");
-        assert_eq!(list(&names(&["git", "gist"])), "git or gist");
-        assert_eq!(list(&names(&["git", "gist", "gitk"])), "git, gist or gitk");
+        assert_eq!(name_list(&names(&[])), "");
+        assert_eq!(name_list(&names(&["git"])), "git");
+        assert_eq!(name_list(&names(&["git", "gist"])), "git or gist");
+        assert_eq!(
+            name_list(&names(&["git", "gist", "gitk"])),
+            "git, gist or gitk"
+        );
     }
 
     #[test]

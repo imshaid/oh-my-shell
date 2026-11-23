@@ -174,12 +174,31 @@ struct Setup {
     blast: Option<BlastLimits>,
     /// The trash and the journal; none when not set (as under `--no-config`).
     undo: Option<Arc<Undo>>,
+    /// What the shell's "did you mean" offers for any name; no suggester when empty.
+    suggest: Vec<&'static str>,
+}
+
+/// A suggester that offers the same names for every name.
+struct FakeSuggest(Vec<String>);
+
+impl omsh_exec::CommandSuggest for FakeSuggest {
+    fn suggest(&self, _name: &str, _path: &[u8], _shell_names: &[String]) -> Vec<String> {
+        self.0.clone()
+    }
 }
 
 fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
     let fake = Arc::new(fake);
     let mut shell = Shell::new();
     let mut files = Io::process();
+    if !setup.suggest.is_empty() {
+        let names = setup
+            .suggest
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        shell.set_suggest(Arc::new(FakeSuggest(names)));
+    }
     if let Some(undo) = &setup.undo {
         shell.set_journal(Arc::clone(undo) as Arc<dyn omsh_exec::JournalCommand>);
     }
@@ -405,6 +424,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         model: ModelRisk::Low,
         command: "shred /nonexistent-omsh-plan-test".to_owned(),
         analysis: Analysis::default(),
+        missing: Vec::new(),
         radii: Vec::new(),
         edited: false,
     };
@@ -1065,6 +1085,213 @@ fn the_panel_shows_summary_steps_commands_reasons_and_root() {
     assert!(err.contains("  2. Look   [safe]"), "{err}");
 }
 
+// -- commands that are not found, before anything runs ---------------------------------------
+
+/// How many `not found:` notes the panels printed.
+fn notes(err: &str) -> usize {
+    err.matches("     not found: ").count()
+}
+
+#[test]
+fn a_command_that_is_not_found_is_noted_under_its_step_and_nothing_is_blocked() {
+    let answer = json(&[
+        ("Open", "omsh-no-such-program --x", "low"),
+        ("Look", "ls", "low"),
+    ]);
+    let ran = go(says(&answer), "x", Setup::default());
+    let err = &ran.err;
+    let first = err.find("1. Open").expect("step 1");
+    let second = err.find("2. Look").expect("step 2");
+    assert!(first < second);
+    assert!(
+        err[first..second].contains("     not found: omsh-no-such-program\n"),
+        "{err}"
+    );
+    assert!(!err[second..].contains("not found:"), "{err}");
+    assert_eq!(notes(err), 1, "{err}");
+    // A note, not a refusal: the level is the same and the plan is still asked about.
+    assert!(err.contains("1. Open   [safe]"), "{err}");
+}
+
+#[test]
+fn the_note_says_what_the_shell_would_offer() {
+    let answer = json(&[("Open", "gti status", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            suggest: vec!["git", "gist"],
+            ..Setup::default()
+        },
+    );
+    assert!(
+        ran.err
+            .contains("     not found: gti; did you mean git or gist?\n"),
+        "{}",
+        ran.err
+    );
+    // With nothing close, only the name.
+    let ran = go(says(&answer), "x", Setup::default());
+    assert!(ran.err.contains("     not found: gti\n"), "{}", ran.err);
+}
+
+#[test]
+fn a_builtin_and_a_function_are_found_and_an_alias_alone_is_not() {
+    let answer = json(&[("Go", "cd /", "low"), ("Greet", "greet", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec!["greet() { :; }"],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(notes(&ran.err), 0, "{}", ran.err);
+    // A plan step runs without aliases, so a step named after one would fail.
+    let answer = json(&[("Long", "zz", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec!["alias zz=ls"],
+            ..Setup::default()
+        },
+    );
+    assert!(ran.err.contains("     not found: zz\n"), "{}", ran.err);
+}
+
+#[test]
+fn editing_a_step_updates_its_note() {
+    let answer = json(&[("Look", "ls", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            keys: vec![ch('e'), enter(), ch('e'), enter()],
+            edits: vec![
+                Edited::Text("omsh-no-such-program".to_owned()),
+                Edited::Text("ls".to_owned()),
+            ],
+            ..Setup::default()
+        },
+    );
+    // Only the panel shown after the first edit has the note: the first panel has none and the
+    // one after the second edit has none again.
+    assert_eq!(notes(&ran.err), 1, "{}", ran.err);
+    assert!(
+        ran.err.contains("     not found: omsh-no-such-program\n"),
+        "{}",
+        ran.err
+    );
+}
+
+#[test]
+fn the_panel_with_buttons_colors_the_label_like_needs_root() {
+    use omsh_ui::text::Tone;
+    let lines = view::body_lines("     not found: gti; did you mean git?\n", 80);
+    assert_eq!(lines.len(), 1);
+    let spans = lines[0].spans();
+    assert_eq!(spans[0].text(), "not found:");
+    assert_eq!(spans[0].style.tone, Tone::Warn);
+    assert_eq!(spans[1].text(), " gti; did you mean git?");
+    assert_eq!(spans[1].style.tone, Tone::Plain);
+}
+
+/// The commands of `line` that are not found in a shell that has nothing special.
+fn missing_in(line: &str) -> Vec<String> {
+    missing_commands(&Shell::new(), line)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+#[test]
+fn compound_lines_whose_commands_all_exist_get_no_note() {
+    for line in [
+        "VAR=1 ls",
+        "ls | wc -l",
+        "cd / && ls",
+        "for x in a; do ls; done",
+        "if true; then ls; fi",
+        "echo $(ls)",
+    ] {
+        assert_eq!(missing_in(line), Vec::<String>::new(), "{line}");
+    }
+    // The same lines as the steps of a plan: no note in any panel.
+    let answer = json(&[
+        ("a", "VAR=1 ls", "low"),
+        ("b", "ls | wc -l", "low"),
+        ("c", "cd / && ls", "low"),
+        ("d", "for x in a; do ls; done", "low"),
+        ("e", "if true; then ls; fi", "low"),
+        ("f", "echo $(ls)", "low"),
+    ]);
+    let ran = go(says(&answer), "x", Setup::default());
+    assert_eq!(notes(&ran.err), 0, "{}", ran.err);
+}
+
+#[test]
+fn other_shapes_of_a_line_get_no_note_either() {
+    for line in [
+        "f() { :; }; f",
+        "case x in a) ls;; esac",
+        "while read l; do ls; done",
+        "until false; do ls; done",
+        "! ls",
+        "(ls)",
+        "{ ls; }",
+        "ls > /dev/null 2>&1",
+        "x=$(ls)",
+        "ls &",
+        "ls; ls",
+        "[ -d / ] && ls",
+        "FOO=1 BAR=2 ls",
+        "echo \"$(ls)\"",
+        "echo `ls`",
+        "command ls",
+        "cat <<EOF\nx\nEOF",
+        "ls \\\n  -l",
+    ] {
+        assert_eq!(missing_in(line), Vec::<String>::new(), "{line:?}");
+    }
+}
+
+#[test]
+fn a_missing_command_is_found_inside_every_shape_of_line() {
+    let none = "omsh-no-such-program";
+    for line in [
+        "omsh-no-such-program",
+        "ls | omsh-no-such-program",
+        "cd / && omsh-no-such-program",
+        "VAR=1 omsh-no-such-program",
+        "for x in a; do omsh-no-such-program; done",
+        "if true; then omsh-no-such-program; fi",
+        "echo $(omsh-no-such-program)",
+        "'omsh-no-such-program' --x",
+    ] {
+        assert_eq!(missing_in(line), [none], "{line}");
+    }
+    // A function defined in the line hides only its own name.
+    assert_eq!(missing_in("f() { :; }; f; omsh-no-such-program"), [none]);
+    // Said once, in the order of the line.
+    assert_eq!(
+        missing_in("omsh-no-such-program && ls && omsh-no-such-two; omsh-no-such-program"),
+        [none, "omsh-no-such-two"]
+    );
+}
+
+#[test]
+fn a_command_that_may_depend_on_the_start_or_an_earlier_step_is_left_alone() {
+    for line in [
+        "./omsh-no-such-program",
+        "/opt/omsh-no-such/bin/tool --x",
+        "$cmd --x",
+        "omsh-no-such-*",
+    ] {
+        assert_eq!(missing_in(line), Vec::<String>::new(), "{line}");
+    }
+}
+
 #[test]
 fn a_long_command_and_a_long_explanation_are_cut() {
     let long = format!("echo {}", "a".repeat(400));
@@ -1654,6 +1881,7 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         model: ModelRisk::Low,
         command: format!("rm -rf {}", dir.file("a")),
         analysis: Analysis::default(),
+        missing: Vec::new(),
         radii: Vec::new(),
         edited: false,
     };
@@ -2026,6 +2254,7 @@ fn paused_plan<R>(body: impl FnOnce(&mut PlanEnv<'_>, &[Reviewed], &mut Run) -> 
             model: ModelRisk::Low,
             command: "true".to_owned(),
             analysis,
+            missing: Vec::new(),
             radii: Vec::new(),
             edited: false,
         }

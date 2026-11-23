@@ -73,6 +73,8 @@ fn classify(rest: &str) -> (&'static str, Tone, Tone) {
         ("- ", Tone::Plain, Tone::Muted)
     } else if rest.starts_with("needs root:") {
         ("needs root:", Tone::Plain, Tone::Warn)
+    } else if rest.starts_with("not found:") {
+        ("not found:", Tone::Plain, Tone::Warn)
     } else if rest.starts_with("rm goes to the trash") {
         ("", Tone::Ok, Tone::Ok)
     } else if rest.starts_with('(') {
