@@ -48,7 +48,7 @@ pub enum Termination {
 
 impl Termination {
     /// Reads the result of `waitpid`. Returns nothing for states where the child is still
-    /// alive (stopped or continued), which S09 handles.
+    /// alive (stopped or continued); job control handles those (`spawn::wait_member`).
     #[must_use]
     pub const fn from_wait(status: WaitStatus) -> Option<Self> {
         match status {

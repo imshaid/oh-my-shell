@@ -1,4 +1,4 @@
-//! The `omsh` program: the shell's own commands (`omsh ai status`, `omsh tour`) run from any
+//! The `omsh` program: the shell's own commands (`omsh ai status`, `omsh update`, ...) run from any
 //! shell, one command and then exit (blueprint D1, §18).
 //!
 //! The installer makes `omsh` a symlink to `oh-my-shell`. The program looks at the name it was

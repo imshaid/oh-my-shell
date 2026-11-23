@@ -1,5 +1,5 @@
 //! The history explorer: a full-screen list of the commands that were run, with a fuzzy search.
-//! `model` holds the state and the rules, `render` draws it, and [`run`] is the loop that owns
+//! `model` holds the state and the rules, `render` draws it, and [`run()`] is the loop that owns
 //! the terminal while the view is open.
 //!
 //! The view never writes anything but its own screen: no history entry, no variable. It gives a

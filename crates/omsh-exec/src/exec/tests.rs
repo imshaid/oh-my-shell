@@ -1649,7 +1649,8 @@ mod job_groups {
 /// Background jobs (`cmd &`), `jobs`, `wait` and `kill`.
 ///
 /// Every test here starts programs that outlive the line, or waits for them. A mistake must not
-/// hang the test run or leave processes behind (there is no PTY suite with timeouts until S10),
+/// hang the test run or leave processes behind (these tests run in this process, not in a
+/// pseudo-terminal with a watchdog, as the tests of `omsh-tests` do),
 /// so each test goes through [`guarded`]: the body runs on its own thread with a time limit, and
 /// whatever happens (success, a failed assertion, a timeout) every program of every job is
 /// killed and collected afterwards, and the test fails if one is left.

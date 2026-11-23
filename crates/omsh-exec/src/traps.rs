@@ -13,8 +13,8 @@ use crate::signals;
 use crate::status::ExitStatus;
 
 /// The signals `trap` accepts: name, number. `EXIT` (0) is not a signal: it is the end of
-/// the shell. The others that need job control (`CHLD`, `TSTP`, `TTIN`, `TTOU`) come with
-/// S08 and S09.
+/// the shell. Every other signal is refused by `trap` ("cannot be trapped yet"), among them the
+/// ones job control uses (`CHLD`, `TSTP`, `TTIN`, `TTOU`).
 pub(crate) const SIGNALS: &[(&str, i32)] = &[
     ("EXIT", 0),
     ("HUP", 1),

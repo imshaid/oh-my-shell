@@ -187,7 +187,7 @@ fn escaped(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// The question of the future "Run it?" panel: an open panel with the buttons inside the rail.
+/// A question like the "Run it?" panel: an open panel with the buttons inside the rail.
 struct Question {
     panel: Panel,
     buttons: Buttons,

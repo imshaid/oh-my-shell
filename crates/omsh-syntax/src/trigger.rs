@@ -21,7 +21,7 @@ use crate::parser::parse;
 pub enum Trigger<'a> {
     /// `? <request>`: plan a task. The text may be empty (`?` alone).
     Plan(&'a str),
-    /// `?? <command or topic>`: explain without running. Not available yet.
+    /// `?? <command or topic>`: explain without running.
     ///
     /// With no text (`??` alone) it asks for the last failed command to be explained.
     Explain(&'a str),

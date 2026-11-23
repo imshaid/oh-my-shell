@@ -29,6 +29,8 @@
 //! - [`explorer`], [`fuzzy`], [`screen`], [`style`]: the full-screen history explorer (S27a): its
 //!   state, the small fuzzy matcher, the alternate screen with its panic restore, and the mapping
 //!   from theme to ratatui styles.
+//! - [`view`], [`palette`], [`settings`]: the loop and the pieces the full-screen views share, the
+//!   command palette (`Ctrl+P`) and the settings view.
 
 pub mod boxes;
 pub mod caps;

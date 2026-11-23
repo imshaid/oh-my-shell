@@ -2,7 +2,7 @@
 //!
 //! Nothing in this crate runs before the first AI request: no thread, no socket, no runtime.
 //! The shell calls [`block_on`] from the main thread when a person types an `omsh ai` command
-//! or (from S21) a `?` request, and the first call builds a small tokio runtime that lives on
+//! or a `?` request, and the first call builds a small tokio runtime that lives on
 //! the calling thread (`current_thread`: it has no worker threads of its own). A normal
 //! session never gets here, which a test checks from outside by looking for sockets and
 //! threads (`omsh-tests/tests/ai_lazy.rs`).

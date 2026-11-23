@@ -1,6 +1,6 @@
 //! Runs the same input through `oh-my-shell` and through `/bin/sh` and compares what they do.
 //!
-//! The input goes in on standard input, which is how the shell reads for now. For each case
+//! The input goes in on standard input, with `--interpret-stdin` for this shell. For each case
 //! the standard output and the exit status must be identical. Standard error is compared only
 //! as "empty or not", because the wording of the messages differs on purpose.
 //!
@@ -340,8 +340,7 @@ fn parameter_operators_behave_like_sh() -> io::Result<()> {
     // Each operator on a value that is set, empty, and unset.
     for op in [":-", "-", ":+", "+", ":=", "="] {
         for setup in ["v=val", "v=", "unset v"] {
-            // Not `unset`: the shell has no such builtin yet. Leaving the variable alone does
-            // the same.
+            // Not `unset`: leaving the variable alone does the same.
             let setup = if setup == "unset v" { "w=1" } else { setup };
             inputs.push(format!(
                 "{setup}; printf '<%s>' \"${{v{op}word}}\" ${{v{op}word}}; echo; echo [$v]\n"

@@ -1,8 +1,8 @@
 //! The words after `omsh`: which command runs.
 //!
 //! `omsh ai ...`, `omsh tour` and `omsh help` are answered by [`crate::ai::AiSession`], as
-//! before. `omsh update` and `omsh uninstall` (S29b) are handled here, first, and everything
-//! else goes on to the AI session. The executor sees one [`OmshCommand`].
+//! before. `omsh update`, `omsh status` and `omsh uninstall` are handled here, first, and
+//! everything else goes on to the AI session. The executor sees one [`OmshCommand`].
 
 use std::path::PathBuf;
 use std::sync::Arc;

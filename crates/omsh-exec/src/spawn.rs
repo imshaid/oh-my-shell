@@ -1,7 +1,7 @@
 //! Starting an external program and waiting for it. This is the one place that needs `unsafe`.
 //!
-//! The shell may have more than one thread (later segments add a runtime for AI and the
-//! prompt). After `fork`, only the calling thread exists in the child, so a lock held by
+//! The shell has more than one thread (the history writer, the helpers of the prompt and
+//! others; see `docs/design.md`). After `fork`, only the calling thread exists in the child, so a lock held by
 //! another thread at that moment would never be released. The child therefore does nothing
 //! except a few raw system calls that are safe in that situation ("async-signal-safe"), and
 //! then `execve`: no allocation, no locks, no logging. The parent prepares every string and
@@ -366,7 +366,8 @@ pub fn wait(child: Pid) -> Termination {
                 if let Some(ending) = Termination::from_wait(status) {
                     return ending;
                 }
-                // Stopped or continued: keep waiting. Job control (S09) will handle these.
+                // Stopped or continued: keep waiting. `waitpid` here has no `WUNTRACED`, so a
+                // stop is not reported to this function; jobs use `wait_member`, which does.
                 debug_assert!(matches!(
                     status,
                     WaitStatus::Stopped(..) | WaitStatus::Continued(_) | WaitStatus::StillAlive

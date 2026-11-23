@@ -19,5 +19,5 @@ miette.workspace = true
 [dev-dependencies]
 insta.workspace = true
 proptest.workspace = true
-# Only the tests render reports; the shell itself will do so from S05 on.
+# Only the tests of this crate render reports; the shell renders them in `omsh-cli` (`report.rs`).
 miette = { workspace = true, features = ["fancy-no-syscall"] }

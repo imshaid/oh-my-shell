@@ -3,8 +3,8 @@
 //!
 //! **Nothing here runs until the user asks.** The crate has no static initializers that start
 //! a thread or open a socket: the tokio runtime, the TLS setup, the HTTP client and the
-//! keyring connection are all created by the first call that needs them (`omsh ai ...`, and
-//! from S21 a `?` request). `omsh-tests/tests/ai_lazy.rs` shows it from outside.
+//! keyring connection are all created by the first call that needs them (`omsh ai ...` or a
+//! `?` request). `omsh-tests/tests/ai_lazy.rs` shows it from outside.
 //!
 //! - [`Provider`] is what the rest of the shell talks to; [`GenaiProvider`] implements it for
 //!   Ollama, Anthropic, OpenAI, Gemini and any OpenAI-compatible server.

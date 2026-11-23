@@ -1,8 +1,8 @@
 //! The typed configuration (blueprint §9) and its defaults.
 //!
-//! Most of these settings are read by parts of the shell that do not exist yet (the line
-//! editor, history, the safety layer, the AI layer). They are defined and checked now, so the
-//! first-run file can document all of them and a typo is reported from the first day.
+//! The settings are read by the line editor, the history, the safety layer, the AI layer and the
+//! rest of the shell. They are defined and checked in this one place, so the first-run file can
+//! document all of them and a typo is reported.
 
 use std::collections::BTreeMap;
 

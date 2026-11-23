@@ -3,8 +3,9 @@
 //!
 //! [`analyze`] looks at a parsed line, offline, and says how risky each command in it is. The
 //! rules are data: [`RULES`] is a table, each entry with an id, a level, a reason in plain
-//! words and a matcher over the syntax tree. Nothing here runs a command, opens a network
-//! connection, or writes a file.
+//! words and a matcher over the syntax tree. The analysis runs no command, opens no network
+//! connection and writes no file (it only looks at the file system, for example with `stat`);
+//! the trash and the undo journal do move and write files.
 
 pub mod blast;
 pub mod changes;

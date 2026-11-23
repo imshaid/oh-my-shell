@@ -14,7 +14,7 @@
 //! | no operands, input is not a terminal | replaced by `/bin/sh` reading the input |
 //! | no operands, input is a terminal, or `-i` | this shell's own interactive loop |
 //! | `-l`, or `argv[0]` starts with `-` | a login shell: the environment is imported first |
-//! | started as `omsh`, first operand `ai`, `tour` or `help` | that `omsh` command, then exit (`tool.rs`) |
+//! | started as `omsh`, first operand `ai`, `tour`, `help`, `status`, `update` or `uninstall` | that `omsh` command, then exit (`tool.rs`) |
 //!
 //! The interactive shell reads `~/.config/oh-my-shell/config.toml` (created with comments on
 //! the first run) and runs `init.omsh` before the first prompt; `--no-config` skips both.

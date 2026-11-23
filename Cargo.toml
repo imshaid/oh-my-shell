@@ -12,7 +12,7 @@ repository = "https://github.com/imshaid/oh-my-shell"
 # Internal crates. Allowed dependency direction (no cycles):
 #   cli    -> editor, exec, ui, ai, safety, history, config, secrets
 #   editor -> syntax, history, ui, config
-#   exec   -> syntax, config
+#   exec   -> syntax
 #   tests  -> cli, history (development only: the end-to-end tests run the shell's entry function;
 #             `omsh-perf` fills a history file)
 #   safety -> syntax
@@ -43,7 +43,8 @@ clap = { version = "4.6", default-features = false, features = [
     "usage",
 ] }
 # Span-based error reports (S04). No `derive` and no `fancy`: the traits are implemented by
-# hand, which keeps `syn` out of the binary, and the fancy renderer is for S05 to turn on.
+# hand, which keeps `syn` out of the binary. `omsh-cli` turns on the report renderer
+# (`fancy-no-syscall`) for the shell's own messages, and `omsh-syntax` for its tests.
 miette = { version = "7.6", default-features = false }
 # POSIX calls for the executor (S05): fork, waitpid, pipe2, access, sigaction. Default
 # features are off; each feature below is one module of the crate that we use.
