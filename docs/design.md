@@ -287,44 +287,46 @@ trusted because it comes from GitHub over https.
 The end-to-end tests that touch real files (`omsh update`, `omsh uninstall`) run only through a sandbox that refuses any
 home or `XDG_*` folder that is the real home or inside it.
 
-CI run 43894149788 on `main` (commit 1df718f, the commit before the version bump to 1.0.0) was green in all six jobs, so every
-test passed there. A local `cargo test --workspace --locked` on the same source ran 2469 tests (2444 passed, 1 ignored); the 25 that
-failed all compare with `/bin/sh`, which on that machine is bash, not dash (CI has dash).
-
-For the 1.1.0 source (commit 620ae39, version changed) a local `cargo test --workspace` ran 3,022 tests: 2,995 passed, 2 were
-ignored and 25 failed, the same 25 as on the commit before (all compare with `/bin/sh`, which is bash here). CI has not run
-on this version yet.
+CI run 44318640636, the push of the tag `v1.1.0` (commit 5b2b075), was green in all six jobs: format, Clippy, tests, tests
+with the network off, the performance gate and `cargo deny`. The test job and the network-off job each ran 3,022 tests: 3,022
+passed, 2 were ignored and none failed (CI has dash as `/bin/sh`). The run for 1.0.0 (run 43894149788 on `main`, commit
+1df718f, the commit before the version bump to 1.0.0) was also green in all six jobs.
 
 ## Measured numbers
 
-From the "Performance gate" job of CI run 43894149788 on `main` (commit 1df718f, the commit before the version bump to 1.0.0, an
-`ubuntu-24.04` runner).
-Start-up numbers are for a warm file system cache.
+From the "Performance gate" job of CI run 44318640636 (the push of the tag `v1.1.0`, commit 5b2b075, an `ubuntu-24.04` runner,
+image 20261116.376), next to the same job of CI run 43894149788 on `main` (1.0.0: commit 1df718f, the commit before the
+version bump to 1.0.0, image 20261111.370). Start-up numbers are for a warm file system cache.
 
-| What | Measured | Budget |
-|---|---|---|
-| `oh-my-shell --version` (median) | 0.62 ms | 10 ms |
-| `oh-my-shell -c true` minus `/bin/sh -c true` | 0.55 ms | 5 ms |
-| Start to first prompt, no repository | 1.63 ms | 30 ms |
-| Start to first prompt, repository, real `git` | 2.57 ms | 30 ms |
-| Start to first prompt, repository, `git` that never answers | 21.72 ms | 30 ms |
-| Idle memory (RSS) at the prompt | 9.91 MB | 15 MB |
-| Idle memory with a 100,000-row history | 11.10 MB | 15 MB |
-| Idle memory, 100,000 rows, newest 20,000 all different | 11.95 MB | 15 MB |
-| Keystroke to end of redraw, worst p99 (100- and 499-character lines) | 0.44 ms | 5 ms |
-| First Tab (completion menu), worst p99, 20,000 programs on `PATH` | 8.1 ms | 50 ms |
-| History lookups on 100,000 rows, worst p99 | 8.74 ms | 20 ms |
+| What | 1.0.0 (CI) | 1.1.0 (CI) | Budget |
+|---|---|---|---|
+| `oh-my-shell --version` (median) | 0.62 ms | 0.79 ms | 10 ms |
+| `oh-my-shell -c true` minus `/bin/sh -c true` | 0.55 ms | 0.73 ms | 5 ms |
+| Start to first prompt, no repository | 1.63 ms | 1.91 ms | 30 ms |
+| Start to first prompt, repository, real `git` | 2.57 ms | 3.18 ms | 30 ms |
+| Start to first prompt, repository, `git` that never answers | 21.72 ms | 22.23 ms | 30 ms |
+| Idle memory (RSS) at the prompt | 9.91 MB | 9.98 MB | 15 MB |
+| Idle memory with a 100,000-row history | 11.10 MB | 11.34 MB | 15 MB |
+| Idle memory, 100,000 rows, newest 20,000 all different | 11.95 MB | 12.34 MB | 15 MB |
+| Keystroke to end of redraw, worst p99 (100- and 499-character lines) | 0.44 ms | 0.28 ms | 5 ms |
+| Slowest key of all (first keys included) | 1.24 ms | 0.50 ms | 25 ms |
+| First Tab (completion menu), worst p99, 20,000 programs on `PATH` | 8.1 ms | 10.4 ms | 50 ms |
+| History lookups on 100,000 rows, worst p99 | 8.74 ms | 10.77 ms | 20 ms |
+
+Some rows are higher than in the 1.0.0 run, by 17 to 33 percent (`--version`, `-c true`, start to first prompt with no
+repository and with a real `git`, first Tab, history lookups); all are far inside the budgets. The two runs used different
+runner images (20261111.370 and 20261116.376). The cause was not investigated.
 
 Other sizes: the release binary was 13,324,912 bytes in a local release build of the last measured source before the 0.1.1
 fix (fat LTO, one code-generation unit, stripped); the v0.1.1 archives are 6.4 MB (x86_64) and 6.0 MB (aarch64); the v1.0.0 archives are 6,357,232 bytes (x86_64) and
-5,983,796 bytes (aarch64).
+5,983,796 bytes (aarch64); the v1.1.0 archives are 6,569,046 bytes (x86_64) and 6,176,259 bytes (aarch64).
 
 Not measured: a cold disk cache, the cost of `git status` in a very large work tree, and anything on aarch64 hardware.
 
 **Version 1.1.0 against 1.0.0, one machine, local (not CI).** Release builds of the tagged commit 8323395 and of the 1.1.0 source
 (commit 620ae39 with the version number changed), the median of three rounds in which the builds were measured in turn;
-`hyperfine` 2.0.0 (20 warm-up and 300 runs) for the first rows and `omsh-perf` for the others. The 1.1.0 rows are not CI
-numbers: the performance gate has not run on this version yet, and the benchmarks of the completion menu, the history
+`hyperfine` 2.0.0 (20 warm-up and 300 runs) for the first rows and `omsh-perf` for the others. These rows are not CI
+numbers (the CI numbers of this version are in the table above), and the benchmarks of the completion menu, the history
 lookups, the explorer, the palette and the settings view were not run here.
 
 | What | 1.0.0 | 1.1.0 | Budget |

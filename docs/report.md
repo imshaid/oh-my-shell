@@ -104,38 +104,40 @@ Each row was read from the code: the system call or mechanism, then the file whe
 
 ### 4.1 Tests
 
-CI for commit 1df718f (the commit before the version bump to 1.0.0) ran six jobs, all green: format, Clippy, tests, tests with the
-network off, the performance gate and `cargo deny` (run 43894149788 on `main`). A local `cargo test --workspace --locked` on the same
-source ran 2469 tests (2444 passed, 1 ignored); the 25 that failed all compare with `/bin/sh`, which on that machine is bash, not
-dash (CI has dash). The test kinds are listed in [design.md](design.md#testing).
-
-For the 1.1.0 work, not yet run in CI: a local `cargo test --workspace` on the source of commit 620ae39 (version changed) ran 3,022
-tests: 2,995 passed, 2 were ignored and 25 failed, the same 25 as on the commit before, which all compare with `/bin/sh`
-(bash on that machine).
+CI for 1.1.0 (run 44318640636, the push of the tag `v1.1.0`, commit 5b2b075) ran six jobs, all green: format, Clippy, tests, tests
+with the network off, the performance gate and `cargo deny`. The test job and the network-off job each ran 3,022 tests: 3,022
+passed, 2 were ignored and none failed (CI has dash as `/bin/sh`). The run for 1.0.0 (run 43894149788 on `main`, commit 1df718f)
+was also green in all six jobs. The test kinds are listed in [design.md](design.md#testing).
 
 ### 4.2 Performance against the budgets
 
-From the "Performance gate" job of that run (commit 1df718f, before the version bump; an `ubuntu-24.04` runner, warm file-system cache):
+From the "Performance gate" job of CI run 44318640636 (1.1.0: tag `v1.1.0`, commit 5b2b075; an `ubuntu-24.04` runner, image 20261116.376,
+warm file-system cache), next to the same job of run 43894149788 (1.0.0: commit 1df718f, image 20261111.370):
 
-| Measure | Result | Budget |
-|---|---|---|
-| `--version` | 0.62 ms | 10 ms |
-| `-c true` overhead over `/bin/sh -c true` | 0.55 ms | 5 ms |
-| Start to first prompt (no repository / real `git` / `git` that never answers) | 1.63 / 2.57 / 21.72 ms | 30 ms |
-| Idle memory at the prompt | 9.91 MB | 15 MB |
-| Idle memory with a 100,000-row history | 11.10 MB | 15 MB |
-| Keystroke to end of redraw, worst p99 | 0.44 ms | 5 ms |
-| Completion menu, worst p99 over 20,000 programs | 8.1 ms | 50 ms |
-| History lookups over 100,000 rows, worst p99 | 8.74 ms | 20 ms |
+| Measure | 1.0.0 (CI) | 1.1.0 (CI) | Budget |
+|---|---|---|---|
+| `--version` | 0.62 ms | 0.79 ms | 10 ms |
+| `-c true` overhead over `/bin/sh -c true` | 0.55 ms | 0.73 ms | 5 ms |
+| Start to first prompt (no repository / real `git` / `git` that never answers) | 1.63 / 2.57 / 21.72 ms | 1.91 / 3.18 / 22.23 ms | 30 ms |
+| Idle memory at the prompt | 9.91 MB | 9.98 MB | 15 MB |
+| Idle memory with a 100,000-row history | 11.10 MB | 11.34 MB | 15 MB |
+| Keystroke to end of redraw, worst p99 | 0.44 ms | 0.28 ms | 5 ms |
+| Completion menu, worst p99 over 20,000 programs | 8.1 ms | 10.4 ms | 50 ms |
+| History lookups over 100,000 rows, worst p99 | 8.74 ms | 10.77 ms | 20 ms |
 
-Version 1.1.0 was measured on one machine, locally and not in CI, against 1.0.0 (release builds, median of three rounds); no
-measure was more than about 3% worse than 1.0.0 apart from the release binary, which is 3.2% larger (13,438,568 to 13,864,936
-bytes). Start to first prompt with no repository was 2.11 ms (1.0.0) and 1.88 ms (1.1.0); idle memory at the prompt 9.49 MB
-and 9.78 MB; the keystroke worst p99 0.72 ms and 0.68 ms. The rounds differ by up to about 10%, so such differences are noise.
-All rows are in [design.md](design.md#measured-numbers).
+Some rows are higher than in the 1.0.0 run, by 17 to 33 percent (`--version`, `-c true`, start to first prompt with no
+repository and with a real `git`, first Tab, history lookups); all are far inside the budgets. The two runs used different
+runner images (20261111.370 and 20261116.376). The cause was not investigated.
 
-The same job also measures `/bin/sh -c true` at 0.39 ms median on that runner, so `-c true` is about 2.4 times slower than
-`sh` in absolute terms (0.94 ms against 0.39 ms) while staying inside the budget.
+A local measurement, made before the CI run: version 1.1.0 was measured on one machine, locally and not in CI, against 1.0.0
+(release builds, median of three rounds); no measure was more than about 3% worse than 1.0.0 apart from the release binary,
+which is 3.2% larger (13,438,568 to 13,864,936 bytes). Start to first prompt with no repository was 2.11 ms (1.0.0) and 1.88 ms
+(1.1.0); idle memory at the prompt 9.49 MB and 9.78 MB; the keystroke worst p99 0.72 ms and 0.68 ms. The rounds differ by up to
+about 10%, so such differences are noise. All rows, the CI ones and the local ones, are in [design.md](design.md#measured-numbers).
+
+The 1.0.0 job also measured `/bin/sh -c true` at 0.39 ms median on its runner, so `-c true` was about 2.4 times slower than
+`sh` in absolute terms (0.94 ms against 0.39 ms) while staying inside the budget; in the 1.1.0 job it is 1.20 ms against 0.47 ms
+(about 2.6 times), also inside the budget.
 
 ### 4.3 Compatibility with `/bin/sh`
 
