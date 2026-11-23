@@ -12,22 +12,23 @@ Contents: [Shape of the program](#shape-of-the-program) · [One typed line](#one
 
 ## Shape of the program
 
-A Cargo workspace of eleven crates under `crates/`. About 131,200 lines of Rust, of which about 18,000 are the end-to-end
-test harness (`git ls-files '*.rs' | xargs cat | wc -l`).
+A Cargo workspace of eleven crates under `crates/`. At version 1.1.2 (commit 99a964c) there are 135,803 lines of Rust, of which
+18,260 are `omsh-tests`, the end-to-end test harness (`git ls-files '*.rs' | xargs cat | wc -l`). The Lines column is the same
+count for one crate, counting all its `.rs` files, its `tests/` and `benches/` folders too (`git ls-files crates/NAME | grep '\.rs$' | xargs cat | wc -l`).
 
-| Crate | Responsibility | Lines |
+| Crate | Responsibility | Lines (1.1.2) |
 |---|---|---|
 | [`omsh-syntax`](../crates/omsh-syntax/src/lib.rs) | Lexer, parser, syntax tree with byte spans, diagnostics. Depends on nothing internal. | 10,160 |
-| [`omsh-exec`](../crates/omsh-exec/src/lib.rs) | Expansion, executor, builtins, jobs, signals, the terminal, the variable table. The only crate with `unsafe`. | 19,507 |
-| [`omsh-config`](../crates/omsh-config/src/lib.rs) | Settings schema, loading with line and column errors, XDG paths, the first-run file, in-place editing. | 3,963 |
+| [`omsh-exec`](../crates/omsh-exec/src/lib.rs) | Expansion, executor, builtins, jobs, signals, the terminal, the variable table. The only crate with `unsafe`. | 20,281 |
+| [`omsh-config`](../crates/omsh-config/src/lib.rs) | Settings schema, loading with line and column errors, XDG paths, the first-run file, in-place editing. | 4,269 |
 | [`omsh-secrets`](../crates/omsh-secrets/src/lib.rs) | Finds and masks secret-looking text. One rule set for history and for AI context. | 833 |
 | [`omsh-history`](../crates/omsh-history/src/lib.rs) | The SQLite history, its writer thread and its queries. | 3,575 |
-| [`omsh-safety`](../crates/omsh-safety/src/lib.rs) | Rule table and analyzer, blast radius, trash, undo journal. | 7,765 |
-| [`omsh-ai`](../crates/omsh-ai/src/lib.rs) | Provider layer, key storage, plan schema, the lazy runtime, the HTTP download used by `omsh update`. | 7,096 |
-| [`omsh-ui`](../crates/omsh-ui/src/lib.rs) | Theme tokens, degrade rules, motion, full-screen views. | 6,995 |
-| [`omsh-editor`](../crates/omsh-editor/src/lib.rs) | The line editor (reedline): prompt, highlighter, hinter, completer, validator. | 11,605 |
-| [`omsh-cli`](../crates/omsh-cli/src/lib.rs) | The `oh-my-shell` program: arguments, modes, wiring, the AI flows, `omsh update`, `omsh uninstall`. | 22,124 |
-| [`omsh-tests`](../crates/omsh-tests/src/lib.rs) | End-to-end tests in a pseudo-terminal, and the performance programs. Development only. | 13,982 |
+| [`omsh-safety`](../crates/omsh-safety/src/lib.rs) | Rule table and analyzer, blast radius, trash, undo journal. | 8,353 |
+| [`omsh-ai`](../crates/omsh-ai/src/lib.rs) | Provider layer, key storage, plan schema, the lazy runtime, the HTTP download used by `omsh update`. | 8,172 |
+| [`omsh-ui`](../crates/omsh-ui/src/lib.rs) | Theme tokens, degrade rules, motion, full-screen views. | 19,714 |
+| [`omsh-editor`](../crates/omsh-editor/src/lib.rs) | The line editor (reedline): prompt, highlighter, hinter, completer, validator. | 12,321 |
+| [`omsh-cli`](../crates/omsh-cli/src/lib.rs) | The `oh-my-shell` program: arguments, modes, wiring, the AI flows, `omsh update`, `omsh uninstall`. | 29,865 |
+| [`omsh-tests`](../crates/omsh-tests/src/lib.rs) | End-to-end tests in a pseudo-terminal, and the performance programs. Development only. | 18,260 |
 
 Which crate may use which (from the `[dependencies]` of each crate's `Cargo.toml`), with no cycles:
 

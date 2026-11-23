@@ -48,7 +48,7 @@ Non-goals: full bash compatibility; being a terminal emulator; Windows or macOS.
 
 ## 3. Implementation summary
 
-Eleven crates, about 131,200 lines of Rust (`git ls-files '*.rs' | xargs cat | wc -l`); see the table in
+Eleven crates, 135,803 lines of Rust at version 1.1.2 (commit 99a964c; `git ls-files '*.rs' | xargs cat | wc -l`); see the table in
 [design.md](design.md#shape-of-the-program). Main components: a lexer and parser with spans; an executor that forks, execs and
 manages process groups; a line editor built on reedline; a SQLite history; a rule-based safety analyzer with blast radius,
 trash and undo; an AI layer with several providers; full-screen views; and a release pipeline with its own installer and
@@ -167,6 +167,15 @@ named in the file.
   printed `1.0.0`, and `omsh update --check` said that 1.0.0 is the newest release. This test ran on x86_64 only. The aarch64
   build ran only on GitHub's `ubuntu-22.04-arm` runner and was never run on our own aarch64 hardware; the update path on aarch64
   was not tested at all.
+- Version 1.1.0 (tag `v1.1.0`, commit 5b2b075, 2026-11-18) is the UI upgrade: see `CHANGELOG.md` for what changed. Its CI run is
+  in sections 4.1 and 4.2.
+- Version 1.1.1 (tag `v1.1.1`, commit 6b43254, 2026-11-23) changed the AI plan and the hint bar: a plan step whose background job
+  fails at once is a failure, the plan panel notes a command that is not found (`not found:`) and fixes one from the local desktop
+  entries (`fixed:`), and the hint bar breaks between its parts on a narrow window.
+- Version 1.1.2 (tag `v1.1.2`, commit 99a964c, 2026-11-23) adds the plan panel's `no such path:` note, with a "did you mean" taken
+  from the real names in the folder, and removes the unused `omsh-config` dependency of `omsh-exec` (commit ffd5343).
+- This file records no CI run, release assets or install and update test for 1.1.1 and 1.1.2, and no such test for 1.1.0 beyond its
+  CI run: the tags and commits above are from `git`, and the rest was not checked for this page.
 
 ## 5. Limitations
 
@@ -190,7 +199,7 @@ POSIX. The only measured comparison in this project is the one in section 4.3 an
 
 ## 8. Timeline
 
-Dates are those of the commits in the repository (74 commits on `main` at the tagged commit 8323395, 2026-11-04 to 2026-11-17).
+Dates are those of the commits in the repository (74 commits on `main` at the tagged commit 8323395, 2026-11-04 to 2026-11-17; 108 commits at the tagged commit 99a964c of version 1.1.2, to 2026-11-23).
 
 | Date | What was added |
 |---|---|
@@ -203,4 +212,5 @@ Dates are those of the commits in the repository (74 commits on `main` at the ta
 | 2026-11-13 | Notifications and tour, idle-memory work, polish, release pipeline, `omsh update` and `omsh uninstall`, version 0.1.0 and 0.1.1 |
 | 2026-11-16 | Documentation accuracy fixes |
 | 2026-11-17 | Version 1.0.0 tagged and released; `omsh update` tested from 0.1.1 to 1.0.0 |
-| 2026-11-17 to 2026-11-18 | The UI upgrade on a branch (not released yet): panels for the questions the shell asks, the new prompt look, the installer display, first-run questions, `omsh status`, the jobs table and the plan panels |
+| 2026-11-17 to 2026-11-18 | The UI upgrade, made on a branch and released as version 1.1.0 (tag `v1.1.0`, commit 5b2b075, 2026-11-18): panels for the questions the shell asks, the new prompt look, the installer display, first-run questions, `omsh status`, the jobs table and the plan panels |
+| 2026-11-23 | Version 1.1.1 (tag `v1.1.1`, commit 6b43254): a plan step whose background job fails at once is a failure, the plan panel notes commands that are not found and fixes one from the desktop entries, and the hint bar breaks between its parts on a narrow window. Version 1.1.2 (tag `v1.1.2`, commit 99a964c): the plan panel notes a path that does not exist, with a "did you mean" |
