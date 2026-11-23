@@ -10,7 +10,7 @@ repository = "https://github.com/imshaid/oh-my-shell"
 
 [workspace.dependencies]
 # Internal crates. Allowed dependency direction (no cycles):
-#   cli    -> editor, exec, ui, ai, safety, history, config, secrets
+#   cli    -> editor, exec, ui, ai, safety, history, config, secrets, syntax
 #   editor -> syntax, history, ui, config
 #   exec   -> syntax
 #   tests  -> cli, history (development only: the end-to-end tests run the shell's entry function;
