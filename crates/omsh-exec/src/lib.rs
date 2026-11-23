@@ -48,7 +48,7 @@ pub use expand::glob;
 pub use io::{FdPlan, Io, Slot};
 pub use jobpanel::{JobAction, JobRow, JobState, JobWatch, JobsPanel, Picked};
 pub use omsh_syntax::{Span, SyntaxDiagnostic, Trigger, trigger};
-pub use path::{DEFAULT_PATH, Lookup, PathCache, find_program};
+pub use path::{DEFAULT_PATH, Lookup, PathCache, find_program, locate_program};
 pub use shell::{LineResult, Outcome, Prepared, Shell};
 pub use signals::{
     catch_interrupt, clear_interrupt, enter_interactive, hung_up, interrupted,

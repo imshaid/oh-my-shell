@@ -136,6 +136,24 @@ pub fn find_program(name: &[u8], path_value: &[u8], base: Option<&Path>) -> bool
     matches!(search(name, path_value, base), Lookup::Found(_))
 }
 
+/// Where `name` would be run from: the first executable regular file called `name` in
+/// `path_value` (a name with a `/` is its own path, from `base`). The path is as a lookup gives
+/// it, not made absolute. Uses no cache and changes nothing.
+#[must_use]
+pub fn locate_program(name: &[u8], path_value: &[u8], base: Option<&Path>) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    if name.contains(&b'/') {
+        let path = PathBuf::from(OsStr::from_bytes(name));
+        return is_executable_file(&under(base, &path)).then_some(path);
+    }
+    match search(name, path_value, base) {
+        Lookup::Found(path) => Some(path),
+        Lookup::Denied(_) | Lookup::NotFound => None,
+    }
+}
+
 /// `path` as seen from `base`: a relative path is joined to it.
 fn under(base: Option<&Path>, path: &Path) -> PathBuf {
     match base {
@@ -224,6 +242,25 @@ mod tests {
             PathCache::new().lookup(b"tool", a.as_str().as_bytes(), None),
             Lookup::Denied(file)
         );
+    }
+
+    #[test]
+    fn locate_program_gives_the_first_executable_file() {
+        let (a, b) = (TempDir::new(), TempDir::new());
+        a.file("tool", 0o644);
+        let in_b = b.file("tool", 0o755);
+        let path = format!("{}:{}", a.as_str(), b.as_str());
+        assert_eq!(
+            locate_program(b"tool", path.as_bytes(), None),
+            Some(in_b.clone())
+        );
+        // A name with a `/` is its own path.
+        let own = in_b.to_str().unwrap().as_bytes().to_vec();
+        assert_eq!(locate_program(&own, b"", None), Some(in_b));
+        assert_eq!(locate_program(b"nothing", path.as_bytes(), None), None);
+        assert_eq!(locate_program(b"", path.as_bytes(), None), None);
+        // A file that may not be run is not a program.
+        assert_eq!(locate_program(b"tool", a.as_str().as_bytes(), None), None);
     }
 
     #[test]

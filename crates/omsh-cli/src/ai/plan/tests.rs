@@ -176,6 +176,15 @@ struct Setup {
     undo: Option<Arc<Undo>>,
     /// What the shell's "did you mean" offers for any name; no suggester when empty.
     suggest: Vec<&'static str>,
+    /// Desktop entries of a made-up machine: (file name, text). `{bin}` in the text is the folder
+    /// of `programs`. Without any, the shell has no entry folder that exists.
+    apps: Vec<(&'static str, String)>,
+    /// Programs the made-up machine has, and the whole of its `PATH` (links to `/bin/true`). Without
+    /// any, the shell keeps its default `PATH`.
+    programs: Vec<&'static str>,
+    /// Programs of the made-up machine that are **not** in `PATH` (links to `/bin/true`); `{opt}`
+    /// in an entry's text is their folder.
+    outside: Vec<&'static str>,
 }
 
 /// A suggester that offers the same names for every name.
@@ -199,6 +208,33 @@ fn go(fake: FakeProvider, request: &str, setup: Setup) -> Ran {
             .collect();
         shell.set_suggest(Arc::new(FakeSuggest(names)));
     }
+    // The shell never looks at the real desktop entries of the machine that runs the tests.
+    let machine = Dir::new();
+    let (share, bin) = (machine.file("share/applications"), machine.file("bin"));
+    let opt = machine.file("opt");
+    fs::create_dir_all(&share).unwrap();
+    fs::create_dir_all(&bin).unwrap();
+    for (name, text) in &setup.apps {
+        let text = text.replace("{bin}", &bin).replace("{opt}", &opt);
+        fs::write(format!("{share}/{name}"), text).unwrap();
+    }
+    fs::create_dir_all(&opt).unwrap();
+    for name in &setup.outside {
+        std::os::unix::fs::symlink("/bin/true", format!("{opt}/{name}")).unwrap();
+    }
+    for name in &setup.programs {
+        std::os::unix::fs::symlink("/bin/true", format!("{bin}/{name}")).unwrap();
+    }
+    let mut vars = format!(
+        "XDG_DATA_HOME='{}' XDG_DATA_DIRS='{}'",
+        machine.file("none"),
+        machine.file("share")
+    );
+    if !setup.programs.is_empty() {
+        // Only the made-up programs: the machine that runs the tests may have the real ones.
+        vars.push_str(&format!(" PATH='{bin}'"));
+    }
+    shell.run_source(&vars, true, &mut files);
     if let Some(undo) = &setup.undo {
         shell.set_journal(Arc::clone(undo) as Arc<dyn omsh_exec::JournalCommand>);
     }
@@ -425,6 +461,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         command: "shred /nonexistent-omsh-plan-test".to_owned(),
         analysis: Analysis::default(),
         missing: Vec::new(),
+        fixed: Vec::new(),
         radii: Vec::new(),
         edited: false,
     };
@@ -1882,6 +1919,7 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         command: format!("rm -rf {}", dir.file("a")),
         analysis: Analysis::default(),
         missing: Vec::new(),
+        fixed: Vec::new(),
         radii: Vec::new(),
         edited: false,
     };
@@ -2255,6 +2293,7 @@ fn paused_plan<R>(body: impl FnOnce(&mut PlanEnv<'_>, &[Reviewed], &mut Run) -> 
             command: "true".to_owned(),
             analysis,
             missing: Vec::new(),
+            fixed: Vec::new(),
             radii: Vec::new(),
             edited: false,
         }
@@ -2468,4 +2507,339 @@ fn the_lines_after_a_stop_in_the_background_name_the_job_and_the_steps_that_did_
         assert!(matches!(result, LineResult::Ran(_)));
         assert_eq!(env.shell.last_status().0, 0);
     });
+}
+
+// -- a command that is not found, fixed from the desktop entries ----------------------------------
+
+/// The entries of a machine that has Google Chrome (under two entries, one program) and Telegram
+/// (with an action that quits it).
+fn chrome_and_telegram() -> Setup {
+    Setup {
+        apps: vec![
+            (
+                "google-chrome.desktop",
+                "[Desktop Entry]\nType=Application\nName=Google Chrome\nExec={bin}/google-chrome-stable %U\n"
+                    .to_owned(),
+            ),
+            (
+                "com.google.Chrome.desktop",
+                "[Desktop Entry]\nType=Application\nName=Google Chrome\nExec=google-chrome-stable %U\n"
+                    .to_owned(),
+            ),
+            (
+                "org.telegram.desktop.desktop",
+                "[Desktop Entry]\nType=Application\nName=Telegram\nTryExec=Telegram\n\
+                 Exec=Telegram -- %U\nActions=Quit;\n\n\
+                 [Desktop Action Quit]\nName=Quit Telegram\nExec=Telegram -quit\n"
+                    .to_owned(),
+            ),
+        ],
+        programs: vec!["google-chrome-stable", "Telegram"],
+        ..Setup::default()
+    }
+}
+
+#[test]
+fn a_missing_command_is_replaced_by_the_program_of_its_desktop_entry() {
+    let answer = json(&[("Open", "google-chrome https://example.org &", "low")]);
+    let ran = go(says(&answer), "x", chrome_and_telegram());
+    let err = &ran.err;
+    assert!(
+        err.contains("     fixed: google-chrome -> google-chrome-stable (Google Chrome)\n"),
+        "{err}"
+    );
+    // Everything but the command word is as the model wrote it.
+    assert!(
+        err.contains("     $ google-chrome-stable https://example.org &\n"),
+        "{err}"
+    );
+    assert!(!err.contains("not found:"), "{err}");
+    assert!(!err.contains("$ google-chrome https"), "{err}");
+}
+
+#[test]
+fn the_telegram_entry_fixes_its_name_and_keeps_the_parentheses_and_the_ampersand() {
+    let answer = json(&[("Open", "(telegram-desktop &)", "low")]);
+    let ran = go(says(&answer), "x", chrome_and_telegram());
+    let err = &ran.err;
+    assert!(
+        err.contains("     fixed: telegram-desktop -> Telegram (Telegram)\n"),
+        "{err}"
+    );
+    assert!(err.contains("     $ (Telegram &)\n"), "{err}");
+    // The action of the entry ("Quit Telegram", `Telegram -quit`) is nowhere.
+    assert!(!err.contains("quit"), "{err}");
+    assert!(!err.contains("not found:"), "{err}");
+}
+
+#[test]
+fn the_fixed_command_is_the_one_that_runs() {
+    let answer = json(&[("Open", "google-chrome", "low")]);
+    let mut setup = chrome_and_telegram();
+    setup.keys = vec![enter()];
+    let ran = go(says(&answer), "x", setup);
+    // `google-chrome-stable` is a link to `true` here: 0, where an unfixed step would be 127.
+    assert_eq!(ran.status(), 0, "{}", ran.err);
+    assert!(ran.err.contains("plan done"), "{}", ran.err);
+}
+
+#[test]
+fn only_the_command_words_that_are_not_found_are_changed() {
+    let answer = json(&[(
+        "Open",
+        "google-chrome a; echo google-chrome; google-chrome b | omsh-no-such-program",
+        "low",
+    )]);
+    let ran = go(says(&answer), "x", chrome_and_telegram());
+    let err = &ran.err;
+    assert!(
+        err.contains(
+            "     $ google-chrome-stable a; echo google-chrome; google-chrome-stable b | \
+             omsh-no-such-program\n"
+        ),
+        "{err}"
+    );
+    // One line for the name, even though it was replaced twice, and the other missing name keeps
+    // its note.
+    assert_eq!(err.matches("     fixed: ").count(), 1, "{err}");
+    assert!(
+        err.contains("     not found: omsh-no-such-program\n"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_program_that_is_found_is_left_alone_even_when_an_entry_names_it() {
+    let answer = json(&[("Open", "google-chrome-stable --x", "low")]);
+    let ran = go(says(&answer), "x", chrome_and_telegram());
+    assert!(!ran.err.contains("fixed:"), "{}", ran.err);
+    assert!(
+        ran.err.contains("     $ google-chrome-stable --x\n"),
+        "{}",
+        ran.err
+    );
+}
+
+#[test]
+fn two_different_programs_leave_the_note_as_it_was() {
+    let mut setup = chrome_and_telegram();
+    // A second program that an entry also calls "Google Chrome" (and `-beta` is not an ending
+    // that is ignored, so only the name makes it a candidate).
+    setup.programs.push("google-chrome-beta");
+    setup.apps.push((
+        "beta.desktop",
+        "[Desktop Entry]\nType=Application\nName=Google Chrome\nExec={bin}/google-chrome-beta %U\n"
+            .to_owned(),
+    ));
+    let answer = json(&[("Open", "google-chrome", "low")]);
+    let ran = go(says(&answer), "x", setup);
+    assert!(!ran.err.contains("fixed:"), "{}", ran.err);
+    assert!(
+        ran.err.contains("     not found: google-chrome\n"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.err.contains("     $ google-chrome\n"), "{}", ran.err);
+}
+
+#[test]
+fn an_entry_whose_program_is_not_installed_is_not_a_fix() {
+    let mut setup = chrome_and_telegram();
+    setup
+        .programs
+        .retain(|name| *name != "google-chrome-stable");
+    let answer = json(&[("Open", "google-chrome", "low")]);
+    let ran = go(says(&answer), "x", setup);
+    assert!(!ran.err.contains("fixed:"), "{}", ran.err);
+    assert!(
+        ran.err.contains("     not found: google-chrome\n"),
+        "{}",
+        ran.err
+    );
+}
+
+#[test]
+fn with_no_entry_folders_nothing_changes_and_nothing_is_said() {
+    // The made-up machine has no entries at all: no files, no programs.
+    let answer = json(&[("Open", "google-chrome", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            programs: vec!["ls"],
+            ..Setup::default()
+        },
+    );
+    assert!(!ran.err.contains("fixed:"), "{}", ran.err);
+    assert!(
+        ran.err.contains("     not found: google-chrome\n"),
+        "{}",
+        ran.err
+    );
+    assert!(ran.err.contains("     $ google-chrome\n"), "{}", ran.err);
+}
+
+#[test]
+fn a_fixed_step_is_still_rated_by_the_model_and_by_the_analyzer() {
+    // The analyzer judges the command as it now reads: a fixed `rm` is not a thing here, so the
+    // level and the model's estimate decide as for any other step.
+    let answer = json(&[("Open", "google-chrome", "high")]);
+    let ran = go(says(&answer), "x", chrome_and_telegram());
+    assert!(ran.err.contains("1. Open   [dangerous"), "{}", ran.err);
+    assert!(
+        ran.err
+            .contains("fixed: google-chrome -> google-chrome-stable"),
+        "{}",
+        ran.err
+    );
+}
+
+#[test]
+fn editing_a_step_to_a_missing_name_fixes_it_too() {
+    let answer = json(&[("Look", "ls", "low")]);
+    let mut setup = chrome_and_telegram();
+    setup.programs.push("ls");
+    setup.keys = vec![ch('e'), enter()];
+    setup.edits = vec![Edited::Text("google-chrome --new-window".to_owned())];
+    let ran = go(says(&answer), "x", setup);
+    let err = &ran.err;
+    let after = &err[err.find("(edited)").map_or(0, |at| at.saturating_sub(200))..];
+    assert!(
+        after.contains("     $ google-chrome-stable --new-window\n"),
+        "{err}"
+    );
+    assert_eq!(err.matches("     fixed: ").count(), 1, "{err}");
+    assert!(!err.contains("not found:"), "{err}");
+}
+
+#[test]
+fn the_name_of_the_application_cannot_carry_control_characters_to_the_screen() {
+    let mut setup = chrome_and_telegram();
+    setup.apps.push((
+        "evil.desktop",
+        "[Desktop Entry]\nType=Application\nName=Evil\x1b[31m Tool\nExec=evil-tool\n".to_owned(),
+    ));
+    setup.programs.push("evil-tool");
+    let answer = json(&[("Open", "evil", "low")]);
+    let ran = go(says(&answer), "x", setup);
+    assert!(
+        ran.err.contains("fixed: evil -> evil-tool (Evil[31m Tool)"),
+        "{:?}",
+        ran.err
+    );
+    assert!(!ran.err.contains('\x1b'), "{:?}", ran.err);
+}
+
+#[test]
+fn the_entries_are_read_only_when_something_is_missing_and_only_once() {
+    let machine = Dir::new();
+    let share = machine.file("share/applications");
+    fs::create_dir_all(&share).unwrap();
+    fs::write(
+        format!("{share}/a.desktop"),
+        "[Desktop Entry]\nType=Application\nName=A\nExec=a-tool\n",
+    )
+    .unwrap();
+    let mut shell = Shell::new();
+    shell.run_source(
+        &format!(
+            "XDG_DATA_HOME='{}' XDG_DATA_DIRS='{}'",
+            machine.file("none"),
+            machine.file("share")
+        ),
+        true,
+        &mut Io::process(),
+    );
+    let mut entries = None;
+    // Everything is found: no read.
+    let (command, fixes) = fix_missing(&shell, "cd / && true", &mut entries);
+    assert_eq!(command, "cd / && true");
+    assert!(fixes.is_empty());
+    assert!(entries.is_none(), "nothing was missing, nothing is read");
+    // Something is missing: read once, and kept for the next step.
+    fix_missing(&shell, "omsh-no-such-program", &mut entries);
+    assert_eq!(entries.as_ref().map(Vec::len), Some(1));
+    fs::remove_file(format!("{share}/a.desktop")).unwrap();
+    fix_missing(&shell, "omsh-other-missing", &mut entries);
+    assert_eq!(entries.as_ref().map(Vec::len), Some(1), "not read again");
+}
+
+#[test]
+fn the_panel_with_buttons_colors_the_fixed_label_like_the_not_found_one() {
+    use omsh_ui::text::Tone;
+    let lines = view::body_lines("     fixed: gti -> git (Git)\n", 80);
+    assert_eq!(lines.len(), 1);
+    let spans = lines[0].spans();
+    assert_eq!(spans[0].text(), "fixed:");
+    assert_eq!(spans[0].style.tone, Tone::Warn);
+    assert_eq!(spans[1].text(), " gti -> git (Git)");
+    assert_eq!(spans[1].style.tone, Tone::Plain);
+}
+
+#[test]
+fn a_web_app_shortcut_of_the_user_does_not_stop_the_browser_from_being_fixed() {
+    // The shape of a real machine: two entries of Chrome (one is `NoDisplay`) and a shortcut of
+    // the user's own that runs the browser's real binary, which is not in `PATH`.
+    let mut setup = chrome_and_telegram();
+    setup.outside = vec!["google-chrome"];
+    setup.apps.push((
+        "a-chrome-hnpfjngllnobngcgfapefoaidbinmjnm-Default.desktop",
+        "[Desktop Entry]\nType=Application\nName=WhatsApp Web\n\
+         Exec={opt}/google-chrome --profile-directory=Default --app-id=hnpf\n"
+            .to_owned(),
+    ));
+    setup.apps.push((
+        "com.google.Chrome.desktop",
+        "[Desktop Entry]\nType=Application\nName=Google Chrome\nNoDisplay=true\n\
+         Exec={bin}/google-chrome-stable %U\n"
+            .to_owned(),
+    ));
+    let answer = json(&[("Open", "google-chrome https://example.org", "low")]);
+    let ran = go(says(&answer), "x", setup);
+    let err = &ran.err;
+    // As on a real machine, the entries write the program as an absolute path.
+    let line = err
+        .lines()
+        .find(|line| line.starts_with("     fixed: "))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(
+        line.starts_with("     fixed: google-chrome -> /")
+            && line.ends_with("/bin/google-chrome-stable (Google Chrome)"),
+        "{line}"
+    );
+    assert!(
+        err.contains("/bin/google-chrome-stable https://example.org\n"),
+        "{err}"
+    );
+    assert!(!err.contains("not found:"), "{err}");
+    assert!(!err.contains("WhatsApp"), "{err}");
+}
+
+#[test]
+fn a_fix_found_only_by_its_program_shows_no_application_name() {
+    // Only the shortcut runs a program called `google-chrome`: it fixes the name, but its own name
+    // ("WhatsApp Web") is another application and is not shown.
+    let setup = Setup {
+        apps: vec![(
+            "shortcut.desktop",
+            "[Desktop Entry]\nType=Application\nName=WhatsApp Web\n\
+             Exec={opt}/google-chrome --app-id=x\n"
+                .to_owned(),
+        )],
+        programs: vec!["ls"],
+        outside: vec!["google-chrome"],
+        ..Setup::default()
+    };
+    let answer = json(&[("Open", "google-chrome", "low")]);
+    let ran = go(says(&answer), "x", setup);
+    let line = ran
+        .err
+        .lines()
+        .find(|line| line.starts_with("     fixed: "))
+        .unwrap_or_else(|| panic!("{}", ran.err));
+    assert!(
+        line.starts_with("     fixed: google-chrome -> ") && line.ends_with("/opt/google-chrome"),
+        "{line}"
+    );
+    assert!(!ran.err.contains("WhatsApp"), "{}", ran.err);
 }

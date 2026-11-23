@@ -222,6 +222,9 @@ struct Reviewed {
     /// Commands of the step that would not start anything in this shell, each with the names its
     /// "did you mean" offers. Only a note in the panel: the step still runs if it is chosen.
     missing: Vec<(String, Vec<String>)>,
+    /// Command words that were replaced by the program of a desktop entry (see `desktop`), shown
+    /// as `fixed:` lines. The panel shows, and the step runs, the corrected command.
+    fixed: Vec<desktop::Fix>,
     /// What the findings of the analysis would touch: one entry per finding, counted when the
     /// plan is shown. Empty until then.
     radii: Vec<Option<Radius>>,
@@ -305,6 +308,70 @@ fn missing_commands(shell: &Shell, command: &str) -> Vec<(String, Vec<String>)> 
     out
 }
 
+/// Replaces the commands of `command` that are not found but that the desktop entries of this
+/// machine name as exactly one program (`google-chrome` for `google-chrome-stable`). Only the
+/// command word changes: arguments, `&`, parentheses and the rest stay as they are. The entries
+/// are read only when something is missing, and once: `entries` keeps them for the next step of
+/// the same plan. Nothing is sent anywhere. With no entry folders, nothing is read and nothing
+/// changes.
+fn fix_missing(
+    shell: &Shell,
+    command: &str,
+    entries: &mut Option<Vec<desktop::Entry>>,
+) -> (String, Vec<desktop::Fix>) {
+    let missing = missing_commands(shell, command);
+    if missing.is_empty() {
+        return (command.to_owned(), Vec::new());
+    }
+    let entries = entries.get_or_insert_with(|| desktop::scan(&desktop::dirs_of(shell)));
+    let fixes: Vec<desktop::Fix> = missing
+        .iter()
+        .filter_map(|(name, _)| desktop::find_fix(shell, entries, name))
+        .collect();
+    if fixes.is_empty() {
+        return (command.to_owned(), fixes);
+    }
+    // The same words `missing_commands` looked at, replaced from the end so that the spans of
+    // the earlier ones stay right.
+    let mut spans: Vec<(usize, usize, &str)> = lex_for_highlight(command)
+        .words
+        .iter()
+        .filter(|word| word.kind == HighlightKind::Command)
+        .filter(|word| !word.span.text(command).contains('/'))
+        .filter_map(|word| {
+            let name = crate::notify::plain_name(word.span.text(command))?;
+            let fix = fixes.iter().find(|fix| fix.from == name)?;
+            Some((word.span.start, word.span.end, fix.to.as_str()))
+        })
+        .collect();
+    spans.sort_by_key(|(start, ..)| std::cmp::Reverse(*start));
+    let mut fixed = command.to_owned();
+    for (start, end, to) in spans {
+        fixed.replace_range(start..end, to);
+    }
+    (fixed, fixes)
+}
+
+/// `command` (already reviewed as `analysis`) with its missing commands fixed from the desktop
+/// entries, and reviewed again as it now reads. If the corrected text cannot be reviewed (not
+/// expected: only a command word changed), the command stays as it was.
+fn with_fixes(
+    shell: &Shell,
+    command: &str,
+    analysis: Analysis,
+    start: &StartDir,
+    entries: &mut Option<Vec<desktop::Entry>>,
+) -> (String, Analysis, Vec<desktop::Fix>) {
+    let (fixed, fixes) = fix_missing(shell, command, entries);
+    if fixes.is_empty() {
+        return (command.to_owned(), analysis, fixes);
+    }
+    match review(shell, &fixed, start) {
+        Ok(reviewed) => (fixed, reviewed, fixes),
+        Err(_) => (command.to_owned(), analysis, Vec::new()),
+    }
+}
+
 /// Where step `index` starts: the shell's directory for the first, else where the one before
 /// it ended (as far as the analysis could follow its `cd`s).
 fn start_of(steps: &[Reviewed], index: usize) -> StartDir {
@@ -329,6 +396,7 @@ fn message_of(result: &LineResult) -> String {
 /// it ended, so `cd /` followed by `rm -rf *` is seen for what it is.
 fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
     let mut out: Vec<Reviewed> = Vec::new();
+    let mut entries = None;
     for (index, step) in plan.steps.iter().enumerate() {
         let start = start_of(&out, index);
         let analysis = review(shell, &step.command, &start).map_err(|why| {
@@ -338,14 +406,17 @@ fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
                 index + 1
             ))
         })?;
+        let (command, analysis, fixed) =
+            with_fixes(shell, &step.command, analysis, &start, &mut entries);
         out.push(Reviewed {
             title: step.title.clone(),
             explanation: step.explanation.clone(),
             needs_root: step.needs_root,
             model: step.risk,
-            command: step.command.clone(),
+            missing: missing_commands(shell, &command),
+            command,
             analysis,
-            missing: missing_commands(shell, &step.command),
+            fixed,
             radii: Vec::new(),
             edited: false,
         });
@@ -710,6 +781,17 @@ fn step_body(
             "     needs root: the plan does not add sudo; it may fail until you decide how \
                  to run it\n",
         );
+    }
+    for fix in &step.fixed {
+        out.push_str(&format!(
+            "     fixed: {} -> {}",
+            shorten(&displayable(&fix.from)),
+            shorten(&displayable(&fix.to)),
+        ));
+        if let Some(app) = &fix.app {
+            out.push_str(&format!(" ({})", shorten(&displayable(app))));
+        }
+        out.push('\n');
     }
     for (name, near) in &step.missing {
         out.push_str(&format!("     not found: {}", shorten(&displayable(name))));
@@ -1322,10 +1404,13 @@ fn edit_step(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], index: usize) {
     let start = start_of(steps, index);
     match review(env.shell, new, &start) {
         Ok(analysis) => {
+            let (command, analysis, fixed) =
+                with_fixes(env.shell, new, analysis, &start, &mut None);
             let step = &mut steps[index];
-            step.command = new.to_owned();
+            step.missing = missing_commands(env.shell, &command);
+            step.command = command;
             step.analysis = analysis;
-            step.missing = missing_commands(env.shell, new);
+            step.fixed = fixed;
             step.edited = true;
             count_step(step, env.confirm, env.blast);
             // The edit may have changed where the steps after it start.
@@ -1922,6 +2007,7 @@ fn stopped(
     finish(env.shell, status)
 }
 
+mod desktop;
 mod view;
 
 #[cfg(test)]

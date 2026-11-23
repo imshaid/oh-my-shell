@@ -11,7 +11,7 @@ use omsh_syntax::ReservedWord;
 use super::{Class, classify, quote};
 use crate::exec::Flow;
 use crate::io::Io;
-use crate::path::{DEFAULT_PATH, Lookup, find_program};
+use crate::path::{DEFAULT_PATH, Lookup, find_program, locate_program};
 use crate::shell::Shell;
 use crate::status::ExitStatus;
 
@@ -78,6 +78,18 @@ impl Shell {
             .clone()
             .unwrap_or_else(|| self.vars.search_path(&[]));
         find_program(name.as_bytes(), &search, self.cwd_override.as_deref())
+    }
+
+    /// The file a program `name` would be run from, found in `PATH` (or as a path, for a name
+    /// with a `/`), as a lookup gives it. `None` if no executable file has that name. Keywords,
+    /// builtins and functions are not looked at. Nothing is remembered and nothing runs.
+    #[must_use]
+    pub fn program_path(&self, name: &str) -> Option<PathBuf> {
+        let search = self
+            .path_override
+            .clone()
+            .unwrap_or_else(|| self.vars.search_path(&[]));
+        locate_program(name.as_bytes(), &search, self.cwd_override.as_deref())
     }
 }
 
