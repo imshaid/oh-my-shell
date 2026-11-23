@@ -58,7 +58,7 @@ pub use palette::BuiltinHelp;
 pub use probe::terminal_reports_cursor;
 pub use prompt::{Look, PromptState, ShellPrompt};
 pub use segments::{Head, Segment, git_head, working_directory};
-pub use suggest::suggest_command;
+pub use suggest::{near_name, suggest_command};
 pub use toast::ToastHandle;
 pub use validator::is_incomplete;
 

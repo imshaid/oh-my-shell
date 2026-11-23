@@ -222,6 +222,9 @@ struct Reviewed {
     /// Commands of the step that would not start anything in this shell, each with the names its
     /// "did you mean" offers. Only a note in the panel: the step still runs if it is chosen.
     missing: Vec<(String, Vec<String>)>,
+    /// Paths that the step opens and that do not exist (see `paths`), each with the names that
+    /// may have been meant. Only a note in the panel, like `missing`.
+    missing_paths: Vec<paths::Note>,
     /// Command words that were replaced by the program of a desktop entry (see `desktop`), shown
     /// as `fixed:` lines. The panel shows, and the step runs, the corrected command.
     fixed: Vec<desktop::Fix>,
@@ -414,6 +417,7 @@ fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
             needs_root: step.needs_root,
             model: step.risk,
             missing: missing_commands(shell, &command),
+            missing_paths: Vec::new(),
             command,
             analysis,
             fixed,
@@ -421,7 +425,27 @@ fn review_plan(shell: &Shell, plan: &Plan) -> Result<Vec<Reviewed>, PlanError> {
             edited: false,
         });
     }
+    fill_missing_paths(shell, &mut out);
     Ok(out)
+}
+
+/// Sets the "no such path" notes of every step. All steps are done together, in order, because a
+/// place is noted once and a name that an earlier step mentions is not noted later.
+fn fill_missing_paths(shell: &Shell, steps: &mut [Reviewed]) {
+    let notes = {
+        let looked: Vec<paths::StepPaths<'_>> = steps
+            .iter()
+            .map(|step| paths::StepPaths {
+                command: &step.command,
+                opens: &step.analysis.opens,
+            })
+            .collect();
+        let cdpath = shell.var("CDPATH").is_some_and(|value| !value.is_empty());
+        paths::notes(&looked, cdpath)
+    };
+    for (step, found) in steps.iter_mut().zip(notes) {
+        step.missing_paths = found;
+    }
 }
 
 /// Counts what the findings of `step` that the person is asked about would touch. Dangerous
@@ -797,6 +821,19 @@ fn step_body(
         out.push_str(&format!("     not found: {}", shorten(&displayable(name))));
         if !near.is_empty() {
             out.push_str(&format!("; did you mean {}?", name_list(near)));
+        }
+        out.push('\n');
+    }
+    for (path, near) in &step.missing_paths {
+        out.push_str(&format!(
+            "     no such path: {}",
+            shorten(&displayable(path))
+        ));
+        if !near.is_empty() {
+            out.push_str(&format!(
+                "; did you mean {}?",
+                shorten(&displayable(&name_list(near)))
+            ));
         }
         out.push('\n');
     }
@@ -1415,6 +1452,7 @@ fn edit_step(env: &mut PlanEnv<'_>, steps: &mut [Reviewed], index: usize) {
             count_step(step, env.confirm, env.blast);
             // The edit may have changed where the steps after it start.
             rechain(env, steps, index + 1);
+            fill_missing_paths(env.shell, steps);
         }
         Err(why) => say(
             env,
@@ -2008,6 +2046,7 @@ fn stopped(
 }
 
 mod desktop;
+mod paths;
 mod view;
 
 #[cfg(test)]

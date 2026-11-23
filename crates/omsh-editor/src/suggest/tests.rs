@@ -233,3 +233,21 @@ fn among_equally_close_names_the_shells_own_come_first() {
     s.program("cha");
     assert_eq!(suggest("chaa", &s, &["echoo"]), ["cha"]);
 }
+
+#[test]
+fn near_name_follows_the_limits_of_a_did_you_mean() {
+    assert_eq!(near_name("gti", "git"), Some(1));
+    assert_eq!(near_name("GTI", "git"), Some(1), "capitals do not count");
+    assert_eq!(near_name("git", "git"), Some(0));
+    assert_eq!(near_name("gt", "xyz"), None, "short names allow one edit");
+    assert_eq!(near_name("a", "b"), None, "one character is never guessed");
+    assert_eq!(near_name("project", "projekt"), Some(1));
+    assert_eq!(near_name("projects", "projekts"), Some(1));
+    assert_eq!(near_name("night-before-codebase", "night-before"), None);
+    assert_eq!(near_name("abcdef", "abxxef"), Some(2));
+    assert_eq!(
+        near_name("abcdef", "axxxef"),
+        None,
+        "three edits are too many"
+    );
+}

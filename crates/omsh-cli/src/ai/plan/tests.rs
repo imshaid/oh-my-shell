@@ -461,6 +461,7 @@ fn a_step_that_became_riskier_is_asked_about_before_it_runs() {
         command: "shred /nonexistent-omsh-plan-test".to_owned(),
         analysis: Analysis::default(),
         missing: Vec::new(),
+        missing_paths: Vec::new(),
         fixed: Vec::new(),
         radii: Vec::new(),
         edited: false,
@@ -1919,6 +1920,7 @@ fn the_panel_of_a_step_that_became_riskier_counts_too() {
         command: format!("rm -rf {}", dir.file("a")),
         analysis: Analysis::default(),
         missing: Vec::new(),
+        missing_paths: Vec::new(),
         fixed: Vec::new(),
         radii: Vec::new(),
         edited: false,
@@ -2293,6 +2295,7 @@ fn paused_plan<R>(body: impl FnOnce(&mut PlanEnv<'_>, &[Reviewed], &mut Run) -> 
             command: "true".to_owned(),
             analysis,
             missing: Vec::new(),
+            missing_paths: Vec::new(),
             fixed: Vec::new(),
             radii: Vec::new(),
             edited: false,
@@ -2842,4 +2845,274 @@ fn a_fix_found_only_by_its_program_shows_no_application_name() {
         "{line}"
     );
     assert!(!ran.err.contains("WhatsApp"), "{}", ran.err);
+}
+
+// -- paths that do not exist, before anything runs --------------------------------------------
+
+/// A made-up place: `base/work` (where the shell starts) and `base/night-before`. Returns the
+/// base folder with links resolved, and the setup line that moves the shell into `work`.
+fn place(dir: &Dir) -> (String, &'static str) {
+    fs::create_dir_all(dir.file("work")).unwrap();
+    fs::create_dir_all(dir.file("night-before")).unwrap();
+    let base = fs::canonicalize(dir.file("")).unwrap();
+    let line: &'static str = Box::leak(format!("cd '{}/work'", base.display()).into_boxed_str());
+    (base.to_string_lossy().into_owned(), line)
+}
+
+/// How many `no such path:` notes the panels printed.
+fn path_notes(err: &str) -> usize {
+    err.matches("     no such path: ").count()
+}
+
+#[test]
+fn a_path_that_does_not_exist_is_noted_with_the_name_that_was_meant() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[
+        ("Open", "code ../night-before-codebase", "low"),
+        ("Look", "ls", "low"),
+    ]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd],
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    let err = &ran.err;
+    let first = err.find("1. Open").expect("step 1");
+    let second = err.find("2. Look").expect("step 2");
+    assert!(
+        err[first..second].contains(
+            "     no such path: ../night-before-codebase; did you mean ../night-before?\n"
+        ),
+        "{err}"
+    );
+    assert_eq!(path_notes(err), 1, "{err}");
+    // A note, not a refusal: the level is the same and the plan is still asked about.
+    assert!(err.contains("1. Open   [safe]"), "{err}");
+    assert_eq!(ran.key_prompts.len(), 1, "{:?}", ran.key_prompts);
+    assert!(err.contains("cancelled; nothing ran"), "{err}");
+}
+
+#[test]
+fn the_command_is_not_rewritten_for_a_missing_path() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[("Open", "cat ../night-before-codebase", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd],
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert!(
+        ran.err.contains("     $ cat ../night-before-codebase\n"),
+        "{}",
+        ran.err
+    );
+    assert!(!ran.err.contains("     fixed:"), "{}", ran.err);
+}
+
+#[test]
+fn an_absolute_path_and_a_home_path_are_noted_too() {
+    let dir = Dir::new();
+    let (base, _) = place(&dir);
+    let command = format!("ls {base}/night-befor");
+    let answer = json(&[("Look", &command, "low")]);
+    let ran = go(says(&answer), "x", Setup::default());
+    assert!(
+        ran.err.contains(&format!(
+            "     no such path: {base}/night-befor; did you mean {base}/night-before?\n"
+        )),
+        "{}",
+        ran.err
+    );
+    // With nothing near, only the path.
+    let command = format!("ls {base}/zzzzzz");
+    let answer = json(&[("Look", &command, "low")]);
+    let ran = go(says(&answer), "x", Setup::default());
+    assert!(
+        ran.err
+            .contains(&format!("     no such path: {base}/zzzzzz\n")),
+        "{}",
+        ran.err
+    );
+}
+
+#[test]
+fn a_name_that_an_earlier_step_creates_or_names_is_not_noted() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    for steps in [
+        vec![("Make", "mkdir fresh", "low"), ("Go", "cd fresh", "low")],
+        vec![
+            ("Clone", "git clone https://example.org/fresh.git", "low"),
+            ("Go", "cd fresh", "low"),
+        ],
+        vec![("Both", "mkdir -p fresh && cd fresh", "low")],
+    ] {
+        let answer = json(&steps);
+        let ran = go(
+            says(&answer),
+            "x",
+            Setup {
+                aliases: vec![cd],
+                keys: vec![Ok(Key::Escape)],
+                ..Setup::default()
+            },
+        );
+        assert_eq!(path_notes(&ran.err), 0, "{steps:?}\n{}", ran.err);
+    }
+}
+
+#[test]
+fn the_steps_after_a_missing_folder_do_not_note_it_again() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[
+        ("Go", "cd ../night-before-codebase", "low"),
+        ("Look", "ls src", "low"),
+        ("Open", "code .", "low"),
+    ]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd],
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(path_notes(&ran.err), 1, "{}", ran.err);
+}
+
+#[test]
+fn a_folder_that_is_not_known_gives_no_note_for_a_relative_path() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[
+        ("Go", "cd \"$somewhere\"", "low"),
+        ("Look", "ls zzzzzz", "low"),
+    ]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd],
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(path_notes(&ran.err), 0, "{}", ran.err);
+}
+
+#[test]
+fn cdpath_keeps_a_bare_cd_name_quiet_but_not_other_commands() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[("Look", "ls yyyyyy", "low"), ("Go", "cd zzzzzz", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd, "CDPATH=/"],
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert!(!ran.err.contains("no such path: zzzzzz"), "{}", ran.err);
+    assert!(
+        ran.err.contains("     no such path: yyyyyy\n"),
+        "{}",
+        ran.err
+    );
+}
+
+#[test]
+fn commands_where_a_missing_path_is_normal_get_no_note() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[
+        ("a", "mkdir zzzzzz", "low"),
+        ("b", "touch yyyyyy", "low"),
+        ("c", "cp a xxxxxx", "low"),
+        ("d", "mv a wwwwww", "low"),
+        ("e", "echo hi > vvvvvv/out", "low"),
+        ("f", "cat < uuuuuu", "low"),
+    ]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd],
+            keys: vec![Ok(Key::Escape)],
+            ..Setup::default()
+        },
+    );
+    assert_eq!(path_notes(&ran.err), 0, "{}", ran.err);
+}
+
+#[test]
+fn editing_a_step_updates_its_path_note() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[("Look", "ls", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd],
+            keys: vec![ch('e'), enter(), ch('e'), enter()],
+            edits: vec![
+                Edited::Text("ls ../night-before-codebase".to_owned()),
+                Edited::Text("ls ../night-before".to_owned()),
+            ],
+            ..Setup::default()
+        },
+    );
+    // Only the panel after the first edit has the note.
+    assert_eq!(path_notes(&ran.err), 1, "{}", ran.err);
+    assert!(
+        ran.err.contains("did you mean ../night-before?\n"),
+        "{}",
+        ran.err
+    );
+}
+
+#[test]
+fn an_edit_that_adds_a_folder_in_an_earlier_step_silences_the_later_note() {
+    let dir = Dir::new();
+    let (_, cd) = place(&dir);
+    let answer = json(&[("Make", "true", "low"), ("Go", "cd fresh", "low")]);
+    let ran = go(
+        says(&answer),
+        "x",
+        Setup {
+            aliases: vec![cd],
+            keys: vec![ch('e'), ch('1'), enter(), Ok(Key::Escape)],
+            edits: vec![Edited::Text("mkdir fresh".to_owned())],
+            ..Setup::default()
+        },
+    );
+    // The first panel notes `fresh`; once step 1 mentions it, the note is gone.
+    assert_eq!(path_notes(&ran.err), 1, "{}", ran.err);
+    assert!(ran.err.contains("     $ mkdir fresh\n"), "{}", ran.err);
+}
+
+#[test]
+fn the_panel_with_buttons_colors_the_path_label_like_the_command_label() {
+    use omsh_ui::text::Tone;
+    let lines = view::body_lines("     no such path: ../a; did you mean ../b?\n", 80);
+    assert_eq!(lines.len(), 1);
+    let spans = lines[0].spans();
+    assert_eq!(spans[0].text(), "no such path:");
+    assert_eq!(spans[0].style.tone, Tone::Warn);
+    assert_eq!(spans[1].text(), " ../a; did you mean ../b?");
+    assert_eq!(spans[1].style.tone, Tone::Plain);
 }

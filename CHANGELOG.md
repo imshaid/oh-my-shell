@@ -3,6 +3,25 @@
 All notable changes to Oh My Shell. The newest version is first. Settings and commands are described in
 [docs/commands.md](docs/commands.md); how to use them in [docs/user-guide.md](docs/user-guide.md).
 
+## Unreleased (for 1.1.2)
+
+### The AI plan
+
+- **A path that does not exist is noted before anything runs.** For a short list of commands that open something
+  that must already exist (`cd`, `ls`, `cat`, `less`, `head`, `tail`, `code`, `xdg-open`), the plan panel puts
+  `no such path: ../night-before-codebase; did you mean ../night-before?` under the step. The suggestions are the
+  real names in the folder where the path first goes wrong, ranked: the same name apart from capitals and
+  `-`, `_`, `.` and blanks, then names a few edits away, then a name that is the other one plus a tail
+  (`night-before-codebase` and `night-before`). It is only a note: the command is not rewritten, the level does
+  not change and Run still works. Nothing is sent anywhere; only the folder in question is read, and only when the
+  plan is shown. Never looked at: `mkdir`, `touch`, `cp`, `mv`, redirections and editors, where a missing path is
+  normal. Left alone: paths built at run time (`$dir/x`, `$(...)`), patterns, `~user`, URLs, a command with an
+  option that may take a value, a bare `cd` name when `CDPATH` is set, and `..` from a folder that is a link. A
+  path is not noted when its missing name is written in an earlier step or earlier in the same step
+  (`mkdir build && cd build`, `git clone .../repo && cd repo`). Not noted either when the file system answers with
+  anything but "no such file" (no permission, not a folder). A path that a program the plan never names would
+  create can still get a note; the step runs as before.
+
 ## 1.1.1 (2026-11-23)
 
 Plans from the AI are checked more before they run. No new settings, and still no network use on the normal

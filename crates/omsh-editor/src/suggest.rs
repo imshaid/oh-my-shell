@@ -69,6 +69,17 @@ fn name_distance(
     Some(found)
 }
 
+/// How many edits `typed` is from `candidate` (capitals ignored), if that is within what a
+/// "did you mean" allows for a name of that length (see the module text); `None` otherwise. The
+/// plan panel uses it for the names in a folder.
+#[must_use]
+pub fn near_name(typed: &str, candidate: &str) -> Option<usize> {
+    let limit = allowed_edits(typed)?;
+    let typed: Vec<char> = typed.chars().flat_map(char::to_lowercase).collect();
+    let candidate: Vec<char> = candidate.chars().flat_map(char::to_lowercase).collect();
+    distance(&typed, &candidate, limit)
+}
+
 /// The names `name` may have been meant as, closest first, at most three. `path` is the `PATH`
 /// the lookup used; `shell_names` are the builtins, functions and aliases.
 #[must_use]

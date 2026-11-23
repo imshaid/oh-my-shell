@@ -13,6 +13,7 @@ mod context;
 mod find;
 pub mod journal;
 mod level;
+pub mod opens;
 pub mod paths;
 mod rules;
 pub mod trash;

@@ -10,6 +10,7 @@ use crate::changes::{Change, NotTrashable, RmSite, change_of, rm_site_options, w
 use crate::command::{Invocation, invocation};
 use crate::context::Context;
 use crate::level::Level;
+use crate::opens::{self, Opened};
 use crate::paths;
 use crate::rules::{Env, Hit, Matcher, RULES, Rule};
 use crate::word::{Arg, collect_subs};
@@ -49,6 +50,9 @@ pub struct Analysis {
     /// The `mkdir`, `mv` and redirections that write files, which the undo journal follows
     /// (§12.5). Not those in the body of a function that is only being defined.
     pub changes: Vec<Change>,
+    /// The paths that `cd`, `ls`, `cat`, `less`, `head`, `tail`, `code` and `xdg-open` open, with
+    /// the directory each was resolved from. Not those in a function body or in `eval` text.
+    pub opens: Vec<Opened>,
 }
 
 impl Analysis {
@@ -81,6 +85,7 @@ pub fn analyze(list: &List, src: &str, ctx: &Context<'_>) -> Analysis {
         findings: Vec::new(),
         deletes: Vec::new(),
         changes: Vec::new(),
+        opens: Vec::new(),
         functions: 0,
         depth: 0,
     };
@@ -90,6 +95,7 @@ pub fn analyze(list: &List, src: &str, ctx: &Context<'_>) -> Analysis {
         cwd_after: walker.cwd,
         deletes: walker.deletes,
         changes: walker.changes,
+        opens: walker.opens,
     }
 }
 
@@ -109,6 +115,7 @@ struct Walker<'c, 'p> {
     findings: Vec<Finding>,
     deletes: Vec<RmSite>,
     changes: Vec<Change>,
+    opens: Vec<Opened>,
     /// How many function definitions the walk is inside: their bodies do not run now.
     functions: usize,
     depth: usize,
@@ -303,6 +310,10 @@ impl Walker<'_, '_> {
         let inv = invocation(span, words)?;
         if inv.only_asks_for_help() {
             return Some(inv);
+        }
+        if self.functions == 0 && frame.outer.is_none() {
+            let found = opens::opened(&inv, self.cwd.as_deref(), self.home.as_deref());
+            self.opens.extend(found);
         }
         if inv.name == "rm" {
             let trashable = if frame.outer.is_some() {

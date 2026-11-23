@@ -75,6 +75,8 @@ fn classify(rest: &str) -> (&'static str, Tone, Tone) {
         ("needs root:", Tone::Plain, Tone::Warn)
     } else if rest.starts_with("not found:") {
         ("not found:", Tone::Plain, Tone::Warn)
+    } else if rest.starts_with("no such path:") {
+        ("no such path:", Tone::Plain, Tone::Warn)
     } else if rest.starts_with("fixed:") {
         ("fixed:", Tone::Plain, Tone::Warn)
     } else if rest.starts_with("rm goes to the trash") {
