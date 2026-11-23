@@ -397,14 +397,38 @@ export EDITOR=nano
 
 ## Update and uninstall
 
-**Update.** `omsh update` looks up the latest GitHub release, downloads the archive for your CPU, checks it against
-`sha256.sum` (see [what that protects](#what-the-checksum-protects-and-what-it-does-not)), runs the new program once
-with `--version`, and only then renames it over the old one. A shell already running keeps the old file until you
-restart it. `omsh update --check` installs nothing; it says whether a newer release exists (and, like the daily check, records the time
-in the stamp file unless `--no-config` is given). It refuses a copy installed by a
-package manager (under `/usr`, but not `/usr/local`) or by `cargo` (found by the program's path) and says how to update that one: `sudo apt install ./new.deb`
-or the `cargo install` command again. It installs only a newer release than the one you run; two updates running at the same moment are not guarded against
-each other. For a notice when a release comes out, set
+**Update.** `omsh update` replaces the program with the newest release. In order, it:
+
+1. looks at where the running program is, before it uses the network (see "What it refuses" below);
+2. finds the newest release, from where GitHub's `releases/latest` address redirects (the GitHub API is not used),
+   and stops with "is the newest release" when that is not newer than the one you run: it never downgrades;
+3. downloads the archive for your CPU (`x86_64` or `aarch64`; there is no release for another one) and the
+   release's `sha256.sum`, and compares the two before anything is unpacked (see
+   [what that protects](#what-the-checksum-protects-and-what-it-does-not));
+4. unpacks the one program file and writes it next to the old one as `.oh-my-shell.update-<number>`, so you need the
+   right to write in that folder (if you do not have it, the command says so and suggests running it with that
+   right, for example `sudo <path> update`);
+5. runs the new file once with `--version` and requires it to name the new version; and only then
+6. renames it over the old one.
+
+If a step fails, the old file is left as it was and the temporary file is removed. A shell already running keeps the
+old file until you restart it; the command ends by saying so (`Updated Oh My Shell 1.0.0 -> 1.1.0 at <path>.`). The
+progress lines go to standard error.
+
+`omsh update --check` installs nothing and does not look at where the program is; it prints `Oh My Shell N is
+available (you have M). Run: omsh update`, or says you have the newest release. Both forms, like the daily check,
+record the time and the release they found in the stamp file unless `--no-config` is given. `omsh update --help` shows
+the usage. **Exit status:** 0 when it updated, when you already have the newest release, and for `--check` whatever
+it found; 1 for any failure (no network, a bad checksum, a refused place); 2 for a wrong argument; 130 when you press
+Ctrl+C.
+
+**What it refuses.** A copy that something else owns: one under `/usr` (but not `/usr/local`), `/bin` or `/sbin` (a
+package manager), one in the `cargo` bin folder (`$CARGO_HOME/bin` or `~/.cargo/bin`, found by the program's path),
+and a build in a `target/debug` or `target/release` folder of a source tree. It says how to update that one:
+`sudo apt install ./new.deb`, or the `cargo install` command again, or to build it again or install a release with
+`install.sh`. Two updates running at the same moment are not guarded against each other.
+
+**The daily check.** For a notice when a release comes out, set
 `check = true` under `[update]` (the first-start question sets it too): the shell then asks GitHub for the latest
 version about once a day (if the stamp file cannot be written it can repeat at each start), a moment after the prompt,
 and keeps the answer in the stamp file. Nothing is downloaded. **The news is shown at the next start**, not in the

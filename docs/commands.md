@@ -285,8 +285,9 @@ Example: `omsh status`
 Download the latest release, check it against `sha256.sum`, try the new program, and rename it over the
 old one. `--check` does not install anything; it says whether a newer release exists, and (like the daily check) it
 records the time in the check stamp unless `--no-config` is given. It refuses a copy under `/usr` (a package
-manager; `/usr/local` is allowed) or in the `cargo` bin folder, as found from the program's path (a symbolic link at
-the front of that path can fool the test).
+manager; `/usr/local` is allowed), `/bin` or `/sbin`, in the `cargo` bin folder, or in a `target/debug` or
+`target/release` build folder, as found from the program's path (a symbolic link at the front of that path can fool
+the test); `--check` does not look at where the program is.
 Usage: `omsh update [--check]`
 Example: `omsh update --check`
 
