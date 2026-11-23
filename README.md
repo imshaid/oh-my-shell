@@ -4,7 +4,7 @@ An interactive Linux shell, written in Rust. It behaves like a familiar POSIX sh
 (colors, hints, completion), keeps a searchable history, checks dangerous commands before they run, and can
 optionally hand a task to an AI. Nothing the AI suggests runs without a preview and your confirmation.
 
-**Status: version 1.1.0.** It is young. Use it from a terminal profile for a while
+**Status: version 1.1.1.** It is young. Use it from a terminal profile for a while
 before you make it your login shell; the installers never run `chsh`.
 
 - **AI is off until you set it up** (`omsh ai setup`). The shell is fully usable without it, and `--no-ai` switches it off.

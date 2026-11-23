@@ -9,7 +9,7 @@ Where this spec says "verify", the claim was not confirmed. Check it in code or 
 
 ---
 
-## Status: phases 1 to 7 are done on the branch `ui-upgrade` (version 1.1.0, not released)
+## Status: phases 1 to 7 were done on the branch `ui-upgrade` and are released in version 1.1.0 (tag `v1.1.0`, 2026-11-18)
 
 Phase 1 foundation, 2 shell look, 3 safety panels, 4 AI panels, 5 install and first run and update, 6 jobs and
 plan-running panels, 7 docs, site, changelog and version. Where the result differs from the text below:

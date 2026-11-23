@@ -3,7 +3,7 @@
 All notable changes to Oh My Shell. The newest version is first. Settings and commands are described in
 [docs/commands.md](docs/commands.md); how to use them in [docs/user-guide.md](docs/user-guide.md).
 
-## 1.1.1 (not released yet)
+## 1.1.1 (2026-11-23)
 
 Plans from the AI are checked more before they run. No new settings, and still no network use on the normal
 command path.
