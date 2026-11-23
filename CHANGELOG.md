@@ -3,7 +3,45 @@
 All notable changes to Oh My Shell. The newest version is first. Settings and commands are described in
 [docs/commands.md](docs/commands.md); how to use them in [docs/user-guide.md](docs/user-guide.md).
 
-## 1.1.0 (not released yet)
+## 1.1.1 (not released yet)
+
+Plans from the AI are checked more before they run. No new settings, and still no network use on the normal
+command path.
+
+### The AI plan
+
+- **A step whose background job fails is a failure.** A step such as `cmd &>/dev/null &` returns 0 as soon as the
+  job starts, so the plan used to say "plan done" and the job's `Exit 127` only showed up later, in the notice
+  before the next prompt. Now, after a step that returned 0, the plan watches the jobs that step started for up
+  to 300 ms. A job that ends with a nonzero status or a signal makes the step fail: the plan prints
+  `background job [1]: Exit 127` (or the signal name, such as `Terminated`) and then
+  `step 2 did not succeed (status 127)`, and the steps after it do not run. A job that is still running after
+  the wait is left alone (it may be a server), and a step that started no job does not wait.
+- **Commands that are not found are noted before anything runs.** The plan panel puts `not found: name` under a
+  step whose command is not a keyword, builtin, function or program in `PATH`, with the same "did you mean"
+  names as a typed mistake. It is only a note: the level does not change and Run still works, because an
+  earlier step may install the program. Aliases do not count, as plan steps run without them.
+- **A missing command is fixed from the desktop entries.** When exactly one installed program fits the name,
+  the command word is replaced before the panel is shown (`google-chrome` becomes
+  `/usr/bin/google-chrome-stable`) and the panel says `fixed: old -> new (App Name)` in place of `not found:`.
+  You still see the corrected plan and confirm it. Arguments, `&` and parentheses are kept. The `.desktop` files
+  are read locally, only when a command is missing, and nothing is sent anywhere. The freedesktop rules are
+  followed: `$XDG_DATA_HOME` and `$XDG_DATA_DIRS`, the `[Desktop Entry]` group only, and `Hidden` or a missing
+  `TryExec` leaves an entry out. An entry whose ID or `Name` says the name comes before one that only runs a
+  program of that name (a web-app shortcut that runs the browser); two different programs in the best group stay
+  a plain `not found:`, and a fix found only through a program name shows no application name. Entries that run
+  `flatpak`, `env` or a shell are not used. With no entry folders (a server, a container, WSL) nothing happens.
+  The same fix is applied when you edit a step.
+
+### Known limits
+
+- A background job started inside a subshell, `( cmd & )`, is not checked: the job belongs to the subshell, not
+  to the shell, so the plan cannot see it fail.
+- A background job that fails after the 300 ms watch is not seen by the plan; its `Exit` notice still appears
+  before the next prompt.
+- Path arguments that do not exist are not checked, and neither are commands written as a path.
+
+## 1.1.0 (2026-11-18)
 
 A new look for the interactive parts. Nothing about how the language runs commands changed, and there is still
 no network use on the normal command path.
